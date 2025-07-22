@@ -100,6 +100,29 @@ fix_vm_locks() {
     # Clear any shared memory locks
     local vm_basename=$(basename "$vm_name")
     rm -f /dev/shm/qemu_"$vm_basename"_* 2>/dev/null || true
+    
+    # Force unlock the specific disk file using qemu-img
+    if command -v qemu-img >/dev/null 2>&1; then
+        print_info "Force unlocking disk image with qemu-img..."
+        qemu-img info "$VM_DISK_PATH" >/dev/null 2>&1 || true
+    fi
+    
+    # Clear any fcntl locks on the disk file
+    if [ -f "$VM_DISK_PATH" ]; then
+        # Use fuser to kill any processes holding locks
+        fuser -k "$VM_DISK_PATH" 2>/dev/null || true
+        sleep 2
+        
+        # Clear file locks by briefly opening and closing the file
+        python3 -c "
+import fcntl
+try:
+    with open('$VM_DISK_PATH', 'r+b') as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+except:
+    pass
+" 2>/dev/null || true
+    fi
 
     # Step 5: Fix file permissions and ownership
     print_info "[5/8] Fixing file permissions and ownership..."
@@ -125,14 +148,21 @@ fix_vm_locks() {
     # Get current VM XML and clean it
     local temp_xml=$(mktemp)
     if virsh dumpxml "$vm_name" > "$temp_xml" 2>/dev/null; then
-        # Remove any problematic CD-ROM/ISO attachments
+        # Remove any problematic CD-ROM/ISO attachments completely
         sed -i '/<disk type="file" device="cdrom"/,/<\/disk>/d' "$temp_xml"
+        sed -i '/<disk.*device="cdrom"/,/<\/disk>/d' "$temp_xml"
         
-        # Ensure correct disk path
+        # Remove any IDE CD-ROM controllers that might cause conflicts
+        sed -i '/<controller type="ide"/,/<\/controller>/d' "$temp_xml"
+        
+        # Ensure correct disk path for main disk only
         sed -i "s|<source file='[^']*'/>|<source file='$VM_DISK_PATH'/>|g" "$temp_xml"
         
         # Remove any cached disk format info that might cause issues
         sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml"
+        
+        # Add proper disk driver settings
+        sed -i 's/<driver name="qemu"[^>]*>/<driver name="qemu" type="qcow2">/g' "$temp_xml"
         
         # Redefine VM with cleaned configuration
         if virsh define "$temp_xml" >/dev/null 2>&1; then

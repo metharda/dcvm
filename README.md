@@ -4,10 +4,12 @@
 
 ## Quick Installation
 
-Set up your system quickly with this single command:
+Set up your system quickly with these commands: (you should be in root user)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh | sudo bash
+wget https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh
+chmod +x install-dcvm.sh
+./install-dcvm.sh
 ```
 
 ## Features
