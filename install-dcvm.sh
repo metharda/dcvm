@@ -3,8 +3,6 @@
 #=============================================================================
 # Datacenter Startup Script
 # Description: Initializes and starts the virtualized datacenter environment
-# Author: Datacenter Administrator
-# Version: 1.0
 #=============================================================================
 
 set -euo pipefail
