@@ -154,8 +154,6 @@ check_directory_structure() {
         "$DATACENTER_BASE/nfs-share"
         "$DATACENTER_BASE/backups"
         "$DATACENTER_BASE/scripts"
-        "$DATACENTER_BASE/vms/vm1"
-        "$DATACENTER_BASE/vms/vm2"
     )
     
     for dir in "${directories[@]}"; do
@@ -270,14 +268,14 @@ show_datacenter_summary() {
     print_status "INFO" "=== DATACENTER STARTUP COMPLETE ==="
     echo
     
-    echo "📁 Base directory: $DATACENTER_BASE"
-    echo "🌐 Network: $NETWORK_NAME (10.10.10.1/24)"
-    echo "🔗 Bridge: $BRIDGE_NAME"
-    echo "📂 NFS Share: $NFS_EXPORT_PATH"
-    echo "📝 Log file: $LOG_FILE"
+    echo "Base directory: $DATACENTER_BASE"
+    echo "Network: $NETWORK_NAME (10.10.10.1/24)"
+    echo "Bridge: $BRIDGE_NAME"
+    echo "NFS Share: $NFS_EXPORT_PATH"
+    echo "Log file: $LOG_FILE"
     echo
-    
-    echo "🔧 Management commands:"
+
+    echo "Management commands:"
     echo "    • List VMs: virsh list --all"
     echo "    • Create VM: virt-install [options]"
     echo "    • Network info: virsh net-dumpxml $NETWORK_NAME"
