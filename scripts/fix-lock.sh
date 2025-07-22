@@ -1,132 +1,214 @@
 #!/bin/bash
 
-# QEMU Lock Fix - Specific fix for the "Failed to get shared write lock" error
+# QEMU Lock Fix - Comprehensive fix for VM lock issues
 
 VM_NAME="$1"
 
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
 if [ -z "$VM_NAME" ]; then
     echo "Usage: $0 <vm_name>"
+    echo "       $0 --all    # Fix locks for all VMs"
     exit 1
 fi
 
-echo "=== QEMU Lock Fix for $VM_NAME ==="
+fix_vm_locks() {
+    local vm_name="$1"
+    
+    echo "=== QEMU Lock Fix for $vm_name ==="
 
-# Step 1: Get VM configuration and disk path
-echo "[1/7] Getting VM configuration..."
-VM_DISK_PATH=$(virsh domblklist "$VM_NAME" --details 2>/dev/null | grep "disk" | grep "file" | awk '{print $4}' | head -1)
+    # Step 1: Get VM configuration and disk path
+    print_info "[1/8] Getting VM configuration..."
+    
+    # Check if VM exists
+    if ! virsh list --all | grep -q " $vm_name "; then
+        print_error "VM '$vm_name' not found"
+        return 1
+    fi
+    
+    VM_DISK_PATH=$(virsh domblklist "$vm_name" --details 2>/dev/null | grep "disk" | grep "file" | awk '{print $4}' | head -1)
 
-if [ -z "$VM_DISK_PATH" ]; then
-    echo "ERROR: Could not find disk path for VM $VM_NAME"
-    exit 1
-fi
+    if [ -z "$VM_DISK_PATH" ]; then
+        print_error "Could not find disk path for VM $vm_name"
+        return 1
+    fi
 
-echo "VM disk path: $VM_DISK_PATH"
+    print_info "VM disk path: $VM_DISK_PATH"
 
-# Step 2: Stop everything aggressively
-echo "[2/7] Stopping all VM processes..."
-virsh destroy "$VM_NAME" 2>/dev/null || true
-sleep 2
+    # Step 2: Force stop everything
+    print_info "[2/8] Force stopping VM and related processes..."
+    
+    # Destroy VM (force stop)
+    virsh destroy "$vm_name" 2>/dev/null || true
+    sleep 3
+    
+    # Kill any remaining QEMU processes for this VM
+    pgrep -f "qemu.*$vm_name" | xargs -r kill -9 2>/dev/null || true
+    sleep 2
+    
+    # Kill any QEMU processes using the disk file
+    if [ -f "$VM_DISK_PATH" ]; then
+        lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $2}' | xargs -r kill -9 2>/dev/null || true
+    fi
+    sleep 2
 
-# Kill any remaining QEMU processes
-pkill -f "$VM_NAME" 2>/dev/null || true
-sleep 2
+    # Step 3: Clear libvirt locks
+    print_info "[3/8] Clearing libvirt lock files..."
+    
+    # Remove lock files from various locations
+    local lock_dirs=(
+        "/var/lib/libvirt/qemu"
+        "/run/libvirt/qemu"
+        "/var/run/libvirt/qemu"
+        "/tmp"
+    )
+    
+    for lock_dir in "${lock_dirs[@]}"; do
+        if [ -d "$lock_dir" ]; then
+            find "$lock_dir" -name "*${vm_name}*" \( -name "*.lock" -o -name "*.pid" \) -delete 2>/dev/null || true
+        fi
+    done
 
-# Step 3: Check QEMU lock files in /var/lib/libvirt/qemu/
-echo "[3/7] Checking QEMU lock directories..."
-QEMU_DIR="/var/lib/libvirt/qemu"
-if [ -d "$QEMU_DIR" ]; then
-    # Remove any lock files for this VM
-    find "$QEMU_DIR" -name "*${VM_NAME}*" -type f | grep -E "\.lock|\.pid" | xargs rm -f 2>/dev/null || true
-fi
+    # Step 4: Clear QEMU image locks
+    print_info "[4/8] Clearing QEMU image locks..."
+    
+    # Remove any .lock files near the disk image
+    local disk_dir=$(dirname "$VM_DISK_PATH")
+    find "$disk_dir" -name "*.lock" -delete 2>/dev/null || true
+    
+    # Clear any shared memory locks
+    local vm_basename=$(basename "$vm_name")
+    rm -f /dev/shm/qemu_"$vm_basename"_* 2>/dev/null || true
 
-# Step 4: Clear QEMU image locks specifically
-echo "[4/7] Clearing QEMU image locks..."
+    # Step 5: Fix file permissions and ownership
+    print_info "[5/8] Fixing file permissions and ownership..."
+    
+    if [ -f "$VM_DISK_PATH" ]; then
+        # Set proper ownership
+        if id -u libvirt-qemu >/dev/null 2>&1; then
+            chown libvirt-qemu:kvm "$VM_DISK_PATH" 2>/dev/null || chown root:root "$VM_DISK_PATH"
+        elif id -u qemu >/dev/null 2>&1; then
+            chown qemu:qemu "$VM_DISK_PATH" 2>/dev/null || chown root:root "$VM_DISK_PATH"
+        else
+            chown root:root "$VM_DISK_PATH"
+        fi
+        
+        # Set proper permissions
+        chmod 660 "$VM_DISK_PATH"
+        print_success "Fixed permissions for $VM_DISK_PATH"
+    fi
 
-# QEMU stores image locks in memory and in lock files
-# Force unlock the image file
-if command -v qemu-img >/dev/null 2>&1; then
-    # Try to detect if qemu-img can see any locks
-    echo "Checking image with qemu-img info..."
-    qemu-img info "$VM_DISK_PATH" >/dev/null 2>&1 || echo "Warning: qemu-img reports issues with image"
-fi
+    # Step 6: Clean VM configuration
+    print_info "[6/8] Cleaning VM configuration..."
+    
+    # Get current VM XML and clean it
+    local temp_xml=$(mktemp)
+    if virsh dumpxml "$vm_name" > "$temp_xml" 2>/dev/null; then
+        # Remove any problematic CD-ROM/ISO attachments
+        sed -i '/<disk type="file" device="cdrom"/,/<\/disk>/d' "$temp_xml"
+        
+        # Ensure correct disk path
+        sed -i "s|<source file='[^']*'/>|<source file='$VM_DISK_PATH'/>|g" "$temp_xml"
+        
+        # Remove any cached disk format info that might cause issues
+        sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml"
+        
+        # Redefine VM with cleaned configuration
+        if virsh define "$temp_xml" >/dev/null 2>&1; then
+            print_success "VM configuration cleaned and redefined"
+        else
+            print_warning "Could not redefine VM configuration"
+        fi
+    fi
+    rm -f "$temp_xml"
 
-# Step 5: Completely recreate the disk file to break any locks
-echo "[5/7] Creating fresh disk file to break locks..."
-TEMP_DISK="${VM_DISK_PATH}.unlocked"
+    # Step 7: Restart libvirtd to clear all cached locks
+    print_info "[7/8] Restarting libvirtd service..."
+    if systemctl restart libvirtd 2>/dev/null || service libvirtd restart 2>/dev/null; then
+        print_success "libvirtd restarted successfully"
+    else
+        print_warning "Could not restart libvirtd automatically"
+    fi
+    
+    # Wait for libvirtd to fully restart
+    sleep 5
+    
+    # Wait for libvirtd to be ready
+    local wait_count=0
+    while ! virsh list >/dev/null 2>&1 && [ $wait_count -lt 10 ]; do
+        sleep 2
+        wait_count=$((wait_count + 1))
+    done
 
-# Copy with dd to ensure a completely fresh inode
-dd if="$VM_DISK_PATH" of="$TEMP_DISK" bs=1M status=progress 2>/dev/null || cp "$VM_DISK_PATH" "$TEMP_DISK"
+    # Step 8: Final verification
+    print_info "[8/8] Final verification..."
+    
+    # Check if VM is properly defined
+    if virsh list --all | grep -q " $vm_name "; then
+        print_success "VM is properly defined in libvirt"
+    else
+        print_error "VM not found after cleanup"
+        return 1
+    fi
+    
+    # Check disk file accessibility
+    if [ -f "$VM_DISK_PATH" ] && [ -r "$VM_DISK_PATH" ]; then
+        print_success "Disk file is accessible"
+    else
+        print_error "Disk file is not accessible"
+        return 1
+    fi
 
-if [ $? -eq 0 ]; then
-    # Replace the original
-    mv "$TEMP_DISK" "$VM_DISK_PATH"
-    echo "Fresh disk file created"
+    echo ""
+    print_success "=== Lock Fix Complete for $vm_name ==="
+    echo ""
+    echo "You can now try:"
+    echo "  dcvm start $vm_name"
+    echo "  virsh start $vm_name"
+    echo ""
+    
+    return 0
+}
+
+# Main logic
+if [ "$VM_NAME" = "--all" ]; then
+    print_info "Fixing locks for all VMs..."
+    
+    # Get all VMs
+    VM_LIST=$(virsh list --all --name | grep -v "^$")
+    
+    if [ -z "$VM_LIST" ]; then
+        print_warning "No VMs found"
+        exit 0
+    fi
+    
+    for vm in $VM_LIST; do
+        fix_vm_locks "$vm"
+        echo ""
+    done
+    
+    print_success "Lock fix completed for all VMs"
 else
-    echo "ERROR: Failed to create fresh disk file"
-    rm -f "$TEMP_DISK"
-    exit 1
+    fix_vm_locks "$VM_NAME"
 fi
-
-# Step 6: Fix VM configuration that might be causing lock issues
-echo "[6/7] Checking VM configuration for lock-causing elements..."
-
-# Get current VM XML
-VM_XML=$(virsh dumpxml "$VM_NAME" 2>/dev/null)
-if [ $? -ne 0 ]; then
-    echo "ERROR: Could not get VM configuration"
-    exit 1
-fi
-
-# Check for problematic configurations
-echo "$VM_XML" | grep -q "ide-cd" && echo "Found IDE CD-ROM in configuration"
-echo "$VM_XML" | grep -q "readonly='yes'" && echo "Found read-only devices"
-
-# Create a cleaned VM configuration
-TEMP_XML=$(mktemp)
-
-# Remove any CD-ROM/ISO attachments that might be causing locks
-echo "$VM_XML" | sed '/<disk type="file" device="cdrom"/,/<\/disk>/d' > "$TEMP_XML"
-
-# Update disk path to ensure it's correct
-sed -i "s|<source file='[^']*'/>|<source file='$VM_DISK_PATH'/>|g" "$TEMP_XML"
-
-# Redefine VM with cleaned configuration
-if virsh define "$TEMP_XML" >/dev/null 2>&1; then
-    echo "VM configuration updated (removed potential lock-causing elements)"
-else
-    echo "Warning: Could not update VM configuration"
-fi
-
-rm -f "$TEMP_XML"
-
-# Step 7: Set correct permissions and restart libvirtd
-echo "[7/7] Final cleanup and permissions..."
-
-# Set ownership
-if id -u libvirt-qemu >/dev/null 2>&1; then
-    chown libvirt-qemu:kvm "$VM_DISK_PATH"
-elif id -u qemu >/dev/null 2>&1; then
-    chown qemu:qemu "$VM_DISK_PATH"
-else
-    chown root:root "$VM_DISK_PATH"
-fi
-
-# Set permissions
-chmod 660 "$VM_DISK_PATH"
-
-# Restart libvirtd to clear all cached locks
-echo "Restarting libvirtd..."
-systemctl restart libvirtd 2>/dev/null || service libvirtd restart 2>/dev/null
-sleep 5
-
-# Wait for libvirtd to fully restart
-echo "Waiting for libvirtd to stabilize..."
-sleep 5
-
-echo "=== Lock Fix Complete ==="
-echo ""
-echo "Now try: dcvm start $VM_NAME"
-echo "Or manually: virsh start $VM_NAME"
-echo ""
-echo "If it still fails, the disk image may be corrupted."
-echo "Check with: qemu-img check $VM_DISK_PATH"

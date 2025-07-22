@@ -358,6 +358,49 @@ EOF
     print_status "SUCCESS" "Datacenter storage service configured and started"
 }
 
+# Function to download scripts from GitHub
+download_scripts() {
+    print_status "INFO" "Downloading DCVM scripts from GitHub..."
+    
+    local github_base="https://raw.githubusercontent.com/metharda/dcvm/main/scripts"
+    local scripts_dir="$DATACENTER_BASE/scripts"
+    
+    # Create scripts directory
+    mkdir -p "$scripts_dir"
+    
+    # List of scripts to download
+    local scripts=(
+        "vm-manager.sh"
+        "create-vm.sh"
+        "delete-vm.sh"
+        "backup.sh"
+        "setup-port-forwarding.sh"
+        "storage-manager.sh"
+        "dhcp-cleanup.sh"
+        "fix-lock.sh"
+    )
+    
+    # Download each script
+    for script in "${scripts[@]}"; do
+        print_status "INFO" "Downloading $script..."
+        if curl -fsSL "$github_base/$script" -o "$scripts_dir/$script"; then
+            chmod +x "$scripts_dir/$script"
+            print_status "SUCCESS" "Downloaded and made executable: $script"
+        else
+            print_status "WARNING" "Failed to download $script - continuing with installation"
+        fi
+    done
+    
+    # Verify at least vm-manager.sh was downloaded
+    if [[ -f "$scripts_dir/vm-manager.sh" ]]; then
+        print_status "SUCCESS" "Essential scripts downloaded successfully"
+    else
+        print_status "ERROR" "Failed to download essential scripts"
+        print_status "INFO" "Please manually clone the repository: git clone https://github.com/metharda/dcvm.git"
+        exit 1
+    fi
+}
+
 # Main execution
 main() {
     print_status "INFO" "Starting datacenter initialization..."
@@ -366,6 +409,9 @@ main() {
     # Pre-flight checks
     check_root
     check_kvm_support
+    
+    # Download scripts from GitHub
+    download_scripts
     
     # Start core services
     start_libvirtd

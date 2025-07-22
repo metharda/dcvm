@@ -1,13 +1,36 @@
 #!/bin/bash
 
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
 get_vm_ip() {
     local vm_name=$1
     local ip=""
     local attempts=0
     
-    echo "Looking for IP address of $vm_name..."
+    print_info "Looking for IP address of $vm_name..."
     
-    while [ -z "$ip" ] && [ $attempts -lt 10 ]; do
+    while [ -z "$ip" ] && [ $attempts -lt 15 ]; do
         # Method 1: Try agent source
         ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
         
@@ -21,39 +44,62 @@ get_vm_ip() {
             ip=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
         fi
         
-        # Method 4: Try MAC address lookup
+        # Method 4: Try MAC address lookup in DHCP leases
         if [ -z "$ip" ]; then
-            mac=$(virsh domiflist "$vm_name" | grep datacenter-net | awk '{print $5}')
+            local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
             if [ -n "$mac" ]; then
-                ip=$(virsh net-dhcp-leases datacenter-net | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+                ip=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
             fi
         fi
         
         # Method 5: Try ARP table
         if [ -z "$ip" ]; then
-            mac=$(virsh domiflist "$vm_name" | grep datacenter-net | awk '{print $5}')
+            local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
             if [ -n "$mac" ]; then
-                ip=$(arp -a | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
+                ip=$(ip neigh show | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
+                # Fallback to arp command
+                if [ -z "$ip" ]; then
+                    ip=$(arp -a | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
+                fi
             fi
+        fi
+        
+        # Method 6: Direct ping scan (last resort)
+        if [ -z "$ip" ] && [ $attempts -eq 10 ]; then
+            print_info "Attempting network scan as last resort..."
+            for i in {100..254}; do
+                local test_ip="10.10.10.$i"
+                if ping -c 1 -W 1 "$test_ip" >/dev/null 2>&1; then
+                    # Try to match this IP to our VM by MAC
+                    local test_mac=$(ip neigh show "$test_ip" 2>/dev/null | awk '{print $5}')
+                    local vm_mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+                    if [ -n "$test_mac" ] && [ -n "$vm_mac" ] && [ "$test_mac" = "$vm_mac" ]; then
+                        ip="$test_ip"
+                        break
+                    fi
+                fi
+            done
         fi
         
         # Validate IP format and reachability
         if [ -n "$ip" ] && [[ $ip =~ ^10\.10\.10\.[0-9]+$ ]]; then
             # Test if IP is reachable
-            if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
-                echo "$vm_name IP found and reachable: $ip"
+            if ping -c 1 -W 3 "$ip" >/dev/null 2>&1; then
+                print_success "$vm_name IP found and reachable: $ip"
                 break
             else
-                echo "$vm_name IP found but not reachable: $ip (attempt $((attempts+1)))"
+                print_warning "$vm_name IP found but not reachable: $ip (attempt $((attempts+1)))"
                 ip=""
             fi
         else
             if [ $attempts -eq 0 ]; then
-                echo "Attempt $((attempts+1)): Waiting for $vm_name to get valid IP address..."
+                print_info "Attempt $((attempts+1)): Waiting for $vm_name to get valid IP address..."
             fi
         fi
         
-        sleep 5
+        if [ -z "$ip" ]; then
+            sleep 3
+        fi
         attempts=$((attempts+1))
     done
     
@@ -61,48 +107,119 @@ get_vm_ip() {
 }
 
 cleanup_port_forwarding() {
-    echo "Cleaning up all existing datacenter port forwarding rules..."
+    print_info "Cleaning up existing datacenter port forwarding rules..."
     
     # Clean up NAT rules (ports 2220-2299 for SSH, 8080-8179 for HTTP)
     for port in {2220..2299} {8080..8179}; do
         while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q ":$port "; do
-            line=$(iptables -t nat -L PREROUTING -n --line-numbers | grep ":$port " | head -1 | awk '{print $1}')
-            iptables -t nat -D PREROUTING $line 2>/dev/null || break
+            local line=$(iptables -t nat -L PREROUTING -n --line-numbers | grep ":$port " | head -1 | awk '{print $1}')
+            if [ -n "$line" ]; then
+                iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
+            else
+                break
+            fi
         done
     done
     
     # Clean up FORWARD rules for datacenter subnet
     while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "10\.10\.10\."; do
-        line=$(iptables -L FORWARD -n --line-numbers | grep "10\.10\.10\." | head -1 | awk '{print $1}')
-        iptables -D FORWARD $line 2>/dev/null || break
+        local line=$(iptables -L FORWARD -n --line-numbers | grep "10\.10\.10\." | head -1 | awk '{print $1}')
+        if [ -n "$line" ]; then
+            iptables -D FORWARD "$line" 2>/dev/null || break
+        else
+            break
+        fi
     done
+    
+    print_success "Cleanup completed"
 }
 
-# Wait for VMs to boot and initialize
+get_host_ip() {
+    # Get the main host IP (prefer eth0, then any non-loopback interface)
+    local host_ip=""
+    
+    # Try to get IP from common interfaces
+    for interface in eth0 ens3 ens18 enp0s3 wlan0; do
+        host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
+        if [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^10\.10\.10\. ]]; then
+            break
+        fi
+    done
+    
+    # Fallback: get any non-loopback, non-datacenter IP
+    if [ -z "$host_ip" ]; then
+        host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
+    fi
+    
+    # Final fallback
+    if [ -z "$host_ip" ]; then
+        host_ip="YOUR_HOST_IP"
+    fi
+    
+    echo "$host_ip"
+}
+
+# Main script starts here
+print_info "=== DCVM Port Forwarding Setup ==="
+
+# Check if we're running as root
+if [ "$EUID" -ne 0 ]; then
+    print_error "This script must be run as root (use sudo)"
+    exit 1
+fi
+
+# Check if iptables is available
+if ! command -v iptables >/dev/null 2>&1; then
+    print_error "iptables is not installed"
+    exit 1
+fi
+
+# Check if datacenter-net exists
+if ! virsh net-list --all | grep -q "datacenter-net"; then
+    print_error "datacenter-net network not found"
+    print_info "Please run: dcvm status (to initialize the environment)"
+    exit 1
+fi
+
+# Check if datacenter-net is active
+if ! virsh net-list | grep -q "datacenter-net.*active"; then
+    print_warning "datacenter-net is not active, attempting to start..."
+    if virsh net-start datacenter-net >/dev/null 2>&1; then
+        print_success "datacenter-net started"
+        sleep 3
+    else
+        print_error "Failed to start datacenter-net"
+        exit 1
+    fi
+fi
 
 # Get all VMs connected to datacenter-net
-echo "Discovering VMs on datacenter-net..."
+print_info "Discovering VMs on datacenter-net..."
 VM_LIST=$(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$" | while read vm; do
-    # Check if VM uses datacenter-net
-    if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+    if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
         echo "$vm"
     fi
 done)
 
 if [ -z "$VM_LIST" ]; then
-    echo "No VMs found using datacenter-net"
-    exit 1
+    print_warning "No VMs found using datacenter-net"
+    print_info "Create a VM first: dcvm create my-vm"
+    exit 0
 fi
 
-echo "Found VMs using datacenter-net:"
-echo "$VM_LIST"
+print_success "Found VMs using datacenter-net:"
+echo "$VM_LIST" | while read vm; do
+    local state=$(virsh list --all | grep " $vm " | awk '{print $3}')
+    echo "  - $vm ($state)"
+done
 echo ""
 
 # Clean up existing rules
 cleanup_port_forwarding
 
-# Get host IP (you can modify this if needed)
-HOST_IP="10.8.8.223"
+# Get host IP
+HOST_IP=$(get_host_ip)
+print_info "Host IP detected: $HOST_IP"
 
 # Initialize port counters
 SSH_PORT_START=2221
@@ -115,114 +232,146 @@ declare -A vm_ips
 declare -A vm_ssh_ports  
 declare -A vm_http_ports
 
-echo "Configuring port forwarding for discovered VMs..."
+print_info "Configuring port forwarding for discovered VMs..."
+
+# Enable IP forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
 
 # Process each VM
-for vm in $VM_LIST; do
+echo "$VM_LIST" | while read vm; do
+    if [ -z "$vm" ]; then
+        continue
+    fi
+    
     # Skip if VM is not running
     if ! virsh list | grep -q "$vm.*running"; then
-        echo "Skipping $vm (not running)"
+        print_warning "Skipping $vm (not running - start it first)"
         continue
     fi
     
     vm_ip=$(get_vm_ip "$vm")
     
     if [ -n "$vm_ip" ] && [[ $vm_ip =~ ^10\.10\.10\.[0-9]+$ ]]; then
-        echo "Setting up port forwarding for $vm ($vm_ip)..."
+        print_info "Setting up port forwarding for $vm ($vm_ip)..."
         
-        # Store VM info
+        # Configure SSH port forwarding
+        if iptables -t nat -I PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null; then
+            iptables -I FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null
+            print_success "  SSH: $HOST_IP:$ssh_port -> $vm_ip:22"
+        else
+            print_error "  Failed to setup SSH forwarding for $vm"
+        fi
+        
+        # Configure HTTP port forwarding  
+        if iptables -t nat -I PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null; then
+            iptables -I FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null
+            print_success "  HTTP: $HOST_IP:$http_port -> $vm_ip:80"
+        else
+            print_error "  Failed to setup HTTP forwarding for $vm"
+        fi
+        
+        # Store info for the current shell session
         vm_ips[$vm]=$vm_ip
         vm_ssh_ports[$vm]=$ssh_port
         vm_http_ports[$vm]=$http_port
         
-        # Configure SSH port forwarding
-        iptables -t nat -I PREROUTING -p tcp --dport $ssh_port -j DNAT --to-destination $vm_ip:22
-        iptables -I FORWARD -p tcp -d $vm_ip --dport 22 -j ACCEPT
-        
-        # Configure HTTP port forwarding  
-        iptables -t nat -I PREROUTING -p tcp --dport $http_port -j DNAT --to-destination $vm_ip:80
-        iptables -I FORWARD -p tcp -d $vm_ip --dport 80 -j ACCEPT
-        
-        echo "  $vm: SSH=$ssh_port, HTTP=$http_port"
+        # Write to port mappings file
+        echo "$vm $vm_ip $ssh_port $http_port" >> /tmp/dcvm_port_mappings.tmp
         
         # Increment ports for next VM
         ssh_port=$((ssh_port + 1))
         http_port=$((http_port + 1))
     else
-        echo "Skipping $vm (no valid IP found)"
+        print_warning "Skipping $vm (no valid IP found or not reachable)"
     fi
 done
 
 # Allow forwarding for established connections
-iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
 
-# Display summary
-echo ""
-echo "=== Port forwarding configured successfully! ==="
-echo "Host IP: $HOST_IP"
-echo ""
-
-for vm in $VM_LIST; do
-    if [ -n "${vm_ips[$vm]}" ]; then
-        echo "$vm (${vm_ips[$vm]}):"
-        echo "  SSH: ssh -p ${vm_ssh_ports[$vm]} admin@$HOST_IP"
-        echo "  HTTP: http://$HOST_IP:${vm_http_ports[$vm]}"
-        echo ""
-    fi
-done
-
-# Save iptables rules
-iptables-save > /etc/iptables/rules.v4
-echo "iptables rules saved to /etc/iptables/rules.v4"
-
-# Update SSH config
-echo "Updating SSH configuration..."
-# Backup existing config
-if [ -f ~/.ssh/config ]; then
-    cp ~/.ssh/config ~/.ssh/config.backup.$(date +%s)
-fi
-
-# Remove all datacenter VM entries
-for vm in $VM_LIST; do
-    sed -i "/^Host $vm$/,/^$/d" ~/.ssh/config 2>/dev/null || true
-done
-
-# Add new entries
-for vm in $VM_LIST; do
-    if [ -n "${vm_ips[$vm]}" ]; then
-        cat >> ~/.ssh/config << EOF
-
-Host $vm
-    HostName $HOST_IP
-    Port ${vm_ssh_ports[$vm]}
-    User admin
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-EOF
-    fi
-done
-
-echo ""
-echo "SSH configuration updated. You can now use:"
-for vm in $VM_LIST; do
-    if [ -n "${vm_ips[$vm]}" ]; then
-        echo "  ssh $vm"
-    fi
-done
-
-echo ""
-
-# Create or update port mapping file for reference
-cat > /srv/datacenter/port-mappings.txt << EOF
+# Create final port mappings file
+if [ -f /tmp/dcvm_port_mappings.tmp ]; then
+    mkdir -p /srv/datacenter
+    cat > /srv/datacenter/port-mappings.txt << EOF
 # Datacenter VM Port Mappings - Generated $(date)
 # Format: VM_NAME VM_IP SSH_PORT HTTP_PORT
 
 EOF
+    cat /tmp/dcvm_port_mappings.tmp >> /srv/datacenter/port-mappings.txt
+    rm -f /tmp/dcvm_port_mappings.tmp
+    
+    print_success "Port mappings saved to /srv/datacenter/port-mappings.txt"
+else
+    print_warning "No successful port mappings to save"
+fi
 
-for vm in $VM_LIST; do
-    if [ -n "${vm_ips[$vm]}" ]; then
-        echo "$vm ${vm_ips[$vm]} ${vm_ssh_ports[$vm]} ${vm_http_ports[$vm]}" >> /srv/datacenter/port-mappings.txt
+# Save iptables rules
+if command -v iptables-save >/dev/null 2>&1; then
+    mkdir -p /etc/iptables
+    if iptables-save > /etc/iptables/rules.v4 2>/dev/null; then
+        print_success "iptables rules saved to /etc/iptables/rules.v4"
     fi
-done
+fi
 
-echo "Port mappings saved to /srv/datacenter/port-mappings.txt"
+# Display summary
+echo ""
+print_success "=== Port forwarding configuration complete! ==="
+echo "Host IP: $HOST_IP"
+echo ""
+
+if [ -f /srv/datacenter/port-mappings.txt ]; then
+    echo "VM Access Information:"
+    grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+        if [ -n "$vm" ]; then
+            echo ""
+            echo "$vm ($ip):"
+            echo "  SSH:  ssh -p $ssh_port admin@$HOST_IP"
+            echo "  HTTP: http://$HOST_IP:$http_port"
+        fi
+    done
+    echo ""
+    
+    # Update SSH config for easy access
+    print_info "Updating SSH configuration for easy access..."
+    
+    # Backup existing config
+    if [ -f ~/.ssh/config ]; then
+        cp ~/.ssh/config ~/.ssh/config.backup.$(date +%s) 2>/dev/null || true
+    fi
+    
+    # Remove old datacenter entries
+    if [ -f ~/.ssh/config ]; then
+        grep -v "^Host.*datacenter\|^Host.*vm[0-9]" ~/.ssh/config > ~/.ssh/config.tmp 2>/dev/null || true
+        mv ~/.ssh/config.tmp ~/.ssh/config 2>/dev/null || true
+    fi
+    
+    # Add new entries
+    grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+        if [ -n "$vm" ]; then
+            mkdir -p ~/.ssh
+            cat >> ~/.ssh/config << EOF
+
+Host $vm
+    HostName $HOST_IP
+    Port $ssh_port
+    User admin
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+        fi
+    done
+    
+    echo ""
+    print_success "SSH configuration updated. You can now use:"
+    grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+        if [ -n "$vm" ]; then
+            echo "  ssh $vm"
+        fi
+    done
+else
+    print_warning "No VMs were successfully configured"
+fi
+
+echo ""
+print_info "Note: Make sure your firewall allows the configured ports"
+print_info "To check current mappings anytime: dcvm ports"

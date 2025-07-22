@@ -175,49 +175,60 @@ troubleshoot_vm() {
         print_error "VM '$vm_name' does not exist"
         return 1
     fi
-    
+
     # Get VM disk path
     local vm_disk_path=$(get_vm_disk_path "$vm_name")
     if [ -z "$vm_disk_path" ]; then
         print_error "Could not find disk path for VM '$vm_name'"
         return 1
     fi
-    
+
     print_info "VM disk path: $vm_disk_path"
-    
+
     # Check if disk file exists
     if [ ! -f "$vm_disk_path" ]; then
         print_error "Disk file does not exist: $vm_disk_path"
         return 1
     fi
+
+    # Comprehensive lock fix procedure
+    print_info "Performing comprehensive lock and file fix..."
     
-    # Check file permissions
-    print_info "Current file permissions:"
-    ls -la "$vm_disk_path"
+    # Step 1: Force stop everything
+    print_info "Force stopping VM and related processes..."
+    virsh destroy "$vm_name" 2>/dev/null || true
+    sleep 3
     
-    # Check processes using the file
-    print_info "Checking for processes using the disk file..."
-    local using_processes=$(lsof "$vm_disk_path" 2>/dev/null || fuser "$vm_disk_path" 2>/dev/null || echo "none")
-    if [ "$using_processes" != "none" ]; then
-        print_warning "Processes using the disk file:"
-        echo "$using_processes"
-        print_info "Attempting to stop conflicting processes..."
-        
-        # Try to stop any running VMs with this name first
-        virsh destroy "$vm_name" 2>/dev/null || true
-        sleep 2
-        
-        # Check again
-        using_processes=$(lsof "$vm_disk_path" 2>/dev/null || fuser "$vm_disk_path" 2>/dev/null || echo "none")
-        if [ "$using_processes" != "none" ]; then
-            print_error "Still have processes using the file after cleanup"
-            return 1
+    # Kill any remaining QEMU processes for this VM
+    pgrep -f "qemu.*$vm_name" | xargs -r kill -9 2>/dev/null || true
+    sleep 2
+    
+    # Kill any QEMU processes using the disk file
+    lsof "$vm_disk_path" 2>/dev/null | awk 'NR>1 {print $2}' | xargs -r kill -9 2>/dev/null || true
+    sleep 2
+
+    # Step 2: Clear libvirt locks
+    print_info "Clearing libvirt lock files..."
+    local lock_dirs=(
+        "/var/lib/libvirt/qemu"
+        "/run/libvirt/qemu"
+        "/var/run/libvirt/qemu"
+        "/tmp"
+    )
+    
+    for lock_dir in "${lock_dirs[@]}"; do
+        if [ -d "$lock_dir" ]; then
+            find "$lock_dir" -name "*${vm_name}*" \( -name "*.lock" -o -name "*.pid" \) -delete 2>/dev/null || true
         fi
-    else
-        print_success "No processes are using the disk file"
-    fi
-    
-    # Fix permissions and ownership
+    done
+
+    # Step 3: Clear QEMU image locks
+    print_info "Clearing QEMU image locks..."
+    local disk_dir=$(dirname "$vm_disk_path")
+    find "$disk_dir" -name "*.lock" -delete 2>/dev/null || true
+    rm -f /dev/shm/qemu_"$(basename "$vm_name")"_* 2>/dev/null || true
+
+    # Step 4: Fix file permissions and ownership
     print_info "Fixing file permissions and ownership..."
     
     # Set proper ownership
@@ -236,24 +247,91 @@ troubleshoot_vm() {
     chmod 660 "$vm_disk_path"
     print_info "Set permissions to 660"
     
-    # Restore SELinux context if needed
+    # Step 5: Clean VM configuration
+    print_info "Cleaning VM configuration..."
+    local temp_xml=$(mktemp)
+    if virsh dumpxml "$vm_name" > "$temp_xml" 2>/dev/null; then
+        # Remove any problematic CD-ROM/ISO attachments
+        sed -i '/<disk type="file" device="cdrom"/,/<\/disk>/d' "$temp_xml"
+        # Ensure correct disk path
+        sed -i "s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g" "$temp_xml"
+        # Remove cached disk format info that might cause issues
+        sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml"
+        
+        # Redefine VM with cleaned configuration
+        if virsh define "$temp_xml" >/dev/null 2>&1; then
+            print_success "VM configuration cleaned and redefined"
+        else
+            print_warning "Could not redefine VM configuration"
+        fi
+    fi
+    rm -f "$temp_xml"
+
+    # Step 6: Restart libvirtd service
+    print_info "Restarting libvirtd service..."
+    if systemctl restart libvirtd 2>/dev/null || service libvirtd restart 2>/dev/null; then
+        print_success "libvirtd restarted successfully"
+    else
+        print_warning "Could not restart libvirtd automatically"
+    fi
+    
+    # Wait for libvirtd to be ready
+    local wait_count=0
+    while ! virsh list >/dev/null 2>&1 && [ $wait_count -lt 15 ]; do
+        sleep 2
+        wait_count=$((wait_count + 1))
+    done
+
+    # Step 7: Restore SELinux context if needed
     if command -v restorecon >/dev/null 2>&1 && [ -f /selinux/enforce ]; then
         restorecon "$vm_disk_path" 2>/dev/null && print_info "Restored SELinux context" || true
     fi
-    
+
     # Show final permissions
     print_info "Final file permissions:"
     ls -la "$vm_disk_path"
-    
-    # Try to start the VM
+
+    # Step 8: Try to start the VM
     print_info "Attempting to start VM..."
-    if virsh start "$vm_name" >/dev/null 2>&1; then
+    
+    # First check if VM is properly defined
+    if ! virsh list --all | grep -q " $vm_name "; then
+        print_error "VM not found after cleanup and restart"
+        return 1
+    fi
+    
+    # Try to start
+    local start_error=""
+    if start_error=$(virsh start "$vm_name" 2>&1); then
         print_success "VM started successfully"
-        return 0
+        
+        # Wait a moment and check if it's actually running
+        sleep 3
+        if virsh list | grep -q "$vm_name.*running"; then
+            print_success "VM is running and stable"
+            return 0
+        else
+            print_warning "VM started but may have stopped"
+        fi
     else
-        print_error "VM still failed to start"
+        print_error "VM failed to start"
+        print_info "Error details: $start_error"
         print_info "Last few lines of libvirt log:"
         tail -10 /var/log/libvirt/qemu/"$vm_name".log 2>/dev/null || echo "Log file not found"
+        
+        # Additional troubleshooting
+        print_info "Additional troubleshooting information:"
+        print_info "Checking disk image integrity..."
+        if command -v qemu-img >/dev/null 2>&1; then
+            qemu-img check "$vm_disk_path" 2>&1 | head -5
+        fi
+        
+        print_info "Suggesting fix-lock.sh for advanced lock resolution..."
+        local fix_lock_script="/srv/datacenter/scripts/fix-lock.sh"
+        if [ -f "$fix_lock_script" ]; then
+            print_info "Try running: sudo $fix_lock_script $vm_name"
+        fi
+        
         return 1
     fi
 }
@@ -472,6 +550,17 @@ restore_vm() {
         return 1
     fi
     
+    # Perform comprehensive lock fix and try to start the VM
+    print_info "Performing post-restore lock fix and startup test..."
+    if troubleshoot_vm "$vm_name"; then
+        print_success "VM restore completed and VM is now running!"
+        local final_state="running"
+    else
+        print_warning "VM restored but failed to start automatically"
+        print_info "You may need to manually fix issues before starting"
+        local final_state="shut off (needs manual intervention)"
+    fi
+
     # Show restore summary
     echo ""
     echo "=================================================="
@@ -484,12 +573,18 @@ restore_vm() {
     echo "  VM Directory: $vm_dir"
     echo "  Disk Size: $(get_file_size "$vm_disk_path")"
     echo ""
-    echo "VM Status: $(get_vm_state "$vm_name")"
+    echo "VM Status: $final_state"
     echo ""
-    echo "Next steps:"
-    echo "  Start VM: virsh start $vm_name"
-    echo "  Console:  virsh console $vm_name"
-    echo "  Or use:   dcvm start $vm_name"
+    if [ "$final_state" = "running" ]; then
+        echo "VM is ready to use!"
+        echo "  SSH access: dcvm setup-forwarding  (to configure ports)"
+        echo "  Console:    virsh console $vm_name"
+    else
+        echo "Manual startup required:"
+        echo "  Try: dcvm start $vm_name"
+        echo "  Or:  virsh start $vm_name"
+        echo "  Fix locks: /srv/datacenter/scripts/fix-lock.sh $vm_name"
+    fi
     echo ""
     
     log "SUCCESS" "Restore completed successfully for VM: $vm_name from backup: $backup_date"
