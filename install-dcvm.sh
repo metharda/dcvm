@@ -331,6 +331,7 @@ download_scripts() {
 		"storage-manager.sh"
 		"dhcp-cleanup.sh"
 		"fix-lock.sh"
+		"uninstall-dcvm.sh"
 	)
 
 	for script in "${scripts[@]}"; do
