@@ -53,7 +53,7 @@ chmod +x install-dcvm.sh
 
 ## Manual Installation
 
-If you prefer step-by-step installation:
+If you prefer step-by-step installation: (you should be in root user)
 
 ### 1. Download Repository
 ```bash
@@ -63,7 +63,7 @@ cd dcvm
 
 ### 2. Run Installation Script
 ```bash
-sudo ./install-dcvm.sh
+./install-dcvm.sh
 ```
 
 ### 3. Start System
@@ -181,7 +181,7 @@ dcvm create web-server nginx,mysql-server
 - SSH key-based authentication
 - Strong password policies
 - Isolated network environment
-- Sudo privilege control
+- Privilege control
 
 ### Security Best Practices
 ```bash
@@ -193,10 +193,10 @@ dcvm create secure-vm
 # (Add SSH key during setup)
 
 # Firewall settings
-sudo ufw enable
-sudo ufw allow 22
-sudo ufw allow 2220:2250/tcp  # SSH ports
-sudo ufw allow 8080:8090/tcp  # HTTP ports
+ufw enable
+ufw allow 22
+ufw allow 2220:2250/tcp  # SSH ports
+ufw allow 8080:8090/tcp  # HTTP ports
 ```
 
 ## Monitoring and Maintenance
@@ -237,16 +237,16 @@ virsh domblkstat vm-name vda
 egrep -c '(vmx|svm)' /proc/cpuinfo
 
 # Load KVM modules
-sudo modprobe kvm
-sudo modprobe kvm_intel  # For Intel
-sudo modprobe kvm_amd    # For AMD
+modprobe kvm
+modprobe kvm_intel  # For Intel
+modprobe kvm_amd    # For AMD
 ```
 
 #### Network Connection Issues
 ```bash
 # Restart network
-sudo virsh net-destroy datacenter-net
-sudo virsh net-start datacenter-net
+virsh net-destroy datacenter-net
+virsh net-start datacenter-net
 
 # DHCP cleanup
 dcvm clear-leases clear-all
@@ -270,6 +270,6 @@ ls -la /srv/datacenter/vms/vm-name/
 dcvm delete --all
 
 # Restart system services
-sudo systemctl restart libvirtd
-sudo ./install-dcvm.sh
+systemctl restart libvirtd
+./install-dcvm.sh
 ```
