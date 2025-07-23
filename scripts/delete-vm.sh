@@ -222,9 +222,20 @@ delete_single_vm() {
 	print_status "Refreshing DHCP leases..."
 	dnsmasq_pid=$(ps aux | grep "dnsmasq.*virbr-dc" | grep -v grep | awk '{print $2}' | head -1)
 	if [ -n "$dnsmasq_pid" ]; then
-		kill -HUP "$dnsmasq_pid" 2>/dev/null && print_status "DHCP refreshed" || print_status "DHCP refresh attempted"
+		kill -HUP "$dnsmasq_pid" 2>/dev/null && print_status "DHCP service refreshed" || print_status "DHCP refresh attempted"
 	else
-		print_status "DHCP lease files cleaned (network preserved)"
+		print_status "DHCP lease files cleaned (network configuration preserved)"
+	fi
+
+	if command -v iptables-save >/dev/null 2>&1; then
+		iptables-save >/etc/iptables/rules.v4 2>/dev/null && print_status "iptables rules saved" || print_warning "Could not save iptables rules"
+	fi
+
+	print_status "Restarting network to ensure stability..."
+	if virsh net-destroy datacenter-net >/dev/null 2>&1 && virsh net-start datacenter-net >/dev/null 2>&1; then
+		print_status "Network restarted successfully"
+	else
+		print_warning "Failed to restart network. Please check manually."
 	fi
 
 	print_success "VM $VM_NAME deleted successfully!"

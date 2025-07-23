@@ -127,13 +127,20 @@ VM_NAME=$1
 ADDITIONAL_PACKAGES=${2:-""}
 
 while true; do
-	read -p "Select OS type (debian/ubuntu, default: debian): " OS_TYPE
-	OS_TYPE=${OS_TYPE:-debian}
+	print_info "Select OS type:"
+	echo "1) Debian"
+	echo "2) Ubuntu"
+	read -p "Enter your choice (1/2, default: 1): " OS_CHOICE
+	OS_CHOICE=${OS_CHOICE:-1}
 
-	if [[ "$OS_TYPE" =~ ^(debian|ubuntu)$ ]]; then
+	if [ "$OS_CHOICE" = "1" ]; then
+		OS_TYPE="debian"
+		break
+	elif [ "$OS_CHOICE" = "2" ]; then
+		OS_TYPE="ubuntu"
 		break
 	else
-		print_error "Invalid OS type! Please choose 'debian' or 'ubuntu'."
+		print_error "Invalid choice! Please enter 1 for Debian or 2 for Ubuntu."
 	fi
 done
 
