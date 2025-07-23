@@ -37,6 +37,8 @@ check_root() {
 	if [[ $EUID -ne 0 ]]; then
 		print_status "ERROR" "This script must be run as root"
 		exit 1
+	else
+		print_status "INFO" "Running as root user."
 	fi
 }
 
@@ -46,25 +48,26 @@ check_kvm_support() {
 	if ! kvm-ok >/dev/null 2>&1; then
 		print_status "ERROR" "KVM is not supported or not properly configured"
 		exit 1
+	else
+		print_status "SUCCESS" "KVM support verified"
 	fi
-
-	print_status "SUCCESS" "KVM support verified"
 }
 
 start_libvirtd() {
 	print_status "INFO" "Checking libvirtd service..."
 
-	if ! systemctl is-active --quiet libvirtd; then
+	if systemctl is-active --quiet libvirtd; then
+		print_status "INFO" "libvirtd is already running."
+	else
 		print_status "INFO" "Starting libvirtd service..."
 		systemctl start libvirtd
 		sleep 2
-	fi
-
-	if systemctl is-active --quiet libvirtd; then
-		print_status "SUCCESS" "libvirtd is running"
-	else
-		print_status "ERROR" "Failed to start libvirtd"
-		exit 1
+		if systemctl is-active --quiet libvirtd; then
+			print_status "SUCCESS" "libvirtd is running"
+		else
+			print_status "ERROR" "Failed to start libvirtd"
+			exit 1
+		fi
 	fi
 }
 
@@ -134,10 +137,13 @@ check_directory_structure() {
 	)
 
 	for dir in "${directories[@]}"; do
-		if [[ ! -d "$dir" ]]; then
+		if [[ -d "$dir" ]]; then
+			print_status "INFO" "Directory $dir already exists."
+		else
 			print_status "WARNING" "Directory $dir does not exist, creating..."
 			mkdir -p "$dir"
 			chmod 755 "$dir"
+			print_status "SUCCESS" "Directory $dir created."
 		fi
 	done
 
@@ -150,18 +156,74 @@ check_directory_structure() {
 	print_status "SUCCESS" "Directory structure verified"
 }
 
-check_cloud_image() {
-	print_status "INFO" "Checking for Debian cloud image..."
+check_cloud_images() {
+	print_status "INFO" "Checking for cloud images..."
 
-	local image_path="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+	local debian_image_path="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+	local ubuntu_image_path="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
 
-	if [[ ! -f "$image_path" ]]; then
-		print_status "WARNING" "Debian cloud image not found at $image_path"
-		print_status "INFO" "Please run: wget https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-		print_status "INFO" "And place it in $DATACENTER_BASE/storage/templates/"
-	else
-		local size=$(du -h "$image_path" | cut -f1)
+	if [[ -f "$debian_image_path" ]]; then
+		local size=$(du -h "$debian_image_path" | cut -f1)
 		print_status "SUCCESS" "Debian cloud image found ($size)"
+	else
+		print_status "WARNING" "Debian cloud image not found at $debian_image_path"
+		print_status "INFO" "Downloading Debian cloud image..."
+		if wget -q -O "$debian_image_path" "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"; then
+			print_status "SUCCESS" "Debian cloud image downloaded"
+		else
+			print_status "ERROR" "Failed to download Debian cloud image"
+			exit 1
+		fi
+	fi
+
+	if [[ -f "$ubuntu_image_path" ]]; then
+		local size=$(du -h "$ubuntu_image_path" | cut -f1)
+		print_status "SUCCESS" "Ubuntu cloud image found ($size)"
+	else
+		print_status "WARNING" "Ubuntu cloud image not found at $ubuntu_image_path"
+		print_status "INFO" "Downloading Ubuntu cloud image..."
+		if wget -q -O "$ubuntu_image_path" "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
+			print_status "SUCCESS" "Ubuntu cloud image downloaded"
+		else
+			print_status "ERROR" "Failed to download Ubuntu cloud image"
+			exit 1
+		fi
+	fi
+}
+
+create_datacenter_network() {
+	print_status "INFO" "Checking datacenter network..."
+
+	if virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
+		print_status "INFO" "Network '$NETWORK_NAME' already exists."
+	else
+		print_status "INFO" "Creating datacenter network..."
+		local network_config="/tmp/datacenter-net.xml"
+		cat > "$network_config" <<EOF
+<network>
+  <name>datacenter-net</name>
+  <uuid>$(uuidgen)</uuid>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <bridge name='virbr-dc' stp='on' delay='0'/>
+  <mac address='52:54:00:8a:8b:8c'/>
+  <ip address='10.10.10.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='10.10.10.10' end='10.10.10.100'/>
+    </dhcp>
+  </ip>
+</network>
+EOF
+		if virsh net-define "$network_config" && virsh net-start "$NETWORK_NAME" && virsh net-autostart "$NETWORK_NAME"; then
+			print_status "SUCCESS" "Datacenter network created and started"
+		else
+			print_status "ERROR" "Failed to create datacenter network"
+			exit 1
+		fi
+		rm -f "$network_config"
 	fi
 }
 
@@ -366,9 +428,9 @@ main() {
 	enable_ip_forwarding
 
 	check_directory_structure
-	check_cloud_image
+	check_cloud_images
 
-	start_datacenter_network
+	create_datacenter_network
 	start_nfs_server
 
 	start_existing_vms
