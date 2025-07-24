@@ -1,5 +1,16 @@
 #!/bin/bash
 
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -37,18 +48,18 @@ get_vm_ip() {
 		fi
 
 		if [ -z "$ip" ]; then
-			ip=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+			ip=$(virsh net-dhcp-leases $NETWORK_NAME 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 		fi
 
 		if [ -z "$ip" ]; then
-			local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+			local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep $NETWORK_NAME | awk '{print $5}')
 			if [ -n "$mac" ]; then
-				ip=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+				ip=$(virsh net-dhcp-leases $NETWORK_NAME 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 			fi
 		fi
 
 		if [ -z "$ip" ]; then
-			local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+			local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep $NETWORK_NAME | awk '{print $5}')
 			if [ -n "$mac" ]; then
 				ip=$(ip neigh show | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
 				if [ -z "$ip" ]; then
@@ -63,7 +74,7 @@ get_vm_ip() {
 				local test_ip="10.10.10.$i"
 				if ping -c 1 -W 1 "$test_ip" >/dev/null 2>&1; then
 					local test_mac=$(ip neigh show "$test_ip" 2>/dev/null | awk '{print $5}')
-					local vm_mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+					local vm_mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep $NETWORK_NAME | awk '{print $5}')
 					if [ -n "$test_mac" ] && [ -n "$vm_mac" ] && [ "$test_mac" = "$vm_mac" ]; then
 						ip="$test_ip"
 						break
@@ -154,37 +165,37 @@ if ! command -v iptables >/dev/null 2>&1; then
 	exit 1
 fi
 
-if ! virsh net-list --all | grep -q "datacenter-net"; then
-	print_error "datacenter-net network not found"
+if ! virsh net-list --all | grep -q "$NETWORK_NAME"; then
+	print_error "$NETWORK_NAME network not found"
 	print_info "Please run: dcvm status (to initialize the environment)"
 	exit 1
 fi
 
-if ! virsh net-list | grep -q "datacenter-net.*active"; then
-	print_warning "datacenter-net is not active, attempting to start..."
-	if virsh net-start datacenter-net >/dev/null 2>&1; then
-		print_success "datacenter-net started"
+if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+	print_warning "$NETWORK_NAME is not active, attempting to start..."
+	if virsh net-start $NETWORK_NAME >/dev/null 2>&1; then
+		print_success "$NETWORK_NAME started"
 		sleep 3
 	else
-		print_error "Failed to start datacenter-net"
+		print_error "Failed to start $NETWORK_NAME"
 		exit 1
 	fi
 fi
 
-print_info "Discovering VMs on datacenter-net..."
+print_info "Discovering VMs on $NETWORK_NAME..."
 VM_LIST=$(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$" | while read vm; do
-	if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+	if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 		echo "$vm"
 	fi
 done)
 
 if [ -z "$VM_LIST" ]; then
-	print_warning "No VMs found using datacenter-net"
+	print_warning "No VMs found using $NETWORK_NAME"
 	print_info "Create a VM first: dcvm create my-vm"
 	exit 0
 fi
 
-print_success "Found VMs using datacenter-net:"
+print_success "Found VMs using $NETWORK_NAME:"
 echo "$VM_LIST" | while read vm; do
 	local state=$(virsh list --all | grep " $vm " | awk '{print $3}')
 	echo "  - $vm ($state)"
@@ -254,14 +265,13 @@ done
 iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
 
 if [ -f /tmp/dcvm_port_mappings.tmp ]; then
-	mkdir -p /srv/datacenter
-	cat >/srv/datacenter/port-mappings.txt <<EOF
-
+	mkdir -p $DATACENTER_BASE
+	cat >$DATACENTER_BASE/port-mappings.txt <<EOF
 EOF
-	cat /tmp/dcvm_port_mappings.tmp >>/srv/datacenter/port-mappings.txt
+	cat /tmp/dcvm_port_mappings.tmp >>$DATACENTER_BASE/port-mappings.txt
 	rm -f /tmp/dcvm_port_mappings.tmp
 
-	print_success "Port mappings saved to /srv/datacenter/port-mappings.txt"
+	print_success "Port mappings saved to $DATACENTER_BASE/port-mappings.txt"
 else
 	print_warning "No successful port mappings to save"
 fi
@@ -278,7 +288,7 @@ print_success "=== Port forwarding configuration complete! ==="
 echo "Host IP: $HOST_IP"
 echo ""
 
-if [ -f /srv/datacenter/port-mappings.txt ]; then
+if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
 	echo "VM Access Information:"
 	grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 		if [ -n "$vm" ]; then

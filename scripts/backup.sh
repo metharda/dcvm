@@ -1,6 +1,12 @@
 #!/bin/bash
 
-BACKUP_DIR="/srv/datacenter/backups"
+CONFIG_FILE="/etc/dcvm-install.conf"
+if [[ -f "$CONFIG_FILE" ]]; then
+	source "$CONFIG_FILE"
+else
+	DATACENTER_BASE="/srv/datacenter"
+fi
+BACKUP_DIR="$DATACENTER_BASE/backups"
 LOG_FILE="/var/log/dcvm-backup.log"
 DATE=$(date +%Y%m%d_%H%M%S)
 KEEP_BACKUPS=5

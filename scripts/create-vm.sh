@@ -1,5 +1,16 @@
 #!/bin/bash
 
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -149,7 +160,7 @@ check_dependencies
 get_host_info
 
 if [ "$OS_TYPE" = "ubuntu" ]; then
-	TEMPLATE_PATH="/srv/datacenter/storage/templates/ubuntu-lts-generic-amd64.qcow2"
+	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/ubuntu-lts-generic-amd64.qcow2"
 	if [ ! -f "$TEMPLATE_PATH" ]; then
 		print_info "Ubuntu LTS template not found. Downloading..."
 		if ! curl -o "$TEMPLATE_PATH" -L "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
@@ -159,7 +170,7 @@ if [ "$OS_TYPE" = "ubuntu" ]; then
 		print_success "Downloaded Ubuntu LTS image."
 	fi
 elif [ "$OS_TYPE" = "debian" ]; then
-	TEMPLATE_PATH="/srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2"
+	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
 	if [ ! -f "$TEMPLATE_PATH" ]; then
 		print_error "Base template $TEMPLATE_PATH not found"
 		exit 1
@@ -447,17 +458,17 @@ fi
 
 print_info "Starting VM creation process..."
 
-if [ ! -d "/srv/datacenter/vms" ]; then
-	print_error "Directory /srv/datacenter/vms does not exist"
+if [ ! -d "$DATACENTER_BASE/vms" ]; then
+	print_error "Directory $DATACENTER_BASE/vms does not exist"
 	exit 1
 fi
 
-if [ ! -f "/srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2" ]; then
-	print_error "Base template /srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2 not found"
+if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; then
+	print_error "Base template $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 not found"
 	exit 1
 fi
 
-if ! mkdir -p /srv/datacenter/vms/$VM_NAME/cloud-init; then
+if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
 	print_error "Failed to create VM directory structure"
 	exit 1
 fi
@@ -483,7 +494,7 @@ if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	ROOT_LOGIN_SETTING="yes"
 fi
 
-cat >/srv/datacenter/vms/$VM_NAME/cloud-init/user-data <<USERDATA_EOF
+cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data <<USERDATA_EOF
 hostname: $VM_NAME
 users:
   - name: $VM_USERNAME
@@ -561,7 +572,7 @@ runcmd:
   
   - mkdir -p /mnt/shared
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
-  - echo "10.10.10.1:/srv/datacenter/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
+  - echo "10.10.10.1:$DATACENTER_BASE/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
   - mount -a || true
   
   - mkdir -p /home/$VM_USERNAME/{Documents,Downloads,Scripts}
@@ -615,17 +626,17 @@ final_message: |
   SSH ready for connections.
 USERDATA_EOF
 
-if [ ! -f "/srv/datacenter/vms/$VM_NAME/cloud-init/user-data" ]; then
+if [ ! -f "$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" ]; then
 	print_error "Failed to create cloud-init user-data file"
 	exit 1
 fi
 
-cat >/srv/datacenter/vms/$VM_NAME/cloud-init/meta-data <<METADATA_EOF
+cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/meta-data <<METADATA_EOF
 instance-id: $VM_NAME-$(date +%s)
 local-hostname: $VM_NAME
 METADATA_EOF
 
-cat >/srv/datacenter/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
+cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
 version: 2
 ethernets:
   enp1s0:
@@ -634,7 +645,7 @@ ethernets:
 NETWORK_EOF
 
 print_info "Creating cloud-init configuration..."
-cd /srv/datacenter/vms/$VM_NAME
+cd $DATACENTER_BASE/vms/$VM_NAME
 if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1; then
 	print_error "Failed to create cloud-init ISO"
 	exit 1
@@ -653,11 +664,11 @@ if ! virt-install \
 	--memory $VM_MEMORY \
 	--vcpus $VM_CPUS \
 	--boot hd,menu=on \
-	--disk path=/srv/datacenter/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
-	--disk path=/srv/datacenter/vms/$VM_NAME/cloud-init.iso,device=cdrom \
+	--disk path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
+	--disk path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom \
 	--graphics none \
 	--os-variant $([ "$OS_TYPE" = "ubuntu" ] && echo "ubuntu20.04" || echo "debian12") \
-	--network network=datacenter-net \
+	--network network=$NETWORK_NAME \
 	--console pty,target_type=serial \
 	--import \
 	--noautoconsole >/dev/null 2>&1; then

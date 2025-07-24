@@ -1,6 +1,17 @@
 #!/bin/bash
 
-SHARED_STORAGE="/srv/datacenter/nfs-share"
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	echo "[ERROR] /etc/dcvm-install.conf bulunamadı!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
+SHARED_STORAGE="$DATACENTER_BASE/nfs-share"
 THRESHOLD=85
 LOG_FILE="/var/log/datacenter-storage.log"
 
@@ -65,10 +76,10 @@ main() {
 	VM2_IP=$(virsh domifaddr datacenter-vm2 --source lease | grep -oE "10\.10\.10\.[0-9]+" | head -1)
 
 	if [ -z "$VM1_IP" ]; then
-		VM1_IP=$(virsh net-dhcp-leases datacenter-net | grep datacenter-vm1 | grep -oE "10\.10\.10\.[0-9]+" | head -1)
+		VM1_IP=$(virsh net-dhcp-leases $NETWORK_NAME | grep datacenter-vm1 | grep -oE "10\.10\.10\.[0-9]+" | head -1)
 	fi
 	if [ -z "$VM2_IP" ]; then
-		VM2_IP=$(virsh net-dhcp-leases datacenter-net | grep datacenter-vm2 | grep -oE "10\.10\.10\.[0-9]+" | head -1)
+		VM2_IP=$(virsh net-dhcp-leases $NETWORK_NAME | grep datacenter-vm2 | grep -oE "10\.10\.10\.[0-9]+" | head -1)
 	fi
 
 	if [ -n "$VM1_IP" ]; then
