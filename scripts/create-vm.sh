@@ -1,4 +1,9 @@
 #!/bin/bash
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
 print_info() {
 	echo -e "${BLUE}[INFO]${NC} $1"
@@ -115,17 +120,17 @@ select_os() {
 	if [ "$VM_OS" = "debian" ]; then
 		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
 		OS_VARIANT="debian12"
-		OS_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.0.0-amd64-netinst.iso"
+		OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 	else
-		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-generic-amd64.qcow2"
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
 		OS_VARIANT="ubuntu22.04"
-		OS_URL="https://releases.ubuntu.com/22.04/ubuntu-22.04.2-live-server-amd64.iso"
+		OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
 	fi
 
 	if [ ! -f "$TEMPLATE_FILE" ]; then
 		echo "Base template for $VM_OS not found. Downloading..."
 		mkdir -p "$DATACENTER_BASE/storage/templates"
-		curl -# -o "$TEMPLATE_FILE" "$OS_URL"
+		wget --show-progress -O "$TEMPLATE_FILE" "$OS_URL"
 		if [ $? -ne 0 ]; then
 			echo "Failed to download $VM_OS template. Please check your internet connection."
 			exit 1
