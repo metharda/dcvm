@@ -1,11 +1,10 @@
 #!/bin/bash
 
-# Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 print_info() {
 	echo -e "${BLUE}[INFO]${NC} $1"
@@ -23,27 +22,21 @@ print_error() {
 	echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to get host system information
 get_host_info() {
-	# Get total memory in MB
 	HOST_MEMORY_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 	HOST_MEMORY_MB=$((HOST_MEMORY_KB / 1024))
 
-	# Get CPU count
 	HOST_CPUS=$(nproc)
 
-	# Get CPU model
 	HOST_CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
 
-	# Calculate recommended maximums (leave some resources for host)
-	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100)) # 75% of host memory
-	MAX_VM_CPUS=$((HOST_CPUS - 1))               # Leave 1 CPU for host
+	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100))
+	MAX_VM_CPUS=$((HOST_CPUS - 1))
 	if [ $MAX_VM_CPUS -lt 1 ]; then
 		MAX_VM_CPUS=1
 	fi
 }
 
-# Function to read password securely
 read_password() {
 	local prompt="$1"
 	local var_name="$2"
@@ -51,34 +44,27 @@ read_password() {
 
 	echo -n "$prompt"
 
-	# Use read with -s flag for silent input
 	read -s password
 	echo # Add newline after password input
 
-	# Use declare to set the variable in the calling scope
 	printf -v "$var_name" '%s' "$password"
 }
 
-# Function to validate username
 validate_username() {
 	local username="$1"
 
-	# Check if username is empty
 	if [ -z "$username" ]; then
 		return 1
 	fi
 
-	# Check if username contains only valid characters (alphanumeric, underscore, hyphen)
 	if [[ ! "$username" =~ ^[a-zA-Z0-9_-]+$ ]]; then
 		return 1
 	fi
 
-	# Check if username starts with a letter or underscore
 	if [[ ! "$username" =~ ^[a-zA-Z_] ]]; then
 		return 1
 	fi
 
-	# Check length (3-32 characters)
 	if [ ${#username} -lt 3 ] || [ ${#username} -gt 32 ]; then
 		return 1
 	fi
@@ -86,17 +72,14 @@ validate_username() {
 	return 0
 }
 
-# Function to validate password
 validate_password() {
 	local password="$1"
 
-	# Check minimum length
 	if [ ${#password} -lt 4 ]; then
 		echo "Password must be at least 4 characters long"
 		return 1
 	fi
 
-	# Check maximum length
 	if [ ${#password} -gt 128 ]; then
 		echo "Password must be less than 128 characters"
 		return 1
@@ -105,18 +88,15 @@ validate_password() {
 	return 0
 }
 
-# Function to generate password hash
 generate_password_hash() {
 	local password="$1"
 	local salt=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
 	echo "$password" | openssl passwd -6 -salt "$salt" -stdin
 }
 
-# Check if required commands exist
 check_dependencies() {
 	local missing_deps=()
 
-	# Check for required commands
 	for cmd in virsh virt-install qemu-img genisoimage openssl bc; do
 		if ! command -v "$cmd" >/dev/null 2>&1; then
 			missing_deps+=("$cmd")
@@ -130,7 +110,6 @@ check_dependencies() {
 	fi
 }
 
-# Dinamik config yükle
 if [ -f /etc/dcvm-install.conf ]; then
 	source /etc/dcvm-install.conf
 else
@@ -142,7 +121,6 @@ DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
 
-# Usage information
 if [ $# -lt 1 ]; then
 	echo "VM Creation Script"
 	echo "Usage: $0 <vm_name> [additional_packages]"
@@ -159,10 +137,8 @@ fi
 VM_NAME=$1
 ADDITIONAL_PACKAGES=${2:-""}
 
-# Check dependencies
 check_dependencies
 
-# Get host system information
 get_host_info
 
 echo "=================================================="
@@ -178,12 +154,10 @@ echo ""
 
 print_info "Creating VM: $VM_NAME"
 
-# Get user credentials
 echo ""
 print_info "Setting up user account..."
 echo ""
 
-# Get username with validation
 while true; do
 	read -p "Enter username for VM (default: admin): " VM_USERNAME
 	VM_USERNAME=${VM_USERNAME:-admin}
@@ -202,20 +176,17 @@ done
 
 print_success "Username set to: $VM_USERNAME"
 
-# Get password with validation
 echo ""
 print_info "Setting password for user '$VM_USERNAME'..."
 while true; do
 	read_password "Password: " VM_PASSWORD
 
-	# Check if password is empty
 	if [ -z "$VM_PASSWORD" ]; then
 		print_error "Password cannot be empty!"
 		echo ""
 		continue
 	fi
 
-	# Validate password
 	validation_result=$(validate_password "$VM_PASSWORD")
 	if [ $? -ne 0 ]; then
 		print_error "$validation_result"
@@ -233,7 +204,6 @@ while true; do
 	fi
 done
 
-# Ask about root access
 echo ""
 print_info "Root access configuration..."
 while true; do
@@ -269,14 +239,12 @@ if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 		while true; do
 			read_password "Password: " ROOT_PASSWORD
 
-			# Check if password is empty
 			if [ -z "$ROOT_PASSWORD" ]; then
 				print_error "Password cannot be empty!"
 				echo ""
 				continue
 			fi
 
-			# Validate password
 			validation_result=$(validate_password "$ROOT_PASSWORD")
 			if [ $? -ne 0 ]; then
 				print_error "$validation_result"
@@ -299,7 +267,6 @@ else
 	print_success "Root access disabled"
 fi
 
-# SSH Key setup (automatic - RSA only)
 echo ""
 print_info "Setting up SSH Key Authentication (RSA)..."
 
@@ -318,29 +285,24 @@ else
 	fi
 fi
 
-# VM Resources with validation
 echo ""
 print_info "VM Resource Configuration..."
 echo ""
 
-# Memory validation
 while true; do
 	read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
 	VM_MEMORY=${VM_MEMORY:-2048}
 
-	# Check if it's a number
 	if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
 		print_error "Memory must be a number"
 		continue
 	fi
 
-	# Check minimum
 	if [ "$VM_MEMORY" -lt 512 ]; then
 		print_error "Memory must be at least 512MB"
 		continue
 	fi
 
-	# Check against host memory
 	if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
 		print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
 		read -p "Continue anyway? (y/N): " continue_anyway
@@ -352,24 +314,20 @@ while true; do
 	break
 done
 
-# CPU validation
 while true; do
 	read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
 	VM_CPUS=${VM_CPUS:-2}
 
-	# Check if it's a number
 	if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
 		print_error "CPU count must be a number"
 		continue
 	fi
 
-	# Check minimum
 	if [ "$VM_CPUS" -lt 1 ]; then
 		print_error "CPU count must be at least 1"
 		continue
 	fi
 
-	# Check against host CPUs
 	if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
 		print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
 		read -p "Continue anyway? (y/N): " continue_anyway
@@ -381,22 +339,18 @@ while true; do
 	break
 done
 
-# Disk size validation
 while true; do
 	read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
 	VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
 
-	# Check format (number followed by G, M, or T)
 	if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
 		print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
 		continue
 	fi
 
-	# Extract number and unit
 	size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
 	size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
 
-	# Basic range check
 	case "$size_unit" in
 	"M")
 		if [ "$size_num" -lt 100 ]; then
@@ -423,7 +377,6 @@ done
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
 
-# Summary
 echo ""
 echo "=================================================="
 print_info "VM Configuration Summary"
@@ -446,7 +399,6 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 fi
 echo ""
 
-# Final confirmation with clear exit option
 echo ""
 while true; do
 	read -p "Proceed with VM creation? (Y/n): " CONFIRM
@@ -462,7 +414,6 @@ while true; do
 	fi
 done
 
-# Check if VM already exists
 if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
 	print_error "VM $VM_NAME already exists"
 	echo "Use: dcvm delete $VM_NAME (to delete it first)"
@@ -471,7 +422,6 @@ fi
 
 print_info "Starting VM creation process..."
 
-# Check if required directories and base image exist
 if [ ! -d "$DATACENTER_BASE/vms" ]; then
 	print_error "Directory $DATACENTER_BASE/vms does not exist"
 	exit 1
@@ -482,13 +432,11 @@ if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; 
 	exit 1
 fi
 
-# Create VM directory structure
 if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
 	print_error "Failed to create VM directory structure"
 	exit 1
 fi
 
-# Generate password hash
 print_info "Generating secure password hash..."
 PASSWORD_HASH=$(generate_password_hash "$VM_PASSWORD")
 if [ -z "$PASSWORD_HASH" ]; then
@@ -496,10 +444,8 @@ if [ -z "$PASSWORD_HASH" ]; then
 	exit 1
 fi
 
-# Parse additional packages (handle comma-separated list)
 PACKAGE_LIST=""
 if [ -n "$ADDITIONAL_PACKAGES" ]; then
-	# Convert comma-separated packages to YAML list format
 	IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
 	for package in "${PACKAGES[@]}"; do
 		package=$(echo "$package" | xargs) # trim whitespace
@@ -507,15 +453,12 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 	done
 fi
 
-# Determine root login setting
 ROOT_LOGIN_SETTING="no"
 if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	ROOT_LOGIN_SETTING="yes"
 fi
 
-# Create user-data with SSH key, password, and optional additional packages
 cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data <<USERDATA_EOF
-#cloud-config
 hostname: $VM_NAME
 users:
   - name: $VM_USERNAME
@@ -550,36 +493,29 @@ $(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then echo "  - echo 'root:$ROOT_PASSWORD' |
 
 write_files:
   - content: |
-      # SSH Configuration for VM: $VM_NAME
       Port 22
       Protocol 2
       
-      # Authentication
       PermitRootLogin $ROOT_LOGIN_SETTING
       PasswordAuthentication yes
       PubkeyAuthentication yes
       AuthorizedKeysFile .ssh/authorized_keys
       
-      # Security settings
       UsePAM yes
       ChallengeResponseAuthentication no
       
-      # SFTP subsystem (required for scp/sftp)
       Subsystem sftp /usr/lib/openssh/sftp-server
       
-      # Connection settings
       ClientAliveInterval 300
       ClientAliveCountMax 2
       MaxAuthTries 6
       
-      # Logging
       SyslogFacility AUTH
       LogLevel INFO
     path: /etc/ssh/sshd_config
     owner: root:root
     permissions: '0644'
   - content: |
-      # VM Information - Created $(date)
       VM_NAME="$VM_NAME"
       VM_USERNAME="$VM_USERNAME"
       VM_MEMORY="${VM_MEMORY}MB"
@@ -589,33 +525,25 @@ write_files:
       SSH_KEY_AUTH="enabled"
       CREATED="$(date)"
       
-      # Connection examples:
-      # SSH: ssh $VM_USERNAME@<vm_ip>
-      # SCP: scp file $VM_USERNAME@<vm_ip>:/path/
-      # SFTP: sftp $VM_USERNAME@<vm_ip>
     path: /etc/vm-info
     owner: root:root
     permissions: '0644'
 
 runcmd:
-  # SSH setup
   - systemctl enable ssh
   - systemctl restart ssh
   - systemctl status ssh --no-pager
   
-  # Network setup
   - mkdir -p /mnt/shared
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
   - echo "10.10.10.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
   - mount -a || true
   
-  # Create user directories
   - mkdir -p /home/$VM_USERNAME/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME /home/$VM_USERNAME
   
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
 	cat <<'NGINX_EOF'
-  # Nginx setup
   - systemctl enable nginx
   - systemctl start nginx
   - echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html
@@ -625,7 +553,6 @@ fi)
 
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "apache2"; then
 	cat <<'APACHE_EOF'
-  # Apache setup
   - systemctl enable apache2
   - systemctl start apache2
   - echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html
@@ -635,7 +562,6 @@ fi)
 
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "mysql-server"; then
 	cat <<'MYSQL_EOF'
-  # MySQL setup
   - systemctl enable mysql
   - systemctl start mysql
   - mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$VM_PASSWORD';"
@@ -647,14 +573,12 @@ fi)
 
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
 	cat <<'DOCKER_EOF'
-  # Docker setup
   - systemctl enable docker
   - systemctl start docker
   - usermod -aG docker $VM_USERNAME
 DOCKER_EOF
 fi)
   
-  # Final setup
   - echo "VM $VM_NAME setup completed successfully" >> /var/log/cloud-init-final.log
   - echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log
   - echo "SSH/SCP/SFTP ready for connections" >> /var/log/cloud-init-final.log
@@ -666,19 +590,16 @@ final_message: |
   SSH ready for connections.
 USERDATA_EOF
 
-# Check if user-data was created successfully
 if [ ! -f "$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" ]; then
 	print_error "Failed to create cloud-init user-data file"
 	exit 1
 fi
 
-# Create meta-data
 cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/meta-data <<METADATA_EOF
 instance-id: $VM_NAME-$(date +%s)
 local-hostname: $VM_NAME
 METADATA_EOF
 
-# Create network-config
 cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
 version: 2
 ethernets:
@@ -687,7 +608,6 @@ ethernets:
     dhcp-identifier: mac
 NETWORK_EOF
 
-# Create cloud-init ISO
 print_info "Creating cloud-init configuration..."
 cd $DATACENTER_BASE/vms/$VM_NAME
 if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1; then
@@ -695,14 +615,12 @@ if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ 
 	exit 1
 fi
 
-# Create VM disk
 print_info "Creating VM disk ($VM_DISK_SIZE)..."
 if ! qemu-img create -f qcow2 -F qcow2 -b $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
 	print_error "Failed to create VM disk"
 	exit 1
 fi
 
-# Create and start VM
 print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
 if ! virt-install \
 	--name $VM_NAME \
@@ -722,7 +640,6 @@ if ! virt-install \
 	exit 1
 fi
 
-# Set VM to autostart
 if ! virsh autostart $VM_NAME >/dev/null 2>&1; then
 	print_warning "Failed to set VM autostart (VM created successfully)"
 fi
