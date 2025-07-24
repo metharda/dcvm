@@ -1,21 +1,30 @@
 #!/bin/bash
+CONFIG_FILE="/etc/dcvm-install.conf"
+if [[ -f "$CONFIG_FILE" ]]; then
+	source "$CONFIG_FILE"
+else
+	DATACENTER_BASE="/srv/datacenter"
+	NETWORK_NAME="datacenter-net"
+	BRIDGE_NAME="virbr-dc"
+fi
+SCRIPTS_PATH="$DATACENTER_BASE/scripts"
 
 show_port_status() {
 	echo "=== Datacenter VM Port Status ==="
 	echo ""
 
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
+	if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
 		echo "Current port mappings:"
 		printf "%-15s  %-15s %-8s  %-8s\n" "VM_NAME" "VM_IP" "SSH_PORT" "HTTP_PORT"
 		echo "------------------------------------------------"
-		grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+		grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 			if [ -n "$vm" ]; then
 				printf "%-15s  %-15s %-8s  %-8s\n" "$vm" "$ip" "$ssh_port" "$http_port"
 			fi
 		done
 		echo ""
 	else
-		echo "No port mappings file found (/srv/datacenter/port-mappings.txt)"
+		echo "No port mappings file found ($DATACENTER_BASE/port-mappings.txt)"
 		echo "Run: $0 setup-forwarding"
 		echo ""
 	fi
@@ -356,7 +365,7 @@ case $1 in
 		echo "  $0 create web-server apache2"
 		exit 1
 	fi
-	/srv/datacenter/scripts/create-vm.sh "$2" "$3"
+	"$SCRIPTS_PATH/create-vm.sh" "$2" "$3"
 	;;
 "delete")
 	if [ -z "$2" ]; then
@@ -364,7 +373,7 @@ case $1 in
 		echo "Example: $0 delete datacenter-vm1"
 		exit 1
 	fi
-	/srv/datacenter/scripts/delete-vm.sh "$2"
+	"$SCRIPTS_PATH/delete-vm.sh" "$2"
 	;;
 "backup")
 	if [ -z "$2" ]; then
@@ -378,7 +387,7 @@ case $1 in
 		echo "  $0 backup list-backups datacenter-vm1       # List available backups"
 		exit 1
 	fi
-	/srv/datacenter/scripts/backup.sh "$2" "$3" "$4"
+	"$SCRIPTS_PATH/backup.sh" "$2" "$3" "$4"
 	;;
 "status")
 	show_enhanced_status
@@ -407,7 +416,7 @@ case $1 in
 	;;
 "setup-forwarding")
 	echo "Setting up port forwarding..."
-	/srv/datacenter/scripts/setup-port-forwarding.sh
+	"$SCRIPTS_PATH/setup-port-forwarding.sh"
 	;;
 "network")
 	echo "=== Network Information ==="
@@ -601,6 +610,16 @@ case $1 in
 		echo "Use: $0 clear-leases (without arguments) for help"
 	fi
 	;;
+"uninstall")
+	echo "This will completely remove all Datacenter VM files, VMs, networks, and this script."
+	read -p "Are you sure? (y/N): " CONFIRM
+	CONFIRM=${CONFIRM:-n}
+	if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+		echo "Uninstallation cancelled."
+		exit 0
+	fi
+	"$SCRIPTS_PATH/uninstall-dcvm.sh"
+	;;
 *)
 	echo "VM Datacenter Manager"
 	echo "Usage: dcvm {command} [options]"
@@ -627,6 +646,7 @@ case $1 in
 	echo "Port & Network Management:"
 	echo "  setup-forwarding   - Configure port forwarding for all VMs"
 	echo "  clear-leases       - Manage DHCP leases (show/clear/cleanup)"
+	echo "  uninstall          - Remove all datacenter files, VMs, networks, and this script"
 	echo ""
 	echo "Examples:"
 	echo "  dcvm start web-server           # Start specific VM"
@@ -643,6 +663,7 @@ case $1 in
 	echo "  dcvm console                    # Show how to access all VMs"
 	echo "  dcvm clear-leases show          # Show DHCP leases"
 	echo "  dcvm clear-leases clear-vm vm1  # Clear DHCP lease for VM"
+	echo "  dcvm uninstall                  # Remove all files and this script"
 	echo ""
 	echo "VM States:"
 	echo "  running    - VM is currently active"

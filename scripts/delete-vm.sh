@@ -1,4 +1,12 @@
 #!/bin/bash
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -62,8 +70,8 @@ delete_single_vm() {
 		VM_IP=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$MAC_ADDRESS" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 	fi
 
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
-		mapping_line=$(grep "^$VM_NAME " /srv/datacenter/port-mappings.txt)
+	if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
+		mapping_line=$(grep "^$VM_NAME " "$DATACENTER_BASE/port-mappings.txt")
 		if [ -n "$mapping_line" ]; then
 			VM_IP_FROM_FILE=$(echo "$mapping_line" | awk '{print $2}')
 			SSH_PORT=$(echo "$mapping_line" | awk '{print $3}')
@@ -176,8 +184,8 @@ delete_single_vm() {
 		fi
 	done
 
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
-		sed -i "/^$VM_NAME /d" /srv/datacenter/port-mappings.txt
+	if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
+		sed -i "/^$VM_NAME /d" "$DATACENTER_BASE/port-mappings.txt"
 		print_status "Removed $VM_NAME from port mappings file"
 	fi
 
@@ -196,9 +204,9 @@ delete_single_vm() {
 		fi
 	fi
 
-	if [ -d "/srv/datacenter/vms/$VM_NAME" ]; then
+	if [ -d "$DATACENTER_BASE/vms/$VM_NAME" ]; then
 		print_status "Removing VM directory..."
-		rm -rf "/srv/datacenter/vms/$VM_NAME" && print_status "VM directory removed" || print_warning "Could not remove VM directory"
+		rm -rf "$DATACENTER_BASE/vms/$VM_NAME" && print_status "VM directory removed" || print_warning "Could not remove VM directory"
 	fi
 
 	if [ -f ~/.ssh/config ]; then
@@ -376,9 +384,9 @@ delete_all_vms() {
 		print_status "DHCP lease files cleaned (network configuration preserved)"
 	fi
 
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
-		>/srv/datacenter/port-mappings.txt
-		echo "# VM_NAME    VM_IP          SSH_PORT  HTTP_PORT" >/srv/datacenter/port-mappings.txt
+	if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
+		>"$DATACENTER_BASE/port-mappings.txt"
+		echo "# VM_NAME    VM_IP          SSH_PORT  HTTP_PORT" >"$DATACENTER_BASE/port-mappings.txt"
 		print_status "Cleared port mappings file"
 	fi
 
@@ -397,9 +405,9 @@ delete_all_vms() {
 		iptables-save >/etc/iptables/rules.v4 2>/dev/null && print_status "Saved iptables rules" || true
 	fi
 
-	if [ -d /srv/datacenter/vms ]; then
+	if [ -d "$DATACENTER_BASE/vms" ]; then
 		print_status "Cleaning up VM directories..."
-		find /srv/datacenter/vms -maxdepth 1 -type d ! -path /srv/datacenter/vms -exec rm -rf {} + 2>/dev/null && print_status "VM directories cleaned" || true
+		find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null && print_status "VM directories cleaned" || true
 	fi
 
 	echo ""

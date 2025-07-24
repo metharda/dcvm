@@ -1,11 +1,35 @@
 #!/bin/bash
 
+if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases ]; then
+	sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
+	echo "Lease removed from lease file"
+fi
+
+if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status ]; then
+	sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status
+	echo "Lease removed from status file"
+fi
+
+virsh net-destroy $NETWORK_NAME
+sleep 2
+virsh net-start $NETWORK_NAME
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	echo "[ERROR] /etc/dcvm-install.conf bulunamadı!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
 echo "=== DHCP Lease Cleanup Tool ==="
 echo ""
 
 show_current_leases() {
 	echo "Current DHCP leases:"
-	virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+	virsh net-dhcp-leases $NETWORK_NAME 2>/dev/null || echo "No leases found"
 	echo ""
 }
 
@@ -35,23 +59,23 @@ clear_lease_by_mac() {
 }
 
 clear_all_leases() {
-	echo "Clearing ALL DHCP leases for datacenter-net..."
+	echo "Clearing ALL DHCP leases for $NETWORK_NAME..."
 
-	virsh net-destroy datacenter-net 2>/dev/null || true
+	virsh net-destroy $NETWORK_NAME 2>/dev/null || true
 
-	if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-		>/var/lib/libvirt/dnsmasq/virbr-dc.leases
+	if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases ]; then
+		>/var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
 		echo "Cleared lease file"
 	fi
 
-	if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-		>/var/lib/libvirt/dnsmasq/virbr-dc.status
+	if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status ]; then
+		>/var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status
 		echo "Cleared status file"
 	fi
 
-	rm -f /var/lib/libvirt/dnsmasq/virbr-dc.pid
+	rm -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.pid
 
-	virsh net-start datacenter-net
+	virsh net-start $NETWORK_NAME
 	echo "Network restarted with clean lease table"
 }
 
@@ -64,7 +88,7 @@ clear_vm_lease() {
 
 	echo "Clearing leases for VM: $vm_name"
 
-	mac_address=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+	mac_address=$(virsh domiflist "$vm_name" 2>/dev/null | grep $NETWORK_NAME | awk '{print $5}')
 
 	if [ -n "$mac_address" ]; then
 		echo "Found MAC address: $mac_address"
@@ -81,7 +105,7 @@ cleanup_stale_leases() {
 	current_time=$(date +%s)
 	temp_file="/tmp/dhcp_leases_clean"
 
-	if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
+	if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases ]; then
 		while IFS=' ' read -r timestamp mac ip hostname client_id; do
 			if [ -n "$timestamp" ] && [ "$timestamp" != "duid" ]; then
 				if [ "$timestamp" -gt "$current_time" ]; then
@@ -90,20 +114,20 @@ cleanup_stale_leases() {
 					echo "Removing expired lease: $ip ($hostname)"
 				fi
 			fi
-		done </var/lib/libvirt/dnsmasq/virbr-dc.leases
+		done </var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
 
 		if [ -f "$temp_file" ]; then
-			mv "$temp_file" /var/lib/libvirt/dnsmasq/virbr-dc.leases
+			mv "$temp_file" /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
 			echo "Cleaned lease file"
 		else
-			>/var/lib/libvirt/dnsmasq/virbr-dc.leases
+			>/var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
 			echo "No valid leases found, cleared lease file"
 		fi
 	fi
 
-	virsh net-destroy datacenter-net
+	virsh net-destroy $NETWORK_NAME
 	sleep 2
-	virsh net-start datacenter-net
+	virsh net-start $NETWORK_NAME
 	echo "Network restarted"
 }
 
@@ -111,7 +135,7 @@ force_renew_all() {
 	echo "Forcing DHCP renewal for all running VMs..."
 
 	running_vms=$(virsh list | grep running | awk '{print $2}' | while read vm; do
-		if virsh domiflist "$vm" 2>/dev/null | grep -q datacenter-net; then
+		if virsh domiflist "$vm" 2>/dev/null | grep -q $NETWORK_NAME; then
 			echo "$vm"
 		fi
 	done)
