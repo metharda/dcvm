@@ -1,21 +1,10 @@
 #!/bin/bash
 
-if [ -f /etc/dcvm-install.conf ]; then
-	source /etc/dcvm-install.conf
-else
-	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
-	exit 1
-fi
-
-DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
-NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
-BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
-
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
 print_info() {
 	echo -e "${BLUE}[INFO]${NC} $1"
@@ -41,8 +30,8 @@ get_host_info() {
 
 	HOST_CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
 
-	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100))
-	MAX_VM_CPUS=$((HOST_CPUS - 1))
+	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100)) # 75% of host memory
+	MAX_VM_CPUS=$((HOST_CPUS - 1))               # Leave 1 CPU for host
 	if [ $MAX_VM_CPUS -lt 1 ]; then
 		MAX_VM_CPUS=1
 	fi
@@ -56,7 +45,7 @@ read_password() {
 	echo -n "$prompt"
 
 	read -s password
-	echo
+	echo # Add newline after password input
 
 	printf -v "$var_name" '%s' "$password"
 }
@@ -137,45 +126,9 @@ fi
 VM_NAME=$1
 ADDITIONAL_PACKAGES=${2:-""}
 
-while true; do
-	print_info "Select OS type:"
-	echo "1) Debian"
-	echo "2) Ubuntu"
-	read -p "Enter your choice (1/2, default: 1): " OS_CHOICE
-	OS_CHOICE=${OS_CHOICE:-1}
-
-	if [ "$OS_CHOICE" = "1" ]; then
-		OS_TYPE="debian"
-		break
-	elif [ "$OS_CHOICE" = "2" ]; then
-		OS_TYPE="ubuntu"
-		break
-	else
-		print_error "Invalid choice! Please enter 1 for Debian or 2 for Ubuntu."
-	fi
-done
-
 check_dependencies
 
 get_host_info
-
-if [ "$OS_TYPE" = "ubuntu" ]; then
-	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
-	if [ ! -f "$TEMPLATE_PATH" ]; then
-		print_info "Ubuntu LTS template not found. Downloading..."
-		if ! curl -o "$TEMPLATE_PATH" -L "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
-			print_error "Failed to download Ubuntu LTS image. Please check your internet connection."
-			exit 1
-		fi
-		print_success "Downloaded Ubuntu LTS image."
-	fi
-elif [ "$OS_TYPE" = "debian" ]; then
-	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
-	if [ ! -f "$TEMPLATE_PATH" ]; then
-		print_error "Base template $TEMPLATE_PATH not found"
-		exit 1
-	fi
-fi
 
 echo "=================================================="
 echo "VM Creation Wizard"
@@ -312,7 +265,6 @@ if [ -f ~/.ssh/id_rsa.pub ]; then
 	print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
 else
 	print_info "No RSA SSH key found. Creating new RSA SSH key..."
-	mkdir -p ~/.ssh
 	if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
 		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
 		print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
@@ -459,14 +411,46 @@ fi
 
 print_info "Starting VM creation process..."
 
+if [ -f /etc/dcvm-install.conf ]; then
+	source /etc/dcvm-install.conf
+else
+	print_error "/etc/dcvm-install.conf is not found!"
+	exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
 if [ ! -d "$DATACENTER_BASE/vms" ]; then
 	print_error "Directory $DATACENTER_BASE/vms does not exist"
 	exit 1
 fi
 
-if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; then
-	print_error "Base template $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 not found"
-	exit 1
+echo ""
+print_info "OS seçimi yapılıyor..."
+while true; do
+    read -p "VM için işletim sistemi seçin (debian/ubuntu) [debian]: " VM_OS
+    VM_OS=${VM_OS:-debian}
+    if [[ "$VM_OS" =~ ^(debian|ubuntu)$ ]]; then
+        break
+    else
+        print_error "Geçersiz seçim! Sadece 'debian' veya 'ubuntu' yazabilirsiniz."
+    fi
+    echo ""
+done
+
+if [ "$VM_OS" = "debian" ]; then
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+    OS_VARIANT="debian12"
+elif [ "$VM_OS" = "ubuntu" ]; then
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-generic-amd64.qcow2"
+    OS_VARIANT="ubuntu22.04"
+fi
+
+if [ ! -f "$TEMPLATE_FILE" ]; then
+    print_error "Base template $TEMPLATE_FILE not found"
+    exit 1
 fi
 
 if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
@@ -653,7 +637,7 @@ if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ 
 fi
 
 print_info "Creating VM disk ($VM_DISK_SIZE)..."
-if ! qemu-img create -f qcow2 -F qcow2 -b "$TEMPLATE_PATH" ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
+if ! qemu-img create -f qcow2 -F qcow2 -b $TEMPLATE_FILE ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
 	print_error "Failed to create VM disk"
 	exit 1
 fi
@@ -668,7 +652,7 @@ if ! virt-install \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom \
 	--graphics none \
-	--os-variant $([ "$OS_TYPE" = "ubuntu" ] && echo "ubuntu20.04" || echo "debian12") \
+	--os-variant $OS_VARIANT \
 	--network network=$NETWORK_NAME \
 	--console pty,target_type=serial \
 	--import \

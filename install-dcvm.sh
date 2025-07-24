@@ -222,7 +222,7 @@ check_cloud_images() {
 	else
 		print_status "WARNING" "Ubuntu cloud image not found at $ubuntu_image_path"
 		print_status "INFO" "Downloading Ubuntu cloud image..."
-		if wget --show-progress -q -O "$ubuntu_image_path" "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
+		if wget --show-progress -q -O "$ubuntu_image_path" "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"; then
 			print_status "SUCCESS" "Ubuntu cloud image downloaded"
 		else
 			print_status "ERROR" "Failed to download Ubuntu cloud image"
