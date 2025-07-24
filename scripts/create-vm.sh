@@ -107,29 +107,48 @@ check_dependencies() {
 
 select_os() {
 	while true; do
-		read -p "Select the operating system for the VM (debian/ubuntu) [ubuntu]: " VM_OS
-		VM_OS=${VM_OS:-ubuntu}
-		if [[ "$VM_OS" =~ ^(debian|ubuntu)$ ]]; then
-			break
-		else
-			echo "Invalid selection! Please type 'debian' or 'ubuntu'."
-		fi
-		echo ""
+		echo "Supported OS options:"
+		echo "  1) Debian 12"
+		echo "  2) Debian 11"
+		echo "  3) Ubuntu 22.04"
+		echo "  4) Ubuntu 20.04"
+		read -p "Select the operating system for the VM [3]: " VM_OS_CHOICE
+		VM_OS_CHOICE=${VM_OS_CHOICE:-3}
+		case "$VM_OS_CHOICE" in
+			1)
+				VM_OS="debian12"
+				TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+				OS_VARIANT="debian12"
+				OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+				break
+				;;
+			2)
+				VM_OS="debian11"
+				TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
+				OS_VARIANT="debian11"
+				OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+				break
+				;;
+			3)
+				VM_OS="ubuntu22.04"
+				TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
+				OS_VARIANT="ubuntu22.04"
+				OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+				break
+				;;
+			4)
+				VM_OS="ubuntu20.04"
+				TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
+				OS_VARIANT="ubuntu20.04"
+				OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+				break
+				;;
+			*)
+				echo "Invalid selection! Please enter 1, 2, 3, or 4."
+				echo ""
+				;;
+		esac
 	done
-
-	if [ "$VM_OS" = "debian" ]; then
-		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
-		OS_VARIANT="debian12"
-		OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-	else
-		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
-		OS_VARIANT="ubuntu20.04"
-		OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
-		else
-		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
-		OS_VARIANT="ubuntu22.04"
-		OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
-	fi
 
 	if [ ! -f "$TEMPLATE_FILE" ]; then
 		echo "Base template for $VM_OS not found. Downloading..."
