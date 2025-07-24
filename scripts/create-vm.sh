@@ -130,6 +130,18 @@ check_dependencies() {
     fi
 }
 
+# Dinamik config yükle
+if [ -f /etc/dcvm-install.conf ]; then
+    source /etc/dcvm-install.conf
+else
+    print_error "/etc/dcvm-install.conf is not found!"
+    exit 1
+fi
+
+DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
 # Usage information
 if [ $# -lt 1 ]; then
     echo "VM Creation Script"
@@ -460,18 +472,18 @@ fi
 print_info "Starting VM creation process..."
 
 # Check if required directories and base image exist
-if [ ! -d "/srv/datacenter/vms" ]; then
-    print_error "Directory /srv/datacenter/vms does not exist"
+if [ ! -d "$DATACENTER_BASE/vms" ]; then
+    print_error "Directory $DATACENTER_BASE/vms does not exist"
     exit 1
 fi
 
-if [ ! -f "/srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2" ]; then
-    print_error "Base template /srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2 not found"
+if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; then
+    print_error "Base template $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 not found"
     exit 1
 fi
 
 # Create VM directory structure
-if ! mkdir -p /srv/datacenter/vms/$VM_NAME/cloud-init; then
+if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
     print_error "Failed to create VM directory structure"
     exit 1
 fi
@@ -502,7 +514,7 @@ if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 fi
 
 # Create user-data with SSH key, password, and optional additional packages
-cat > /srv/datacenter/vms/$VM_NAME/cloud-init/user-data << USERDATA_EOF
+cat > $DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data << USERDATA_EOF
 #cloud-config
 hostname: $VM_NAME
 users:
@@ -651,19 +663,19 @@ final_message: |
 USERDATA_EOF
 
 # Check if user-data was created successfully
-if [ ! -f "/srv/datacenter/vms/$VM_NAME/cloud-init/user-data" ]; then
+if [ ! -f "$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" ]; then
     print_error "Failed to create cloud-init user-data file"
     exit 1
 fi
 
 # Create meta-data
-cat > /srv/datacenter/vms/$VM_NAME/cloud-init/meta-data << METADATA_EOF
+cat > $DATACENTER_BASE/vms/$VM_NAME/cloud-init/meta-data << METADATA_EOF
 instance-id: $VM_NAME-$(date +%s)
 local-hostname: $VM_NAME
 METADATA_EOF
 
 # Create network-config
-cat > /srv/datacenter/vms/$VM_NAME/cloud-init/network-config << 'NETWORK_EOF'
+cat > $DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config << 'NETWORK_EOF'
 version: 2
 ethernets:
   enp1s0:
@@ -673,7 +685,7 @@ NETWORK_EOF
 
 # Create cloud-init ISO
 print_info "Creating cloud-init configuration..."
-cd /srv/datacenter/vms/$VM_NAME
+cd $DATACENTER_BASE/vms/$VM_NAME
 if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1; then
     print_error "Failed to create cloud-init ISO"
     exit 1
@@ -681,7 +693,7 @@ fi
 
 # Create VM disk
 print_info "Creating VM disk ($VM_DISK_SIZE)..."
-if ! qemu-img create -f qcow2 -F qcow2 -b /srv/datacenter/storage/templates/debian-12-generic-amd64.qcow2 ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
+if ! qemu-img create -f qcow2 -F qcow2 -b $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
     print_error "Failed to create VM disk"
     exit 1
 fi
@@ -694,11 +706,11 @@ if ! virt-install \
     --memory $VM_MEMORY \
     --vcpus $VM_CPUS \
     --boot hd,menu=on \
-    --disk path=/srv/datacenter/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
-    --disk path=/srv/datacenter/vms/$VM_NAME/cloud-init.iso,device=cdrom \
+    --disk path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
+    --disk path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom \
     --graphics none \
     --os-variant debian12 \
-    --network network=datacenter-net \
+    --network network=$NETWORK_NAME \
     --console pty,target_type=serial \
     --import \
     --noautoconsole >/dev/null 2>&1; then
