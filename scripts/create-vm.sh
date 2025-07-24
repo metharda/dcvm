@@ -1,11 +1,5 @@
 #!/bin/bash
 
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
 print_info() {
 	echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -106,6 +100,40 @@ check_dependencies() {
 	fi
 }
 
+select_os() {
+	while true; do
+		read -p "Select the operating system for the VM (debian/ubuntu) [ubuntu]: " VM_OS
+		VM_OS=${VM_OS:-ubuntu}
+		if [[ "$VM_OS" =~ ^(debian|ubuntu)$ ]]; then
+			break
+		else
+			echo "Invalid selection! Please type 'debian' or 'ubuntu'."
+		fi
+		echo ""
+	done
+
+	if [ "$VM_OS" = "debian" ]; then
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+		OS_VARIANT="debian12"
+		OS_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.0.0-amd64-netinst.iso"
+	else
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-generic-amd64.qcow2"
+		OS_VARIANT="ubuntu22.04"
+		OS_URL="https://releases.ubuntu.com/22.04/ubuntu-22.04.2-live-server-amd64.iso"
+	fi
+
+	if [ ! -f "$TEMPLATE_FILE" ]; then
+		echo "Base template for $VM_OS not found. Downloading..."
+		mkdir -p "$DATACENTER_BASE/storage/templates"
+		curl -# -o "$TEMPLATE_FILE" "$OS_URL"
+		if [ $? -ne 0 ]; then
+			echo "Failed to download $VM_OS template. Please check your internet connection."
+			exit 1
+		fi
+		echo "$VM_OS template downloaded successfully."
+	fi
+}
+
 if [ -f /etc/dcvm-install.conf ]; then
 	source /etc/dcvm-install.conf
 else
@@ -135,7 +163,6 @@ ADDITIONAL_PACKAGES=${2:-""}
 
 check_dependencies
 get_host_info
-
 echo "=================================================="
 echo "VM Creation Wizard"
 echo "=================================================="
@@ -150,6 +177,10 @@ echo ""
 print_info "Creating VM: $VM_NAME"
 
 echo ""
+
+print_info "Setting up operating system for the VM..."
+select_os
+
 print_info "Setting up user account..."
 echo ""
 
@@ -422,8 +453,8 @@ if [ ! -d "$DATACENTER_BASE/vms" ]; then
 	exit 1
 fi
 
-if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; then
-	print_error "Base template $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 not found"
+if [ ! -f "$TEMPLATE_FILE" ]; then
+	print_error "Base template $TEMPLATE_FILE not found"
 	exit 1
 fi
 
@@ -443,7 +474,7 @@ PACKAGE_LIST=""
 if [ -n "$ADDITIONAL_PACKAGES" ]; then
 	IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
 	for package in "${PACKAGES[@]}"; do
-		package=$(echo "$package" | xargs) 
+		package=$(echo "$package" | xargs)
 		PACKAGE_LIST="${PACKAGE_LIST}  - ${package}\n"
 	done
 fi
@@ -631,7 +662,7 @@ if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ 
 fi
 
 print_info "Creating VM disk ($VM_DISK_SIZE)..."
-if ! qemu-img create -f qcow2 -F qcow2 -b $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
+if ! qemu-img create -f qcow2 -F qcow2 -b $TEMPLATE_FILE ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
 	print_error "Failed to create VM disk"
 	exit 1
 fi
@@ -646,7 +677,7 @@ if ! virt-install \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom \
 	--graphics none \
-	--os-variant debian12 \
+	--os-variant $OS_VARIANT \
 	--network network=$NETWORK_NAME \
 	--console pty,target_type=serial \
 	--import \
