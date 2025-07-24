@@ -160,7 +160,7 @@ check_dependencies
 get_host_info
 
 if [ "$OS_TYPE" = "ubuntu" ]; then
-	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/ubuntu-lts-generic-amd64.qcow2"
+	TEMPLATE_PATH="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
 	if [ ! -f "$TEMPLATE_PATH" ]; then
 		print_info "Ubuntu LTS template not found. Downloading..."
 		if ! curl -o "$TEMPLATE_PATH" -L "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
@@ -312,6 +312,7 @@ if [ -f ~/.ssh/id_rsa.pub ]; then
 	print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
 else
 	print_info "No RSA SSH key found. Creating new RSA SSH key..."
+	mkdir -p ~/.ssh
 	if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
 		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
 		print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
