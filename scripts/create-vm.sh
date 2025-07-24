@@ -30,8 +30,8 @@ get_host_info() {
 
 	HOST_CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
 
-	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100)) # 75% of host memory
-	MAX_VM_CPUS=$((HOST_CPUS - 1))               # Leave 1 CPU for host
+	MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100)) 
+	MAX_VM_CPUS=$((HOST_CPUS - 1))               
 	if [ $MAX_VM_CPUS -lt 1 ]; then
 		MAX_VM_CPUS=1
 	fi
@@ -45,8 +45,7 @@ read_password() {
 	echo -n "$prompt"
 
 	read -s password
-	echo # Add newline after password input
-
+	echo 
 	printf -v "$var_name" '%s' "$password"
 }
 
@@ -427,30 +426,9 @@ if [ ! -d "$DATACENTER_BASE/vms" ]; then
 	exit 1
 fi
 
-echo ""
-print_info "OS seçimi yapılıyor..."
-while true; do
-    read -p "VM için işletim sistemi seçin (debian/ubuntu) [debian]: " VM_OS
-    VM_OS=${VM_OS:-debian}
-    if [[ "$VM_OS" =~ ^(debian|ubuntu)$ ]]; then
-        break
-    else
-        print_error "Geçersiz seçim! Sadece 'debian' veya 'ubuntu' yazabilirsiniz."
-    fi
-    echo ""
-done
-
-if [ "$VM_OS" = "debian" ]; then
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
-    OS_VARIANT="debian12"
-elif [ "$VM_OS" = "ubuntu" ]; then
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-generic-amd64.qcow2"
-    OS_VARIANT="ubuntu22.04"
-fi
-
-if [ ! -f "$TEMPLATE_FILE" ]; then
-    print_error "Base template $TEMPLATE_FILE not found"
-    exit 1
+if [ ! -f "$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2" ]; then
+	print_error "Base template $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 not found"
+	exit 1
 fi
 
 if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
@@ -637,7 +615,7 @@ if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ 
 fi
 
 print_info "Creating VM disk ($VM_DISK_SIZE)..."
-if ! qemu-img create -f qcow2 -F qcow2 -b $TEMPLATE_FILE ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
+if ! qemu-img create -f qcow2 -F qcow2 -b $DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2 ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
 	print_error "Failed to create VM disk"
 	exit 1
 fi
@@ -652,7 +630,7 @@ if ! virt-install \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk \
 	--disk path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom \
 	--graphics none \
-	--os-variant $OS_VARIANT \
+	--os-variant debian12 \
 	--network network=$NETWORK_NAME \
 	--console pty,target_type=serial \
 	--import \
