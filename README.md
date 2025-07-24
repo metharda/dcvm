@@ -8,7 +8,6 @@ Set up your system quickly with these commands: (you should be in root user)
 
 ```bash
 wget https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh
-chmod +x install-dcvm.sh
 ./install-dcvm.sh
 ```
 
@@ -47,7 +46,7 @@ chmod +x install-dcvm.sh
 - **Network**: Internet connection
 
 ### Software
-- **Operating System**: Ubuntu 20.04+, Debian 11+, CentOS 8+
+- **Operating System**: Ubuntu 20.04,22.04 Debian 11,12
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
 
@@ -103,6 +102,7 @@ dcvm backup list-backups my-vm       # List available backups
 
 # VM deletion
 dcvm delete my-vm                    # Delete specific VM
+dcvm uninstall                       # Uninstall the whole app
 ```
 
 ### Bulk Operations
