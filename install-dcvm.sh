@@ -152,7 +152,7 @@ start_nfs_server() {
 	if systemctl is-active --quiet nfs-kernel-server; then
 		print_status "SUCCESS" "NFS server is running"
 
-		echo "$NFS_EXPORT_PATH *(rw,sync,no_subtree_check)" > /etc/exports
+		echo "$NFS_EXPORT_PATH *(rw,sync,no_subtree_check)" >/etc/exports
 		exportfs -ra
 		print_status "INFO" "NFS exports refreshed"
 

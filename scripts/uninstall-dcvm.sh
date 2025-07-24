@@ -15,11 +15,11 @@ print_error() {
 CONFIG_FILE="/etc/dcvm-install.conf"
 
 if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
-    print_info "Loaded configuration from $CONFIG_FILE"
+	source "$CONFIG_FILE"
+	print_info "Loaded configuration from $CONFIG_FILE"
 else
-    print_error "Configuration file $CONFIG_FILE not found. Using default base directory."
-    DATACENTER_BASE="/srv/datacenter"
+	print_error "Configuration file $CONFIG_FILE not found. Using default base directory."
+	DATACENTER_BASE="/srv/datacenter"
 fi
 
 read -p "This will completely remove all installed components. Are you sure? (y/N): " CONFIRM
@@ -68,8 +68,8 @@ fi
 
 print_info "Removing dcvm command alias..."
 find /root/.bashrc /home/*/.bashrc -type f 2>/dev/null | while read -r bashrc; do
-    sed -i '/alias dcvm=/d' "$bashrc" 2>/dev/null || true
-    print_info "Removed alias from $bashrc"
+	sed -i '/alias dcvm=/d' "$bashrc" 2>/dev/null || true
+	print_info "Removed alias from $bashrc"
 done
 
 print_info "Unsetting dcvm alias from the current shell..."
@@ -78,10 +78,10 @@ unalias dcvm 2>/dev/null || true
 print_info "Sourcing .bashrc files to update PATH..."
 source /root/.bashrc 2>/dev/null || true
 for user_home in /home/*/; do
-    if [[ -d "$user_home" ]]; then
-        user_bashrc="${user_home}.bashrc"
-        source "$user_bashrc" 2>/dev/null || true
-    fi
+	if [[ -d "$user_home" ]]; then
+		user_bashrc="${user_home}.bashrc"
+		source "$user_bashrc" 2>/dev/null || true
+	fi
 
 done
 
