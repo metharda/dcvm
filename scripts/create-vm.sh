@@ -123,8 +123,12 @@ select_os() {
 		OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 	else
 		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
-		OS_VARIANT="ubuntu22.04"
+		OS_VARIANT="ubuntu20.04"
 		OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+		else
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
+		OS_VARIANT="ubuntu22.04"
+		OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
 	fi
 
 	if [ ! -f "$TEMPLATE_FILE" ]; then
