@@ -75,8 +75,8 @@ print_status() {
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
-	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime)
-	local arch_packages=(qemu libvirt bridge-utils virt-install wget curl nfs-utils)
+	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage)
+	local arch_packages=(qemu libvirt bridge-utils virt-install wget curl nfs-utils genisoimage)
 
 	if [[ -f /etc/os-release ]]; then
 		. /etc/os-release
@@ -240,7 +240,7 @@ check_cloud_images() {
 	local missing_images=()
 
 	for entry in "${images[@]}"; do
-		IFS='|' read -r filename label url <<< "$entry"
+		IFS='|' read -r filename label url <<<"$entry"
 		local image_path="$DATACENTER_BASE/storage/templates/$filename"
 		if [[ -f "$image_path" ]]; then
 			local size=$(du -h "$image_path" | cut -f1)
@@ -256,23 +256,23 @@ check_cloud_images() {
 		echo "Some cloud images are missing. Would you like to download them now?"
 		select yn in "Yes, download now" "No, download when creating a VM"; do
 			case $yn in
-				"Yes, download now")
-					for entry in "${missing_images[@]}"; do
-						IFS='|' read -r filename label url <<< "$entry"
-						local image_path="$DATACENTER_BASE/storage/templates/$filename"
-						print_status "INFO" "Downloading $label cloud image..."
-						if wget --show-progress -q -O "$image_path" "$url"; then
-							print_status "SUCCESS" "$label cloud image downloaded"
-						else
-							print_status "ERROR" "Failed to download $label cloud image"
-						fi
-					done
-					break
-					;;
-				"No, download when creating a VM")
-					print_status "INFO" "Missing images will be downloaded when you create a VM."
-					break
-					;;
+			"Yes, download now")
+				for entry in "${missing_images[@]}"; do
+					IFS='|' read -r filename label url <<<"$entry"
+					local image_path="$DATACENTER_BASE/storage/templates/$filename"
+					print_status "INFO" "Downloading $label cloud image..."
+					if wget --show-progress -q -O "$image_path" "$url"; then
+						print_status "SUCCESS" "$label cloud image downloaded"
+					else
+						print_status "ERROR" "Failed to download $label cloud image"
+					fi
+				done
+				break
+				;;
+			"No, download when creating a VM")
+				print_status "INFO" "Missing images will be downloaded when you create a VM."
+				break
+				;;
 			esac
 		done
 	fi
@@ -406,6 +406,7 @@ show_datacenter_summary() {
 	echo
 
 	print_status "SUCCESS" "Datacenter environment is ready!"
+	print_status "INFO" "Source bashrc to apply aliases and environment variables"
 }
 
 setup_aliases() {
@@ -433,17 +434,6 @@ setup_aliases() {
 			fi
 		fi
 	done
-
-	print_status "INFO" "Aliases configured. Sourcing .bashrc files for immediate usage..."
-	source /root/.bashrc 2>/dev/null || true
-	for user_home in /home/*/; do
-		if [[ -d "$user_home" ]]; then
-			local user_bashrc="${user_home}.bashrc"
-			source "$user_bashrc" 2>/dev/null || true
-		fi
-	done
-
-	print_status "INFO" "Aliases are now active. You can use the 'dcvm' command immediately."
 }
 
 setup_service() {
