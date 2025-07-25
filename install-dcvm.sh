@@ -72,6 +72,37 @@ print_status() {
 	esac
 }
 
+install_required_packages() {
+	print_status "INFO" "Checking and installing required packages..."
+
+	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime)
+	local arch_packages=(qemu libvirt bridge-utils virt-install wget curl nfs-utils)
+
+	if [[ -f /etc/os-release ]]; then
+		. /etc/os-release
+		if [[ "$ID" == "debian" || "$ID" == "ubuntu" ]]; then
+			if ! command -v apt >/dev/null 2>&1; then
+				print_status "ERROR" "apt not found. Cannot install packages."
+				exit 1
+			fi
+			print_status "INFO" "Detected Debian/Ubuntu. Installing packages with apt..."
+			export DEBIAN_FRONTEND=noninteractive
+			apt update -y && apt install -y "${debian_packages[@]}"
+		elif [[ "$ID" == "arch" ]]; then
+			if ! command -v pacman >/dev/null 2>&1; then
+				print_status "ERROR" "pacman not found. Cannot install packages."
+				exit 1
+			fi
+			print_status "INFO" "Detected Arch Linux. Installing packages with pacman..."
+			pacman -Sy --noconfirm "${arch_packages[@]}"
+		else
+			print_status "WARNING" "Unsupported distro: $ID. Please install dependencies manually."
+		fi
+	else
+		print_status "WARNING" "/etc/os-release not found. Cannot detect distribution. Please install dependencies manually."
+	fi
+}
+
 check_root() {
 	if [[ $EUID -ne 0 ]]; then
 		print_status "ERROR" "This script must be run as root"
@@ -494,7 +525,7 @@ download_scripts() {
 main() {
 	print_status "INFO" "Starting datacenter initialization..."
 	echo "$(date)" >>"$LOG_FILE"
-
+	install_required_packages
 	if [[ "$NETWORK_ONLY" == "1" ]]; then
 		check_root
 		start_libvirtd
