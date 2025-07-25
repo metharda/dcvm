@@ -109,9 +109,9 @@ dcvm uninstall                       # Uninstall the whole app
 
 ```bash
 # Manage all VMs
-dcvm start all                       # Start all VMs
-dcvm stop all                        # Stop all VMs
-dcvm restart all                     # Restart all VMs
+dcvm start                           # Start all VMs
+dcvm stop                            # Stop all VMs
+dcvm restart                         # Restart all VMs
 
 # Network management
 dcvm setup-forwarding                # Port forwarding setup
@@ -187,10 +187,6 @@ dcvm create web-server nginx,mysql-server
 ```bash
 # SSH key creation
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/dcvm-key
-
-# Secure VM creation
-dcvm create secure-vm
-# (Add SSH key during setup)
 
 # Firewall settings
 ufw enable
