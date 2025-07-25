@@ -230,35 +230,51 @@ check_directory_structure() {
 check_cloud_images() {
 	print_status "INFO" "Checking for cloud images..."
 
-	local debian_image_path="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
-	local ubuntu_image_path="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
+	local images=(
+		"debian-12-generic-amd64.qcow2|Debian 12|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+		"debian-11-generic-amd64.qcow2|Debian 11|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+		"ubuntu-20.04-server-cloudimg-amd64.img|Ubuntu 20.04|https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+		"ubuntu-22.04-server-cloudimg-amd64.img|Ubuntu 22.04|https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+	)
 
-	if [[ -f "$debian_image_path" ]]; then
-		local size=$(du -h "$debian_image_path" | cut -f1)
-		print_status "SUCCESS" "Debian cloud image found ($size)"
-	else
-		print_status "WARNING" "Debian cloud image not found at $debian_image_path"
-		print_status "INFO" "Downloading Debian cloud image..."
-		if wget --show-progress -q -O "$debian_image_path" "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"; then
-			print_status "SUCCESS" "Debian cloud image downloaded"
-		else
-			print_status "ERROR" "Failed to download Debian cloud image"
-			exit 1
-		fi
-	fi
+	local missing_images=()
 
-	if [[ -f "$ubuntu_image_path" ]]; then
-		local size=$(du -h "$ubuntu_image_path" | cut -f1)
-		print_status "SUCCESS" "Ubuntu cloud image found ($size)"
-	else
-		print_status "WARNING" "Ubuntu cloud image not found at $ubuntu_image_path"
-		print_status "INFO" "Downloading Ubuntu cloud image..."
-		if wget --show-progress -q -O "$ubuntu_image_path" "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"; then
-			print_status "SUCCESS" "Ubuntu cloud image downloaded"
+	for entry in "${images[@]}"; do
+		IFS='|' read -r filename label url <<< "$entry"
+		local image_path="$DATACENTER_BASE/storage/templates/$filename"
+		if [[ -f "$image_path" ]]; then
+			local size=$(du -h "$image_path" | cut -f1)
+			print_status "SUCCESS" "$label cloud image found ($size)"
 		else
-			print_status "ERROR" "Failed to download Ubuntu cloud image"
-			exit 1
+			print_status "WARNING" "$label cloud image not found at $image_path"
+			missing_images+=("$entry")
 		fi
+	done
+
+	if [[ ${#missing_images[@]} -gt 0 ]]; then
+		echo
+		echo "Some cloud images are missing. Would you like to download them now?"
+		select yn in "Yes, download now" "No, download when creating a VM"; do
+			case $yn in
+				"Yes, download now")
+					for entry in "${missing_images[@]}"; do
+						IFS='|' read -r filename label url <<< "$entry"
+						local image_path="$DATACENTER_BASE/storage/templates/$filename"
+						print_status "INFO" "Downloading $label cloud image..."
+						if wget --show-progress -q -O "$image_path" "$url"; then
+							print_status "SUCCESS" "$label cloud image downloaded"
+						else
+							print_status "ERROR" "Failed to download $label cloud image"
+						fi
+					done
+					break
+					;;
+				"No, download when creating a VM")
+					print_status "INFO" "Missing images will be downloaded when you create a VM."
+					break
+					;;
+			esac
+		done
 	fi
 }
 
@@ -280,16 +296,16 @@ create_network() {
   <name>${net_name}</name>
   <uuid>$(uuidgen | tr -d '\n')</uuid>
   <forward mode='nat'>
-    <nat>
-      <port start='1024' end='65535'/>
-    </nat>
+	<nat>
+	  <port start='1024' end='65535'/>
+	</nat>
   </forward>
   <bridge name='${bridge_name}' stp='on' delay='0'/>
   <mac address='52:54:00:8a:8b:8c'/>
   <ip address='${ip_addr}' netmask='${netmask}'>
-    <dhcp>
-      <range start='${dhcp_start}' end='${dhcp_end}'/>
-    </dhcp>
+	<dhcp>
+	  <range start='${dhcp_start}' end='${dhcp_end}'/>
+	</dhcp>
   </ip>
 </network>
 EOF
