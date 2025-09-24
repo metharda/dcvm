@@ -9,7 +9,7 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 | Method    | Command                                                                                           |
 | :-------- | :------------------------------------------------------------------------------------------------ |
 | **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)"`    |
-| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/install-dcvm.sh)"`    |
+| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)"`    |
 
 ## Features
 
