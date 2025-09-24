@@ -82,6 +82,44 @@ print_status() {
 	esac
 }
 
+detect_shell() {
+	local shell_name="unknown"
+	local config_file=""
+	
+	# Check current user's shell
+	if [[ -n "${SHELL:-}" ]]; then
+		shell_name=$(basename "$SHELL")
+	fi
+	
+	# Determine config file based on shell
+	case "$shell_name" in
+		"bash")
+			config_file="~/.bashrc"
+			;;
+		"zsh")
+			config_file="~/.zshrc"
+			;;
+		*)
+			# Try to detect from available config files or OS
+			if [[ "$OSTYPE" == "darwin"* ]]; then
+				# macOS default is zsh since Catalina
+				shell_name="zsh"
+				config_file="~/.zshrc"
+			elif [[ -f "$HOME/.zshrc" ]]; then
+				shell_name="zsh"
+				config_file="~/.zshrc"
+			elif [[ -f "$HOME/.bashrc" ]]; then
+				shell_name="bash"
+				config_file="~/.bashrc"
+			else
+				config_file="~/.bashrc or ~/.zshrc"
+			fi
+			;;
+	esac
+	
+	echo "$shell_name|$config_file"
+}
+
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
@@ -425,58 +463,52 @@ show_datacenter_summary() {
 	echo
 
 	print_status "SUCCESS" "Datacenter environment is ready!"
+	print_status "INFO" "Restart your shell or source your config file (.bashrc/.zshrc) to use dcvm command"
 }
 
 setup_aliases() {
-	print_status "INFO" "Setting up command aliases..."
+	print_status "INFO" "Setting up command aliases for dcvm..."
 
-	local bashrc_files=("/root/.bashrc" "/home/*/.bashrc")
+	local configured_shells=()
 
-	for bashrc in /root/.bashrc; do
-		if [[ -f "$bashrc" ]]; then
-			if ! grep -q "alias dcvm=" "$bashrc"; then
-				echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"$bashrc"
-				print_status "SUCCESS" "Added dcvm alias to $bashrc"
-			fi
-		fi
-	done
-
-	for user_home in /home/*/; do
-		if [[ -d "$user_home" ]]; then
-			local user_bashrc="${user_home}.bashrc"
-			if [[ -f "$user_bashrc" ]]; then
-				if ! grep -q "alias dcvm=" "$user_bashrc"; then
-					echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"$user_bashrc"
-					print_status "SUCCESS" "Added dcvm alias to $user_bashrc"
-				fi
-			fi
-		fi
-	done
-}
-
-source_bashrc_files() {
-	print_status "INFO" "Automatically sourcing updated bashrc files..."
-	
 	if [[ -f "/root/.bashrc" ]]; then
-		source "/root/.bashrc" 2>/dev/null || true
-		print_status "SUCCESS" "Sourced /root/.bashrc"
+		if ! grep -q "alias dcvm=" "/root/.bashrc"; then
+			echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"/root/.bashrc"
+			print_status "SUCCESS" "Added dcvm alias to /root/.bashrc (bash)"
+			configured_shells+=("bash")
+		else
+			print_status "INFO" "dcvm alias already exists in /root/.bashrc (bash)"
+			configured_shells+=("bash")
+		fi
 	fi
 
-	local user_bashrc_found=false
-	for user_home in /home/*/; do
-		if [[ -d "$user_home" ]]; then
-			local user_bashrc="${user_home}.bashrc"
-			local username=$(basename "$user_home")
-			if [[ -f "$user_bashrc" ]] && grep -q "alias dcvm=" "$user_bashrc"; then
-				print_status "INFO" "User $username should run: source ~/.bashrc"
-				user_bashrc_found=true
-			fi
+	if [[ -f "/root/.zshrc" ]]; then
+		if ! grep -q "alias dcvm=" "/root/.zshrc"; then
+			echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"/root/.zshrc"
+			print_status "SUCCESS" "Added dcvm alias to /root/.zshrc (zsh)"
+			configured_shells+=("zsh")
+		else
+			print_status "INFO" "dcvm alias already exists in /root/.zshrc (zsh)"
+			configured_shells+=("zsh")
 		fi
-	done
+	fi
+
+	echo
+	local shell_info=$(detect_shell)
+	local shell_name=$(echo "$shell_info" | cut -d'|' -f1)
+	local config_file=$(echo "$shell_info" | cut -d'|' -f2)
 	
-	if [[ "$user_bashrc_found" == "true" ]]; then
-		echo
-		print_status "INFO" "Regular users should run 'source ~/.bashrc' to apply dcvm alias"
+	print_status "INFO" "Detected shell: $shell_name"
+	print_status "INFO" "To activate dcvm alias, run: source $config_file"
+	
+	if [[ "$shell_name" == "unknown" ]]; then
+		print_status "INFO" "Or restart your terminal to apply changes"
+	fi
+	
+	if [[ ${#configured_shells[@]} -gt 0 ]]; then
+		print_status "SUCCESS" "dcvm alias configured for ${configured_shells[*]}"
+	else
+		print_status "WARNING" "No shell configuration files found"
 	fi
 }
 
@@ -607,7 +639,6 @@ main() {
 	start_existing_vms
 
 	setup_aliases
-	source_bashrc_files
 	setup_service
 	show_vm_status
 	show_network_info
