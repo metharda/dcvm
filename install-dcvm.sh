@@ -10,30 +10,41 @@ NC='\033[0m'
 
 DEFAULT_DATACENTER_BASE="/srv/datacenter"
 CONFIG_FILE="/etc/dcvm-install.conf"
+LOG_FILE="/var/log/datacenter-startup.log"
 
 NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+NETWORK_ONLY=0
+NETWORK_NAME_ARG=""
+
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}" == "" ]]; then
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
-		echo "Please choose the installation directory for Datacenter VM."
-		read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR
-		USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
-		DATACENTER_BASE="$USER_DIR"
+	
+		if [[ -t 0 && -t 1 ]]; then
+			echo "Please choose the installation directory for Datacenter VM."
+			read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
+			USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
+			DATACENTER_BASE="$USER_DIR"
+
+			echo "Please enter the network name for the datacenter."
+			read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
+			NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
+
+			echo "Please enter the bridge name for the datacenter."
+			read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
+			BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+		else
+			echo "Non-interactive installation detected. Using default values."
+			DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
+		fi
+		
 		echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
-		echo "Installation directory set to: $DATACENTER_BASE"
-
-		echo "Please enter the network name for the datacenter."
-		read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME
-		NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
 		echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
-		echo "Network name set to: $NETWORK_NAME"
-
-		echo "Please enter the bridge name for the datacenter."
-		read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME
-		BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 		echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
+		echo "Installation directory set to: $DATACENTER_BASE"
+		echo "Network name set to: $NETWORK_NAME"
 		echo "Bridge name set to: $BRIDGE_NAME"
 	else
 		source "$CONFIG_FILE"
@@ -51,7 +62,6 @@ else
 fi
 
 NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
-LOG_FILE="/var/log/datacenter-startup.log"
 
 print_status() {
 	local status=$1
@@ -70,6 +80,44 @@ print_status() {
 		echo -e "${RED}[ERROR]${NC} $message" | tee -a "$LOG_FILE"
 		;;
 	esac
+}
+
+detect_shell() {
+	local shell_name="unknown"
+	local config_file=""
+	
+	# Check current user's shell
+	if [[ -n "${SHELL:-}" ]]; then
+		shell_name=$(basename "$SHELL")
+	fi
+	
+	# Determine config file based on shell
+	case "$shell_name" in
+		"bash")
+			config_file="~/.bashrc"
+			;;
+		"zsh")
+			config_file="~/.zshrc"
+			;;
+		*)
+			# Try to detect from available config files or OS
+			if [[ "$OSTYPE" == "darwin"* ]]; then
+				# macOS default is zsh since Catalina
+				shell_name="zsh"
+				config_file="~/.zshrc"
+			elif [[ -f "$HOME/.zshrc" ]]; then
+				shell_name="zsh"
+				config_file="~/.zshrc"
+			elif [[ -f "$HOME/.bashrc" ]]; then
+				shell_name="bash"
+				config_file="~/.bashrc"
+			else
+				config_file="~/.bashrc or ~/.zshrc"
+			fi
+			;;
+	esac
+	
+	echo "$shell_name|$config_file"
 }
 
 install_required_packages() {
@@ -113,14 +161,19 @@ check_root() {
 }
 
 check_kvm_support() {
-	print_status "INFO" "Checking KVM support..."
+    print_status "INFO" "Checking KVM support..."
 
-	if ! kvm-ok >/dev/null 2>&1; then
-		print_status "ERROR" "KVM is not supported or not properly configured"
-		exit 1
-	else
-		print_status "SUCCESS" "KVM support verified"
-	fi
+    if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
+        if [ -e /dev/kvm ]; then
+            print_status "SUCCESS" "KVM support verified"
+        else
+            print_status "ERROR" "CPU supports KVM but /dev/kvm not present (BIOS/UEFI disabled or kernel module missing)"
+            exit 1
+        fi
+    else
+        print_status "ERROR" "CPU does not support KVM (no vmx/svm flag)"
+        exit 1
+    fi
 }
 
 start_libvirtd() {
@@ -253,28 +306,32 @@ check_cloud_images() {
 
 	if [[ ${#missing_images[@]} -gt 0 ]]; then
 		echo
-		echo "Some cloud images are missing. Would you like to download them now?"
-		select yn in "Yes, download now" "No, download when creating a VM"; do
-			case $yn in
-			"Yes, download now")
-				for entry in "${missing_images[@]}"; do
-					IFS='|' read -r filename label url <<<"$entry"
-					local image_path="$DATACENTER_BASE/storage/templates/$filename"
-					print_status "INFO" "Downloading $label cloud image..."
-					if wget --show-progress -q -O "$image_path" "$url"; then
-						print_status "SUCCESS" "$label cloud image downloaded"
-					else
-						print_status "ERROR" "Failed to download $label cloud image"
-					fi
-				done
-				break
-				;;
-			"No, download when creating a VM")
-				print_status "INFO" "Missing images will be downloaded when you create a VM."
-				break
-				;;
-			esac
-		done
+		if [[ -t 0 && -t 1 ]]; then
+			echo "Some cloud images are missing. Would you like to download them now?"
+			select yn in "Yes, download now" "No, download when creating a VM"; do
+				case $yn in
+				"Yes, download now")
+					for entry in "${missing_images[@]}"; do
+						IFS='|' read -r filename label url <<<"$entry"
+						local image_path="$DATACENTER_BASE/storage/templates/$filename"
+						print_status "INFO" "Downloading $label cloud image..."
+						if wget --show-progress -q -O "$image_path" "$url"; then
+							print_status "SUCCESS" "$label cloud image downloaded"
+						else
+							print_status "ERROR" "Failed to download $label cloud image"
+						fi
+					done
+					break
+					;;
+				"No, download when creating a VM")
+					print_status "INFO" "Missing images will be downloaded when you create a VM."
+					break
+					;;
+				esac
+			done
+		else
+			print_status "INFO" "Non-interactive mode: Missing cloud images will be downloaded when creating VMs."
+		fi
 	fi
 }
 
@@ -406,34 +463,53 @@ show_datacenter_summary() {
 	echo
 
 	print_status "SUCCESS" "Datacenter environment is ready!"
-	print_status "INFO" "Source bashrc to apply aliases and environment variables"
+	print_status "INFO" "Restart your shell or source your config file (.bashrc/.zshrc) to use dcvm command"
 }
 
 setup_aliases() {
-	print_status "INFO" "Setting up command aliases..."
+	print_status "INFO" "Setting up command aliases for dcvm..."
 
-	local bashrc_files=("/root/.bashrc" "/home/*/.bashrc")
+	local configured_shells=()
 
-	for bashrc in /root/.bashrc; do
-		if [[ -f "$bashrc" ]]; then
-			if ! grep -q "alias dcvm=" "$bashrc"; then
-				echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"$bashrc"
-				print_status "SUCCESS" "Added dcvm alias to $bashrc"
-			fi
+	if [[ -f "/root/.bashrc" ]]; then
+		if ! grep -q "alias dcvm=" "/root/.bashrc"; then
+			echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"/root/.bashrc"
+			print_status "SUCCESS" "Added dcvm alias to /root/.bashrc (bash)"
+			configured_shells+=("bash")
+		else
+			print_status "INFO" "dcvm alias already exists in /root/.bashrc (bash)"
+			configured_shells+=("bash")
 		fi
-	done
+	fi
 
-	for user_home in /home/*/; do
-		if [[ -d "$user_home" ]]; then
-			local user_bashrc="${user_home}.bashrc"
-			if [[ -f "$user_bashrc" ]]; then
-				if ! grep -q "alias dcvm=" "$user_bashrc"; then
-					echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"$user_bashrc"
-					print_status "SUCCESS" "Added dcvm alias to $user_bashrc"
-				fi
-			fi
+	if [[ -f "/root/.zshrc" ]]; then
+		if ! grep -q "alias dcvm=" "/root/.zshrc"; then
+			echo "alias dcvm='$DATACENTER_BASE/scripts/vm-manager.sh'" >>"/root/.zshrc"
+			print_status "SUCCESS" "Added dcvm alias to /root/.zshrc (zsh)"
+			configured_shells+=("zsh")
+		else
+			print_status "INFO" "dcvm alias already exists in /root/.zshrc (zsh)"
+			configured_shells+=("zsh")
 		fi
-	done
+	fi
+
+	echo
+	local shell_info=$(detect_shell)
+	local shell_name=$(echo "$shell_info" | cut -d'|' -f1)
+	local config_file=$(echo "$shell_info" | cut -d'|' -f2)
+	
+	print_status "INFO" "Detected shell: $shell_name"
+	print_status "INFO" "To activate dcvm alias, run: source $config_file"
+	
+	if [[ "$shell_name" == "unknown" ]]; then
+		print_status "INFO" "Or restart your terminal to apply changes"
+	fi
+	
+	if [[ ${#configured_shells[@]} -gt 0 ]]; then
+		print_status "SUCCESS" "dcvm alias configured for ${configured_shells[*]}"
+	else
+		print_status "WARNING" "No shell configuration files found"
+	fi
 }
 
 setup_service() {
@@ -529,6 +605,7 @@ download_scripts() {
 }
 
 main() {
+	echo "DCVM installer is starting..." >&2
 	print_status "INFO" "Starting datacenter initialization..."
 	echo "$(date)" >>"$LOG_FILE"
 	install_required_packages
@@ -568,8 +645,6 @@ main() {
 	show_datacenter_summary
 }
 
-NETWORK_ONLY=0
-NETWORK_NAME_ARG=""
 for arg in "$@"; do
 	case $arg in
 	--network-only)
@@ -579,12 +654,15 @@ for arg in "$@"; do
 		NETWORK_NAME_ARG="${arg#*=}"
 		;;
 	--network-name)
-		shift
-		NETWORK_NAME_ARG="$1"
+		if [[ -n "${2:-}" ]]; then
+			NETWORK_NAME_ARG="$2"
+		else
+			echo "Error: --network-name requires a value" >&2
+			exit 1
+		fi
 		;;
 	esac
 done
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	main "$@"
-fi
+echo "Executing DCVM installer..." >&2
+main "$@"

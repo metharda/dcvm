@@ -1,0 +1,111 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*~
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.pid
+*.lock
+
+# Virtual Machine files
+*.qcow2
+*.raw
+*.img
+*.iso
+*.vmdk
+*.vdi
+*.vhd
+*.vhdx
+
+# Configuration files (may contain sensitive data)
+*.conf
+config/
+.env
+.env.*
+
+# Runtime files
+*.pid
+*.sock
+run/
+var/run/
+tmp/
+/tmp/
+
+# Backup files
+*.bak
+*.backup
+backup/
+backups/
+snapshots/
+
+# System files
+lost+found/
+
+# Logs
+logs/
+*.log
+/var/log/
+
+# Cache
+cache/
+.cache/
+
+# VM storage directories (these should not be in version control)
+vms/
+storage/
+nfs-share/
+vm-storage/
+libvirt/
+
+# SSH keys (security)
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+authorized_keys
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Compressed files (usually large)
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
+# Build artifacts
+dist/
+build/
+
+# Local environment
+.local/
+local/
+
+# Network configuration (may contain sensitive info)
+network-config
+dhcp.conf
+dnsmasq.conf
+
+# Test files
+test-*
+*-test
+testing/
