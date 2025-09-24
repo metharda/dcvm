@@ -4,12 +4,12 @@
 
 ## Quick Installation
 
-Set up your system quickly with these commands: (you should be in root user)
+You can setup dcvm quickly with `curl` or `wget` commands: (you should be in root user)
 
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)" #with curl
-bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/install-dcvm.sh)" #with wget
-```
+| Method    | Command                                                                                           |
+| :-------- | :------------------------------------------------------------------------------------------------ |
+| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)"`    |
+| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/install-dcvm.sh)"`    |
 
 ## Features
 
