@@ -7,8 +7,8 @@
 Set up your system quickly with these commands: (you should be in root user)
 
 ```bash
-wget https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh
-./install-dcvm.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)" #with curl
+bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/install-dcvm.sh)" #with wget
 ```
 
 ## Features
