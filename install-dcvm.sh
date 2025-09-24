@@ -10,30 +10,41 @@ NC='\033[0m'
 
 DEFAULT_DATACENTER_BASE="/srv/datacenter"
 CONFIG_FILE="/etc/dcvm-install.conf"
+LOG_FILE="/var/log/datacenter-startup.log"
 
 NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 
-if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
+NETWORK_ONLY=0
+NETWORK_NAME_ARG=""
+
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}" == "" ]]; then
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
-		echo "Please choose the installation directory for Datacenter VM."
-		read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR
-		USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
-		DATACENTER_BASE="$USER_DIR"
+	
+		if [[ -t 0 && -t 1 ]]; then
+			echo "Please choose the installation directory for Datacenter VM."
+			read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
+			USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
+			DATACENTER_BASE="$USER_DIR"
+
+			echo "Please enter the network name for the datacenter."
+			read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
+			NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
+
+			echo "Please enter the bridge name for the datacenter."
+			read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
+			BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+		else
+			echo "Non-interactive installation detected. Using default values."
+			DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
+		fi
+		
 		echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
-		echo "Installation directory set to: $DATACENTER_BASE"
-
-		echo "Please enter the network name for the datacenter."
-		read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME
-		NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
 		echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
-		echo "Network name set to: $NETWORK_NAME"
-
-		echo "Please enter the bridge name for the datacenter."
-		read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME
-		BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 		echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
+		echo "Installation directory set to: $DATACENTER_BASE"
+		echo "Network name set to: $NETWORK_NAME"
 		echo "Bridge name set to: $BRIDGE_NAME"
 	else
 		source "$CONFIG_FILE"
@@ -51,7 +62,6 @@ else
 fi
 
 NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
-LOG_FILE="/var/log/datacenter-startup.log"
 
 print_status() {
 	local status=$1
@@ -258,28 +268,32 @@ check_cloud_images() {
 
 	if [[ ${#missing_images[@]} -gt 0 ]]; then
 		echo
-		echo "Some cloud images are missing. Would you like to download them now?"
-		select yn in "Yes, download now" "No, download when creating a VM"; do
-			case $yn in
-			"Yes, download now")
-				for entry in "${missing_images[@]}"; do
-					IFS='|' read -r filename label url <<<"$entry"
-					local image_path="$DATACENTER_BASE/storage/templates/$filename"
-					print_status "INFO" "Downloading $label cloud image..."
-					if wget --show-progress -q -O "$image_path" "$url"; then
-						print_status "SUCCESS" "$label cloud image downloaded"
-					else
-						print_status "ERROR" "Failed to download $label cloud image"
-					fi
-				done
-				break
-				;;
-			"No, download when creating a VM")
-				print_status "INFO" "Missing images will be downloaded when you create a VM."
-				break
-				;;
-			esac
-		done
+		if [[ -t 0 && -t 1 ]]; then
+			echo "Some cloud images are missing. Would you like to download them now?"
+			select yn in "Yes, download now" "No, download when creating a VM"; do
+				case $yn in
+				"Yes, download now")
+					for entry in "${missing_images[@]}"; do
+						IFS='|' read -r filename label url <<<"$entry"
+						local image_path="$DATACENTER_BASE/storage/templates/$filename"
+						print_status "INFO" "Downloading $label cloud image..."
+						if wget --show-progress -q -O "$image_path" "$url"; then
+							print_status "SUCCESS" "$label cloud image downloaded"
+						else
+							print_status "ERROR" "Failed to download $label cloud image"
+						fi
+					done
+					break
+					;;
+				"No, download when creating a VM")
+					print_status "INFO" "Missing images will be downloaded when you create a VM."
+					break
+					;;
+				esac
+			done
+		else
+			print_status "INFO" "Non-interactive mode: Missing cloud images will be downloaded when creating VMs."
+		fi
 	fi
 }
 
@@ -534,6 +548,7 @@ download_scripts() {
 }
 
 main() {
+	echo "DCVM installer is starting..." >&2
 	print_status "INFO" "Starting datacenter initialization..."
 	echo "$(date)" >>"$LOG_FILE"
 	install_required_packages
@@ -573,8 +588,6 @@ main() {
 	show_datacenter_summary
 }
 
-NETWORK_ONLY=0
-NETWORK_NAME_ARG=""
 for arg in "$@"; do
 	case $arg in
 	--network-only)
@@ -584,12 +597,15 @@ for arg in "$@"; do
 		NETWORK_NAME_ARG="${arg#*=}"
 		;;
 	--network-name)
-		shift
-		NETWORK_NAME_ARG="$1"
+		if [[ -n "${2:-}" ]]; then
+			NETWORK_NAME_ARG="$2"
+		else
+			echo "Error: --network-name requires a value" >&2
+			exit 1
+		fi
 		;;
 	esac
 done
 
-if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
-	main "$@"
-fi
+echo "Executing DCVM installer..." >&2
+main "$@"
