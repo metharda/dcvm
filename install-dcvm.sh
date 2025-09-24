@@ -425,7 +425,6 @@ show_datacenter_summary() {
 	echo
 
 	print_status "SUCCESS" "Datacenter environment is ready!"
-	print_status "INFO" "Source bashrc to apply aliases and environment variables"
 }
 
 setup_aliases() {
@@ -453,6 +452,32 @@ setup_aliases() {
 			fi
 		fi
 	done
+}
+
+source_bashrc_files() {
+	print_status "INFO" "Automatically sourcing updated bashrc files..."
+	
+	if [[ -f "/root/.bashrc" ]]; then
+		source "/root/.bashrc" 2>/dev/null || true
+		print_status "SUCCESS" "Sourced /root/.bashrc"
+	fi
+
+	local user_bashrc_found=false
+	for user_home in /home/*/; do
+		if [[ -d "$user_home" ]]; then
+			local user_bashrc="${user_home}.bashrc"
+			local username=$(basename "$user_home")
+			if [[ -f "$user_bashrc" ]] && grep -q "alias dcvm=" "$user_bashrc"; then
+				print_status "INFO" "User $username should run: source ~/.bashrc"
+				user_bashrc_found=true
+			fi
+		fi
+	done
+	
+	if [[ "$user_bashrc_found" == "true" ]]; then
+		echo
+		print_status "INFO" "Regular users should run 'source ~/.bashrc' to apply dcvm alias"
+	fi
 }
 
 setup_service() {
@@ -582,6 +607,7 @@ main() {
 	start_existing_vms
 
 	setup_aliases
+	source_bashrc_files
 	setup_service
 	show_vm_status
 	show_network_info
