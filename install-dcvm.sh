@@ -14,7 +14,7 @@ CONFIG_FILE="/etc/dcvm-install.conf"
 NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
 		echo "Please choose the installation directory for Datacenter VM."
@@ -113,14 +113,19 @@ check_root() {
 }
 
 check_kvm_support() {
-	print_status "INFO" "Checking KVM support..."
+    print_status "INFO" "Checking KVM support..."
 
-	if ! kvm-ok >/dev/null 2>&1; then
-		print_status "ERROR" "KVM is not supported or not properly configured"
-		exit 1
-	else
-		print_status "SUCCESS" "KVM support verified"
-	fi
+    if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
+        if [ -e /dev/kvm ]; then
+            print_status "SUCCESS" "KVM support verified"
+        else
+            print_status "ERROR" "CPU supports KVM but /dev/kvm not present (BIOS/UEFI disabled or kernel module missing)"
+            exit 1
+        fi
+    else
+        print_status "ERROR" "CPU does not support KVM (no vmx/svm flag)"
+        exit 1
+    fi
 }
 
 start_libvirtd() {
