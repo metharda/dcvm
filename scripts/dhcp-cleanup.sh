@@ -52,9 +52,9 @@ clear_lease_by_mac() {
 		echo "Removed from status file"
 	fi
 
-	virsh net-destroy datacenter-net
+	virsh net-destroy "$NETWORK_NAME"
 	sleep 2
-	virsh net-start datacenter-net
+	virsh net-start "$NETWORK_NAME"
 	echo "Network restarted"
 }
 
@@ -150,16 +150,16 @@ force_renew_all() {
 		echo "$running_vms" | while read vm; do
 			if [ -n "$vm" ]; then
 				echo "Forcing DHCP renewal on $vm..."
-				ssh_port=$(grep "^$vm " /srv/datacenter/port-mappings.txt 2>/dev/null | awk '{print $3}')
+				ssh_port=$(grep "^$vm " $DATACENTER_BASE/port-mappings.txt 2>/dev/null | awk '{print $3}')
 				if [ -n "$ssh_port" ]; then
 					timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" admin@10.8.8.223 "sudo dhclient -r enp1s0; sudo dhclient enp1s0" 2>/dev/null &
 				fi
 			fi
 		done
 
-		echo "DHCP renewal initiated. Wait 30 seconds and check with: virsh net-dhcp-leases datacenter-net"
+		echo "DHCP renewal initiated. Wait 30 seconds and check with: virsh net-dhcp-leases $NETWORK_NAME"
 	else
-		echo "No running VMs found using datacenter-net"
+		echo "No running VMs found using $NETWORK_NAME"
 	fi
 }
 
@@ -245,7 +245,7 @@ case "$1" in
 	echo "  files                   - Show lease file contents and locations"
 	echo ""
 	echo "Examples:"
-	echo "  $0 show                           # Show current leases"
+	echo "  $0 show                          # Show current leases"
 	echo "  $0 clear-vm datacenter-vm1       # Clear lease for specific VM"
 	echo "  $0 clear-mac 52:54:00:12:34:56   # Clear lease for MAC address"
 	echo "  $0 cleanup                       # Remove expired leases only"

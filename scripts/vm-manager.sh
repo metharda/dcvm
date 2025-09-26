@@ -36,7 +36,7 @@ show_port_status() {
 		vm=$(echo "$line" | awk '{print $2}')
 		state=$(echo "$line" | awk '{print $3" "$4}' | sed 's/ *$//')
 		if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-			if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				printf "%-15s: %s\n" "$vm" "$state"
 			fi
 		fi
@@ -57,8 +57,8 @@ show_port_status() {
 	echo "Connectivity test:"
 	printf "%-15s: %-4s  %-4s  %-4s\n" "VM_NAME" "Ping" "SSH" "HTTP"
 	echo "-------------------------------------"
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
-		grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+	if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
+		grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 			if [ -n "$vm" ]; then
 				if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
 					ping_status="✓"
@@ -92,9 +92,9 @@ show_enhanced_console() {
 	echo "=== VM Access Information ==="
 	echo ""
 
-	if [ -f /srv/datacenter/port-mappings.txt ]; then
+	if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
 		echo "SSH Access:"
-		grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+		grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 			if [ -n "$vm" ]; then
 				echo "  ssh $vm"
 				echo "    or: ssh -p $ssh_port admin@10.8.8.223"
@@ -103,7 +103,7 @@ show_enhanced_console() {
 		echo ""
 
 		echo "HTTP Access:"
-		grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+		grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 			if [ -n "$vm" ]; then
 				echo "  $vm: http://10.8.8.223:$http_port"
 			fi
@@ -111,7 +111,7 @@ show_enhanced_console() {
 		echo ""
 
 		echo "Console Access:"
-		grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+		grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 			if [ -n "$vm" ]; then
 				echo "  virsh console $vm  (Press Ctrl+] to exit)"
 			fi
@@ -138,7 +138,7 @@ start_vms() {
 
 		stopped_vms=$(virsh list --all | grep -E "shut off" | while read line; do
 			vm=$(echo "$line" | awk '{print $2}')
-			if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				echo "$vm"
 			fi
 		done)
@@ -195,7 +195,7 @@ stop_vms() {
 
 		running_vms=$(virsh list | grep -E "running" | while read line; do
 			vm=$(echo "$line" | awk '{print $2}')
-			if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if [ -n "$vm" ] && virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				echo "$vm"
 			fi
 		done)
@@ -334,7 +334,7 @@ show_enhanced_status() {
 	virsh list --all | grep -E "(running|shut off)" | while read line; do
 		vm=$(echo "$line" | awk '{print $2}')
 		if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-			if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				ip=$(virsh domifaddr "$vm" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | head -1)
 				if [ -n "$ip" ]; then
 					printf "%-15s: %s\n" "$vm" "$ip"
@@ -369,25 +369,29 @@ case $1 in
 	;;
 "delete")
 	if [ -z "$2" ]; then
-		echo "Usage: $0 delete <vm_name>"
-		echo "Example: $0 delete datacenter-vm1"
+		echo "Usage: dcvm delete <vm_name>"
+		echo "Example: dcvm delete datacenter-vm1"
 		exit 1
 	fi
 	"$SCRIPTS_PATH/delete-vm.sh" "$2"
 	;;
 "backup")
 	if [ -z "$2" ]; then
-		echo "Usage: $0 backup <vm_name>"
-		echo "       $0 backup restore <vm_name> [backup_date]"
-		echo "       $0 backup list-backups <vm_name>"
+		echo "Usage: dcvm backup create <vm_name>"
+		echo "       dcvm backup restore <vm_name> [backup_date]"
+		echo "       dcvm backup list [vm_name]"
+		echo "       dcvm backup troubleshoot <vm_name>"
 		echo "Examples:"
-		echo "  $0 backup datacenter-vm1                    # Create backup"
-		echo "  $0 backup restore datacenter-vm1            # Restore from latest backup"
-		echo "  $0 backup restore datacenter-vm1 20250722_143052  # Restore from specific backup"
-		echo "  $0 backup list-backups datacenter-vm1       # List available backups"
+		echo "  dcvm backup create datacenter-vm1               	# Create backup"
+		echo "  dcvm backup restore datacenter-vm1            		# Restore from latest backup"
+		echo "  dcvm backup restore datacenter-vm1 20250722_143052  # Restore from specific backup"
+		echo "  dcvm backup list                               		# List all backups"
+		echo "  dcvm backup list datacenter-vm1                		# List backups of a VM"
+		echo "  dcvm backup troubleshoot vm1                   		# Fix VM startup issues"
 		exit 1
 	fi
-	"$SCRIPTS_PATH/backup.sh" "$2" "$3" "$4"
+	shift
+	"$SCRIPTS_PATH/backup.sh" "$@"
 	;;
 "status")
 	show_enhanced_status
@@ -403,12 +407,12 @@ case $1 in
 	virsh list --all
 	echo ""
 
-	echo "VMs using datacenter-net:"
+	echo "VMs using $NETWORK_NAME:"
 	virsh list --all | grep -E "(running|shut off)" | while read line; do
 		vm=$(echo "$line" | awk '{print $2}')
 		state=$(echo "$line" | awk '{print $3}')
 		if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-			if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				printf "  %-15s: %s\n" "$vm" "$state"
 			fi
 		fi
@@ -425,12 +429,12 @@ case $1 in
 	virsh net-list
 	echo ""
 	echo "Datacenter Network Details:"
-	virsh net-info datacenter-net 2>/dev/null || echo "datacenter-net not found"
+	virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
 	echo ""
 	echo "=== ALL DHCP LEASES ==="
 	echo ""
 	echo "Active DHCP Leases (via virsh):"
-	dhcp_leases=$(virsh net-dhcp-leases datacenter-net 2>/dev/null)
+	dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
 	if [ -n "$dhcp_leases" ]; then
 		echo "$dhcp_leases"
 	else
@@ -438,12 +442,12 @@ case $1 in
 	fi
 	echo ""
 	echo "Raw DHCP Lease Files:"
-	if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-		lease_count=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.leases)
+	if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
+		lease_count=$(wc -l </var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases)
 		echo "Lease file entries: $lease_count"
 		if [ "$lease_count" -gt 0 ]; then
 			echo "Raw lease file content:"
-			cat /var/lib/libvirt/dnsmasq/virbr-dc.leases | while read line; do
+			cat /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases | while read line; do
 				echo "  $line"
 			done
 		else
@@ -498,10 +502,10 @@ case $1 in
 		echo "  $0 clear-leases clear-all"
 		echo ""
 		echo "Current DHCP leases:"
-		virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+		virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 	elif [ "$2" = "show" ]; then
 		echo "Current DHCP leases:"
-		virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+		virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 	elif [ "$2" = "clear-vm" ]; then
 		if [ -z "$3" ]; then
 			echo "Usage: $0 clear-leases clear-vm <vm_name>"
@@ -510,28 +514,28 @@ case $1 in
 			vm_name="$3"
 			echo "Clearing DHCP lease for VM: $vm_name"
 
-			mac_address=$(virsh domiflist "$vm_name" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+			mac_address=$(virsh domiflist "$vm_name" 2>/dev/null | grep "$NETWORK_NAME" | awk '{print $5}')
 
 			if [ -n "$mac_address" ]; then
 				echo "Found MAC address: $mac_address"
 
-				if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-					sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/virbr-dc.leases
+				if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
+					sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases
 					echo "Removed from lease file"
 				fi
 
-				if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-					sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/virbr-dc.status
+				if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status ]; then
+					sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status
 					echo "Removed from status file"
 				fi
 
-				virsh net-destroy datacenter-net
+				virsh net-destroy "$NETWORK_NAME"
 				sleep 2
-				virsh net-start datacenter-net
+				virsh net-start "$NETWORK_NAME"
 				echo "Network restarted"
 				echo ""
 				echo "Updated DHCP leases:"
-				virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+				virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 			else
 				echo "Could not find MAC address for VM: $vm_name"
 			fi
@@ -539,29 +543,29 @@ case $1 in
 	elif [ "$2" = "clear-all" ]; then
 		echo "WARNING: This will clear ALL DHCP leases!"
 		echo "Current leases:"
-		virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+		virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 		echo ""
 		read -p "Are you sure you want to clear all leases? (y/N): " confirm
 		if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
 			echo "Clearing all DHCP leases..."
 
-			virsh net-destroy datacenter-net 2>/dev/null || true
+			virsh net-destroy "$NETWORK_NAME" 2>/dev/null || true
 
-			if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-				>/var/lib/libvirt/dnsmasq/virbr-dc.leases
+			if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
+				>/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases
 				echo "Cleared lease file"
 			fi
 
-			if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-				>/var/lib/libvirt/dnsmasq/virbr-dc.status
+			if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status ]; then
+				>/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status
 				echo "Cleared status file"
 			fi
 
-			virsh net-start datacenter-net
+			virsh net-start "$NETWORK_NAME"
 			echo "Network restarted with clean lease table"
 			echo ""
 			echo "New lease status:"
-			virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+			virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 		else
 			echo "Cancelled"
 		fi
@@ -572,9 +576,9 @@ case $1 in
 		temp_file="/tmp/dhcp_leases_clean"
 		cleaned_count=0
 
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
+		if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
 			echo "Current leases before cleanup:"
-			virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+			virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 			echo ""
 
 			while IFS=' ' read -r timestamp mac ip hostname client_id; do
@@ -586,22 +590,22 @@ case $1 in
 						cleaned_count=$((cleaned_count + 1))
 					fi
 				fi
-			done </var/lib/libvirt/dnsmasq/virbr-dc.leases
+			done </var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases
 
 			if [ -f "$temp_file" ]; then
-				mv "$temp_file" /var/lib/libvirt/dnsmasq/virbr-dc.leases
+				mv "$temp_file" /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases
 			else
-				>/var/lib/libvirt/dnsmasq/virbr-dc.leases
+				>/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases
 			fi
 
-			virsh net-destroy datacenter-net
+			virsh net-destroy "$NETWORK_NAME"
 			sleep 2
-			virsh net-start datacenter-net
+			virsh net-start "$NETWORK_NAME"
 
 			echo "Cleaned $cleaned_count expired leases"
 			echo ""
 			echo "Leases after cleanup:"
-			virsh net-dhcp-leases datacenter-net 2>/dev/null || echo "No leases found"
+			virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
 		else
 			echo "No lease file found"
 		fi
@@ -635,13 +639,13 @@ case $1 in
 	echo "  status             - Show enhanced VM status and network info"
 	echo "  ports              - Show detailed port mappings and connectivity"
 	echo "  console            - Show connection instructions for all VMs"
-	echo "  list               - List all VMs (with datacenter-net filter)"
+	echo "  list               - List all VMs (with $NETWORK_NAME filter)"
 	echo "  network            - Show network information and DHCP leases"
 	echo ""
 	echo "Backup & Restore:"
-	echo "  backup <vm_name>                    - Create backup of VM"
+	echo "  backup create <vm_name>             - Create backup of VM"
 	echo "  backup restore <vm_name> [date]     - Restore VM from backup"
-	echo "  backup list-backups <vm_name>       - List available backups"
+	echo "  backup list [vm_name]               - List backups (all or per VM)"
 	echo ""
 	echo "Port & Network Management:"
 	echo "  setup-forwarding   - Configure port forwarding for all VMs"
@@ -649,21 +653,21 @@ case $1 in
 	echo "  uninstall          - Remove all datacenter files, VMs, networks, and this script"
 	echo ""
 	echo "Examples:"
-	echo "  dcvm start web-server           # Start specific VM"
-	echo "  dcvm start all                  # Start all VMs"
-	echo "  dcvm start                      # Start all VMs (default)"
-	echo "  dcvm stop datacenter-vm1        # Stop specific VM"
-	echo "  dcvm restart all                # Restart all VMs"
-	echo "  dcvm create web-server nginx    # Create VM with nginx"
-	echo "  dcvm delete old-vm              # Delete specific VM"
-	echo "  dcvm backup datacenter-vm1      # Create backup"
+	echo "  dcvm start web-server           	# Start specific VM"
+	echo "  dcvm start all                  	# Start all VMs"
+	echo "  dcvm start                      	# Start all VMs (default)"
+	echo "  dcvm stop datacenter-vm1        	# Stop specific VM"
+	echo "  dcvm restart all                	# Restart all VMs"
+	echo "  dcvm create web-server nginx    	# Create VM with nginx"
+	echo "  dcvm delete old-vm              	# Delete specific VM"
+	echo "  dcvm backup create datacenter-vm1   # Create backup"
 	echo "  dcvm backup restore datacenter-vm1  # Restore from latest backup"
-	echo "  dcvm backup list-backups vm1    # List available backups"
-	echo "  dcvm ports                      # Check port status and connectivity"
-	echo "  dcvm console                    # Show how to access all VMs"
-	echo "  dcvm clear-leases show          # Show DHCP leases"
-	echo "  dcvm clear-leases clear-vm vm1  # Clear DHCP lease for VM"
-	echo "  dcvm uninstall                  # Remove all files and this script"
+	echo "  dcvm backup list vm1            	# List available backups"
+	echo "  dcvm ports                      	# Check port status and connectivity"
+	echo "  dcvm console                    	# Show how to access all VMs"
+	echo "  dcvm clear-leases show          	# Show DHCP leases"
+	echo "  dcvm clear-leases clear-vm vm1  	# Clear DHCP lease for VM"
+	echo "  dcvm uninstall                  	# Remove all files and this script"
 	echo ""
 	echo "VM States:"
 	echo "  running    - VM is currently active"

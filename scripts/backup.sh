@@ -12,6 +12,7 @@ DATE=$(date +%Y%m%d_%H%M%S)
 KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
 COMPRESSION_ENABLED=true
+FIX_LOCK_SCRIPT="$DATACENTER_BASE/scripts/fix-lock.sh"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -78,6 +79,36 @@ wait_for_vm_state() {
 get_vm_disk_path() {
 	local vm_name="$1"
 	virsh domblklist "$vm_name" --details 2>/dev/null | grep "disk" | grep "file" | awk '{print $4}' | head -1
+}
+
+is_lock_error() {
+	local error_message="$1"
+	
+	if echo "$error_message" | grep -qi "failed to get.*lock\|is another process using\|file is locked\|resource busy\|device or resource busy\|qemu unexpectedly closed\|failed to get shared.*lock\|block device is in use\|image is being used\|cannot lock\|already in use\|permission denied.*lock"; then
+		return 0
+	fi
+	return 1
+}
+
+auto_fix_locks() {
+	local vm_name="$1"
+	
+	print_warning "Lock issue detected. Running fix-lock.sh..."
+	
+	if [ ! -x "$FIX_LOCK_SCRIPT" ]; then
+		print_error "fix-lock.sh script not found or not executable: $FIX_LOCK_SCRIPT"
+		return 1
+	fi
+	
+	print_info "Running fix-lock.sh for $vm_name..."
+	if "$FIX_LOCK_SCRIPT" "$vm_name"; then
+		print_success "fix-lock.sh completed successfully"
+		sleep 2
+		return 0
+	else
+		print_error "fix-lock.sh failed"
+		return 1
+	fi
 }
 
 get_file_size() {
@@ -150,147 +181,60 @@ list_backups() {
 	return 0
 }
 
+list_all_backups() {
+	print_info "Available backups (all VMs)"
+	echo ""
+
+	local backups=( $(ls -t "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null) )
+
+	if [ ${#backups[@]} -eq 0 ]; then
+		print_warning "No backups found in: $BACKUP_DIR"
+		return 1
+	fi
+
+	echo "VM Name            Date/Time           Size      Type       Status"
+	echo "=================  =================== ========= ========== =========="
+
+	for backup in "${backups[@]}"; do
+		local base=$(basename "$backup")
+		local vm_name=$(echo "$base" | sed -E 's/^([^ ]+)-disk-.*/\1/')
+		local date_part=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\1/")
+		local size=$(get_file_size "$backup")
+		local type="qcow2"
+		local status="✓"
+
+		if [[ "$backup" == *.gz ]]; then
+			type="qcow2+gz"
+		fi
+
+		local config_file="$BACKUP_DIR/${vm_name}-config-${date_part}.xml"
+		if [ ! -f "$config_file" ]; then
+			status="⚠ No config"
+		fi
+
+		local formatted_date=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+
+		printf "%-18s %-19s %-9s %-10s %s\n" "$vm_name" "$formatted_date" "$size" "$type" "$status"
+	done
+
+	echo ""
+	return 0
+}
+
 troubleshoot_vm() {
 	local vm_name="$1"
 
-	print_info "Troubleshooting VM: $vm_name"
-
-	if ! check_vm_exists "$vm_name"; then
-		print_error "VM '$vm_name' does not exist"
+	if [ -z "$vm_name" ]; then
+		print_error "VM name required for 'troubleshoot'"
 		return 1
 	fi
 
-	local vm_disk_path=$(get_vm_disk_path "$vm_name")
-	if [ -z "$vm_disk_path" ]; then
-		print_error "Could not find disk path for VM '$vm_name'"
-		return 1
-	fi
-
-	print_info "VM disk path: $vm_disk_path"
-
-	if [ ! -f "$vm_disk_path" ]; then
-		print_error "Disk file does not exist: $vm_disk_path"
-		return 1
-	fi
-
-	print_info "Performing comprehensive lock and file fix..."
-
-	print_info "Force stopping VM and related processes..."
-	virsh destroy "$vm_name" 2>/dev/null || true
-	sleep 3
-
-	pgrep -f "qemu.*$vm_name" | xargs -r kill -9 2>/dev/null || true
-	sleep 2
-
-	lsof "$vm_disk_path" 2>/dev/null | awk 'NR>1 {print $2}' | xargs -r kill -9 2>/dev/null || true
-	sleep 2
-
-	print_info "Clearing libvirt lock files..."
-	local lock_dirs=(
-		"/var/lib/libvirt/qemu"
-		"/run/libvirt/qemu"
-		"/var/run/libvirt/qemu"
-		"/tmp"
-	)
-
-	for lock_dir in "${lock_dirs[@]}"; do
-		if [ -d "$lock_dir" ]; then
-			find "$lock_dir" -name "*${vm_name}*" \( -name "*.lock" -o -name "*.pid" \) -delete 2>/dev/null || true
-		fi
-	done
-
-	print_info "Clearing QEMU image locks..."
-	local disk_dir=$(dirname "$vm_disk_path")
-	find "$disk_dir" -name "*.lock" -delete 2>/dev/null || true
-	rm -f /dev/shm/qemu_"$(basename "$vm_name")"_* 2>/dev/null || true
-
-	print_info "Fixing file permissions and ownership..."
-
-	if id -u libvirt-qemu >/dev/null 2>&1; then
-		chown libvirt-qemu:kvm "$vm_disk_path" 2>/dev/null || chown root:root "$vm_disk_path"
-		print_info "Set ownership to libvirt-qemu:kvm"
-	elif id -u qemu >/dev/null 2>&1; then
-		chown qemu:qemu "$vm_disk_path" 2>/dev/null || chown root:root "$vm_disk_path"
-		print_info "Set ownership to qemu:qemu"
+	print_info "Troubleshooting VM (delegated to fix-lock.sh): $vm_name"
+	if [ -x "$FIX_LOCK_SCRIPT" ]; then
+		"$FIX_LOCK_SCRIPT" "$vm_name" --verbose
+		return $?
 	else
-		chown root:root "$vm_disk_path"
-		print_info "Set ownership to root:root"
-	fi
-
-	chmod 660 "$vm_disk_path"
-	print_info "Set permissions to 660"
-
-	print_info "Cleaning VM configuration..."
-	local temp_xml=$(mktemp)
-	if virsh dumpxml "$vm_name" >"$temp_xml" 2>/dev/null; then
-		sed -i '/<disk type="file" device="cdrom"/,/<\/disk>/d' "$temp_xml"
-		sed -i "s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g" "$temp_xml"
-		sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml"
-
-		if virsh define "$temp_xml" >/dev/null 2>&1; then
-			print_success "VM configuration cleaned and redefined"
-		else
-			print_warning "Could not redefine VM configuration"
-		fi
-	fi
-	rm -f "$temp_xml"
-
-	print_info "Restarting libvirtd service..."
-	if systemctl restart libvirtd 2>/dev/null || service libvirtd restart 2>/dev/null; then
-		print_success "libvirtd restarted successfully"
-	else
-		print_warning "Could not restart libvirtd automatically"
-	fi
-
-	local wait_count=0
-	while ! virsh list >/dev/null 2>&1 && [ $wait_count -lt 15 ]; do
-		sleep 2
-		wait_count=$((wait_count + 1))
-	done
-
-	if command -v restorecon >/dev/null 2>&1 && [ -f /selinux/enforce ]; then
-		restorecon "$vm_disk_path" 2>/dev/null && print_info "Restored SELinux context" || true
-	fi
-
-	print_info "Final file permissions:"
-	ls -la "$vm_disk_path"
-
-	print_info "Attempting to start VM..."
-
-	if ! virsh list --all | grep -q " $vm_name "; then
-		print_error "VM not found after cleanup and restart"
-		return 1
-	fi
-
-	local start_error=""
-	if start_error=$(virsh start "$vm_name" 2>&1); then
-		print_success "VM started successfully"
-
-		sleep 3
-		if virsh list | grep -q "$vm_name.*running"; then
-			print_success "VM is running and stable"
-			return 0
-		else
-			print_warning "VM started but may have stopped"
-		fi
-	else
-		print_error "VM failed to start"
-		print_info "Error details: $start_error"
-		print_info "Last few lines of libvirt log:"
-		tail -10 /var/log/libvirt/qemu/"$vm_name".log 2>/dev/null || echo "Log file not found"
-
-		print_info "Additional troubleshooting information:"
-		print_info "Checking disk image integrity..."
-		if command -v qemu-img >/dev/null 2>&1; then
-			qemu-img check "$vm_disk_path" 2>&1 | head -5
-		fi
-
-		print_info "Suggesting fix-lock.sh for advanced lock resolution..."
-		local fix_lock_script="/srv/datacenter/scripts/fix-lock.sh"
-		if [ -f "$fix_lock_script" ]; then
-			print_info "Try running: sudo $fix_lock_script $vm_name"
-		fi
-
+		print_error "fix-lock.sh script not found or not executable: $FIX_LOCK_SCRIPT"
 		return 1
 	fi
 }
@@ -378,17 +322,35 @@ restore_vm() {
 			fi
 		fi
 
-		print_info "Removing existing VM definition..."
-		virsh undefine "$vm_name" --remove-all-storage >/dev/null 2>&1 || true
+		print_info "Removing existing VM definition (keeping storage)..."
+		virsh undefine "$vm_name" >/dev/null 2>&1 || true
+		
+		print_info "Running fix-lock.sh for comprehensive cleanup..."
+		if [ -x "$FIX_LOCK_SCRIPT" ]; then
+			"$FIX_LOCK_SCRIPT" "$vm_name" >/dev/null 2>&1 || true
+		else
+			print_warning "fix-lock.sh not found, doing basic cleanup..."
+			virsh destroy "$vm_name" >/dev/null 2>&1 || true
+			sleep 2
+		fi
 	fi
 
-	local vm_dir="/srv/datacenter/vms/$vm_name"
+	local vm_dir="$DATACENTER_BASE/vms/$vm_name"
 	local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
 
 	print_info "Preparing VM directory..."
 	if ! mkdir -p "$vm_dir"; then
 		print_error "Failed to create VM directory: $vm_dir"
 		return 1
+	fi
+
+	if [ -f "$vm_disk_path" ]; then
+		print_info "Removing existing disk file..."
+		lsof "$vm_disk_path" 2>/dev/null && sleep 3
+		rm -f "$vm_disk_path" || {
+			print_error "Failed to remove existing disk file: $vm_disk_path"
+			return 1
+		}
 	fi
 
 	if [ "$is_compressed" = true ]; then
@@ -455,18 +417,31 @@ restore_vm() {
 
 	local temp_config=$(mktemp)
 
-	if sed "s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g" "$config_backup" >"$temp_config"; then
-		if virsh define "$temp_config" >/dev/null 2>&1; then
-			print_success "VM configuration restored"
-			log "INFO" "VM configuration restored for $vm_name"
-		else
-			print_error "Failed to define VM from configuration"
-			cat "$temp_config"
+	if ! cp "$config_backup" "$temp_config"; then
+		print_error "Failed to prepare temporary config file"
+		rm -f "$temp_config"
+		return 1
+	fi
+
+	if command -v xmlstarlet >/dev/null 2>&1; then
+		if ! xmlstarlet ed -P -L -u "/domain/devices/disk[@device='disk']/source/@file" -v "$vm_disk_path" "$temp_config"; then
+			print_error "Failed to update disk source with xmlstarlet"
 			rm -f "$temp_config"
 			return 1
 		fi
 	else
-		print_error "Failed to update configuration file"
+		sed -i "/<disk[^>]*device=\"disk\"[^>]*>/,/<\/disk>/{s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g}" "$temp_config"
+		if grep -qi "<disk[^>]*device=\"cdrom\"" "$temp_config" && grep -q "<source file='$vm_disk_path'/>" "$temp_config"; then
+			sed -i "/<disk[^>]*device=\"cdrom\"[^>]*>/,/<\/disk>/{ /<source file='$vm_disk_path'\/>/,/<\/disk>/d }" "$temp_config"
+		fi
+	fi
+
+	if virsh define "$temp_config" >/dev/null 2>&1; then
+		print_success "VM configuration restored"
+		log "INFO" "VM configuration restored for $vm_name"
+	else
+		print_error "Failed to define VM from configuration"
+		sed -n '1,120p' "$temp_config" | sed -n '1,30p'
 		rm -f "$temp_config"
 		return 1
 	fi
@@ -486,14 +461,105 @@ restore_vm() {
 		return 1
 	fi
 
-	print_info "Performing post-restore lock fix and startup test..."
-	if troubleshoot_vm "$vm_name"; then
-		print_success "VM restore completed and VM is now running!"
-		local final_state="running"
-	else
-		print_warning "VM restored but failed to start automatically"
-		print_info "You may need to manually fix issues before starting"
-		local final_state="shut off (needs manual intervention)"
+	print_info "Waiting for libvirt to register the restored VM..."
+	sleep 3
+
+	print_info "Performing post-restore verification and cleanup..."
+	print_info "Waiting for libvirt to register the restored VM..."
+	sleep 3
+
+	print_info "Checking for other VMs referencing the restored disk..."
+	conflicting_vms=$(virsh list --all --name 2>/dev/null | grep -v "^$" | while read -r other; do
+		[ "$other" = "$vm_name" ] && continue
+		virsh domblklist "$other" --details 2>/dev/null | awk '{print $4}' | grep -Fxq "$vm_disk_path" && echo "$other"
+	done)
+
+	if [ -n "$conflicting_vms" ]; then
+		print_error "The disk is referenced by other VM(s): $(echo $conflicting_vms | tr '\n' ' ')"
+		print_info "This will cause shared write lock failures."
+		print_info "Resolve by detaching/changing disk on those VMs or undefining them before start."
+		print_info "You can run: sudo $FIX_LOCK_SCRIPT $vm_name --verbose (for cleanup), but conflicts must be fixed manually."
+		local final_state="shut off (conflicting domains detected)"
+		goto_skip_start=true
+	fi
+	
+	print_info "Attempting to start VM..."
+	local start_error=""
+	local start_attempts=0
+	local max_attempts=2
+
+	if [ "$goto_skip_start" = true ]; then
+		print_warning "Skipping auto-start due to conflicting VM references"
+		start_attempts=$max_attempts
+	fi
+	
+	while [ $start_attempts -lt $max_attempts ]; do
+		print_info "Start attempt $((start_attempts + 1))/$max_attempts"
+		start_error=$(virsh start "$vm_name" 2>&1)
+		
+		if [ $? -eq 0 ]; then
+			print_success "VM restore completed and VM is now starting!"
+			
+			if wait_for_vm_state "$vm_name" "running" 30; then
+				print_success "VM is now running successfully!"
+				local final_state="running"
+			else
+				print_warning "VM started but may still be booting"
+				local final_state="starting"
+			fi
+			break
+		else
+			print_error "Start attempt $((start_attempts + 1)) failed: $start_error"
+			
+			if is_lock_error "$start_error" && [ $start_attempts -eq 0 ]; then
+				print_warning "Detected lock-related error, running fix-lock.sh..."
+				
+				if [ -x "$FIX_LOCK_SCRIPT" ]; then
+					if "$FIX_LOCK_SCRIPT" "$vm_name"; then
+						print_success "fix-lock.sh completed successfully"
+						start_attempts=$((start_attempts + 1))
+						print_info "Waiting before retry..."
+						sleep 3
+						continue
+					else
+						print_error "fix-lock.sh failed"
+						break
+					fi
+				else
+					print_error "fix-lock.sh script not found or not executable: $FIX_LOCK_SCRIPT"
+					break
+				fi
+			else
+				print_error "Cannot recover from error: $start_error"
+				break
+			fi
+		fi
+		
+		start_attempts=$((start_attempts + 1))
+	done
+
+	if ! wait_for_vm_state "$vm_name" "running" 5; then
+		print_warning "VM restored but failed to start automatically after $max_attempts attempts"
+		print_info ""
+		print_info "Manual troubleshooting steps:"
+		print_info "  1. Check for conflicting domains using the same disk:"
+		print_info "     virsh list --all --name | while read n; do [ \"$vm_name\" = \"$n\" ] || virsh domblklist \"$n\" --details | awk '{print $4}' | grep -Fxq \"$vm_disk_path\" && echo \"$n\"; done"
+		print_info "     If any are listed, detach/change their disk or undefine them."
+		print_info ""
+		print_info "  2. Run fix-lock.sh with verbose:"
+		print_info "     sudo $FIX_LOCK_SCRIPT $vm_name --verbose"
+		print_info ""
+		print_info "  3. Ensure no cdrom/ide remains in XML:"
+		print_info "     sudo grep -iE 'cdrom|controller type=\"ide\"' /etc/libvirt/qemu/$vm_name.xml || echo OK"
+		print_info ""
+		print_info "  4. Manual start:"
+		print_info "     virsh start $vm_name"
+		print_info ""
+		print_info "  5. Check detailed logs:"
+		print_info "     tail -f /var/log/libvirt/qemu/$vm_name.log"
+		print_info ""
+		print_info "Last error was: $start_error"
+		local final_state="shut off (manual start needed)"
 	fi
 
 	echo ""
@@ -517,7 +583,7 @@ restore_vm() {
 		echo "Manual startup required:"
 		echo "  Try: dcvm start $vm_name"
 		echo "  Or:  virsh start $vm_name"
-		echo "  Fix locks: /srv/datacenter/scripts/fix-lock.sh $vm_name"
+		echo "  Fix locks: $FIX_LOCK_SCRIPT $vm_name"
 	fi
 	echo ""
 
@@ -667,62 +733,31 @@ backup_vm() {
 
 if [ $# -lt 1 ]; then
 	echo "VM Backup & Restore Script"
-	echo "Usage: dcvm backup <vm_name>"
-	echo "       dcvm restore <vm_name> [backup_date]"
-	echo "       dcvm list-backups <vm_name>"
-	echo "       dcvm troubleshoot <vm_name>"
+	echo "Usage: dcvm backup create <vm_name>"
+	echo "       dcvm backup restore <vm_name> [backup_date]"
+	echo "       dcvm backup list [vm_name]"
+	echo "       dcvm backup troubleshoot <vm_name>"
 	echo ""
 	echo "Examples:"
-	echo "  dcvm backup datacenter-vm1              # Create backup"
-	echo "  dcvm restore datacenter-vm1             # Restore from latest backup"
-	echo "  dcvm restore datacenter-vm1 20250722_143052  # Restore from specific backup"
-	echo "  dcvm list-backups datacenter-vm1        # List available backups"
-	echo "  dcvm troubleshoot vm1                   # Fix VM startup issues"
+	echo "  dcvm backup create datacenter-vm1             		# Create backup"
+	echo "  dcvm backup restore datacenter-vm1            		# Restore from latest backup"
+	echo "  dcvm backup restore datacenter-vm1 20250722_143052  # Restore from specific backup"
+	echo "  dcvm backup list                              		# List all backups"
+	echo "  dcvm backup list datacenter-vm1               		# List backups of a VM"
+	echo "  dcvm backup troubleshoot vm1                  		# Fix VM startup issues"
 	echo ""
 	echo "Options:"
 	echo "  Backups are stored in: $BACKUP_DIR"
 	echo "  Retention: $KEEP_BACKUPS backups per VM"
 	echo "  Compression: $([ "$COMPRESSION_ENABLED" = true ] && echo "Enabled" || echo "Disabled")"
 	echo ""
-	echo "⚠️  WARNING: Restore will COMPLETELY REPLACE the existing VM!"
+	echo "WARNING: Restore will COMPLETELY REPLACE the existing VM!"
 	exit 1
 fi
 
-OPERATION="$1"
+SUBCOMMAND="$1"
 VM_NAME="$2"
-
-case "$OPERATION" in
-"backup")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for backup operation"
-		exit 1
-	fi
-	;;
-"restore")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for restore operation"
-		exit 1
-	fi
-	BACKUP_DATE="$3"
-	;;
-"list-backups")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for list-backups operation"
-		exit 1
-	fi
-	;;
-"troubleshoot")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for troubleshoot operation"
-		exit 1
-	fi
-	;;
-*)
-	print_error "Unknown operation: $OPERATION"
-	echo "Valid operations: backup, restore, list-backups"
-	exit 1
-	;;
-esac
+BACKUP_DATE="$3"
 
 for cmd in virsh cp gzip gunzip; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -739,21 +774,38 @@ if [ ! -d "$LOG_DIR" ]; then
 	}
 fi
 
-case "$OPERATION" in
-"backup")
-	backup_vm "$VM_NAME"
-	exit $?
+case "$SUBCOMMAND" in
+"create")
+	if [ -z "$VM_NAME" ]; then
+		print_error "VM name required for 'create'"
+		exit 1
+	fi
+	backup_vm "$VM_NAME"; exit $?
 	;;
 "restore")
-	restore_vm "$VM_NAME" "$BACKUP_DATE"
-	exit $?
+	if [ -z "$VM_NAME" ]; then
+		print_error "VM name required for 'restore'"
+		exit 1
+	fi
+	restore_vm "$VM_NAME" "$BACKUP_DATE"; exit $?
 	;;
-"list-backups")
-	list_backups "$VM_NAME"
-	exit $?
+"list")
+	if [ -n "$VM_NAME" ]; then
+		list_backups "$VM_NAME"; exit $?
+	else
+		list_all_backups; exit $?
+	fi
 	;;
 "troubleshoot")
-	troubleshoot_vm "$VM_NAME"
-	exit $?
+	if [ -z "$VM_NAME" ]; then
+		print_error "VM name required for 'troubleshoot'"
+		exit 1
+	fi
+	troubleshoot_vm "$VM_NAME"; exit $?
+	;;
+*)
+	print_error "Unknown subcommand: $SUBCOMMAND"
+	echo "Valid subcommands: create, restore, list, troubleshoot"
+	exit 1
 	;;
 esac

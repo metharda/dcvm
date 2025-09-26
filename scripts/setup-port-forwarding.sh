@@ -290,7 +290,7 @@ echo ""
 
 if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
 	echo "VM Access Information:"
-	grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+	grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 		if [ -n "$vm" ]; then
 			echo ""
 			echo "$vm ($ip):"
@@ -311,7 +311,7 @@ if [ -f $DATACENTER_BASE/port-mappings.txt ]; then
 		mv ~/.ssh/config.tmp ~/.ssh/config 2>/dev/null || true
 	fi
 
-	grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+	grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 		if [ -n "$vm" ]; then
 			mkdir -p ~/.ssh
 			cat >>~/.ssh/config <<EOF
@@ -328,7 +328,7 @@ EOF
 
 	echo ""
 	print_success "SSH configuration updated. You can now use:"
-	grep -v "^#" /srv/datacenter/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
+	grep -v "^#" $DATACENTER_BASE/port-mappings.txt | grep -v "^$" | while read vm ip ssh_port http_port; do
 		if [ -n "$vm" ]; then
 			echo "  ssh $vm"
 		fi

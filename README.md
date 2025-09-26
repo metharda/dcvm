@@ -96,9 +96,10 @@ dcvm network                         # Network information
 dcvm console                         # Connection information
 
 # Backup
-dcvm backup my-vm                    # Create backup
-dcvm backup restore my-vm            # Restore backup
-dcvm backup list-backups my-vm       # List available backups
+dcvm backup create my-vm             # Create backup
+dcvm backup restore my-vm            # Restore backup (latest)
+dcvm backup list                     # List all backups
+dcvm backup list my-vm               # List backups of a VM
 
 # VM deletion
 dcvm delete my-vm                    # Delete specific VM

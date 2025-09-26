@@ -7,6 +7,8 @@ else
 fi
 
 DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -48,7 +50,7 @@ delete_single_vm() {
 
 	print_status "Gathering VM information..."
 
-	MAC_ADDRESS=$(virsh domiflist "$VM_NAME" 2>/dev/null | grep datacenter-net | awk '{print $5}')
+	MAC_ADDRESS=$(virsh domiflist "$VM_NAME" 2>/dev/null | grep "$NETWORK_NAME" | awk '{print $5}')
 	if [ -n "$MAC_ADDRESS" ]; then
 		print_status "Found MAC address: $MAC_ADDRESS"
 	fi
@@ -64,10 +66,10 @@ delete_single_vm() {
 		VM_IP=$(virsh domifaddr "$VM_NAME" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 	fi
 	if [ -z "$VM_IP" ]; then
-		VM_IP=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$VM_NAME" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+		VM_IP=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep "$VM_NAME" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 	fi
 	if [ -z "$VM_IP" ] && [ -n "$MAC_ADDRESS" ]; then
-		VM_IP=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep "$MAC_ADDRESS" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+		VM_IP=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep "$MAC_ADDRESS" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
 	fi
 
 	if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
@@ -227,23 +229,47 @@ delete_single_vm() {
 		systemctl daemon-reload 2>/dev/null || true
 	fi
 
-	print_status "Refreshing DHCP leases..."
-	dnsmasq_pid=$(ps aux | grep "dnsmasq.*virbr-dc" | grep -v grep | awk '{print $2}' | head -1)
+	print_status "Cleaning DHCP leases for VM..."
+	
+	if [ -n "$MAC_ADDRESS" ]; then
+		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" ]; then
+			sed -i "/$MAC_ADDRESS/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" 2>/dev/null || true
+			print_status "Removed MAC $MAC_ADDRESS from lease file"
+		fi
+		
+		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status" ]; then
+			sed -i "/$MAC_ADDRESS/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status" 2>/dev/null || true
+			print_status "Removed MAC $MAC_ADDRESS from status file"
+		fi
+		
+		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" ]; then
+			sed -i "/$VM_NAME/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" 2>/dev/null || true
+			print_status "Removed VM name $VM_NAME from lease file"
+		fi
+	fi
+
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
 	if [ -n "$dnsmasq_pid" ]; then
 		kill -HUP "$dnsmasq_pid" 2>/dev/null && print_status "DHCP service refreshed" || print_status "DHCP refresh attempted"
 	else
-		print_status "DHCP lease files cleaned (network configuration preserved)"
+		print_status "DHCP service not found, lease files cleaned manually"
 	fi
 
 	if command -v iptables-save >/dev/null 2>&1; then
 		iptables-save >/etc/iptables/rules.v4 2>/dev/null && print_status "iptables rules saved" || print_warning "Could not save iptables rules"
 	fi
 
-	print_status "Restarting network to ensure stability..."
-	if virsh net-destroy datacenter-net >/dev/null 2>&1 && virsh net-start datacenter-net >/dev/null 2>&1; then
-		print_status "Network restarted successfully"
+	print_status "Restarting network to ensure DHCP lease cleanup..."
+	if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1; then
+		sleep 2 
+		if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+			print_status "Network restarted successfully"
+			sleep 1
+		else
+			print_warning "Failed to start network after restart"
+		fi
 	else
-		print_warning "Failed to restart network. Please check manually."
+		print_warning "Failed to stop network for restart"
 	fi
 
 	print_success "VM $VM_NAME deleted successfully!"
@@ -257,11 +283,21 @@ delete_single_vm() {
 		print_warning "✗ VM still exists in libvirt: $vm_check"
 	fi
 
-	dhcp_check=$(virsh net-dhcp-leases datacenter-net 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
+	sleep 2
+	dhcp_check=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
 	if [ -z "$dhcp_check" ]; then
 		print_success "✓ No DHCP leases found"
 	else
 		print_warning "✗ DHCP leases still exist: $dhcp_check"
+		print_info "Attempting final DHCP cleanup..."
+		"$DATACENTER_BASE/scripts/dhcp-cleanup.sh" clear-vm "$VM_NAME" >/dev/null 2>&1 || true
+		sleep 1
+		dhcp_recheck=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
+		if [ -z "$dhcp_recheck" ]; then
+			print_success "✓ DHCP leases cleaned after retry"
+		else
+			print_warning "✗ DHCP leases persist: $dhcp_recheck"
+		fi
 	fi
 
 	if [ -n "$VM_DISK_PATH" ]; then
@@ -284,7 +320,7 @@ delete_all_vms() {
 	datacenter_vms=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
 		vm=$(echo "$line" | awk '{print $2}')
 		if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-			if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				echo "$vm"
 			fi
 		fi
@@ -419,7 +455,7 @@ delete_all_vms() {
 	remaining_vms=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
 		vm=$(echo "$line" | awk '{print $2}')
 		if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-			if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+			if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 				echo "$vm"
 			fi
 		fi
@@ -432,20 +468,20 @@ delete_all_vms() {
 		echo "$remaining_vms"
 	fi
 
-	print_status "DHCP leases: $(virsh net-dhcp-leases datacenter-net 2>/dev/null | wc -l) active leases"
+	print_status "DHCP leases: $(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | wc -l) active leases"
 	print_status "Port forwarding rules: $(iptables -t nat -L PREROUTING -n | grep -E "(222[0-9]|808[0-9])" | wc -l) active rules"
 }
 
 if [ $# -lt 1 ]; then
 	echo "VM Deletion Script"
-	echo "Usage: $0 <vm_name|--all>"
+	echo "Usage: dcvm delete <vm_name|--all>"
 	echo ""
 	echo "Examples:"
-	echo "  $0 datacenter-vm1     # Delete specific VM"
-	echo "  $0 web-server         # Delete specific VM"
-	echo "  $0 --all              # Delete ALL datacenter VMs (DANGEROUS!)"
+	echo "  dcvm delete datacenter-vm1     # Delete specific VM"
+	echo "  dcvm delete web-server         # Delete specific VM"
+	echo "  dcvm delete --all              # Delete ALL datacenter VMs (DANGEROUS!)"
 	echo ""
-	echo "WARNING: The --all option will delete ALL VMs using datacenter-net!"
+	echo "WARNING: The --all option will delete ALL VMs using $NETWORK_NAME!"
 	exit 1
 fi
 
@@ -453,13 +489,13 @@ if [ "$1" = "--all" ]; then
 	delete_all_vms
 elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
 	echo "VM Deletion Script"
-	echo "Usage: $0 <vm_name|--all>"
+	echo "Usage: dcvm delete <vm_name|--all>"
 	echo ""
 	echo "Single VM deletion:"
-	echo "  $0 datacenter-vm1     # Delete specific VM with full cleanup"
+	echo "  dcvm delete datacenter-vm1     # Delete specific VM with full cleanup"
 	echo ""
 	echo "Mass deletion (DANGEROUS):"
-	echo "  $0 --all              # Delete ALL datacenter VMs"
+	echo "  dcvm delete --all              # Delete ALL datacenter VMs"
 	echo ""
 	echo "This script performs comprehensive cleanup including:"
 	echo "  - VM shutdown and removal"
@@ -480,7 +516,7 @@ remaining_vms=$(virsh list --all | grep -E "(running|shut off)" | while read lin
 	vm=$(echo "$line" | awk '{print $2}')
 	state=$(echo "$line" | awk '{print $3}')
 	if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-		if virsh domiflist "$vm" 2>/dev/null | grep -q "datacenter-net"; then
+		if virsh domiflist "$vm" 2>/dev/null | grep -q "$NETWORK_NAME"; then
 			printf "  %-15s: %s\n" "$vm" "$state"
 		fi
 	fi

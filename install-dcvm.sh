@@ -86,12 +86,10 @@ detect_shell() {
 	local shell_name="unknown"
 	local config_file=""
 	
-	# Check current user's shell
 	if [[ -n "${SHELL:-}" ]]; then
 		shell_name=$(basename "$SHELL")
 	fi
-	
-	# Determine config file based on shell
+
 	case "$shell_name" in
 		"bash")
 			config_file="~/.bashrc"
@@ -100,9 +98,7 @@ detect_shell() {
 			config_file="~/.zshrc"
 			;;
 		*)
-			# Try to detect from available config files or OS
 			if [[ "$OSTYPE" == "darwin"* ]]; then
-				# macOS default is zsh since Catalina
 				shell_name="zsh"
 				config_file="~/.zshrc"
 			elif [[ -f "$HOME/.zshrc" ]]; then
@@ -515,7 +511,7 @@ setup_aliases() {
 setup_service() {
 	print_status "INFO" "Setting up datacenter storage service..."
 
-	cat >/etc/systemd/system/datacenter-storage.service <<'EOF'
+	cat >/etc/systemd/system/datacenter-storage.service <<EOF
 [Unit]
 Description=Datacenter Storage Management
 After=libvirtd.service
@@ -524,7 +520,7 @@ Requires=libvirtd.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/srv/datacenter/scripts/storage-manager.sh
+ExecStart=$DATACENTER_BASE/scripts/storage-manager.sh
 EOF
 
 	cat >/etc/systemd/system/datacenter-storage.timer <<'EOF'
