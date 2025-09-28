@@ -1,22 +1,9 @@
 #!/bin/bash
 
-if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases ]; then
-	sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
-	echo "Lease removed from lease file"
-fi
-
-if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status ]; then
-	sed -i "/$mac_address/d" /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.status
-	echo "Lease removed from status file"
-fi
-
-virsh net-destroy $NETWORK_NAME
-sleep 2
-virsh net-start $NETWORK_NAME
 if [ -f /etc/dcvm-install.conf ]; then
 	source /etc/dcvm-install.conf
 else
-	echo "[ERROR] /etc/dcvm-install.conf bulunamadı!"
+	echo "[ERROR] /etc/dcvm-install.conf not found!"
 	exit 1
 fi
 
@@ -52,16 +39,17 @@ clear_lease_by_mac() {
 		echo "Removed from status file"
 	fi
 
-	virsh net-destroy "$NETWORK_NAME"
-	sleep 2
-	virsh net-start "$NETWORK_NAME"
-	echo "Network restarted"
+	# Reload dnsmasq gracefully instead of restarting the libvirt network
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
+	if [ -n "$dnsmasq_pid" ]; then
+		kill -HUP "$dnsmasq_pid" 2>/dev/null && echo "DHCP service (dnsmasq) reloaded" || echo "Failed to signal dnsmasq"
+	else
+		echo "dnsmasq process not found for bridge ${BRIDGE_NAME}; leases cleaned on disk"
+	fi
 }
 
 clear_all_leases() {
 	echo "Clearing ALL DHCP leases for $NETWORK_NAME..."
-
-	virsh net-destroy $NETWORK_NAME 2>/dev/null || true
 
 	if [ -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases ]; then
 		>/var/lib/libvirt/dnsmasq/$BRIDGE_NAME.leases
@@ -75,8 +63,12 @@ clear_all_leases() {
 
 	rm -f /var/lib/libvirt/dnsmasq/$BRIDGE_NAME.pid
 
-	virsh net-start $NETWORK_NAME
-	echo "Network restarted with clean lease table"
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
+	if [ -n "$dnsmasq_pid" ]; then
+		kill -HUP "$dnsmasq_pid" 2>/dev/null && echo "DHCP service (dnsmasq) reloaded" || echo "Failed to signal dnsmasq"
+	else
+		echo "dnsmasq process not found for bridge ${BRIDGE_NAME}; leases cleared on disk"
+	fi
 }
 
 clear_vm_lease() {
@@ -125,10 +117,12 @@ cleanup_stale_leases() {
 		fi
 	fi
 
-	virsh net-destroy $NETWORK_NAME
-	sleep 2
-	virsh net-start $NETWORK_NAME
-	echo "Network restarted"
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
+	if [ -n "$dnsmasq_pid" ]; then
+		kill -HUP "$dnsmasq_pid" 2>/dev/null && echo "DHCP service (dnsmasq) reloaded" || echo "Failed to signal dnsmasq"
+	else
+		echo "dnsmasq process not found for bridge ${BRIDGE_NAME}; leases cleaned on disk"
+	fi
 }
 
 force_renew_all() {

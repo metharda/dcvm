@@ -3,7 +3,7 @@
 if [ -f /etc/dcvm-install.conf ]; then
 	source /etc/dcvm-install.conf
 else
-	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
+	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf not found!"
 	exit 1
 fi
 

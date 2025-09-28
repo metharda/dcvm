@@ -2,7 +2,7 @@
 if [ -f /etc/dcvm-install.conf ]; then
 	source /etc/dcvm-install.conf
 else
-	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf bulunamadı!"
+	echo "${RED:-}[ERROR]${NC:-} /etc/dcvm-install.conf not found!"
 	exit 1
 fi
 
@@ -130,61 +130,24 @@ delete_single_vm() {
 		done
 	fi
 
-	print_status "Clearing DHCP lease records..."
+	print_status "Clearing DHCP lease records (targeted by MAC only)..."
 
 	if [ -n "$MAC_ADDRESS" ]; then
 		print_status "Removing DHCP lease for MAC: $MAC_ADDRESS"
 
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-			lease_count_before=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.leases)
-			sed -i "/$MAC_ADDRESS/d" /var/lib/libvirt/dnsmasq/virbr-dc.leases
-			lease_count_after=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.leases)
+		local lease_path="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
+		if [ -f "$lease_path" ]; then
+			lease_count_before=$(wc -l <"$lease_path")
+			sed -i "/[[:space:]]$MAC_ADDRESS[[:space:]]/d" "$lease_path"
+			lease_count_after=$(wc -l <"$lease_path")
 			removed_leases=$((lease_count_before - lease_count_after))
 			if [ $removed_leases -gt 0 ]; then
-				print_status "Removed $removed_leases lease(s) from lease file"
+				print_status "Removed $removed_leases lease(s) from ${BRIDGE_NAME}.leases"
+			else
+				print_status "No matching lease lines found in ${BRIDGE_NAME}.leases"
 			fi
 		fi
-
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-			sed -i "/$MAC_ADDRESS/d" /var/lib/libvirt/dnsmasq/virbr-dc.status
-			print_status "Removed from status file"
-		fi
 	fi
-
-	if [ -n "$VM_NAME" ]; then
-		print_status "Removing DHCP lease for VM name: $VM_NAME"
-
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-			sed -i "/$VM_NAME/d" /var/lib/libvirt/dnsmasq/virbr-dc.leases
-		fi
-
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-			sed -i "/$VM_NAME/d" /var/lib/libvirt/dnsmasq/virbr-dc.status
-		fi
-	fi
-
-	if [ -n "$VM_IP" ]; then
-		print_status "Removing DHCP lease for IP: $VM_IP"
-
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.leases ]; then
-			sed -i "/$VM_IP/d" /var/lib/libvirt/dnsmasq/virbr-dc.leases
-		fi
-
-		if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-			sed -i "/$VM_IP/d" /var/lib/libvirt/dnsmasq/virbr-dc.status
-		fi
-	fi
-
-	for lease_file in /var/lib/dhcp/dhcpd.leases /var/lib/libvirt/dnsmasq/*.leases; do
-		if [ -f "$lease_file" ] && [ "$lease_file" != "/var/lib/libvirt/dnsmasq/virbr-dc.leases" ]; then
-			if [ -n "$MAC_ADDRESS" ]; then
-				sed -i "/$MAC_ADDRESS/d" "$lease_file" 2>/dev/null && print_status "Cleaned $lease_file" || true
-			fi
-			if [ -n "$VM_NAME" ]; then
-				sed -i "/$VM_NAME/d" "$lease_file" 2>/dev/null || true
-			fi
-		fi
-	done
 
 	if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
 		sed -i "/^$VM_NAME /d" "$DATACENTER_BASE/port-mappings.txt"
@@ -229,22 +192,12 @@ delete_single_vm() {
 		systemctl daemon-reload 2>/dev/null || true
 	fi
 
-	print_status "Cleaning DHCP leases for VM..."
-	
+	print_status "Cleaning DHCP leases for VM (final pass by MAC)..."
+
 	if [ -n "$MAC_ADDRESS" ]; then
 		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" ]; then
-			sed -i "/$MAC_ADDRESS/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" 2>/dev/null || true
-			print_status "Removed MAC $MAC_ADDRESS from lease file"
-		fi
-		
-		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status" ]; then
-			sed -i "/$MAC_ADDRESS/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status" 2>/dev/null || true
-			print_status "Removed MAC $MAC_ADDRESS from status file"
-		fi
-		
-		if [ -f "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" ]; then
-			sed -i "/$VM_NAME/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" 2>/dev/null || true
-			print_status "Removed VM name $VM_NAME from lease file"
+			sed -i "/[[:space:]]$MAC_ADDRESS[[:space:]]/d" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" 2>/dev/null || true
+			print_status "Ensured MAC $MAC_ADDRESS is removed from ${BRIDGE_NAME}.leases"
 		fi
 	fi
 
@@ -259,17 +212,12 @@ delete_single_vm() {
 		iptables-save >/etc/iptables/rules.v4 2>/dev/null && print_status "iptables rules saved" || print_warning "Could not save iptables rules"
 	fi
 
-	print_status "Restarting network to ensure DHCP lease cleanup..."
-	if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1; then
-		sleep 2 
-		if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
-			print_status "Network restarted successfully"
-			sleep 1
-		else
-			print_warning "Failed to start network after restart"
-		fi
+	print_status "Refreshing DHCP service (without restarting network)..."
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
+	if [ -n "$dnsmasq_pid" ]; then
+		kill -HUP "$dnsmasq_pid" 2>/dev/null && print_status "DHCP service (dnsmasq) reloaded" || print_warning "Failed to signal dnsmasq"
 	else
-		print_warning "Failed to stop network for restart"
+		print_warning "dnsmasq process not found for bridge ${BRIDGE_NAME}; leases were cleaned on disk"
 	fi
 
 	print_success "VM $VM_NAME deleted successfully!"
@@ -289,7 +237,7 @@ delete_single_vm() {
 		print_success "✓ No DHCP leases found"
 	else
 		print_warning "✗ DHCP leases still exist: $dhcp_check"
-		print_info "Attempting final DHCP cleanup..."
+		print_status "Attempting final DHCP cleanup..."
 		"$DATACENTER_BASE/scripts/dhcp-cleanup.sh" clear-vm "$VM_NAME" >/dev/null 2>&1 || true
 		sleep 1
 		dhcp_recheck=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
@@ -413,7 +361,7 @@ delete_all_vms() {
 		print_status "Cleared DHCP status file"
 	fi
 
-	dnsmasq_pid=$(ps aux | grep "dnsmasq.*virbr-dc" | grep -v grep | awk '{print $2}' | head -1)
+	dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
 	if [ -n "$dnsmasq_pid" ]; then
 		kill -HUP "$dnsmasq_pid" 2>/dev/null && print_status "DHCP service refreshed" || print_status "DHCP refresh attempted"
 	else
@@ -504,7 +452,7 @@ elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
 	echo "  - Port forwarding rule removal"
 	echo "  - SSH config cleanup"
 	echo "  - Directory cleanup"
-	echo "  - Network restart"
+	echo "  - DHCP service refresh (no network restart)"
 	exit 0
 else
 	delete_single_vm "$1"
