@@ -45,6 +45,161 @@ log() {
 	echo "[$timestamp] [$level] $message" >>"$LOG_FILE"
 }
 
+generate_random_mac() {
+	printf "52:54:00:%02x:%02x:%02x\n" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256))
+}
+
+get_backup_folder_path() {
+	local vm_name="$1"; local date_part="$2"
+	echo "$BACKUP_DIR/${vm_name}-${date_part}"
+}
+
+get_backup_disk_path() {
+	local vm_name="$1"; local date_part="$2"
+	local folder
+	folder=$(get_backup_folder_path "$vm_name" "$date_part")
+	if [ -d "$folder" ]; then
+		if [ -f "$folder/${vm_name}-disk-${date_part}.qcow2.gz" ]; then
+			echo "$folder/${vm_name}-disk-${date_part}.qcow2.gz"; return 0
+		fi
+		if [ -f "$folder/${vm_name}-disk-${date_part}.qcow2" ]; then
+			echo "$folder/${vm_name}-disk-${date_part}.qcow2"; return 0
+		fi
+	fi
+	if [ -f "$BACKUP_DIR/${vm_name}-disk-${date_part}.qcow2.gz" ]; then
+		echo "$BACKUP_DIR/${vm_name}-disk-${date_part}.qcow2.gz"; return 0
+	fi
+	if [ -f "$BACKUP_DIR/${vm_name}-disk-${date_part}.qcow2" ]; then
+		echo "$BACKUP_DIR/${vm_name}-disk-${date_part}.qcow2"; return 0
+	fi
+	echo ""
+	return 1
+}
+
+get_backup_config_path() {
+	local vm_name="$1"; local date_part="$2"
+	local folder
+	folder=$(get_backup_folder_path "$vm_name" "$date_part")
+	if [ -d "$folder" ] && [ -f "$folder/${vm_name}-config-${date_part}.xml" ]; then
+		echo "$folder/${vm_name}-config-${date_part}.xml"; return 0
+	fi
+	if [ -f "$BACKUP_DIR/${vm_name}-config-${date_part}.xml" ]; then
+		echo "$BACKUP_DIR/${vm_name}-config-${date_part}.xml"; return 0
+	fi
+	echo ""
+	return 1
+}
+
+list_backup_timestamps_desc() {
+	local vm_name="$1"
+	local -a ts_list=()
+	while IFS= read -r d; do
+		local base=$(basename "$d")
+		local ts=$(echo "$base" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\\1/")
+		[[ "$ts" =~ ^[0-9]{8}_[0-9]{6}$ ]] && ts_list+=("$ts")
+	done < <(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null)
+	while IFS= read -r f; do
+		local base=$(basename "$f")
+		local ts=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\\1/")
+		[[ "$ts" =~ ^[0-9]{8}_[0-9]{6}$ ]] && ts_list+=("$ts")
+	done < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null)
+	if [ ${#ts_list[@]} -eq 0 ]; then
+		return 0
+	fi
+	printf "%s\n" "${ts_list[@]}" | sort -u -r
+}
+list_day_backup_timestamps_asc() {
+	local vm_name="$1"; local yyyymmdd="$2"
+	local -a ts_list=()
+	while IFS= read -r d; do
+		local base=$(basename "$d")
+		local ts=$(echo "$base" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\\1/")
+		[[ "$ts" =~ ^${yyyymmdd}_[0-9]{6}$ ]] && ts_list+=("$ts")
+	done < <(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null)
+	while IFS= read -r f; do
+		local base=$(basename "$f")
+		local ts=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\\1/")
+		[[ "$ts" =~ ^${yyyymmdd}_[0-9]{6}$ ]] && ts_list+=("$ts")
+	done < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-${yyyymmdd}_*.qcow2* 2>/dev/null)
+	if [ ${#ts_list[@]} -eq 0 ]; then
+		return 0
+	fi
+	printf "%s\n" "${ts_list[@]}" | sort -u
+}
+
+download_cloud_image() {
+	local filename="$1"; local target_path="$2"
+	local url=""
+	case "$filename" in
+		ubuntu-22.04-server-cloudimg-amd64.img)
+			url="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img";;
+		ubuntu-20.04-server-cloudimg-amd64.img)
+			url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img";;
+		debian-12-generic-amd64.qcow2)
+			url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2";;
+		debian-11-generic-amd64.qcow2)
+			url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2";;
+	esac
+	if [ -z "$url" ]; then
+		print_warning "Unknown backing image '$filename'. Please place it at: $target_path"
+		return 1
+	fi
+	mkdir -p "$(dirname "$target_path")" || { print_error "Cannot create directory for backing image"; return 1; }
+	print_info "Downloading cloud image $filename ..."
+	if wget -q -O "$target_path" "$url"; then
+		print_success "Downloaded backing image: $filename"
+		return 0
+	else
+		print_error "Failed to download backing image from $url"
+		return 1
+	fi
+}
+
+ensure_backing_image() {
+	local vm_disk_path="$1"
+	if ! command -v qemu-img >/dev/null 2>&1; then
+		print_warning "qemu-img not found; skipping backing file check"
+		return 0
+	fi
+	local info
+	info=$(qemu-img info "$vm_disk_path" 2>/dev/null) || return 0
+	local backing_file
+	backing_file=$(echo "$info" | awk -F': ' '/backing file:/ {print $2; exit}')
+	if [ -z "$backing_file" ]; then
+		return 0
+	fi
+	if [[ "$backing_file" != /* ]]; then
+		local base_dir="$(dirname "$vm_disk_path")"
+		backing_file="${base_dir}/${backing_file}"
+	fi
+	if [ -f "$backing_file" ]; then
+		return 0
+	fi
+	print_warning "Backing file missing: $backing_file"
+	local filename="$(basename "$backing_file")"
+	local canonical_path="$DATACENTER_BASE/storage/templates/$filename"
+	if [ "$backing_file" = "$canonical_path" ]; then
+		if download_cloud_image "$filename" "$canonical_path"; then
+			return 0
+		else
+			return 1
+		fi
+	else
+		if download_cloud_image "$filename" "$canonical_path"; then
+			print_info "Rebasing restored disk to use canonical backing file path"
+			if qemu-img rebase -u -b "$canonical_path" "$vm_disk_path"; then
+				print_success "Rebase completed"
+				return 0
+			else
+				print_error "Failed to rebase disk backing file"
+				return 1
+			fi
+		else
+			return 1
+		fi
+	fi
+}
+
 check_vm_exists() {
 	local vm_name="$1"
 
@@ -120,21 +275,48 @@ get_file_size() {
 	fi
 }
 
+normalize_backing_chain() {
+	local vm_disk_path="$1"
+	if ! command -v qemu-img >/dev/null 2>&1; then
+		return 0
+	fi
+	local info backing
+	info=$(qemu-img info "$vm_disk_path" 2>/dev/null) || return 0
+	backing=$(echo "$info" | awk -F': ' '/backing file:/ {print $2; exit}')
+	if [ -z "$backing" ]; then
+		return 0
+	fi
+	if echo "$backing" | grep -q "/vms/"; then
+		print_warning "Disk has VM-backed backing file ($backing). Flattening to standalone..."
+		local tmp="${vm_disk_path}.tmp"
+		if qemu-img convert -O qcow2 "$vm_disk_path" "$tmp"; then
+			mv -f "$tmp" "$vm_disk_path"
+			print_success "Disk flattened to standalone image"
+		else
+			print_error "Failed to flatten disk image (qemu-img convert)"
+			rm -f "$tmp" 2>/dev/null || true
+			return 1
+		fi
+	fi
+}
+
 cleanup_old_backups() {
 	local vm_name="$1"
 
 	print_info "Cleaning up old backups (keeping $KEEP_BACKUPS most recent)..."
-
-	local disk_backups=$(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
-	if [ -n "$disk_backups" ]; then
-		echo "$disk_backups" | xargs rm -f
-		log "INFO" "Removed old disk backups for $vm_name"
-	fi
-
-	local config_backups=$(ls -t "$BACKUP_DIR"/${vm_name}-config-*.xml 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
-	if [ -n "$config_backups" ]; then
-		echo "$config_backups" | xargs rm -f
-		log "INFO" "Removed old config backups for $vm_name"
+	mapfile -t all_ts < <(list_backup_timestamps_desc "$vm_name")
+	if [ ${#all_ts[@]} -gt $KEEP_BACKUPS ]; then
+		local to_delete=("${all_ts[@]:$KEEP_BACKUPS}")
+		for dp in "${to_delete[@]}"; do
+			local folder=$(get_backup_folder_path "$vm_name" "$dp")
+			if [ -d "$folder" ]; then
+				rm -rf "$folder" && log "INFO" "Removed old backup folder $folder"
+			else
+				local d=$(get_backup_disk_path "$vm_name" "$dp"); local c=$(get_backup_config_path "$vm_name" "$dp")
+				[ -n "$d" ] && rm -f "$d" && log "INFO" "Removed old disk $d"
+				[ -n "$c" ] && rm -f "$c" && log "INFO" "Removed old config $c"
+			fi
+		done
 	fi
 
 	print_success "Cleanup completed"
@@ -147,19 +329,23 @@ list_backups() {
 	print_info "Backups for VM: $vm_name"
 	echo ""
 
-	mapfile -t backups < <(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null)
+	mapfile -t backups_ts < <(list_backup_timestamps_desc "$vm_name")
 
-	if [ ${#backups[@]} -eq 0 ]; then
+	if [ ${#backups_ts[@]} -eq 0 ]; then
 		print_warning "No backups found for VM: $vm_name"
 		return 1
 	fi
 
 	declare -A __day_seq
 	declare -A __seq_for_dp
-	mapfile -t __chrono_dps < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null | sed -E "s#.*/${vm_name}-disk-([0-9]{8}_[0-9]{6})\.qcow2(\.gz)?#\1#" | sort)
+	mapfile -t __chrono_dps < <(printf "%s\n" "${backups_ts[@]}" | sort)
 	for __dp in "${__chrono_dps[@]}"; do
+		[ -z "$__dp" ] && continue
 		__dmy=$(echo "$__dp" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/')
-		__n=${__day_seq[$__dmy]}; __n=$((__n+1)); __day_seq[$__dmy]=$__n
+		[ -z "$__dmy" ] && continue
+		local __cur=${__day_seq[$__dmy]:-0}
+		local __n=$((__cur+1))
+		__day_seq[$__dmy]=$__n
 		__seq_for_dp[$__dp]=$__n
 	done
 
@@ -172,21 +358,18 @@ list_backups() {
 	fi
 
 	local idx=0
-	for backup in "${backups[@]}"; do
-		local basename_backup=$(basename "$backup")
-		local date_part=$(echo "$basename_backup" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\1/")
-		local size=$(get_file_size "$backup")
-		local type="qcow2"
-		local status="✓"
-		[[ "$backup" == *.gz ]] && type="qcow2+gz"
+	for date_part in "${backups_ts[@]}"; do
+		[ -z "$date_part" ] && continue
+		local disk_path; disk_path=$(get_backup_disk_path "$vm_name" "$date_part")
+		local cfg_path;  cfg_path=$(get_backup_config_path "$vm_name" "$date_part")
+		local size=$(get_file_size "$disk_path")
+		local type="qcow2"; [[ "$disk_path" == *.gz ]] && type="qcow2+gz"
+		local status="✓"; [ ! -f "$cfg_path" ] && status="⚠ No config"
 
-		local config_file="$BACKUP_DIR/${vm_name}-config-${date_part}.xml"
-		[ ! -f "$config_file" ] && status="⚠ No config"
-
-	local pretty_dt=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
-	local dmy=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/')
-	local seq=${__seq_for_dp[$date_part]}
-	local date_id="${vm_name}-${dmy}-${seq}"
+		local pretty_dt=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+		local dmy=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/')
+		local seq=${__seq_for_dp[$date_part]:-?}
+		local date_id="${vm_name}-${dmy}-${seq}"
 
 		if [ "$with_index" = "true" ]; then
 			idx=$((idx+1))
@@ -204,13 +387,14 @@ list_all_backups() {
 	print_info "Available backups (grouped by VM)"
 	echo ""
 
-	mapfile -t all_files < <(ls -t "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
-	if [ ${#all_files[@]} -eq 0 ]; then
+	local -a vms=()
+	while IFS= read -r f; do vms+=("$(basename "$f" | awk -F"-disk-" '{print $1}')"); done < <(ls -1 "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
+	while IFS= read -r d; do vms+=("$(basename "$d" | sed -E 's/-[0-9]{8}_[0-9]{6}$//')"); done < <(ls -1 -d "$BACKUP_DIR"/*-????????_?????? 2>/dev/null)
+	if [ ${#vms[@]} -eq 0 ]; then
 		print_warning "No backups found in: $BACKUP_DIR"
 		return 1
 	fi
-
-	mapfile -t vms < <(basename -a "${all_files[@]}" | awk -F"-disk-" '{print $1}' | sort -u)
+	mapfile -t vms < <(printf "%s\n" "${vms[@]}" | sort -u)
 
 	for vm in "${vms[@]}"; do
 		echo "VM: $vm"
@@ -224,30 +408,80 @@ delete_backups() {
 	local arg="$1"
 
 	if [ -z "$arg" ]; then
-		print_error "Usage: dcvm backup delete <vm_name>|<vm_name-dd.mm.yyyy>|<vm_name-dd.mm.yyyy-HH:MM:SS>"
+		print_error "Usage: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>"
 		return 1
+	fi
+
+	if [ "$arg" = "--all" ] || [ "$arg" = "all" ]; then
+		mapfile -t __folders < <(ls -1 -d "$BACKUP_DIR"/*-????????_?????? 2>/dev/null | grep -vE '/exports$')
+		mapfile -t __legacy_disks < <(ls -1 "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
+
+		local count_folders=${#__folders[@]}
+		local count_legacy=${#__legacy_disks[@]}
+		local total=$((count_folders + count_legacy))
+
+		if [ "$total" -eq 0 ]; then
+			print_warning "No backups found in: $BACKUP_DIR"
+			return 0
+		fi
+
+		echo "This will permanently delete $total backup(s):"
+		[ "$count_folders" -gt 0 ] && echo "  - $count_folders folder backup(s)"
+		[ "$count_legacy" -gt 0 ] && echo "  - $count_legacy legacy file backup(s)"
+		read -p "Proceed? (y/N): " yn
+		if [[ ! "$yn" =~ ^[Yy]$ ]]; then
+			print_info "Cancelled."
+			return 0
+		fi
+
+		local removed=0
+		for d in "${__folders[@]}"; do
+			[ -z "$d" ] && continue
+			rm -rf "$d" && removed=$((removed+1))
+		done
+		for f in "${__legacy_disks[@]}"; do
+			[ -z "$f" ] && continue
+			rm -f "$f" && removed=$((removed+1))
+			local base=$(basename "$f")
+			local vmname=$(echo "$base" | awk -F"-disk-" '{print $1}')
+			local ts=$(echo "$base" | sed -E "s/${vmname}-disk-(.*)\.qcow2(\.gz)?/\1/")
+			local legacy_cfg="$BACKUP_DIR/${vmname}-config-${ts}.xml"
+			[ -f "$legacy_cfg" ] && rm -f "$legacy_cfg" || true
+		done
+
+		print_success "$removed backup artifact(s) deleted."
+		return 0
 	fi
 
 	local vm_name=""
 	local dmy=""
 	local hms=""
+	local indexN=""
 
-	if [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4})(-([0-9]{2}:[0-9]{2}:[0-9]{2}))?$ ]]; then
+	if [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4})(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?$ ]]; then
 		vm_name="${BASH_REMATCH[1]}"
 		dmy="${BASH_REMATCH[2]}"
-		hms="${BASH_REMATCH[4]}"
+		local tail="${BASH_REMATCH[4]}"
+		if [[ "$tail" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+			hms="$tail"
+		elif [[ "$tail" =~ ^[0-9]+$ ]]; then
+			indexN="$tail"
+		fi
 	else
 		vm_name="$arg"
 	fi
 
-	mapfile -t vm_files < <(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null)
+	mapfile -t vm_files < <(list_backup_timestamps_desc "$vm_name")
 	if [ ${#vm_files[@]} -eq 0 ]; then
-		print_error "No backups found for VM: $vm_name"
-		return 1
+		print_warning "No backups found for VM: $vm_name"
+		return 0
 	fi
 
 	if [ -z "$dmy" ]; then
-		list_backups "$vm_name" true || return 1
+		if ! list_backups "$vm_name" true; then
+			print_warning "No backups to delete for VM: $vm_name"
+			return 0
+		fi
 		read -p "Enter number(s) to delete (e.g., 1 or 1,2,3): " selection
 		selection=$(echo "$selection" | tr -d ' ')
 		if [ -z "$selection" ]; then
@@ -256,28 +490,28 @@ delete_backups() {
 		fi
 
 		IFS=',' read -r -a indices <<< "$selection"
-		mapfile -t sorted_backups < <(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null)
+		mapfile -t sorted_dates < <(list_backup_timestamps_desc "$vm_name")
+		if [ ${#sorted_dates[@]} -eq 0 ]; then
+			print_warning "No backups to delete for VM: $vm_name"
+			return 0
+		fi
 
-		declare -a to_delete_disk
-		declare -a to_delete_cfg
+		declare -a to_delete_dates
 		for idx in "${indices[@]}"; do
 			if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
 				print_error "Invalid number: $idx"
 				return 1
 			fi
-			if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#sorted_backups[@]} ]; then
+			if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#sorted_dates[@]} ]; then
 				print_error "Out of range: $idx"
 				return 1
 			fi
-			local file="${sorted_backups[$((idx-1))]}"
-			local base=$(basename "$file")
-			local date_part=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\1/")
-			to_delete_disk+=("$file")
-			to_delete_cfg+=("$BACKUP_DIR/${vm_name}-config-${date_part}.xml")
+			local date_part="${sorted_dates[$((idx-1))]}"
+			to_delete_dates+=("$date_part")
 		done
 
 		echo "Backups to delete:"
-		for f in "${to_delete_disk[@]}"; do echo "  $(basename "$f")"; done
+		for d in "${to_delete_dates[@]}"; do echo "  ${vm_name}-${d}"; done
 		read -p "Proceed? (y/N): " yn
 		if [[ ! "$yn" =~ ^[Yy]$ ]]; then
 			print_info "Cancelled."
@@ -285,10 +519,17 @@ delete_backups() {
 		fi
 
 		local del_ok=0
-		for i in ${!to_delete_disk[@]}; do
-			rm -f "${to_delete_disk[$i]}"
-			rm -f "${to_delete_cfg[$i]}"
-			del_ok=$((del_ok+1))
+		for date_part in "${to_delete_dates[@]}"; do
+			local folder=$(get_backup_folder_path "$vm_name" "$date_part")
+			if [ -d "$folder" ]; then
+				rm -rf "$folder" && del_ok=$((del_ok+1))
+			else
+				local disk="$(get_backup_disk_path "$vm_name" "$date_part")"
+				local cfg="$(get_backup_config_path "$vm_name" "$date_part")"
+				[ -n "$disk" ] && rm -f "$disk"
+				[ -n "$cfg" ] && rm -f "$cfg"
+				del_ok=$((del_ok+1))
+			fi
 		done
 		print_success "$del_ok backup(s) deleted."
 		return 0
@@ -299,31 +540,34 @@ delete_backups() {
 	local yyyy=$(echo "$dmy" | cut -d'.' -f3)
 	local yyyymmdd="${yyyy}${mm}${dd}"
 
-	local pattern="${BACKUP_DIR}/${vm_name}-disk-${yyyymmdd}_*.qcow2*"
-	local precise=false
+	local resolved_ts=""
 	if [ -n "$hms" ]; then
 		local HH=$(echo "$hms" | cut -d':' -f1)
 		local MM=$(echo "$hms" | cut -d':' -f2)
 		local SS=$(echo "$hms" | cut -d':' -f3)
-		local HHMMSS="${HH}${MM}${SS}"
-		pattern="${BACKUP_DIR}/${vm_name}-disk-${yyyymmdd}_${HHMMSS}.qcow2*"
-		precise=true
+		resolved_ts="${yyyymmdd}_${HH}${MM}${SS}"
+	elif [ -n "$indexN" ]; then
+		local selector="${dd}.${mm}.${yyyy}-${indexN}"
+		resolved_ts=$(resolve_backup_selector "$vm_name" "$selector") || true
+	else
+		resolved_ts=$(resolve_backup_selector "$vm_name" "${dd}.${mm}.${yyyy}") || true
 	fi
 
-	mapfile -t matches < <(ls -t $pattern 2>/dev/null)
-	if [ ${#matches[@]} -eq 0 ]; then
-		print_error "No matching backup found: ${vm_name}-${dmy}${hms:+-$hms}"
+	if [ -z "$resolved_ts" ]; then
+		print_error "No matching backup found: ${vm_name}-${dmy}${hms:+-$hms}${indexN:+-$indexN}"
 		return 1
 	fi
 
+	local folder=$(get_backup_folder_path "$vm_name" "$resolved_ts")
 	local count=0
-	for file in "${matches[@]}"; do
-		local base=$(basename "$file")
-		local date_part=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\1/")
-		rm -f "$file"
-		rm -f "$BACKUP_DIR/${vm_name}-config-${date_part}.xml"
-		count=$((count+1))
-	done
+	if [ -d "$folder" ]; then
+		rm -rf "$folder" && count=1
+	else
+		local disk="$(get_backup_disk_path "$vm_name" "$resolved_ts")"
+		local cfg="$(get_backup_config_path "$vm_name" "$resolved_ts")"
+		[ -n "$disk" ] && rm -f "$disk" && count=$((count+1))
+		[ -n "$cfg" ] && rm -f "$cfg"
+	fi
 	print_success "$count backup(s) deleted."
 	return 0
 }
@@ -347,6 +591,12 @@ troubleshoot_vm() {
 }
 get_latest_backup() {
 	local vm_name="$1"
+
+	local latest_dir=$(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null | sort | tail -n 1)
+	if [ -n "$latest_dir" ]; then
+		basename "$latest_dir" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\1/"
+		return 0
+	fi
 
 	local latest_backup=$(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null | head -1)
 	if [ -n "$latest_backup" ]; then
@@ -372,7 +622,7 @@ resolve_backup_selector() {
 		local dd="${BASH_REMATCH[1]}"; local mm="${BASH_REMATCH[2]}"; local yyyy="${BASH_REMATCH[3]}"; local n="${BASH_REMATCH[5]}"
 		local yyyymmdd="${yyyy}${mm}${dd}"
 
-		mapfile -t day_backups < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-${yyyymmdd}_*.qcow2* 2>/dev/null | sed -E "s#.*/${vm_name}-disk-([0-9]{8}_[0-9]{6})\.qcow2(\.gz)?#\1#" | sort)
+		mapfile -t day_backups < <(list_day_backup_timestamps_asc "$vm_name" "$yyyymmdd")
 
 		if [ ${#day_backups[@]} -eq 0 ]; then
 			echo ""; return 1
@@ -430,23 +680,15 @@ export_backup() {
 	fi
 
 	local disk_backup=""
-	local config_backup="$BACKUP_DIR/${vm_name}-config-${backup_date}.xml"
+	local config_backup=""
+	disk_backup=$(get_backup_disk_path "$vm_name" "$backup_date")
+	config_backup=$(get_backup_config_path "$vm_name" "$backup_date")
 	local is_compressed=false
-
-	if [ -f "$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2.gz" ]; then
-		disk_backup="$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2.gz"
-		is_compressed=true
-	elif [ -f "$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2" ]; then
-		disk_backup="$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2"
-	else
+	if [ -z "$disk_backup" ] || [ -z "$config_backup" ]; then
 		print_error "Backup files not found for date: $backup_date"
 		return 1
 	fi
-
-	if [ ! -f "$config_backup" ]; then
-		print_error "Configuration backup not found: $config_backup"
-		return 1
-	fi
+	[[ "$disk_backup" == *.gz ]] && is_compressed=true
 
 	local export_base="$BACKUP_DIR/exports"
 	[ -n "$output_dir" ] && export_base="$output_dir"
@@ -528,8 +770,10 @@ import_backup() {
 	[ -n "$rename_to" ] && vm_target="$rename_to"
 
 	mkdir -p "$BACKUP_DIR" || { rm -rf "$workdir"; print_error "Cannot create $BACKUP_DIR"; return 1; }
-	local tgt_disk="$BACKUP_DIR/${vm_target}-disk-${date_part}.qcow2"
-	local tgt_cfg="$BACKUP_DIR/${vm_target}-config-${date_part}.xml"
+	local backup_folder="$(get_backup_folder_path "$vm_target" "$date_part")"
+	mkdir -p "$backup_folder" || { rm -rf "$workdir"; print_error "Cannot create backup folder: $backup_folder"; return 1; }
+	local tgt_disk="$backup_folder/${vm_target}-disk-${date_part}.qcow2"
+	local tgt_cfg="$backup_folder/${vm_target}-config-${date_part}.xml"
 
 	if [[ "$base_disk" == *.gz ]]; then
 		tgt_disk+=".gz"
@@ -549,7 +793,9 @@ import_backup() {
 restore_vm() {
 	local vm_name="$1"
 	local backup_date="$2"
-	local force_restore="$3"
+	local opt_third="$3"
+	local force_restore=""
+	if [ "$opt_third" = "true" ]; then force_restore="true"; fi
 
 	print_info "Starting restore for VM: $vm_name"
 	log "INFO" "Starting restore for VM: $vm_name"
@@ -565,28 +811,18 @@ restore_vm() {
 	fi
 
 	local disk_backup=""
-	local config_backup="$BACKUP_DIR/${vm_name}-config-${backup_date}.xml"
+	local config_backup=""
+	disk_backup=$(get_backup_disk_path "$vm_name" "$backup_date")
+	config_backup=$(get_backup_config_path "$vm_name" "$backup_date")
 	local is_compressed=false
-
-	if [ -f "$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2.gz" ]; then
-		disk_backup="$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2.gz"
-		is_compressed=true
-		print_info "Found compressed backup: $(basename "$disk_backup")"
-	elif [ -f "$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2" ]; then
-		disk_backup="$BACKUP_DIR/${vm_name}-disk-${backup_date}.qcow2"
-		is_compressed=false
-		print_info "Found uncompressed backup: $(basename "$disk_backup")"
-	else
+	if [ -z "$disk_backup" ] || [ -z "$config_backup" ]; then
 		print_error "Backup not found for date: $backup_date"
 		print_info "Available backups:"
 		list_backups "$vm_name"
 		return 1
 	fi
-
-	if [ ! -f "$config_backup" ]; then
-		print_error "Configuration backup not found: $config_backup"
-		return 1
-	fi
+	[[ "$disk_backup" == *.gz ]] && is_compressed=true
+	print_info "Found $( [ "$is_compressed" = true ] && echo compressed || echo uncompressed ) backup: $(basename "$disk_backup")"
 
 	print_info "Found backup files:"
 	print_info "  Disk: $(basename "$disk_backup") ($(get_file_size "$disk_backup"))"
@@ -693,6 +929,8 @@ restore_vm() {
 		return 1
 	fi
 
+	normalize_backing_chain "$vm_disk_path" || true
+
 	print_info "Setting correct permissions and ownership..."
 
 	if id -u libvirt-qemu >/dev/null 2>&1; then
@@ -721,12 +959,24 @@ restore_vm() {
 		return 1
 	fi
 
+	local original_main_file=""
+	if command -v xmlstarlet >/dev/null 2>&1; then
+		original_main_file=$(xmlstarlet sel -t -v "(/domain/devices/disk[@device='disk']/source/@file)[1]" "$temp_config" 2>/dev/null)
+		if [ -z "$original_main_file" ]; then
+			original_main_file=$(xmlstarlet sel -t -v "(/domain/devices/disk[not(@device='cdrom')]/source/@file)[1]" "$temp_config" 2>/dev/null)
+		fi
+	else
+		original_main_file=$(grep -oE "source (file|dev)=['\"][^'\"]+['\"]" "$temp_config" | head -1 | sed -E "s/.*=['\"]([^'\"]+)['\"]/\1/")
+	fi
+
 	if command -v xmlstarlet >/dev/null 2>&1; then
 		if ! xmlstarlet ed -P -L -u "/domain/devices/disk[@device='disk']/source/@file" -v "$vm_disk_path" "$temp_config"; then
 			print_error "Failed to update disk source with xmlstarlet"
 			rm -f "$temp_config"
 			return 1
 		fi
+		xmlstarlet ed -P -L -u "/domain/name" -v "$vm_name" "$temp_config" 2>/dev/null || true
+		xmlstarlet ed -P -L -d "/domain/uuid" "$temp_config" 2>/dev/null || true
 		xmlstarlet ed -P -L -d "/domain/devices/disk[@device='cdrom']" "$temp_config" 2>/dev/null || true
 		xmlstarlet ed -P -L -d "/domain/devices/disk[contains(source/@file, '.iso')]" "$temp_config" 2>/dev/null || true
 		xmlstarlet ed -P -L -d "/domain/devices/controller[@type='ide']" "$temp_config" 2>/dev/null || true
@@ -734,12 +984,57 @@ restore_vm() {
 		print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
 	else
 		sed -i "/<disk[^>]*device=\"disk\"[^>]*>/,/<\/disk>/{s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g}" "$temp_config"
+		sed -i "s|<name>[^<]*</name>|<name>$vm_name</name>|" "$temp_config" 2>/dev/null || true
+		sed -i "/<uuid>.*<\/uuid>/d" "$temp_config" 2>/dev/null || true
 		sed -i "/<disk[^>]*device=['\"]cdrom['\"][^>]*>/,/<\\/disk>/d" "$temp_config"
 		sed -i "/<disk[^>]*>[^<]*<source[^>]*file=['\"][^'\"]*\.iso['\"][^>]*>[^<]*<[^>]*>/,/<\\/disk>/d" "$temp_config"
 		sed -i "/<controller[^>]*type=['\"]ide['\"][^>]*>/,/<\\/controller>/d" "$temp_config"
 		sed -i "/<qemu:commandline[\s\S]*\.iso[\s\S]*<\\/qemu:commandline>/d" "$temp_config"
 		print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
 	fi
+
+	if [ -n "$original_main_file" ] && [ "$original_main_file" != "$vm_disk_path" ]; then
+		sed -i "s|file='$original_main_file'|file='$vm_disk_path'|g" "$temp_config" 2>/dev/null || true
+		sed -i "s|file=\"$original_main_file\"|file=\"$vm_disk_path\"|g" "$temp_config" 2>/dev/null || true
+	fi
+
+	sed -i "/<disk[^>]*>/,/<\\/disk>/{ \
+	/<source[^>]*file='[^']*\\/vms\\/[^']*'[^>]*>/ { \
+		/<source[^>]*file='[^']*\\/vms\\\/$vm_name\\/[^']*'[^>]*>/! d \
+	} \
+}" "$temp_config" 2>/dev/null || true
+	sed -i "/<disk[^>]*>/,/<\\/disk>/{ \
+	/<source[^>]*file=\"[^\"]*\\/vms\\/[^\"]*\"[^>]*>/ { \
+		/<source[^>]*file=\"[^\"]*\\/vms\\\/$vm_name\\/[^\"]*\"[^>]*>/! d \
+	} \
+}" "$temp_config" 2>/dev/null || true
+		if command -v xmlstarlet >/dev/null 2>&1; then
+			local __ifcnt
+			__ifcnt=$(xmlstarlet sel -t -v "count(/domain/devices/interface/mac/@address)" "$temp_config" 2>/dev/null | tr -d '\n')
+			if [[ "$__ifcnt" =~ ^[0-9]+$ ]] && [ "$__ifcnt" -gt 0 ]; then
+				for ((i=1; i<=__ifcnt; i++)); do
+					local newmac
+					newmac=$(generate_random_mac)
+					xmlstarlet ed -P -L -u "(/domain/devices/interface/mac/@address)[$i]" -v "$newmac" "$temp_config" 2>/dev/null || true
+				done
+				print_info "Randomized $__ifcnt MAC address(es) to avoid DHCP lease reuse"
+			fi
+		else
+			local __tmp_mac_cfg
+			__tmp_mac_cfg=$(mktemp)
+			while IFS= read -r __line; do
+				if echo "$__line" | grep -q "<mac address=\\\"\|<mac address='"; then
+					local mac
+					mac=$(generate_random_mac)
+					__line=$(echo "$__line" | sed -E "s/address='[^']*'/address='$mac'/g; s/address=\\\"[^\\\"]*\\\"/address=\\\"$mac\\\"/g")
+				fi
+				echo "$__line" >> "$__tmp_mac_cfg"
+			done < "$temp_config"
+			mv "$__tmp_mac_cfg" "$temp_config"
+			print_info "Randomized MAC addresses (sed fallback)"
+		fi
+
+	ensure_backing_image "$vm_disk_path" || true
 
 	if virsh define "$temp_config" >/dev/null 2>&1; then
 		print_success "VM configuration restored"
@@ -975,8 +1270,12 @@ backup_vm() {
 		return 1
 	fi
 
-	local disk_backup="$BACKUP_DIR/${vm_name}-disk-$DATE.qcow2"
-	local config_backup="$BACKUP_DIR/${vm_name}-config-$DATE.xml"
+	local backup_folder_name="${vm_name}-$DATE"
+	local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
+	mkdir -p "$backup_folder_path" || { print_error "Failed to create folder: $backup_folder_path"; return 1; }
+
+	local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
+	local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
 
 	print_info "Backing up VM disk..."
 	if cp "$vm_disk_path" "$disk_backup"; then
@@ -1025,7 +1324,7 @@ backup_vm() {
 	echo "Backup files created:"
 	echo "  Disk: $(basename "$disk_backup")"
 	echo "  Config: $(basename "$config_backup")"
-	echo "  Location: $BACKUP_DIR"
+	echo "  Location: $backup_folder_path"
 	echo "  Timestamp: $DATE"
 	if [ "$COMPRESSION_ENABLED" = true ]; then
 		echo "  Compression: Enabled"
@@ -1041,7 +1340,7 @@ if [ $# -lt 1 ]; then
 	echo "Usage: dcvm backup create <vm_name>"
 	echo "       dcvm backup restore <vm_name> [backup_date]"
 	echo "       dcvm backup list [vm_name]"
-	echo "       dcvm backup delete <vm_name>|<vm_name-dd.mm.yyyy>|<vm_name-dd.mm.yyyy-HH:MM:SS>"
+	echo "       dcvm backup delete <vm_name>|<vm_name-dd.mm.yyyy>|<vm_name-dd.mm.yyyy-N>|<vm_name-dd.mm.yyyy-HH:MM:SS>|--all|all"
 	echo "       dcvm backup export <vm_name> [backup_date] [output_dir]"
 	echo "       dcvm backup import <package_path|directory> [new_vm_name]"
 	echo "       dcvm backup troubleshoot <vm_name>"
@@ -1052,9 +1351,11 @@ if [ $# -lt 1 ]; then
 	echo "  dcvm backup restore datacenter-vm1 20250722_143052  	# Restore from specific backup"
 	echo "  dcvm backup list                                		# List all backups"
 	echo "  dcvm backup list datacenter-vm1               			# List backups of a VM"
-	echo "  dcvm backup delete vm1                        			# Interactive delete (numbered)"
-	echo "  dcvm backup delete vm1-10.01.2025            			# Delete by date-id (day)"
+	echo "  dcvm backup delete vm1                         			# Interactive delete (numbered)"
+	echo "  dcvm backup delete vm1-10.01.2025            			# Delete by date-id (day, latest of day)"
+	echo "  dcvm backup delete vm1-10.01.2025-2          			# Delete Nth backup of the day"
 	echo "  dcvm backup delete vm1-10.01.2025-14:30:00   			# Delete precise backup"
+	echo "  dcvm backup delete --all                      			# Delete ALL backups across ALL VMs"
 	echo "  dcvm backup export vm1 /tmp                 			# Export latest backup to custom dir"
 	echo "  dcvm backup export vm1 20250722_143052 /tmp   			# Export specific backup by timestamp"
 	echo "  dcvm backup export vm1 28.09.2025-1 /tmp     			# Export using day+index selector"
@@ -1074,7 +1375,7 @@ SUBCOMMAND="$1"
 VM_NAME="$2"
 BACKUP_DATE="$3"
 
-for cmd in virsh cp gzip gunzip; do
+for cmd in virsh cp gzip gunzip wget qemu-img; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
 		print_error "Required command not found: $cmd"
 		exit 1
@@ -1113,7 +1414,7 @@ case "$SUBCOMMAND" in
 	;;
 "delete")
 	if [ -z "$VM_NAME" ]; then
-		print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-HH:MM:SS>"
+		print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>|--all|all"
 		exit 1
 	fi
 	delete_backups "$VM_NAME"; exit $?
@@ -1141,7 +1442,7 @@ case "$SUBCOMMAND" in
 	;;
 *)
 	print_error "Unknown subcommand: $SUBCOMMAND"
-	echo "Valid subcommands: create, restore, list, delete, troubleshoot"
+	echo "Valid subcommands: create, restore, list, delete, export, import, troubleshoot"
 	exit 1
 	;;
 esac
