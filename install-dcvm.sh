@@ -112,7 +112,6 @@ detect_shell() {
 		fi
 		;;
 	esac
-
 	echo "$shell_name|$config_file"
 }
 
