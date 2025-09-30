@@ -21,7 +21,7 @@ NETWORK_NAME_ARG=""
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}" == "" ]]; then
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
-	
+
 		if [[ -t 0 && -t 1 ]]; then
 			echo "Please choose the installation directory for Datacenter VM."
 			read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
@@ -39,7 +39,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}"
 			echo "Non-interactive installation detected. Using default values."
 			DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
 		fi
-		
+
 		echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
 		echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
 		echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
@@ -85,38 +85,33 @@ print_status() {
 detect_shell() {
 	local shell_name="unknown"
 	local config_file=""
-	
-	# Check current user's shell
+
 	if [[ -n "${SHELL:-}" ]]; then
 		shell_name=$(basename "$SHELL")
 	fi
-	
-	# Determine config file based on shell
+
 	case "$shell_name" in
-		"bash")
-			config_file="~/.bashrc"
-			;;
-		"zsh")
+	"bash")
+		config_file="~/.bashrc"
+		;;
+	"zsh")
+		config_file="~/.zshrc"
+		;;
+	*)
+		if [[ "$OSTYPE" == "darwin"* ]]; then
+			shell_name="zsh"
 			config_file="~/.zshrc"
-			;;
-		*)
-			# Try to detect from available config files or OS
-			if [[ "$OSTYPE" == "darwin"* ]]; then
-				# macOS default is zsh since Catalina
-				shell_name="zsh"
-				config_file="~/.zshrc"
-			elif [[ -f "$HOME/.zshrc" ]]; then
-				shell_name="zsh"
-				config_file="~/.zshrc"
-			elif [[ -f "$HOME/.bashrc" ]]; then
-				shell_name="bash"
-				config_file="~/.bashrc"
-			else
-				config_file="~/.bashrc or ~/.zshrc"
-			fi
-			;;
+		elif [[ -f "$HOME/.zshrc" ]]; then
+			shell_name="zsh"
+			config_file="~/.zshrc"
+		elif [[ -f "$HOME/.bashrc" ]]; then
+			shell_name="bash"
+			config_file="~/.bashrc"
+		else
+			config_file="~/.bashrc or ~/.zshrc"
+		fi
+		;;
 	esac
-	
 	echo "$shell_name|$config_file"
 }
 
@@ -161,19 +156,19 @@ check_root() {
 }
 
 check_kvm_support() {
-    print_status "INFO" "Checking KVM support..."
+	print_status "INFO" "Checking KVM support..."
 
-    if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
-        if [ -e /dev/kvm ]; then
-            print_status "SUCCESS" "KVM support verified"
-        else
-            print_status "ERROR" "CPU supports KVM but /dev/kvm not present (BIOS/UEFI disabled or kernel module missing)"
-            exit 1
-        fi
-    else
-        print_status "ERROR" "CPU does not support KVM (no vmx/svm flag)"
-        exit 1
-    fi
+	if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
+		if [ -e /dev/kvm ]; then
+			print_status "SUCCESS" "KVM support verified"
+		else
+			print_status "ERROR" "CPU supports KVM but /dev/kvm not present (BIOS/UEFI disabled or kernel module missing)"
+			exit 1
+		fi
+	else
+		print_status "ERROR" "CPU does not support KVM (no vmx/svm flag)"
+		exit 1
+	fi
 }
 
 start_libvirtd() {
@@ -497,14 +492,14 @@ setup_aliases() {
 	local shell_info=$(detect_shell)
 	local shell_name=$(echo "$shell_info" | cut -d'|' -f1)
 	local config_file=$(echo "$shell_info" | cut -d'|' -f2)
-	
+
 	print_status "INFO" "Detected shell: $shell_name"
 	print_status "INFO" "To activate dcvm alias, run: source $config_file"
-	
+
 	if [[ "$shell_name" == "unknown" ]]; then
 		print_status "INFO" "Or restart your terminal to apply changes"
 	fi
-	
+
 	if [[ ${#configured_shells[@]} -gt 0 ]]; then
 		print_status "SUCCESS" "dcvm alias configured for ${configured_shells[*]}"
 	else
@@ -515,7 +510,7 @@ setup_aliases() {
 setup_service() {
 	print_status "INFO" "Setting up datacenter storage service..."
 
-	cat >/etc/systemd/system/datacenter-storage.service <<'EOF'
+	cat >/etc/systemd/system/datacenter-storage.service <<EOF
 [Unit]
 Description=Datacenter Storage Management
 After=libvirtd.service
@@ -524,7 +519,7 @@ Requires=libvirtd.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/srv/datacenter/scripts/storage-manager.sh
+ExecStart=$DATACENTER_BASE/scripts/storage-manager.sh
 EOF
 
 	cat >/etc/systemd/system/datacenter-storage.timer <<'EOF'

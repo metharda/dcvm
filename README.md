@@ -96,9 +96,15 @@ dcvm network                         # Network information
 dcvm console                         # Connection information
 
 # Backup
-dcvm backup my-vm                    # Create backup
-dcvm backup restore my-vm            # Restore backup
-dcvm backup list-backups my-vm       # List available backups
+dcvm backup create my-vm                                # Create backup
+dcvm backup restore my-vm                               # Restore backup (latest)
+dcvm backup list                                        # List all backups (grouped by VM)
+dcvm backup list my-vm                                  # List backups of a VM (shows date-id)
+dcvm backup delete my-vm                                # Interactive delete (choose 1,2,3)
+dcvm backup delete my-vm-10.01.2025                     # Delete backups of that day (by date-id)
+dcvm backup delete my-vm-10.01.2025-N                   # Delete the precise backup
+dcvm backup export my-vm 20250722_143052 /tmp           # Export as portable tar.gz (custom dir)
+dcvm backup import /tmp/my-vm-20250722_143052.tar.gz    # Import and restore
 
 # VM deletion
 dcvm delete my-vm                    # Delete specific VM
