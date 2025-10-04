@@ -668,11 +668,20 @@ echo "=================================================="
 print_info "VM Configuration Summary"
 echo "=================================================="
 echo "VM Name: $VM_NAME"
+echo "Operating System: $VM_OS"
 echo "Username: $VM_USERNAME"
-echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
+if [ "$FORCE_MODE" = true ]; then
+	echo "Password: ******* (provided via flag)"
+else
+	echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
+fi
 if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	echo "Root Access: Enabled"
-	echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
+	if [ "$FORCE_MODE" = true ]; then
+		echo "Root Password: ******* (provided via flag)"
+	else
+		echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
+	fi
 else
 	echo "Root Access: Disabled"
 fi
@@ -685,20 +694,24 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 fi
 echo ""
 
-echo ""
-while true; do
-	read -p "Proceed with VM creation? (Y/n): " CONFIRM
-	CONFIRM=${CONFIRM:-y}
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Proceeding with VM creation in non-interactive mode..."
+else
+	echo ""
+	while true; do
+		read -p "Proceed with VM creation? (Y/n): " CONFIRM
+		CONFIRM=${CONFIRM:-y}
 
-	if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-		break
-	elif [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
-		print_info "VM creation cancelled by user."
-		exit 0
-	else
-		print_error "Please enter 'y' to proceed or 'n' to cancel"
-	fi
-done
+		if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+			break
+		elif [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
+			print_info "VM creation cancelled by user."
+			exit 0
+		else
+			print_error "Please enter 'y' to proceed or 'n' to cancel"
+		fi
+	done
+fi
 
 if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
 	print_error "VM $VM_NAME already exists"
