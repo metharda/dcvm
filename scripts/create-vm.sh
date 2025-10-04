@@ -499,20 +499,51 @@ else
 fi
 
 echo ""
-print_info "Setting up SSH Key Authentication (RSA)..."
 
+# SSH Key setup - only if requested
 SSH_KEY=""
-if [ -f ~/.ssh/id_rsa.pub ]; then
-	SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-	print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
-else
-	print_info "No RSA SSH key found. Creating new RSA SSH key..."
-	if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-		print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+if [ "$FLAG_WITH_SSH_KEY" = true ] || ([ "$FORCE_MODE" = false ] && [ "$FLAG_WITH_SSH_KEY" != true ]); then
+	# In interactive mode, ask user; in force mode, only if flag is set
+	SETUP_SSH_KEY=false
+	
+	if [ "$FLAG_WITH_SSH_KEY" = true ]; then
+		SETUP_SSH_KEY=true
+	elif [ "$FORCE_MODE" = false ]; then
+		# Interactive mode - ask user
+		echo ""
+		while true; do
+			read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
+			ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
+			
+			if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
+				if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
+					SETUP_SSH_KEY=true
+				fi
+				break
+			else
+				print_error "Please enter 'y' for yes or 'n' for no"
+			fi
+		done
+	fi
+	
+	if [ "$SETUP_SSH_KEY" = true ]; then
+		print_info "Setting up SSH Key Authentication (RSA)..."
+		
+		if [ -f ~/.ssh/id_rsa.pub ]; then
+			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+			print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
+		else
+			print_info "No RSA SSH key found. Creating new RSA SSH key..."
+			if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
+				SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+				print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+			else
+				print_error "Failed to create SSH key"
+				exit 1
+			fi
+		fi
 	else
-		print_error "Failed to create SSH key"
-		exit 1
+		print_info "SSH key authentication disabled - using password-only authentication"
 	fi
 fi
 
@@ -691,7 +722,11 @@ if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 else
 	echo "Root Access: Disabled"
 fi
-echo "SSH Key: Configured"
+if [ -n "$SSH_KEY" ]; then
+	echo "SSH Key: Configured"
+else
+	echo "SSH Key: Disabled (password-only authentication)"
+fi
 echo "Memory: ${VM_MEMORY}MB"
 echo "CPUs: $VM_CPUS"
 echo "Disk: $VM_DISK_SIZE"
@@ -771,9 +806,9 @@ users:
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash
     lock_passwd: false
-    passwd: '$PASSWORD_HASH'
+    passwd: '$PASSWORD_HASH'$(if [ -n "$SSH_KEY" ]; then echo "
     ssh_authorized_keys:
-      - $SSH_KEY
+      - $SSH_KEY"; fi)
 
 ssh_pwauth: true
 disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")
@@ -976,7 +1011,12 @@ echo "=================================================="
 echo ""
 echo "Connection Methods:"
 echo "   Console: virsh console $VM_NAME"
-echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
+if [ -n "$SSH_KEY" ]; then
+	echo "   SSH with key: ssh $VM_USERNAME@<vm_ip>"
+	echo "   SSH with password: ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no $VM_USERNAME@<vm_ip>"
+else
+	echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
+fi
 echo "   SCP: scp file $VM_USERNAME@<vm_ip>:/path/"
 echo "   SFTP: sftp $VM_USERNAME@<vm_ip>"
 echo ""
