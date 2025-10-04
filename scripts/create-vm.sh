@@ -213,6 +213,7 @@ show_usage() {
 	echo "Options:"
 	echo "  -u, --username <username>      Set VM username (default: admin)"
 	echo "  -p, --password <password>      Set VM password"
+	echo "  --enable-root                  Enable root login (uses same password as user)"
 	echo "  -r, --root-password <password> Set root password (enables root access)"
 	echo "  -m, --memory <memory_mb>       Set memory in MB (default: 2048)"
 	echo "  -c, --cpus <cpu_count>         Set CPU count (default: 2)"
@@ -228,9 +229,10 @@ show_usage() {
 	echo "  dcvm web-server -k nginx"
 	echo ""
 	echo "Non-interactive Examples:"
-	echo "  dcvm web-server -f -p mypass123 -k nginx"
-	echo "  dcvm db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
-	echo "  dcvm test-vm -f -p mypass -o 1 -r rootpass"
+	echo "  $0 web-server -f -p mypass123 -k nginx"
+	echo "  $0 db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+	echo "  $0 test-vm -f -p mypass -o 1 --enable-root        # Root same password"
+	echo "  $0 admin-vm -f -p mypass -r rootpass123           # Root different password"
 	echo ""
 	echo "Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io"
 }
@@ -245,6 +247,10 @@ parse_arguments() {
 			-p|--password)
 				FLAG_PASSWORD="$2"
 				shift 2
+				;;
+			--enable-root)
+				FLAG_ENABLE_ROOT="y"
+				shift
 				;;
 			-r|--root-password)
 				FLAG_ROOT_PASSWORD="$2"
@@ -316,7 +322,17 @@ validate_force_mode() {
 		VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
 		VM_OS_CHOICE="${FLAG_OS:-$DEFAULT_OS}"
 		ENABLE_ROOT="${FLAG_ENABLE_ROOT:-$DEFAULT_ENABLE_ROOT}"
-		ROOT_PASSWORD="${FLAG_ROOT_PASSWORD:-$DEFAULT_ROOT_PASSWORD}"
+		
+		# Root password logic for force mode
+		if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+			if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+				ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+			else
+				ROOT_PASSWORD="$VM_PASSWORD"  # Use same password as user
+			fi
+		else
+			ROOT_PASSWORD=""
+		fi
 		
 		print_info "Running in non-interactive mode"
 	fi
@@ -811,7 +827,11 @@ users:
       - $SSH_KEY"; fi)
 
 ssh_pwauth: true
-disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")
+disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")$(if [ "$ROOT_LOGIN_SETTING" = "yes" ]; then echo "
+chpasswd:
+  list: |
+    root:$ROOT_PASSWORD
+  expire: False"; fi)
 package_update: true
 packages:
   - openssh-server
