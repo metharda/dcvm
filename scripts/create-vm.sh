@@ -516,7 +516,6 @@ fi
 
 echo ""
 
-# SSH Key setup - only if requested
 SSH_KEY=""
 if [ "$FLAG_WITH_SSH_KEY" = true ] || ([ "$FORCE_MODE" = false ] && [ "$FLAG_WITH_SSH_KEY" != true ]); then
 	# In interactive mode, ask user; in force mode, only if flag is set
