@@ -173,21 +173,152 @@ DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
 
-if [ $# -lt 1 ]; then
+# Default values for non-interactive mode
+DEFAULT_USERNAME="admin"
+DEFAULT_PASSWORD=""
+DEFAULT_MEMORY="2048"
+DEFAULT_CPUS="2"
+DEFAULT_DISK_SIZE="20G"
+DEFAULT_OS="3"  # Ubuntu 22.04
+DEFAULT_ENABLE_ROOT="n"
+DEFAULT_ROOT_PASSWORD=""
+FORCE_MODE=false
+
+# Flag variables
+FLAG_USERNAME=""
+FLAG_PASSWORD=""
+FLAG_MEMORY=""
+FLAG_CPUS=""
+FLAG_DISK_SIZE=""
+FLAG_OS=""
+FLAG_ENABLE_ROOT=""
+FLAG_ROOT_PASSWORD=""
+
+show_usage() {
 	echo "VM Creation Script"
-	echo "Usage: $0 <vm_name> [additional_packages]"
+	echo "Usage: $0 <vm_name> [options]"
 	echo ""
-	echo "Examples:"
+	echo "Options:"
+	echo "  -u, --username <username>      Set VM username (default: admin)"
+	echo "  -p, --password <password>      Set VM password"
+	echo "  -r, --root-password <password> Set root password (enables root access)"
+	echo "  -m, --memory <memory_mb>       Set memory in MB (default: 2048)"
+	echo "  -c, --cpus <cpu_count>         Set CPU count (default: 2)"
+	echo "  -d, --disk <size>              Set disk size (e.g., 20G, 500M, 1T)"
+	echo "  -o, --os <os_choice>           Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04"
+	echo "  -k, --packages <packages>      Comma-separated package list"
+	echo "  -f, --force                    Non-interactive mode (requires password)"
+	echo "  -h, --help                     Show this help"
+	echo ""
+	echo "Interactive Examples:"
 	echo "  $0 datacenter-vm1"
-	echo "  $0 web-server nginx"
-	echo "  $0 db-server mysql-server,phpmyadmin"
+	echo "  $0 web-server -k nginx"
+	echo ""
+	echo "Non-interactive Examples:"
+	echo "  $0 web-server -f -p mypass123 -k nginx"
+	echo "  $0 db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+	echo "  $0 test-vm -f -p mypass -o 1 -r rootpass"
 	echo ""
 	echo "Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io"
+}
+
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+			-u|--username)
+				FLAG_USERNAME="$2"
+				shift 2
+				;;
+			-p|--password)
+				FLAG_PASSWORD="$2"
+				shift 2
+				;;
+			-r|--root-password)
+				FLAG_ROOT_PASSWORD="$2"
+				FLAG_ENABLE_ROOT="y"
+				shift 2
+				;;
+			-m|--memory)
+				FLAG_MEMORY="$2"
+				shift 2
+				;;
+			-c|--cpus)
+				FLAG_CPUS="$2"
+				shift 2
+				;;
+			-d|--disk)
+				FLAG_DISK_SIZE="$2"
+				shift 2
+				;;
+			-o|--os)
+				FLAG_OS="$2"
+				shift 2
+				;;
+			-k|--packages)
+				ADDITIONAL_PACKAGES="$2"
+				shift 2
+				;;
+			-f|--force)
+				FORCE_MODE=true
+				shift
+				;;
+			-h|--help)
+				show_usage
+				exit 0
+				;;
+			-*)
+				echo "Unknown option: $1"
+				show_usage
+				exit 1
+				;;
+			*)
+				if [ -z "$VM_NAME" ]; then
+					VM_NAME="$1"
+				else
+					echo "Unexpected argument: $1"
+					show_usage
+					exit 1
+				fi
+				shift
+				;;
+		esac
+	done
+}
+
+validate_force_mode() {
+	if [ "$FORCE_MODE" = true ]; then
+		if [ -z "$FLAG_PASSWORD" ]; then
+			print_error "Password is required in non-interactive mode (use -p or --password)"
+			exit 1
+		fi
+		
+		VM_USERNAME="${FLAG_USERNAME:-$DEFAULT_USERNAME}"
+		VM_PASSWORD="$FLAG_PASSWORD"
+		VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
+		VM_CPUS="${FLAG_CPUS:-$DEFAULT_CPUS}"
+		VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
+		VM_OS_CHOICE="${FLAG_OS:-$DEFAULT_OS}"
+		ENABLE_ROOT="${FLAG_ENABLE_ROOT:-$DEFAULT_ENABLE_ROOT}"
+		ROOT_PASSWORD="${FLAG_ROOT_PASSWORD:-$DEFAULT_ROOT_PASSWORD}"
+		
+		print_info "Running in non-interactive mode"
+	fi
+}
+
+if [ $# -lt 1 ]; then
+	show_usage
 	exit 1
 fi
 
-VM_NAME=$1
-ADDITIONAL_PACKAGES=${2:-""}
+parse_arguments "$@"
+
+if [ -z "$VM_NAME" ]; then
+	echo "Error: VM name is required"
+	show_usage
+	exit 1
+fi
+
+validate_force_mode
 
 check_dependencies
 get_host_info
