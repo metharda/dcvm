@@ -372,6 +372,8 @@ case $1 in
 		echo "Non-interactive mode (pass all parameters to create-vm.sh):"
 		echo "  $0 create web-server -f -p mypass123 -k nginx"
 		echo "  $0 create db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+		echo "  $0 create admin-vm -f -p mypass --enable-root      # Root same password"
+		echo "  $0 create secure-vm -f -p userpass -r rootpass123  # Root different password"
 		echo ""
 		echo "For all available options, run: $SCRIPTS_PATH/create-vm.sh --help"
 		exit 1
@@ -681,6 +683,8 @@ case $1 in
 	echo "  dcvm restart all                							# Restart all VMs"
 	echo "  dcvm create web-server nginx    							# Create VM with nginx (interactive)"
 	echo "  dcvm create web-server -f -p pass123 -k nginx			# Create VM (non-interactive)"
+	echo "  dcvm create admin-vm -f -p mypass --enable-root			# With root login (same password)"
+	echo "  dcvm create secure-vm -f -p userpass -r rootpass123		# With root login (different password)"
 	echo "  dcvm delete old-vm              							# Delete specific VM"
 	echo "  dcvm backup create datacenter-vm1   						# Create backup"
 	echo "  dcvm backup restore datacenter-vm1  						# Restore from latest backup"
