@@ -106,49 +106,60 @@ check_dependencies() {
 }
 
 select_os() {
-	while true; do
-		echo "Supported OS options:"
-		echo "  1) Debian 12"
-		echo "  2) Debian 11"
-		echo "  3) Ubuntu 22.04"
-		echo "  4) Ubuntu 20.04"
-		read -p "Select the operating system for the VM [3]: " VM_OS_CHOICE
-		VM_OS_CHOICE=${VM_OS_CHOICE:-3}
-		case "$VM_OS_CHOICE" in
-		1)
-			VM_OS="debian12"
-			TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
-			OS_VARIANT="debian12"
-			OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+	# If in force mode and OS is specified via flag, use it
+	if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_OS" ]; then
+		VM_OS_CHOICE="$FLAG_OS"
+	else
+		# Interactive mode
+		while true; do
+			echo "Supported OS options:"
+			echo "  1) Debian 12"
+			echo "  2) Debian 11"
+			echo "  3) Ubuntu 22.04"
+			echo "  4) Ubuntu 20.04"
+			read -p "Select the operating system for the VM [3]: " VM_OS_CHOICE
+			VM_OS_CHOICE=${VM_OS_CHOICE:-3}
 			break
-			;;
-		2)
-			VM_OS="debian11"
-			TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
-			OS_VARIANT="debian11"
-			OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
-			break
-			;;
-		3)
-			VM_OS="ubuntu22.04"
-			TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
-			OS_VARIANT="ubuntu22.04"
-			OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
-			break
-			;;
-		4)
-			VM_OS="ubuntu20.04"
-			TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
-			OS_VARIANT="ubuntu20.04"
-			OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
-			break
-			;;
-		*)
+		done
+	fi
+	
+	case "$VM_OS_CHOICE" in
+	1)
+		VM_OS="debian12"
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+		OS_VARIANT="debian12"
+		OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+		;;
+	2)
+		VM_OS="debian11"
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
+		OS_VARIANT="debian11"
+		OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+		;;
+	3)
+		VM_OS="ubuntu22.04"
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
+		OS_VARIANT="ubuntu22.04"
+		OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+		;;
+	4)
+		VM_OS="ubuntu20.04"
+		TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
+		OS_VARIANT="ubuntu20.04"
+		OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+		;;
+	*)
+		if [ "$FORCE_MODE" = true ]; then
+			print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1, 2, 3, or 4."
+			exit 1
+		else
 			echo "Invalid selection! Please enter 1, 2, 3, or 4."
 			echo ""
-			;;
-		esac
-	done
+			select_os
+			return
+		fi
+		;;
+	esac
 
 	if [ ! -f "$TEMPLATE_FILE" ]; then
 		echo "Base template for $VM_OS not found. Downloading..."
@@ -173,21 +184,174 @@ DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
 
-if [ $# -lt 1 ]; then
+# Default values for non-interactive mode
+DEFAULT_USERNAME="admin"
+DEFAULT_PASSWORD=""
+DEFAULT_MEMORY="2048"
+DEFAULT_CPUS="2"
+DEFAULT_DISK_SIZE="20G"
+DEFAULT_OS="3"  # Ubuntu 22.04
+DEFAULT_ENABLE_ROOT="n"
+DEFAULT_ROOT_PASSWORD=""
+FORCE_MODE=false
+
+# Flag variables
+FLAG_USERNAME=""
+FLAG_PASSWORD=""
+FLAG_MEMORY=""
+FLAG_CPUS=""
+FLAG_DISK_SIZE=""
+FLAG_OS=""
+FLAG_ENABLE_ROOT=""
+FLAG_ROOT_PASSWORD=""
+FLAG_WITH_SSH_KEY=false
+
+show_usage() {
 	echo "VM Creation Script"
-	echo "Usage: $0 <vm_name> [additional_packages]"
+	echo "Usage: dcvm <vm_name> [options]"
 	echo ""
-	echo "Examples:"
-	echo "  $0 datacenter-vm1"
-	echo "  $0 web-server nginx"
-	echo "  $0 db-server mysql-server,phpmyadmin"
+	echo "Options:"
+	echo "  -u, --username <username>      Set VM username (default: admin)"
+	echo "  -p, --password <password>      Set VM password"
+	echo "  --enable-root                  Enable root login (uses same password as user)"
+	echo "  -r, --root-password <password> Set root password (enables root access)"
+	echo "  -m, --memory <memory_mb>       Set memory in MB (default: 2048)"
+	echo "  -c, --cpus <cpu_count>         Set CPU count (default: 2)"
+	echo "  -d, --disk <size>              Set disk size (e.g., 20G, 500M, 1T)"
+	echo "  -o, --os <os_choice>           Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04"
+	echo "  -k, --packages <packages>      Comma-separated package list"
+	echo "  --with-ssh-key                 Add SSH key for passwordless authentication"
+	echo "  -f, --force                    Non-interactive mode (requires password)"
+	echo "  -h, --help                     Show this help"
+	echo ""
+	echo "Interactive Examples:"
+	echo "  dcvm datacenter-vm1"
+	echo "  dcvm web-server -k nginx"
+	echo ""
+	echo "Non-interactive Examples:"
+	echo "  $0 web-server -f -p mypass123 -k nginx"
+	echo "  $0 db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+	echo "  $0 test-vm -f -p mypass -o 1 --enable-root        # Root same password"
+	echo "  $0 admin-vm -f -p mypass -r rootpass123           # Root different password"
 	echo ""
 	echo "Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io"
+}
+
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+			-u|--username)
+				FLAG_USERNAME="$2"
+				shift 2
+				;;
+			-p|--password)
+				FLAG_PASSWORD="$2"
+				shift 2
+				;;
+			--enable-root)
+				FLAG_ENABLE_ROOT="y"
+				shift
+				;;
+			-r|--root-password)
+				FLAG_ROOT_PASSWORD="$2"
+				FLAG_ENABLE_ROOT="y"
+				shift 2
+				;;
+			-m|--memory)
+				FLAG_MEMORY="$2"
+				shift 2
+				;;
+			-c|--cpus)
+				FLAG_CPUS="$2"
+				shift 2
+				;;
+			-d|--disk)
+				FLAG_DISK_SIZE="$2"
+				shift 2
+				;;
+			-o|--os)
+				FLAG_OS="$2"
+				shift 2
+				;;
+			-k|--packages)
+				ADDITIONAL_PACKAGES="$2"
+				shift 2
+				;;
+			--with-ssh-key)
+				FLAG_WITH_SSH_KEY=true
+				shift
+				;;
+			-f|--force)
+				FORCE_MODE=true
+				shift
+				;;
+			-h|--help)
+				show_usage
+				exit 0
+				;;
+			-*)
+				echo "Unknown option: $1"
+				show_usage
+				exit 1
+				;;
+			*)
+				if [ -z "$VM_NAME" ]; then
+					VM_NAME="$1"
+				else
+					echo "Unexpected argument: $1"
+					show_usage
+					exit 1
+				fi
+				shift
+				;;
+		esac
+	done
+}
+
+validate_force_mode() {
+	if [ "$FORCE_MODE" = true ]; then
+		if [ -z "$FLAG_PASSWORD" ]; then
+			print_error "Password is required in non-interactive mode (use -p or --password)"
+			exit 1
+		fi
+		
+		VM_USERNAME="${FLAG_USERNAME:-$DEFAULT_USERNAME}"
+		VM_PASSWORD="$FLAG_PASSWORD"
+		VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
+		VM_CPUS="${FLAG_CPUS:-$DEFAULT_CPUS}"
+		VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
+		VM_OS_CHOICE="${FLAG_OS:-$DEFAULT_OS}"
+		ENABLE_ROOT="${FLAG_ENABLE_ROOT:-$DEFAULT_ENABLE_ROOT}"
+		
+		# Root password logic for force mode
+		if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+			if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+				ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+			else
+				ROOT_PASSWORD="$VM_PASSWORD"  # Use same password as user
+			fi
+		else
+			ROOT_PASSWORD=""
+		fi
+		
+		print_info "Running in non-interactive mode"
+	fi
+}
+
+if [ $# -lt 1 ]; then
+	show_usage
 	exit 1
 fi
 
-VM_NAME=$1
-ADDITIONAL_PACKAGES=${2:-""}
+parse_arguments "$@"
+
+if [ -z "$VM_NAME" ]; then
+	echo "Error: VM name is required"
+	show_usage
+	exit 1
+fi
+
+validate_force_mode
 
 check_dependencies
 get_host_info
@@ -209,133 +373,192 @@ echo ""
 print_info "Setting up operating system for the VM..."
 select_os
 
-print_info "Setting up user account..."
-echo ""
-
-while true; do
-	read -p "Enter username for VM (default: admin): " VM_USERNAME
-	VM_USERNAME=${VM_USERNAME:-admin}
-
-	if validate_username "$VM_USERNAME"; then
-		break
-	else
-		print_error "Invalid username! Requirements:"
+if [ "$FORCE_MODE" = true ]; then
+	if ! validate_username "$VM_USERNAME"; then
+		print_error "Invalid username: $VM_USERNAME"
+		print_error "Username requirements:"
 		echo "  - 3-32 characters long"
 		echo "  - Start with letter or underscore"
 		echo "  - Only letters, numbers, underscore, hyphen allowed"
-		echo "  - Examples: admin, user1, my_user, test-vm"
-		echo ""
+		exit 1
 	fi
-done
-
-print_success "Username set to: $VM_USERNAME"
-
-echo ""
-print_info "Setting password for user '$VM_USERNAME'..."
-while true; do
-	read_password "Password: " VM_PASSWORD
-
-	if [ -z "$VM_PASSWORD" ]; then
-		print_error "Password cannot be empty!"
-		echo ""
-		continue
-	fi
-
+	
 	validation_result=$(validate_password "$VM_PASSWORD")
 	if [ $? -ne 0 ]; then
-		print_error "$validation_result"
-		echo ""
-		continue
+		print_error "Invalid password: $validation_result"
+		exit 1
 	fi
-
-	read_password "Retype password: " VM_PASSWORD_CONFIRM
-	if [ "$VM_PASSWORD" = "$VM_PASSWORD_CONFIRM" ]; then
-		print_success "User '$VM_USERNAME' password configured successfully"
-		break
-	else
-		print_error "Passwords do not match! Please try again."
-		echo ""
+	
+	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ -n "$ROOT_PASSWORD" ]; then
+		validation_result=$(validate_password "$ROOT_PASSWORD")
+		if [ $? -ne 0 ]; then
+			print_error "Invalid root password: $validation_result"
+			exit 1
+		fi
+	elif [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ -z "$ROOT_PASSWORD" ]; then
+		ROOT_PASSWORD="$VM_PASSWORD"
 	fi
-done
+	
+	print_success "Non-interactive configuration validated"
+else
+	print_info "Setting up user account..."
+	echo ""
 
-echo ""
-print_info "Root access configuration..."
-while true; do
-	read -p "Enable root login? (y/N): " ENABLE_ROOT
-	ENABLE_ROOT=${ENABLE_ROOT:-n}
-
-	if [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]]; then
-		break
-	else
-		print_error "Please enter 'y' for yes or 'n' for no"
-	fi
-done
-
-ROOT_PASSWORD=""
-if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	while true; do
-		read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD
-		SAME_ROOT_PASSWORD=${SAME_ROOT_PASSWORD:-y}
+		read -p "Enter username for VM (default: admin): " VM_USERNAME
+		VM_USERNAME=${VM_USERNAME:-admin}
 
-		if [[ "$SAME_ROOT_PASSWORD" =~ ^[YyNn]$ ]]; then
+		if validate_username "$VM_USERNAME"; then
+			break
+		else
+			print_error "Invalid username! Requirements:"
+			echo "  - 3-32 characters long"
+			echo "  - Start with letter or underscore"
+			echo "  - Only letters, numbers, underscore, hyphen allowed"
+			echo "  - Examples: admin, user1, my_user, test-vm"
+			echo ""
+		fi
+	done
+
+	print_success "Username set to: $VM_USERNAME"
+
+	echo ""
+	print_info "Setting password for user '$VM_USERNAME'..."
+	while true; do
+		read_password "Password: " VM_PASSWORD
+
+		if [ -z "$VM_PASSWORD" ]; then
+			print_error "Password cannot be empty!"
+			echo ""
+			continue
+		fi
+
+		validation_result=$(validate_password "$VM_PASSWORD")
+		if [ $? -ne 0 ]; then
+			print_error "$validation_result"
+			echo ""
+			continue
+		fi
+
+		read_password "Retype password: " VM_PASSWORD_CONFIRM
+		if [ "$VM_PASSWORD" = "$VM_PASSWORD_CONFIRM" ]; then
+			print_success "User '$VM_USERNAME' password configured successfully"
+			break
+		else
+			print_error "Passwords do not match! Please try again."
+			echo ""
+		fi
+	done
+
+	echo ""
+	print_info "Root access configuration..."
+	while true; do
+		read -p "Enable root login? (y/N): " ENABLE_ROOT
+		ENABLE_ROOT=${ENABLE_ROOT:-n}
+
+		if [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]]; then
 			break
 		else
 			print_error "Please enter 'y' for yes or 'n' for no"
 		fi
 	done
 
-	if [[ "$SAME_ROOT_PASSWORD" =~ ^[Yy]$ ]]; then
-		ROOT_PASSWORD="$VM_PASSWORD"
-		print_success "Root will use the same password"
-	else
-		echo ""
-		print_info "Setting password for root user..."
+	ROOT_PASSWORD=""
+	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 		while true; do
-			read_password "Password: " ROOT_PASSWORD
+			read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD
+			SAME_ROOT_PASSWORD=${SAME_ROOT_PASSWORD:-y}
 
-			if [ -z "$ROOT_PASSWORD" ]; then
-				print_error "Password cannot be empty!"
-				echo ""
-				continue
-			fi
-
-			validation_result=$(validate_password "$ROOT_PASSWORD")
-			if [ $? -ne 0 ]; then
-				print_error "$validation_result"
-				echo ""
-				continue
-			fi
-
-			read_password "Retype password: " ROOT_PASSWORD_CONFIRM
-			if [ "$ROOT_PASSWORD" = "$ROOT_PASSWORD_CONFIRM" ]; then
-				print_success "Root password configured successfully"
+			if [[ "$SAME_ROOT_PASSWORD" =~ ^[YyNn]$ ]]; then
 				break
 			else
-				print_error "Passwords do not match! Please try again."
-				echo ""
+				print_error "Please enter 'y' for yes or 'n' for no"
 			fi
 		done
+
+		if [[ "$SAME_ROOT_PASSWORD" =~ ^[Yy]$ ]]; then
+			ROOT_PASSWORD="$VM_PASSWORD"
+			print_success "Root will use the same password"
+		else
+			echo ""
+			print_info "Setting password for root user..."
+			while true; do
+				read_password "Password: " ROOT_PASSWORD
+
+				if [ -z "$ROOT_PASSWORD" ]; then
+					print_error "Password cannot be empty!"
+					echo ""
+					continue
+				fi
+
+				validation_result=$(validate_password "$ROOT_PASSWORD")
+				if [ $? -ne 0 ]; then
+					print_error "$validation_result"
+					echo ""
+					continue
+				fi
+
+				read_password "Retype password: " ROOT_PASSWORD_CONFIRM
+				if [ "$ROOT_PASSWORD" = "$ROOT_PASSWORD_CONFIRM" ]; then
+					print_success "Root password configured successfully"
+					break
+				else
+					print_error "Passwords do not match! Please try again."
+					echo ""
+				fi
+			done
+		fi
+		print_success "Root access enabled"
+	else
+		print_success "Root access disabled"
 	fi
-	print_success "Root access enabled"
-else
-	print_success "Root access disabled"
 fi
 
 echo ""
-print_info "Setting up SSH Key Authentication (RSA)..."
 
 SSH_KEY=""
-if [ -f ~/.ssh/id_rsa.pub ]; then
-	SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-	print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
-else
-	print_info "No RSA SSH key found. Creating new RSA SSH key..."
-	if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-		print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+if [ "$FLAG_WITH_SSH_KEY" = true ] || ([ "$FORCE_MODE" = false ] && [ "$FLAG_WITH_SSH_KEY" != true ]); then
+	# In interactive mode, ask user; in force mode, only if flag is set
+	SETUP_SSH_KEY=false
+	
+	if [ "$FLAG_WITH_SSH_KEY" = true ]; then
+		SETUP_SSH_KEY=true
+	elif [ "$FORCE_MODE" = false ]; then
+		# Interactive mode - ask user
+		echo ""
+		while true; do
+			read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
+			ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
+			
+			if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
+				if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
+					SETUP_SSH_KEY=true
+				fi
+				break
+			else
+				print_error "Please enter 'y' for yes or 'n' for no"
+			fi
+		done
+	fi
+	
+	if [ "$SETUP_SSH_KEY" = true ]; then
+		print_info "Setting up SSH Key Authentication (RSA)..."
+		
+		if [ -f ~/.ssh/id_rsa.pub ]; then
+			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+			print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
+		else
+			print_info "No RSA SSH key found. Creating new RSA SSH key..."
+			if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
+				SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+				print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+			else
+				print_error "Failed to create SSH key"
+				exit 1
+			fi
+		fi
 	else
-		print_error "Failed to create SSH key"
-		exit 1
+		print_info "SSH key authentication disabled - using password-only authentication"
 	fi
 fi
 
@@ -343,63 +566,38 @@ echo ""
 print_info "VM Resource Configuration..."
 echo ""
 
-while true; do
-	read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
-	VM_MEMORY=${VM_MEMORY:-2048}
-
+if [ "$FORCE_MODE" = true ]; then
 	if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
 		print_error "Memory must be a number"
-		continue
+		exit 1
 	fi
 
 	if [ "$VM_MEMORY" -lt 512 ]; then
 		print_error "Memory must be at least 512MB"
-		continue
+		exit 1
 	fi
 
 	if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
 		print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
-		read -p "Continue anyway? (y/N): " continue_anyway
-		if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-			continue
-		fi
 	fi
-
-	break
-done
-
-while true; do
-	read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
-	VM_CPUS=${VM_CPUS:-2}
 
 	if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
 		print_error "CPU count must be a number"
-		continue
+		exit 1
 	fi
 
 	if [ "$VM_CPUS" -lt 1 ]; then
 		print_error "CPU count must be at least 1"
-		continue
+		exit 1
 	fi
 
 	if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
 		print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
-		read -p "Continue anyway? (y/N): " continue_anyway
-		if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-			continue
-		fi
 	fi
-
-	break
-done
-
-while true; do
-	read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
-	VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
 
 	if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
 		print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
-		continue
+		exit 1
 	fi
 
 	size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
@@ -409,25 +607,111 @@ while true; do
 	"M")
 		if [ "$size_num" -lt 100 ]; then
 			print_error "Minimum disk size is 100M"
-			continue
+			exit 1
 		fi
 		;;
 	"G")
 		if [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ]; then
 			print_error "Disk size must be between 1G and 1000G"
-			continue
+			exit 1
 		fi
 		;;
 	"T")
 		if [ "$size_num" -gt 10 ]; then
 			print_error "Maximum disk size is 10T"
-			continue
+			exit 1
 		fi
 		;;
 	esac
+	
+	print_success "Non-interactive resource configuration validated"
+else
+	while true; do
+		read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
+		VM_MEMORY=${VM_MEMORY:-2048}
 
-	break
-done
+		if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
+			print_error "Memory must be a number"
+			continue
+		fi
+
+		if [ "$VM_MEMORY" -lt 512 ]; then
+			print_error "Memory must be at least 512MB"
+			continue
+		fi
+
+		if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
+			print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
+			read -p "Continue anyway? (y/N): " continue_anyway
+			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+				continue
+			fi
+		fi
+
+		break
+	done
+
+	while true; do
+		read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
+		VM_CPUS=${VM_CPUS:-2}
+
+		if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
+			print_error "CPU count must be a number"
+			continue
+		fi
+
+		if [ "$VM_CPUS" -lt 1 ]; then
+			print_error "CPU count must be at least 1"
+			continue
+		fi
+
+		if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
+			print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
+			read -p "Continue anyway? (y/N): " continue_anyway
+			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+				continue
+			fi
+		fi
+
+		break
+	done
+
+	while true; do
+		read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
+		VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
+
+		if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
+			print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
+			continue
+		fi
+
+		size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
+		size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
+
+		case "$size_unit" in
+		"M")
+			if [ "$size_num" -lt 100 ]; then
+				print_error "Minimum disk size is 100M"
+				continue
+			fi
+			;;
+		"G")
+			if [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ]; then
+				print_error "Disk size must be between 1G and 1000G"
+				continue
+			fi
+			;;
+		"T")
+			if [ "$size_num" -gt 10 ]; then
+				print_error "Maximum disk size is 10T"
+				continue
+			fi
+			;;
+		esac
+
+		break
+	done
+fi
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
 
@@ -436,15 +720,28 @@ echo "=================================================="
 print_info "VM Configuration Summary"
 echo "=================================================="
 echo "VM Name: $VM_NAME"
+echo "Operating System: $VM_OS"
 echo "Username: $VM_USERNAME"
-echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
+if [ "$FORCE_MODE" = true ]; then
+	echo "Password: ******* (provided via flag)"
+else
+	echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
+fi
 if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	echo "Root Access: Enabled"
-	echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
+	if [ "$FORCE_MODE" = true ]; then
+		echo "Root Password: ******* (provided via flag)"
+	else
+		echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
+	fi
 else
 	echo "Root Access: Disabled"
 fi
-echo "SSH Key: Configured"
+if [ -n "$SSH_KEY" ]; then
+	echo "SSH Key: Configured"
+else
+	echo "SSH Key: Disabled (password-only authentication)"
+fi
 echo "Memory: ${VM_MEMORY}MB"
 echo "CPUs: $VM_CPUS"
 echo "Disk: $VM_DISK_SIZE"
@@ -453,20 +750,24 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 fi
 echo ""
 
-echo ""
-while true; do
-	read -p "Proceed with VM creation? (Y/n): " CONFIRM
-	CONFIRM=${CONFIRM:-y}
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Proceeding with VM creation in non-interactive mode..."
+else
+	echo ""
+	while true; do
+		read -p "Proceed with VM creation? (Y/n): " CONFIRM
+		CONFIRM=${CONFIRM:-y}
 
-	if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-		break
-	elif [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
-		print_info "VM creation cancelled by user."
-		exit 0
-	else
-		print_error "Please enter 'y' to proceed or 'n' to cancel"
-	fi
-done
+		if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+			break
+		elif [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
+			print_info "VM creation cancelled by user."
+			exit 0
+		else
+			print_error "Please enter 'y' to proceed or 'n' to cancel"
+		fi
+	done
+fi
 
 if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
 	print_error "VM $VM_NAME already exists"
@@ -520,12 +821,16 @@ users:
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash
     lock_passwd: false
-    passwd: '$PASSWORD_HASH'
+    passwd: '$PASSWORD_HASH'$(if [ -n "$SSH_KEY" ]; then echo "
     ssh_authorized_keys:
-      - $SSH_KEY
+      - $SSH_KEY"; fi)
 
 ssh_pwauth: true
-disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")
+disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")$(if [ "$ROOT_LOGIN_SETTING" = "yes" ]; then echo "
+chpasswd:
+  list: |
+    root:$ROOT_PASSWORD
+  expire: False"; fi)
 package_update: true
 packages:
   - openssh-server
@@ -725,7 +1030,12 @@ echo "=================================================="
 echo ""
 echo "Connection Methods:"
 echo "   Console: virsh console $VM_NAME"
-echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
+if [ -n "$SSH_KEY" ]; then
+	echo "   SSH with key: ssh $VM_USERNAME@<vm_ip>"
+	echo "   SSH with password: ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no $VM_USERNAME@<vm_ip>"
+else
+	echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
+fi
 echo "   SCP: scp file $VM_USERNAME@<vm_ip>:/path/"
 echo "   SFTP: sftp $VM_USERNAME@<vm_ip>"
 echo ""
