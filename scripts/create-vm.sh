@@ -204,10 +204,11 @@ FLAG_DISK_SIZE=""
 FLAG_OS=""
 FLAG_ENABLE_ROOT=""
 FLAG_ROOT_PASSWORD=""
+FLAG_WITH_SSH_KEY=false
 
 show_usage() {
 	echo "VM Creation Script"
-	echo "Usage: $0 <vm_name> [options]"
+	echo "Usage: dcvm <vm_name> [options]"
 	echo ""
 	echo "Options:"
 	echo "  -u, --username <username>      Set VM username (default: admin)"
@@ -218,17 +219,18 @@ show_usage() {
 	echo "  -d, --disk <size>              Set disk size (e.g., 20G, 500M, 1T)"
 	echo "  -o, --os <os_choice>           Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04"
 	echo "  -k, --packages <packages>      Comma-separated package list"
+	echo "  --with-ssh-key                 Add SSH key for passwordless authentication"
 	echo "  -f, --force                    Non-interactive mode (requires password)"
 	echo "  -h, --help                     Show this help"
 	echo ""
 	echo "Interactive Examples:"
-	echo "  $0 datacenter-vm1"
-	echo "  $0 web-server -k nginx"
+	echo "  dcvm datacenter-vm1"
+	echo "  dcvm web-server -k nginx"
 	echo ""
 	echo "Non-interactive Examples:"
-	echo "  $0 web-server -f -p mypass123 -k nginx"
-	echo "  $0 db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
-	echo "  $0 test-vm -f -p mypass -o 1 -r rootpass"
+	echo "  dcvm web-server -f -p mypass123 -k nginx"
+	echo "  dcvm db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+	echo "  dcvm test-vm -f -p mypass -o 1 -r rootpass"
 	echo ""
 	echo "Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io"
 }
@@ -268,6 +270,10 @@ parse_arguments() {
 			-k|--packages)
 				ADDITIONAL_PACKAGES="$2"
 				shift 2
+				;;
+			--with-ssh-key)
+				FLAG_WITH_SSH_KEY=true
+				shift
 				;;
 			-f|--force)
 				FORCE_MODE=true
