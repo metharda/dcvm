@@ -593,15 +593,119 @@ print_info "Creating VM: $VM_NAME"
 echo ""
 
 print_info "Setting up operating system for the VM..."
+if [ -n "$FLAG_OS" ]; then
+	VM_OS_CHOICE="$FLAG_OS"
+else
+	VM_OS_CHOICE="${VM_OS_CHOICE:-$DEFAULT_OS}"
+fi
 select_os
+
+echo ""
+print_info "Setting up user account..."
+echo ""
+
+if [ -n "$FLAG_USERNAME" ]; then
+	VM_USERNAME="$FLAG_USERNAME"
+	if ! validate_username "$VM_USERNAME"; then
+		print_error "Invalid username: $VM_USERNAME"
+		print_error "Username requirements:"
+		echo "  - 3-32 characters long"
+		echo "  - Start with letter or underscore"
+		echo "  - Only letters, numbers, underscore, hyphen allowed"
+		exit 1
+	fi
+	print_success "Username set to: $VM_USERNAME"
+elif [ "$FORCE_MODE" = true ]; then
+	VM_USERNAME="$DEFAULT_USERNAME"
+	print_success "Username set to: $VM_USERNAME"
+else
+	interactive_prompt_username
+fi
+
+echo ""
+
+if [ -n "$FLAG_PASSWORD" ]; then
+	print_info "Setting password for user '$VM_USERNAME'..."
+	VM_PASSWORD="$FLAG_PASSWORD"
+	validation_result=$(validate_password "$VM_PASSWORD")
+	if [ $? -ne 0 ]; then
+		print_error "Invalid password: $validation_result"
+		exit 1
+	fi
+	print_success "User '$VM_USERNAME' password configured successfully"
+elif [ "$FORCE_MODE" = true ]; then
+	print_error "Password is required in force mode. Use -p <password>"
+	exit 1
+else
+	interactive_prompt_password
+fi
+
+echo ""
+
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Root access configuration..."
+	if [ -n "$FLAG_ENABLE_ROOT" ]; then
+		ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+	else
+		ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
+	fi
+
+	ROOT_PASSWORD=""
+	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+		if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+			ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+			validation_result=$(validate_password "$ROOT_PASSWORD")
+			if [ $? -ne 0 ]; then
+				print_error "Invalid root password: $validation_result"
+				exit 1
+			fi
+		else
+			ROOT_PASSWORD="$VM_PASSWORD"
+		fi
+		print_success "Root will use the same password"
+		print_success "Root access enabled"
+	else
+		print_success "Root access disabled"
+	fi
+else
+	if [ -n "$FLAG_ENABLE_ROOT" ]; then
+		print_info "Root access configuration..."
+		ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+		ROOT_PASSWORD=""
+		if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+			if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+				ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+				validation_result=$(validate_password "$ROOT_PASSWORD")
+				if [ $? -ne 0 ]; then
+					print_error "Invalid root password: $validation_result"
+					exit 1
+				fi
+			else
+				ROOT_PASSWORD="$VM_PASSWORD"
+			fi
+			print_success "Root will use the same password"
+			print_success "Root access enabled"
+		else
+			print_success "Root access disabled"
+		fi
+	else
+		interactive_prompt_root
+	fi
+fi
 
 echo ""
 
 SSH_KEY=""
-if [ "$FLAG_WITH_SSH_KEY" = true ]; then
+SETUP_SSH_KEY=true
+
+if [ "$FLAG_DISABLE_SSH_KEY" = true ]; then
+	SETUP_SSH_KEY=false
+elif [ "$FLAG_WITH_SSH_KEY" = true ]; then
 	SETUP_SSH_KEY=true
+fi
+
+if [ "$SETUP_SSH_KEY" = true ]; then
 	print_info "Setting up SSH Key Authentication (RSA)..."
-	
 	if [ -f ~/.ssh/id_rsa.pub ]; then
 		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
 		print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
@@ -630,6 +734,10 @@ print_info "VM Resource Configuration..."
 echo ""
 
 if [ "$FORCE_MODE" = true ]; then
+	VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
+	VM_CPUS="${FLAG_CPUS:-$DEFAULT_CPUS}"
+	VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
+
 	if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
 		print_error "Memory must be a number"
 		exit 1
@@ -686,8 +794,73 @@ if [ "$FORCE_MODE" = true ]; then
 		fi
 		;;
 	esac
-	
-	print_success "Force mode resource configuration validated"
+else
+	if [ -n "$FLAG_MEMORY" ]; then
+		VM_MEMORY="$FLAG_MEMORY"
+		if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
+			print_error "Memory must be a number"
+			exit 1
+		fi
+		if [ "$VM_MEMORY" -lt 512 ]; then
+			print_error "Memory must be at least 512MB"
+			exit 1
+		fi
+		if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
+			print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
+		fi
+	else
+		interactive_prompt_memory
+	fi
+
+	if [ -n "$FLAG_CPUS" ]; then
+		VM_CPUS="$FLAG_CPUS"
+		if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
+			print_error "CPU count must be a number"
+			exit 1
+		fi
+		if [ "$VM_CPUS" -lt 1 ]; then
+			print_error "CPU count must be at least 1"
+			exit 1
+		fi
+		if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
+			print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
+		fi
+	else
+		interactive_prompt_cpus
+	fi
+
+	if [ -n "$FLAG_DISK_SIZE" ]; then
+		VM_DISK_SIZE="$FLAG_DISK_SIZE"
+		if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
+			print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
+			exit 1
+		fi
+		size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
+		size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
+
+		case "$size_unit" in
+		"M")
+			if [ "$size_num" -lt 100 ]; then
+				print_error "Minimum disk size is 100M"
+				exit 1
+			fi
+			;;
+		"G")
+			if [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ]; then
+				print_error "Disk size must be between 1G and 1000G"
+				exit 1
+			fi
+			;;
+		"T")
+			if [ "$size_num" -gt 10 ]; then
+				print_error "Maximum disk size is 10T"
+				exit 1
+			fi
+			;;
+		esac
+	else
+		interactive_prompt_disk
+	fi
 fi
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
