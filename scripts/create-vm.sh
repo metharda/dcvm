@@ -943,7 +943,7 @@ if [ "$FORCE_MODE" = true ]; then
 		;;
 	esac
 	
-	print_success "Non-interactive resource configuration validated"
+	print_success "Force mode resource configuration validated"
 else
 	while true; do
 		read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
