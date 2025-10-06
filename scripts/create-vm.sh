@@ -543,12 +543,13 @@ parse_arguments() {
 			*)
 				if [ -z "$VM_NAME" ]; then
 					VM_NAME="$1"
+					shift
 				else
-					echo "Unexpected argument: $1"
+					echo "Error: Unexpected argument '$1'"
+					echo "If you want to install packages, use: -k <package1,package2,...>"
 					show_usage
 					exit 1
 				fi
-				shift
 				;;
 		esac
 	done
