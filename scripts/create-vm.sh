@@ -776,91 +776,9 @@ if [ "$FORCE_MODE" = true ]; then
 	
 	print_success "Force mode resource configuration validated"
 else
-	while true; do
-		read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
-		VM_MEMORY=${VM_MEMORY:-2048}
-
-		if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
-			print_error "Memory must be a number"
-			continue
-		fi
-
-		if [ "$VM_MEMORY" -lt 512 ]; then
-			print_error "Memory must be at least 512MB"
-			continue
-		fi
-
-		if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
-			print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
-			read -p "Continue anyway? (y/N): " continue_anyway
-			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-				continue
-			fi
-		fi
-
-		break
-	done
-
-	while true; do
-		read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
-		VM_CPUS=${VM_CPUS:-2}
-
-		if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
-			print_error "CPU count must be a number"
-			continue
-		fi
-
-		if [ "$VM_CPUS" -lt 1 ]; then
-			print_error "CPU count must be at least 1"
-			continue
-		fi
-
-		if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
-			print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
-			read -p "Continue anyway? (y/N): " continue_anyway
-			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-				continue
-			fi
-		fi
-
-		break
-	done
-
-	while true; do
-		read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
-		VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
-
-		if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
-			print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
-			continue
-		fi
-
-		size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
-		size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
-
-		case "$size_unit" in
-		"M")
-			if [ "$size_num" -lt 100 ]; then
-				print_error "Minimum disk size is 100M"
-				continue
-			fi
-			;;
-		"G")
-			if [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ]; then
-				print_error "Disk size must be between 1G and 1000G"
-				continue
-			fi
-			;;
-		"T")
-			if [ "$size_num" -gt 10 ]; then
-				print_error "Maximum disk size is 10T"
-				continue
-			fi
-			;;
-		esac
-
-		break
-	done
+	interactive_prompt_memory
+	interactive_prompt_cpus
+	interactive_prompt_disk
 fi
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
