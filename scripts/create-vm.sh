@@ -705,15 +705,7 @@ if [ "$FORCE_MODE" = true ]; then
 		exit 1
 	fi
 	
-	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ -n "$ROOT_PASSWORD" ]; then
-		validation_result=$(validate_password "$ROOT_PASSWORD")
-		if [ $? -ne 0 ]; then
-			print_error "Invalid root password: $validation_result"
-			exit 1
-		fi
-	elif [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ -z "$ROOT_PASSWORD" ]; then
-		ROOT_PASSWORD="$VM_PASSWORD"
-	fi
+	# Root password validation and assignment is handled in validate_force_mode; no need to duplicate here.
 	
 	print_success "Non-interactive configuration validated"
 else
