@@ -559,31 +559,98 @@ parse_arguments() {
 
 validate_force_mode() {
 	if [ "$FORCE_MODE" = true ]; then
-		if [ -z "$FLAG_PASSWORD" ]; then
-			print_error "Password is required in non-interactive mode (use -p or --password)"
-			exit 1
-		fi
+		# Force mode - prompt for any unspecified configurations
+		print_info "Running in force mode"
 		
-		VM_USERNAME="${FLAG_USERNAME:-$DEFAULT_USERNAME}"
-		VM_PASSWORD="$FLAG_PASSWORD"
-		VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
-		VM_CPUS="${FLAG_CPUS:-$DEFAULT_CPUS}"
-		VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
-		VM_OS_CHOICE="${FLAG_OS:-$DEFAULT_OS}"
-		ENABLE_ROOT="${FLAG_ENABLE_ROOT:-$DEFAULT_ENABLE_ROOT}"
-		
-		# Root password logic for force mode
-		if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
-			if [ -n "$FLAG_ROOT_PASSWORD" ]; then
-				ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
-			else
-				ROOT_PASSWORD="$VM_PASSWORD"  # Use same password as user
+		# Username
+		if [ -n "$FLAG_USERNAME" ]; then
+			VM_USERNAME="$FLAG_USERNAME"
+			if ! validate_username "$VM_USERNAME"; then
+				print_error "Invalid username: $VM_USERNAME"
+				print_error "Username requirements:"
+				echo "  - 3-32 characters long"
+				echo "  - Start with letter or underscore"
+				echo "  - Only letters, numbers, underscore, hyphen allowed"
+				exit 1
 			fi
 		else
-			ROOT_PASSWORD=""
+			echo ""
+			print_info "Setting up user account..."
+			echo ""
+			interactive_prompt_username
 		fi
 		
-		print_info "Running in non-interactive mode"
+		# Password
+		if [ -n "$FLAG_PASSWORD" ]; then
+			VM_PASSWORD="$FLAG_PASSWORD"
+			validation_result=$(validate_password "$VM_PASSWORD")
+			if [ $? -ne 0 ]; then
+				print_error "Invalid password: $validation_result"
+				exit 1
+			fi
+		else
+			echo ""
+			interactive_prompt_password
+		fi
+		
+		# Memory
+		if [ -n "$FLAG_MEMORY" ]; then
+			VM_MEMORY="$FLAG_MEMORY"
+		else
+			echo ""
+			print_info "VM Resource Configuration - Memory..."
+			echo ""
+			interactive_prompt_memory
+		fi
+		
+		# CPUs
+		if [ -n "$FLAG_CPUS" ]; then
+			VM_CPUS="$FLAG_CPUS"
+		else
+			echo ""
+			print_info "VM Resource Configuration - CPUs..."
+			echo ""
+			interactive_prompt_cpus
+		fi
+		
+		# Disk size
+		if [ -n "$FLAG_DISK_SIZE" ]; then
+			VM_DISK_SIZE="$FLAG_DISK_SIZE"
+		else
+			echo ""
+			print_info "VM Resource Configuration - Disk..."
+			echo ""
+			interactive_prompt_disk
+		fi
+		
+		if [ -n "$FLAG_OS" ]; then
+			VM_OS_CHOICE="$FLAG_OS"
+		else
+			VM_OS_CHOICE="$DEFAULT_OS"
+		fi
+		
+		if [ -n "$FLAG_ENABLE_ROOT" ]; then
+			ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+			if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+				if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+					ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+					validation_result=$(validate_password "$ROOT_PASSWORD")
+					if [ $? -ne 0 ]; then
+						print_error "Invalid root password: $validation_result"
+						exit 1
+					fi
+				else
+					ROOT_PASSWORD="$VM_PASSWORD"
+				fi
+			else
+				ROOT_PASSWORD=""
+			fi
+		else
+			echo ""
+			interactive_prompt_root
+		fi
+		
+		print_success "Force mode configuration completed"
 	fi
 }
 
