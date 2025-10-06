@@ -347,11 +347,14 @@ check_dependencies() {
 }
 
 select_os() {
-	# If in force mode and OS is specified via flag, use it
-	if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_OS" ]; then
-		VM_OS_CHOICE="$FLAG_OS"
+	if [ "$FORCE_MODE" = true ]; then
+		# Force mode already sets VM_OS_CHOICE in validate_force_mode
+		# Just validate it here
+		if [ -z "$VM_OS_CHOICE" ]; then
+			VM_OS_CHOICE="$DEFAULT_OS"
+		fi
 	else
-		# Interactive mode
+		# Interactive mode - prompt user
 		while true; do
 			echo "Supported OS options:"
 			echo "  1) Debian 12"
