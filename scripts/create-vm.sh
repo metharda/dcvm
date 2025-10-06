@@ -772,16 +772,6 @@ echo ""
 SSH_KEY=""
 if [ "$FLAG_WITH_SSH_KEY" = true ]; then
 	SETUP_SSH_KEY=true
-else
-	if [ "$FORCE_MODE" = false ]; then
-		echo ""
-		interactive_prompt_ssh_key
-	else
-		SETUP_SSH_KEY=false
-	fi
-fi
-
-if [ "$SETUP_SSH_KEY" = true ]; then
 	print_info "Setting up SSH Key Authentication (RSA)..."
 	
 	if [ -f ~/.ssh/id_rsa.pub ]; then
@@ -798,7 +788,13 @@ if [ "$SETUP_SSH_KEY" = true ]; then
 		fi
 	fi
 else
-	print_info "SSH key authentication disabled - using password-only authentication"
+	if [ "$FORCE_MODE" = false ]; then
+		echo ""
+		interactive_prompt_ssh_key
+	else
+		SETUP_SSH_KEY=false
+		print_info "SSH key authentication disabled - using password-only authentication"
+	fi
 fi
 
 echo ""
