@@ -89,6 +89,247 @@ generate_password_hash() {
 	echo "$password" | openssl passwd -6 -salt "$salt" -stdin
 }
 
+interactive_prompt_username() {
+	while true; do
+		read -p "Enter username for VM (default: admin): " VM_USERNAME
+		VM_USERNAME=${VM_USERNAME:-admin}
+
+		if validate_username "$VM_USERNAME"; then
+			print_success "Username set to: $VM_USERNAME"
+			break
+		else
+			print_error "Invalid username! Requirements:"
+			echo "  - 3-32 characters long"
+			echo "  - Start with letter or underscore"
+			echo "  - Only letters, numbers, underscore, hyphen allowed"
+			echo "  - Examples: admin, user1, my_user, test-vm"
+			echo ""
+		fi
+	done
+}
+
+interactive_prompt_password() {
+	print_info "Setting password for user '$VM_USERNAME'..."
+	while true; do
+		read_password "Password: " VM_PASSWORD
+
+		if [ -z "$VM_PASSWORD" ]; then
+			print_error "Password cannot be empty!"
+			echo ""
+			continue
+		fi
+
+		validation_result=$(validate_password "$VM_PASSWORD")
+		if [ $? -ne 0 ]; then
+			print_error "$validation_result"
+			echo ""
+			continue
+		fi
+
+		read_password "Retype password: " VM_PASSWORD_CONFIRM
+		if [ "$VM_PASSWORD" = "$VM_PASSWORD_CONFIRM" ]; then
+			print_success "User '$VM_USERNAME' password configured successfully"
+			break
+		else
+			print_error "Passwords do not match! Please try again."
+			echo ""
+		fi
+	done
+}
+
+interactive_prompt_memory() {
+	while true; do
+		read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
+		VM_MEMORY=${VM_MEMORY:-2048}
+
+		if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
+			print_error "Memory must be a number"
+			continue
+		fi
+
+		if [ "$VM_MEMORY" -lt 512 ]; then
+			print_error "Memory must be at least 512MB"
+			continue
+		fi
+
+		if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
+			print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
+			read -p "Continue anyway? (y/N): " continue_anyway
+			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+				continue
+			fi
+		fi
+
+		break
+	done
+}
+
+interactive_prompt_cpus() {
+	while true; do
+		read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
+		VM_CPUS=${VM_CPUS:-2}
+
+		if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
+			print_error "CPU count must be a number"
+			continue
+		fi
+
+		if [ "$VM_CPUS" -lt 1 ]; then
+			print_error "CPU count must be at least 1"
+			continue
+		fi
+
+		if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
+			print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
+			read -p "Continue anyway? (y/N): " continue_anyway
+			if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+				continue
+			fi
+		fi
+
+		break
+	done
+}
+
+interactive_prompt_disk() {
+	while true; do
+		read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
+		VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
+
+		if [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
+			print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
+			continue
+		fi
+
+		size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
+		size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
+
+		case "$size_unit" in
+		"M")
+			if [ "$size_num" -lt 100 ]; then
+				print_error "Minimum disk size is 100M"
+				continue
+			fi
+			;;
+		"G")
+			if [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ]; then
+				print_error "Disk size must be between 1G and 1000G"
+				continue
+			fi
+			;;
+		"T")
+			if [ "$size_num" -gt 10 ]; then
+				print_error "Maximum disk size is 10T"
+				continue
+			fi
+			;;
+		esac
+
+		break
+	done
+}
+
+interactive_prompt_root() {
+	print_info "Root access configuration..."
+	while true; do
+		read -p "Enable root login? (y/N): " ENABLE_ROOT
+		ENABLE_ROOT=${ENABLE_ROOT:-n}
+
+		if [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]]; then
+			break
+		else
+			print_error "Please enter 'y' for yes or 'n' for no"
+		fi
+	done
+
+	ROOT_PASSWORD=""
+	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+		while true; do
+			read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD
+			SAME_ROOT_PASSWORD=${SAME_ROOT_PASSWORD:-y}
+
+			if [[ "$SAME_ROOT_PASSWORD" =~ ^[YyNn]$ ]]; then
+				break
+			else
+				print_error "Please enter 'y' for yes or 'n' for no"
+			fi
+		done
+
+		if [[ "$SAME_ROOT_PASSWORD" =~ ^[Yy]$ ]]; then
+			ROOT_PASSWORD="$VM_PASSWORD"
+			print_success "Root will use the same password"
+		else
+			echo ""
+			print_info "Setting password for root user..."
+			while true; do
+				read_password "Password: " ROOT_PASSWORD
+
+				if [ -z "$ROOT_PASSWORD" ]; then
+					print_error "Password cannot be empty!"
+					echo ""
+					continue
+				fi
+
+				validation_result=$(validate_password "$ROOT_PASSWORD")
+				if [ $? -ne 0 ]; then
+					print_error "$validation_result"
+					echo ""
+					continue
+				fi
+
+				read_password "Retype password: " ROOT_PASSWORD_CONFIRM
+				if [ "$ROOT_PASSWORD" = "$ROOT_PASSWORD_CONFIRM" ]; then
+					print_success "Root password configured successfully"
+					break
+				else
+					print_error "Passwords do not match! Please try again."
+					echo ""
+				fi
+			done
+		fi
+		print_success "Root access enabled"
+	else
+		print_success "Root access disabled"
+	fi
+}
+
+interactive_prompt_ssh_key() {
+	SETUP_SSH_KEY=false
+	while true; do
+		read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
+		ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
+		
+		if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
+			if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
+				SETUP_SSH_KEY=true
+			fi
+			break
+		else
+			print_error "Please enter 'y' for yes or 'n' for no"
+		fi
+	done
+	
+	if [ "$SETUP_SSH_KEY" = true ]; then
+		print_info "Setting up SSH Key Authentication (RSA)..."
+		
+		if [ -f ~/.ssh/id_rsa.pub ]; then
+			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+			print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
+		else
+			print_info "No RSA SSH key found. Creating new RSA SSH key..."
+			if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
+				SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+				print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+			else
+				print_error "Failed to create SSH key"
+				exit 1
+			fi
+		fi
+	else
+		print_info "SSH key authentication disabled - using password-only authentication"
+	fi
+}
+
 check_dependencies() {
 	local missing_deps=()
 
