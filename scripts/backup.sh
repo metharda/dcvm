@@ -20,38 +20,52 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-print_info() {
-	echo -e "${BLUE}[INFO]${NC} $1"
-}
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}" >>"$LOG_FILE"; }
 
-print_success() {
-	echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
+generate_random_mac() { printf "52:54:00:%02x:%02x:%02x\n" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)); }
+get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
+list_backup_timestamps_desc() { collect_backup_timestamps "$1" "" "desc"; }
+list_day_backup_timestamps_asc() { collect_backup_timestamps "$1" "$2" "asc"; }
+collect_backup_timestamps() {
+	local vm_name="$1"
+	local day_filter="$2"
+	local order="${3:-desc}"
+	local -a ts_list=()
+	local regex="^[0-9]{8}_[0-9]{6}$"
 
-print_warning() {
-	echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+	if [ -n "$day_filter" ]; then
+		regex="^${day_filter}_[0-9]{6}$"
+	fi
 
-print_error() {
-	echo -e "${RED}[ERROR]${NC} $1"
-}
+	while IFS= read -r path; do
+		[ -z "$path" ] && continue
+		local base=$(basename "$path")
+		local ts="${base#${vm_name}-}"
+		[[ "$ts" =~ $regex ]] && ts_list+=("$ts")
+	done < <(compgen -G "$BACKUP_DIR/${vm_name}-????????_??????" 2>/dev/null || printf '')
 
-log() {
-	local level="$1"
-	shift
-	local message="$*"
-	local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+	while IFS= read -r path; do
+		[ -z "$path" ] && continue
+		local base=$(basename "$path")
+		local ts="${base#${vm_name}-disk-}"
+		ts="${ts%.qcow2.gz}"
+		ts="${ts%.qcow2}"
+		[[ "$ts" =~ $regex ]] && ts_list+=("$ts")
+	done < <(compgen -G "$BACKUP_DIR/${vm_name}-disk-*.qcow2*" 2>/dev/null || printf '')
 
-	echo "[$timestamp] [$level] $message" >>"$LOG_FILE"
-}
+	if [ ${#ts_list[@]} -eq 0 ]; then
+		return 0
+	fi
 
-generate_random_mac() {
-	printf "52:54:00:%02x:%02x:%02x\n" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256))
-}
-
-get_backup_folder_path() {
-	local vm_name="$1"; local date_part="$2"
-	echo "$BACKUP_DIR/${vm_name}-${date_part}"
+	if [ "$order" = "asc" ]; then
+		printf "%s\n" "${ts_list[@]}" | sort -u
+	else
+		printf "%s\n" "${ts_list[@]}" | sort -u -r
+	fi
 }
 
 get_backup_disk_path() {
@@ -88,43 +102,6 @@ get_backup_config_path() {
 	fi
 	echo ""
 	return 1
-}
-
-list_backup_timestamps_desc() {
-	local vm_name="$1"
-	local -a ts_list=()
-	while IFS= read -r d; do
-		local base=$(basename "$d")
-		local ts=$(echo "$base" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\\1/")
-		[[ "$ts" =~ ^[0-9]{8}_[0-9]{6}$ ]] && ts_list+=("$ts")
-	done < <(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null)
-	while IFS= read -r f; do
-		local base=$(basename "$f")
-		local ts=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\\1/")
-		[[ "$ts" =~ ^[0-9]{8}_[0-9]{6}$ ]] && ts_list+=("$ts")
-	done < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null)
-	if [ ${#ts_list[@]} -eq 0 ]; then
-		return 0
-	fi
-	printf "%s\n" "${ts_list[@]}" | sort -u -r
-}
-list_day_backup_timestamps_asc() {
-	local vm_name="$1"; local yyyymmdd="$2"
-	local -a ts_list=()
-	while IFS= read -r d; do
-		local base=$(basename "$d")
-		local ts=$(echo "$base" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\\1/")
-		[[ "$ts" =~ ^${yyyymmdd}_[0-9]{6}$ ]] && ts_list+=("$ts")
-	done < <(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null)
-	while IFS= read -r f; do
-		local base=$(basename "$f")
-		local ts=$(echo "$base" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\\1/")
-		[[ "$ts" =~ ^${yyyymmdd}_[0-9]{6}$ ]] && ts_list+=("$ts")
-	done < <(ls -1 "$BACKUP_DIR"/${vm_name}-disk-${yyyymmdd}_*.qcow2* 2>/dev/null)
-	if [ ${#ts_list[@]} -eq 0 ]; then
-		return 0
-	fi
-	printf "%s\n" "${ts_list[@]}" | sort -u
 }
 
 download_cloud_image() {
@@ -200,19 +177,9 @@ ensure_backing_image() {
 	fi
 }
 
-check_vm_exists() {
-	local vm_name="$1"
+check_vm_exists() { virsh list --all 2>/dev/null | grep -q " $1 "; }
 
-	if ! virsh list --all 2>/dev/null | grep -q " $vm_name "; then
-		return 1
-	fi
-	return 0
-}
-
-get_vm_state() {
-	local vm_name="$1"
-	virsh domstate "$vm_name" 2>/dev/null
-}
+get_vm_state() { virsh domstate "$1" 2>/dev/null; }
 
 wait_for_vm_state() {
 	local vm_name="$1"
@@ -245,35 +212,7 @@ is_lock_error() {
 	return 1
 }
 
-auto_fix_locks() {
-	local vm_name="$1"
-	
-	print_warning "Lock issue detected. Running fix-lock.sh..."
-	
-	if [ ! -x "$FIX_LOCK_SCRIPT" ]; then
-		print_error "fix-lock.sh script not found or not executable: $FIX_LOCK_SCRIPT"
-		return 1
-	fi
-	
-	print_info "Running fix-lock.sh for $vm_name..."
-	if "$FIX_LOCK_SCRIPT" "$vm_name"; then
-		print_success "fix-lock.sh completed successfully"
-		sleep 2
-		return 0
-	else
-		print_error "fix-lock.sh failed"
-		return 1
-	fi
-}
-
-get_file_size() {
-	local file_path="$1"
-	if [ -f "$file_path" ]; then
-		du -h "$file_path" | cut -f1
-	else
-		echo "0"
-	fi
-}
+get_file_size() { [ -f "$1" ] && du -h "$1" | cut -f1 || echo "0"; }
 
 normalize_backing_chain() {
 	local vm_disk_path="$1"
@@ -300,6 +239,41 @@ normalize_backing_chain() {
 	fi
 }
 
+remove_backup_artifacts() {
+	local vm_name="$1"
+	local date_part="$2"
+	local context="${3:-backup}"
+	local removed=0
+
+	local folder=$(get_backup_folder_path "$vm_name" "$date_part")
+	if [ -d "$folder" ]; then
+		if rm -rf "$folder"; then
+			log "INFO" "Removed ${context} folder $folder"
+			return 0
+		fi
+		return 1
+	fi
+
+	local disk=$(get_backup_disk_path "$vm_name" "$date_part")
+	local cfg=$(get_backup_config_path "$vm_name" "$date_part")
+
+	if [ -n "$disk" ] && rm -f "$disk"; then
+		log "INFO" "Removed ${context} disk $disk"
+		removed=1
+	fi
+
+	if [ -n "$cfg" ] && rm -f "$cfg"; then
+		log "INFO" "Removed ${context} config $cfg"
+		removed=1
+	fi
+
+	if [ $removed -gt 0 ]; then
+		return 0
+	fi
+
+	return 1
+}
+
 cleanup_old_backups() {
 	local vm_name="$1"
 
@@ -308,14 +282,8 @@ cleanup_old_backups() {
 	if [ ${#all_ts[@]} -gt $KEEP_BACKUPS ]; then
 		local to_delete=("${all_ts[@]:$KEEP_BACKUPS}")
 		for dp in "${to_delete[@]}"; do
-			local folder=$(get_backup_folder_path "$vm_name" "$dp")
-			if [ -d "$folder" ]; then
-				rm -rf "$folder" && log "INFO" "Removed old backup folder $folder"
-			else
-				local d=$(get_backup_disk_path "$vm_name" "$dp"); local c=$(get_backup_config_path "$vm_name" "$dp")
-				[ -n "$d" ] && rm -f "$d" && log "INFO" "Removed old disk $d"
-				[ -n "$c" ] && rm -f "$c" && log "INFO" "Removed old config $c"
-			fi
+			[ -z "$dp" ] && continue
+			remove_backup_artifacts "$vm_name" "$dp" "old backup" || true
 		done
 	fi
 
@@ -471,8 +439,8 @@ delete_backups() {
 		vm_name="$arg"
 	fi
 
-	mapfile -t vm_files < <(list_backup_timestamps_desc "$vm_name")
-	if [ ${#vm_files[@]} -eq 0 ]; then
+	mapfile -t backup_dates < <(list_backup_timestamps_desc "$vm_name")
+	if [ ${#backup_dates[@]} -eq 0 ]; then
 		print_warning "No backups found for VM: $vm_name"
 		return 0
 	fi
@@ -490,11 +458,6 @@ delete_backups() {
 		fi
 
 		IFS=',' read -r -a indices <<< "$selection"
-		mapfile -t sorted_dates < <(list_backup_timestamps_desc "$vm_name")
-		if [ ${#sorted_dates[@]} -eq 0 ]; then
-			print_warning "No backups to delete for VM: $vm_name"
-			return 0
-		fi
 
 		declare -a to_delete_dates
 		for idx in "${indices[@]}"; do
@@ -502,16 +465,19 @@ delete_backups() {
 				print_error "Invalid number: $idx"
 				return 1
 			fi
-			if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#sorted_dates[@]} ]; then
+			if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#backup_dates[@]} ]; then
 				print_error "Out of range: $idx"
 				return 1
 			fi
-			local date_part="${sorted_dates[$((idx-1))]}"
+			local date_part="${backup_dates[$((idx-1))]}"
 			to_delete_dates+=("$date_part")
 		done
 
 		echo "Backups to delete:"
-		for d in "${to_delete_dates[@]}"; do echo "  ${vm_name}-${d}"; done
+		for d in "${to_delete_dates[@]}"; do
+			[ -z "$d" ] && continue
+			echo "  ${vm_name}-${d}"
+		done
 		read -p "Proceed? (y/N): " yn
 		if [[ ! "$yn" =~ ^[Yy]$ ]]; then
 			print_info "Cancelled."
@@ -520,14 +486,8 @@ delete_backups() {
 
 		local del_ok=0
 		for date_part in "${to_delete_dates[@]}"; do
-			local folder=$(get_backup_folder_path "$vm_name" "$date_part")
-			if [ -d "$folder" ]; then
-				rm -rf "$folder" && del_ok=$((del_ok+1))
-			else
-				local disk="$(get_backup_disk_path "$vm_name" "$date_part")"
-				local cfg="$(get_backup_config_path "$vm_name" "$date_part")"
-				[ -n "$disk" ] && rm -f "$disk"
-				[ -n "$cfg" ] && rm -f "$cfg"
+			[ -z "$date_part" ] && continue
+			if remove_backup_artifacts "$vm_name" "$date_part" "backup"; then
 				del_ok=$((del_ok+1))
 			fi
 		done
@@ -558,17 +518,11 @@ delete_backups() {
 		return 1
 	fi
 
-	local folder=$(get_backup_folder_path "$vm_name" "$resolved_ts")
-	local count=0
-	if [ -d "$folder" ]; then
-		rm -rf "$folder" && count=1
-	else
-		local disk="$(get_backup_disk_path "$vm_name" "$resolved_ts")"
-		local cfg="$(get_backup_config_path "$vm_name" "$resolved_ts")"
-		[ -n "$disk" ] && rm -f "$disk" && count=$((count+1))
-		[ -n "$cfg" ] && rm -f "$cfg"
+	local removed=0
+	if remove_backup_artifacts "$vm_name" "$resolved_ts" "backup"; then
+		removed=1
 	fi
-	print_success "$count backup(s) deleted."
+	print_success "$removed backup(s) deleted."
 	return 0
 }
 
@@ -592,16 +546,9 @@ troubleshoot_vm() {
 get_latest_backup() {
 	local vm_name="$1"
 
-	local latest_dir=$(ls -1 -d "$BACKUP_DIR"/${vm_name}-????????_?????? 2>/dev/null | sort | tail -n 1)
-	if [ -n "$latest_dir" ]; then
-		basename "$latest_dir" | sed -E "s/${vm_name}-([0-9]{8}_[0-9]{6})/\1/"
-		return 0
-	fi
-
-	local latest_backup=$(ls -t "$BACKUP_DIR"/${vm_name}-disk-*.qcow2* 2>/dev/null | head -1)
-	if [ -n "$latest_backup" ]; then
-		local basename_backup=$(basename "$latest_backup")
-		echo "$basename_backup" | sed -E "s/${vm_name}-disk-(.*)\.qcow2(\.gz)?/\1/"
+	mapfile -t latest_list < <(collect_backup_timestamps "$vm_name" "" "desc")
+	if [ ${#latest_list[@]} -gt 0 ]; then
+		echo "${latest_list[0]}"
 	fi
 }
 
@@ -693,7 +640,17 @@ export_backup() {
 	local export_base="$BACKUP_DIR/exports"
 	[ -n "$output_dir" ] && export_base="$output_dir"
 	export_base="${export_base/#\~/$HOME}"
-	mkdir -p "$export_base" || { print_error "Cannot create export directory: $export_base"; return 1; }
+	if ! mkdir -p "$export_base"; then
+		print_error "Cannot create export directory: $export_base"
+		return 1
+	fi
+
+	local export_base_abs
+	if ! export_base_abs=$(cd "$export_base" 2>/dev/null && pwd); then
+		print_error "Cannot resolve export directory: $export_base"
+		return 1
+	fi
+	export_base="$export_base_abs"
 
 	local pkg_name="${vm_name}-${backup_date}.tar.gz"
 	local pkg_path="$export_base/$pkg_name"
@@ -796,6 +753,9 @@ restore_vm() {
 	local opt_third="$3"
 	local force_restore=""
 	if [ "$opt_third" = "true" ]; then force_restore="true"; fi
+	local final_state="shut off"
+	local skip_auto_start=false
+	local start_error=""
 
 	print_info "Starting restore for VM: $vm_name"
 	log "INFO" "Starting restore for VM: $vm_name"
@@ -981,7 +941,14 @@ restore_vm() {
 		xmlstarlet ed -P -L -d "/domain/devices/disk[contains(source/@file, '.iso')]" "$temp_config" 2>/dev/null || true
 		xmlstarlet ed -P -L -d "/domain/devices/controller[@type='ide']" "$temp_config" 2>/dev/null || true
 		xmlstarlet ed -P -L -N qemu='http://libvirt.org/schemas/domain/qemu/1.0' -d "/domain/qemu:commandline[qemu:arg/@value[contains(., '.iso')]]" "$temp_config" 2>/dev/null || true
+		xmlstarlet ed -P -L -d "/domain/metadata" "$temp_config" 2>/dev/null || true
+		current_machine=$(xmlstarlet sel -t -v "/domain/os/type/@machine" "$temp_config" 2>/dev/null)
+		if [ -n "$current_machine" ] && [ "$current_machine" != "q35" ]; then
+			xmlstarlet ed -P -L -d "/domain/os/type/@machine" "$temp_config" 2>/dev/null || true
+		fi
+		xmlstarlet ed -P -L -N libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0' -d "/domain/@xmlns:libosinfo" "$temp_config" 2>/dev/null || true
 		print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
+		print_info "Normalized domain metadata and machine attribute for compatibility"
 	else
 		sed -i "/<disk[^>]*device=\"disk\"[^>]*>/,/<\/disk>/{s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g}" "$temp_config"
 		sed -i "s|<name>[^<]*</name>|<name>$vm_name</name>|" "$temp_config" 2>/dev/null || true
@@ -990,7 +957,16 @@ restore_vm() {
 		sed -i "/<disk[^>]*>[^<]*<source[^>]*file=['\"][^'\"]*\.iso['\"][^>]*>[^<]*<[^>]*>/,/<\\/disk>/d" "$temp_config"
 		sed -i "/<controller[^>]*type=['\"]ide['\"][^>]*>/,/<\\/controller>/d" "$temp_config"
 		sed -i "/<qemu:commandline[\s\S]*\.iso[\s\S]*<\\/qemu:commandline>/d" "$temp_config"
-		print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
+		sed -i "/<metadata[ >\t]/,/<\\/metadata>/d" "$temp_config"
+		if grep -q "machine=\"q35\"" "$temp_config" || grep -q "machine='q35'" "$temp_config"; then
+			:
+		else
+			sed -i "s/ machine='[^']*'//" "$temp_config"
+			sed -i 's/ machine=\"[^\"]*\"//' "$temp_config"
+		fi
+		sed -i "s/ xmlns:libosinfo='[^']*'//" "$temp_config"
+		sed -i 's/ xmlns:libosinfo="[^"]*"//' "$temp_config"
+		print_info "Removed cdrom/iso/ide/qemu:commandline entries and normalized metadata/machine attributes"
 	fi
 
 	if [ -n "$original_main_file" ] && [ "$original_main_file" != "$vm_disk_path" ]; then
@@ -1036,15 +1012,58 @@ restore_vm() {
 
 	ensure_backing_image "$vm_disk_path" || true
 
-	if virsh define "$temp_config" >/dev/null 2>&1; then
-		print_success "VM configuration restored"
-		log "INFO" "VM configuration restored for $vm_name"
-	else
-		print_error "Failed to define VM from configuration"
-		sed -n '1,120p' "$temp_config" | sed -n '1,30p'
-		rm -f "$temp_config"
-		return 1
-	fi
+	local define_output attempt=1 max_attempts=3
+	while [ $attempt -le $max_attempts ]; do
+		define_output=$(virsh define "$temp_config" 2>&1)
+		if [ $? -eq 0 ]; then
+			print_success "VM configuration restored (attempt $attempt)"
+			log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
+			break
+		fi
+		if echo "$define_output" | grep -q "must be model='pci-root'"; then
+			print_warning "Adjusting root PCI controller to pci-root"
+			if command -v xmlstarlet >/dev/null 2>&1; then
+				xmlstarlet ed -P -L -u "/domain/devices/controller[@type='pci' and @index='0']/@model" -v "pci-root" "$temp_config" 2>/dev/null || true
+			else
+				sed -i "/<controller[^>]*type=['\"]pci['\"][^>]*index=['\"]0['\"][^>]*>/s/model=['\"][^'\"]*['\"]/model='pci-root'/" "$temp_config"
+				sed -i "/<controller[^>]*type=['\"]pci['\"][^>]*index=['\"]0['\"][^>]*>/s/model=\"[^\"]*\"/model=\"pci-root\"/" "$temp_config"
+			fi
+		elif echo "$define_output" | grep -q "requires a controller that accepts a pcie-root-port"; then
+			print_warning "Switching to q35 + pcie-root + pcie-root-port"
+			if command -v xmlstarlet >/dev/null 2>&1; then
+				curmach=$(xmlstarlet sel -t -v "/domain/os/type/@machine" "$temp_config" 2>/dev/null)
+				if [ "$curmach" != "q35" ]; then
+					xmlstarlet ed -P -L -i "/domain/os/type[not(@machine)]" -t attr -n machine -v "q35" "$temp_config" 2>/dev/null || true
+					xmlstarlet ed -P -L -u "/domain/os/type/@machine" -v "q35" "$temp_config" 2>/dev/null || true
+				fi
+				xmlstarlet ed -P -L -u "/domain/devices/controller[@type='pci' and @index='0']/@model" -v "pcie-root" "$temp_config" 2>/dev/null || true
+				if ! xmlstarlet sel -t -v "count(/domain/devices/controller[@type='pci' and @model='pcie-root-port'])" "$temp_config" 2>/dev/null | grep -q '[1-9]'; then
+					xmlstarlet ed -P -L -s "/domain/devices" -t elem -n controllerTMP -v "" "$temp_config" 2>/dev/null || true
+					xmlstarlet ed -P -L -i "/domain/devices/controllerTMP" -t attr -n type -v "pci" "$temp_config" 2>/dev/null || true
+					xmlstarlet ed -P -L -i "/domain/devices/controllerTMP" -t attr -n model -v "pcie-root-port" "$temp_config" 2>/dev/null || true
+					xmlstarlet ed -P -L -i "/domain/devices/controllerTMP" -t attr -n index -v "1" "$temp_config" 2>/dev/null || true
+					sed -i "s/controllerTMP/controller/" "$temp_config"
+				fi
+			else
+				grep -q "machine='q35'\|machine=\"q35\"" "$temp_config" || sed -i "s|<type arch='x86_64'\(.*\)>hvm</type>|<type arch='x86_64' machine='q35'\1>hvm</type>|" "$temp_config"
+				sed -i "/<controller[^>]*type=['\"]pci['\"][^>]*index=['\"]0['\"][^>]*>/s/model=['\"][^'\"]*['\"]/model='pcie-root'/" "$temp_config"
+				sed -i "/<controller[^>]*type=['\"]pci['\"][^>]*index=['\"]0['\"][^>]*>/s/model=\"[^\"]*\"/model=\"pcie-root\"/" "$temp_config"
+				if ! grep -q "pcie-root-port" "$temp_config"; then
+					sed -i "/<devices>/a \\t<controller type='pci' model='pcie-root-port' index='1'/>" "$temp_config"
+				fi
+			fi
+		else
+			print_error "Define failed (attempt $attempt): $define_output"
+			if [ $attempt -eq $max_attempts ]; then
+				print_error "Giving up after $max_attempts attempts"
+				sed -n '1,30p' "$temp_config"
+				rm -f "$temp_config"
+				return 1
+			fi
+		fi
+		attempt=$((attempt+1))
+		[ $attempt -le $max_attempts ] && print_info "Retrying define (attempt $attempt)..." && sleep 1
+	done
 
 	rm -f "$temp_config"
 
@@ -1065,7 +1084,6 @@ restore_vm() {
 	sleep 3
 
 	print_info "Performing post-restore verification and cleanup..."
-	print_info "Waiting for libvirt to register the restored VM..."
 	sleep 3
 
 	print_info "Checking for other VMs referencing the restored disk..."
@@ -1079,41 +1097,38 @@ restore_vm() {
 		print_info "This will cause shared write lock failures."
 		print_info "Resolve by detaching/changing disk on those VMs or undefining them before start."
 		print_info "You can run: sudo $FIX_LOCK_SCRIPT $vm_name --verbose (for cleanup), but conflicts must be fixed manually."
-		local final_state="shut off (conflicting domains detected)"
-		goto_skip_start=true
+		final_state="shut off (conflicting domains detected)"
+		skip_auto_start=true
+		start_error="Disk referenced by other VM(s): $(echo "$conflicting_vms" | tr '\n' ' ')"
 	fi
 	
 	print_info "Attempting to start VM..."
-	local start_error=""
 	local start_attempts=0
 	local max_attempts=2
 
-	if [ "$goto_skip_start" = true ]; then
+	if [ "$skip_auto_start" = true ]; then
 		print_warning "Skipping auto-start due to conflicting VM references"
-		start_attempts=$max_attempts
-	fi
-	
-	while [ $start_attempts -lt $max_attempts ]; do
-		print_info "Start attempt $((start_attempts + 1))/$max_attempts"
-		start_error=$(virsh start "$vm_name" 2>&1)
-		
-		if [ $? -eq 0 ]; then
-			print_success "VM restore completed and VM is now starting!"
-			
-			if wait_for_vm_state "$vm_name" "running" 30; then
-				print_success "VM is now running successfully!"
-				local final_state="running"
-			else
-				print_warning "VM started but may still be booting"
-				local final_state="starting"
+	else
+		while [ $start_attempts -lt $max_attempts ]; do
+			local attempt=$((start_attempts + 1))
+			print_info "Start attempt ${attempt}/$max_attempts"
+			start_error=$(virsh start "$vm_name" 2>&1)
+			if [ $? -eq 0 ]; then
+				print_success "VM restore completed and VM is now starting!"
+				if wait_for_vm_state "$vm_name" "running" 30; then
+					print_success "VM is now running successfully!"
+					final_state="running"
+				else
+					print_warning "VM started but may still be booting"
+					final_state="starting"
+				fi
+				break
 			fi
-			break
-		else
-			print_error "Start attempt $((start_attempts + 1)) failed: $start_error"
-			
+
+			print_error "Start attempt ${attempt} failed: $start_error"
+
 			if is_lock_error "$start_error" && [ $start_attempts -eq 0 ]; then
 				print_warning "Detected lock-related error, running fix-lock.sh..."
-				
 				if [ -x "$FIX_LOCK_SCRIPT" ]; then
 					if "$FIX_LOCK_SCRIPT" "$vm_name"; then
 						print_success "fix-lock.sh completed successfully"
@@ -1129,16 +1144,28 @@ restore_vm() {
 					print_error "fix-lock.sh script not found or not executable: $FIX_LOCK_SCRIPT"
 					break
 				fi
-			else
-				print_error "Cannot recover from error: $start_error"
-				break
 			fi
-		fi
-		
-		start_attempts=$((start_attempts + 1))
-	done
 
-	if ! wait_for_vm_state "$vm_name" "running" 5; then
+			print_error "Cannot recover from error: $start_error"
+			break
+		done
+	fi
+
+	local need_manual_help=false
+	if [ "$final_state" != "running" ]; then
+		if [ "$skip_auto_start" = false ]; then
+			if wait_for_vm_state "$vm_name" "running" 5; then
+				final_state="running"
+			else
+				need_manual_help=true
+				final_state="shut off (manual start needed)"
+			fi
+		else
+			need_manual_help=true
+		fi
+	fi
+
+	if [ "$need_manual_help" = true ] && [ "$final_state" != "running" ]; then
 		print_warning "VM restored but failed to start automatically after $max_attempts attempts"
 		print_info ""
 		print_info "Manual troubleshooting steps:"
@@ -1158,8 +1185,8 @@ restore_vm() {
 		print_info "  5. Check detailed logs:"
 		print_info "     tail -f /var/log/libvirt/qemu/$vm_name.log"
 		print_info ""
+		[ -z "$start_error" ] && start_error="Auto-start skipped."
 		print_info "Last error was: $start_error"
-		local final_state="shut off (manual start needed)"
 	fi
 
 	echo ""
