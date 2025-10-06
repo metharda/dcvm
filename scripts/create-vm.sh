@@ -864,40 +864,26 @@ echo "=================================================="
 print_info "VM Configuration Summary"
 echo "=================================================="
 echo "VM Name: $VM_NAME"
-echo "Operating System: $VM_OS"
 echo "Username: $VM_USERNAME"
-if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_PASSWORD" ]; then
-	echo "Password: ******* (provided via flag)"
-else
-	echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
-fi
+echo "Password: ****"
 if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	echo "Root Access: Enabled"
-	if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_ROOT_PASSWORD" ]; then
-		echo "Root Password: ******* (provided via flag)"
-	else
-		echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
-	fi
+	echo "Root Password: ****"
 else
 	echo "Root Access: Disabled"
 fi
 if [ -n "$SSH_KEY" ]; then
 	echo "SSH Key: Configured"
-else
-	echo "SSH Key: Disabled (password-only authentication)"
 fi
 echo "Memory: ${VM_MEMORY}MB"
 echo "CPUs: $VM_CPUS"
 echo "Disk: $VM_DISK_SIZE"
-if [ -n "$ADDITIONAL_PACKAGES" ]; then
-	echo "Packages: $ADDITIONAL_PACKAGES"
-fi
+echo ""
 echo ""
 
 if [ "$FORCE_MODE" = true ]; then
-	print_info "Proceeding with VM creation in non-interactive mode..."
+	CONFIRM="y"
 else
-	echo ""
 	while true; do
 		read -p "Proceed with VM creation? (Y/n): " CONFIRM
 		CONFIRM=${CONFIRM:-y}
@@ -1174,12 +1160,7 @@ echo "=================================================="
 echo ""
 echo "Connection Methods:"
 echo "   Console: virsh console $VM_NAME"
-if [ -n "$SSH_KEY" ]; then
-	echo "   SSH with key: ssh $VM_USERNAME@<vm_ip>"
-	echo "   SSH with password: ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no $VM_USERNAME@<vm_ip>"
-else
-	echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
-fi
+echo "   SSH: ssh $VM_USERNAME@<vm_ip>"
 echo "   SCP: scp file $VM_USERNAME@<vm_ip>:/path/"
 echo "   SFTP: sftp $VM_USERNAME@<vm_ip>"
 echo ""
