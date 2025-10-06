@@ -348,13 +348,10 @@ check_dependencies() {
 
 select_os() {
 	if [ "$FORCE_MODE" = true ]; then
-		# Force mode already sets VM_OS_CHOICE in validate_force_mode
-		# Just validate it here
 		if [ -z "$VM_OS_CHOICE" ]; then
 			VM_OS_CHOICE="$DEFAULT_OS"
 		fi
 	else
-		# Interactive mode - prompt user
 		while true; do
 			echo "Supported OS options:"
 			echo "  1) Debian 12"
@@ -428,7 +425,6 @@ DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
 
-# Default values for non-interactive mode
 DEFAULT_USERNAME="admin"
 DEFAULT_PASSWORD=""
 DEFAULT_MEMORY="2048"
@@ -439,7 +435,6 @@ DEFAULT_ENABLE_ROOT="n"
 DEFAULT_ROOT_PASSWORD=""
 FORCE_MODE=false
 
-# Flag variables
 FLAG_USERNAME=""
 FLAG_PASSWORD=""
 FLAG_MEMORY=""
@@ -559,10 +554,8 @@ parse_arguments() {
 
 validate_force_mode() {
 	if [ "$FORCE_MODE" = true ]; then
-		# Force mode - prompt for any unspecified configurations
 		print_info "Running in force mode"
 		
-		# Username
 		if [ -n "$FLAG_USERNAME" ]; then
 			VM_USERNAME="$FLAG_USERNAME"
 			if ! validate_username "$VM_USERNAME"; then
@@ -580,7 +573,6 @@ validate_force_mode() {
 			interactive_prompt_username
 		fi
 		
-		# Password
 		if [ -n "$FLAG_PASSWORD" ]; then
 			VM_PASSWORD="$FLAG_PASSWORD"
 			validation_result=$(validate_password "$VM_PASSWORD")
@@ -593,7 +585,6 @@ validate_force_mode() {
 			interactive_prompt_password
 		fi
 		
-		# Memory
 		if [ -n "$FLAG_MEMORY" ]; then
 			VM_MEMORY="$FLAG_MEMORY"
 		else
@@ -603,7 +594,6 @@ validate_force_mode() {
 			interactive_prompt_memory
 		fi
 		
-		# CPUs
 		if [ -n "$FLAG_CPUS" ]; then
 			VM_CPUS="$FLAG_CPUS"
 		else
@@ -613,7 +603,6 @@ validate_force_mode() {
 			interactive_prompt_cpus
 		fi
 		
-		# Disk size
 		if [ -n "$FLAG_DISK_SIZE" ]; then
 			VM_DISK_SIZE="$FLAG_DISK_SIZE"
 		else
