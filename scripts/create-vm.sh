@@ -833,49 +833,52 @@ fi
 echo ""
 
 SSH_KEY=""
-if { [ "$FORCE_MODE" = true ] && [ "$FLAG_WITH_SSH_KEY" = true ]; } || [ "$FORCE_MODE" = false ]; then
-	# In interactive mode, ask user; in force mode, only if flag is set
-	SETUP_SSH_KEY=false
-	
-	if [ "$FLAG_WITH_SSH_KEY" = true ]; then
-		SETUP_SSH_KEY=true
-	elif [ "$FORCE_MODE" = false ]; then
-		# Interactive mode - ask user
-		echo ""
-		while true; do
-			read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
-			ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
-			
-			if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
-				if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
-					SETUP_SSH_KEY=true
-				fi
-				break
-			else
-				print_error "Please enter 'y' for yes or 'n' for no"
-			fi
-		done
-	fi
-	
-	if [ "$SETUP_SSH_KEY" = true ]; then
-		print_info "Setting up SSH Key Authentication (RSA)..."
+if [ "$FLAG_WITH_SSH_KEY" = true ]; then
+	# SSH key flag is set
+	SETUP_SSH_KEY=true
+elif [ "$FORCE_MODE" = true ]; then
+	# Force mode without SSH key flag - prompt user
+	echo ""
+	interactive_prompt_ssh_key
+	SETUP_SSH_KEY=false  # Will be set by interactive_prompt_ssh_key if needed
+elif [ "$FORCE_MODE" = false ]; then
+	# Full interactive mode - ask user
+	echo ""
+	while true; do
+		read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
+		ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
 		
-		if [ -f ~/.ssh/id_rsa.pub ]; then
-			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-			print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
-		else
-			print_info "No RSA SSH key found. Creating new RSA SSH key..."
-			if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-				SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-				print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+		if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
+			if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
+				SETUP_SSH_KEY=true
 			else
-				print_error "Failed to create SSH key"
-				exit 1
+				SETUP_SSH_KEY=false
 			fi
+			break
+		else
+			print_error "Please enter 'y' for yes or 'n' for no"
 		fi
+	done
+fi
+
+if [ "$SETUP_SSH_KEY" = true ] || [ "$FLAG_WITH_SSH_KEY" = true ]; then
+	print_info "Setting up SSH Key Authentication (RSA)..."
+	
+	if [ -f ~/.ssh/id_rsa.pub ]; then
+		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+		print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
 	else
-		print_info "SSH key authentication disabled - using password-only authentication"
+		print_info "No RSA SSH key found. Creating new RSA SSH key..."
+		if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
+			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+			print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+		else
+			print_error "Failed to create SSH key"
+			exit 1
+		fi
 	fi
+else
+	print_info "SSH key authentication disabled - using password-only authentication"
 fi
 
 echo ""
