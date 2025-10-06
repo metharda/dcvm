@@ -140,6 +140,7 @@ interactive_prompt_password() {
 interactive_prompt_memory() {
 	while true; do
 		read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY
+		VM_MEMORY=$(echo "$VM_MEMORY" | xargs)
 		VM_MEMORY=${VM_MEMORY:-2048}
 
 		if [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]]; then
@@ -167,6 +168,7 @@ interactive_prompt_memory() {
 interactive_prompt_cpus() {
 	while true; do
 		read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS
+		VM_CPUS=$(echo "$VM_CPUS" | xargs)
 		VM_CPUS=${VM_CPUS:-2}
 
 		if [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]]; then
