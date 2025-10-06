@@ -860,10 +860,6 @@ if [ "$FORCE_MODE" = true ]; then
 	esac
 	
 	print_success "Force mode resource configuration validated"
-else
-	interactive_prompt_memory
-	interactive_prompt_cpus
-	interactive_prompt_disk
 fi
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
