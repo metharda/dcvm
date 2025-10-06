@@ -1041,14 +1041,14 @@ echo "=================================================="
 echo "VM Name: $VM_NAME"
 echo "Operating System: $VM_OS"
 echo "Username: $VM_USERNAME"
-if [ "$FORCE_MODE" = true ]; then
+if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_PASSWORD" ]; then
 	echo "Password: ******* (provided via flag)"
 else
 	echo "Password: $(echo "$VM_PASSWORD" | sed 's/./*/g')"
 fi
 if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
 	echo "Root Access: Enabled"
-	if [ "$FORCE_MODE" = true ]; then
+	if [ "$FORCE_MODE" = true ] && [ -n "$FLAG_ROOT_PASSWORD" ]; then
 		echo "Root Password: ******* (provided via flag)"
 	else
 		echo "Root Password: $(echo "$ROOT_PASSWORD" | sed 's/./*/g')"
