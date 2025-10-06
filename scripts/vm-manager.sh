@@ -362,14 +362,24 @@ case $1 in
 	;;
 "create")
 	if [ -z "$2" ]; then
-		echo "Usage: $0 create <vm_name> [additional_packages]"
-		echo "Examples:"
+		echo "Usage: $0 create <vm_name> [options]"
+		echo ""
+		echo "Interactive mode:"
 		echo "  $0 create datacenter-vm1"
 		echo "  $0 create datacenter-vm2 nginx"
 		echo "  $0 create web-server apache2"
+		echo ""
+		echo "Non-interactive mode (pass all parameters to create-vm.sh):"
+		echo "  $0 create web-server -f -p mypass123 -k nginx"
+		echo "  $0 create db-server -f -u dbadmin -p secret -m 4096 -c 4 -d 50G -k mysql-server"
+		echo "  $0 create admin-vm -f -p mypass --enable-root      # Root same password"
+		echo "  $0 create secure-vm -f -p userpass -r rootpass123  # Root different password"
+		echo ""
+		echo "For all available options, run: $SCRIPTS_PATH/create-vm.sh --help"
 		exit 1
 	fi
-	"$SCRIPTS_PATH/create-vm.sh" "$2" "$3"
+	shift
+	"$SCRIPTS_PATH/create-vm.sh" "$@"
 	;;
 "delete")
 	if [ -z "$2" ]; then
@@ -642,7 +652,7 @@ case $1 in
 	echo "  start [vm|all]     - Start specific VM or all datacenter VMs"
 	echo "  stop [vm|all]      - Stop specific VM or all datacenter VMs"
 	echo "  restart [vm|all]   - Restart specific VM or all datacenter VMs"
-	echo "  create <n> [pkg]   - Create new VM with optional package"
+	echo "  create <n> [opts]  - Create new VM (interactive/non-interactive modes)"
 	echo "  delete <n>         - Delete specified VM"
 	echo ""
 	echo "Status & Monitoring:"
@@ -671,7 +681,10 @@ case $1 in
 	echo "  dcvm start                      							# Start all VMs (default)"
 	echo "  dcvm stop datacenter-vm1        							# Stop specific VM"
 	echo "  dcvm restart all                							# Restart all VMs"
-	echo "  dcvm create web-server nginx    							# Create VM with nginx"
+	echo "  dcvm create web-server nginx    							# Create VM with nginx (interactive)"
+	echo "  dcvm create web-server -f -p pass123 -k nginx           # Create VM (non-interactive)"
+	echo "  dcvm create admin-vm -f -p mypass --enable-root         # With root login (same password)"
+	echo "  dcvm create secure-vm -f -p userpass -r rootpass123     # With root login (different password)"
 	echo "  dcvm delete old-vm              							# Delete specific VM"
 	echo "  dcvm backup create datacenter-vm1   						# Create backup"
 	echo "  dcvm backup restore datacenter-vm1  						# Restore from latest backup"
