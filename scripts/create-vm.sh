@@ -720,13 +720,7 @@ if [ "$SETUP_SSH_KEY" = true ]; then
 		fi
 	fi
 else
-	if [ "$FORCE_MODE" = false ]; then
-		echo ""
-		interactive_prompt_ssh_key
-	else
-		SETUP_SSH_KEY=false
-		print_info "SSH key authentication disabled - using password-only authentication"
-	fi
+	print_info "SSH key authentication disabled - using password-only authentication"
 fi
 
 echo ""
