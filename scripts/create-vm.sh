@@ -840,7 +840,6 @@ elif [ "$FORCE_MODE" = true ]; then
 	# Force mode without SSH key flag - prompt user
 	echo ""
 	interactive_prompt_ssh_key
-	SETUP_SSH_KEY=false  # Will be set by interactive_prompt_ssh_key if needed
 elif [ "$FORCE_MODE" = false ]; then
 	# Full interactive mode - ask user
 	echo ""
