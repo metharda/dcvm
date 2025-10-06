@@ -298,8 +298,8 @@ interactive_prompt_root() {
 interactive_prompt_ssh_key() {
 	SETUP_SSH_KEY=false
 	while true; do
-		read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
-		ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
+		read -p "Setup SSH key for passwordless authentication? (Y/n): " ENABLE_SSH_KEY
+		ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-y}
 		
 		if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
 			if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
@@ -446,6 +446,8 @@ FLAG_OS=""
 FLAG_ENABLE_ROOT=""
 FLAG_ROOT_PASSWORD=""
 FLAG_WITH_SSH_KEY=false
+FLAG_DISABLE_SSH_KEY=false
+ADDITIONAL_PACKAGES=""
 
 show_usage() {
 	echo "VM Creation Script"
@@ -462,6 +464,7 @@ show_usage() {
 	echo "  -o, --os <os_choice>           Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04 (default: 3)"
 	echo "  -k, --packages <packages>      Comma-separated package list"
 	echo "  --with-ssh-key                 Add SSH key for passwordless authentication"
+	echo "  --without-ssh-key              Disable SSH key setup (password-only)"
 	echo "  -f, --force                    Force mode - uses defaults for unspecified options (no prompts)"
 	echo "  -h, --help                     Show this help"
 	echo ""
@@ -525,6 +528,10 @@ parse_arguments() {
 				;;
 			--with-ssh-key)
 				FLAG_WITH_SSH_KEY=true
+				shift
+				;;
+			--without-ssh-key)
+				FLAG_DISABLE_SSH_KEY=true
 				shift
 				;;
 			-f|--force)
