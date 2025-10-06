@@ -447,7 +447,7 @@ FLAG_WITH_SSH_KEY=false
 
 show_usage() {
 	echo "VM Creation Script"
-	echo "Usage: dcvm <vm_name> [options]"
+	echo "Usage: $0 <vm_name> [options]"
 	echo ""
 	echo "Options:"
 	echo "  -u, --username <username>      Set VM username (default: admin)"
