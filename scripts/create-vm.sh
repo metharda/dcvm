@@ -557,7 +557,88 @@ parse_arguments() {
 
 validate_force_mode() {
 	if [ "$FORCE_MODE" = true ]; then
-		print_info "Running in force mode"
+		print_info "Running in force mode - using defaults for unspecified options"
+		
+		if [ -n "$FLAG_USERNAME" ]; then
+			VM_USERNAME="$FLAG_USERNAME"
+			if ! validate_username "$VM_USERNAME"; then
+				print_error "Invalid username: $VM_USERNAME"
+				print_error "Username requirements:"
+				echo "  - 3-32 characters long"
+				echo "  - Start with letter or underscore"
+				echo "  - Only letters, numbers, underscore, hyphen allowed"
+				exit 1
+			fi
+		else
+			VM_USERNAME="$DEFAULT_USERNAME"
+			print_info "Using default username: $VM_USERNAME"
+		fi
+		
+		if [ -n "$FLAG_PASSWORD" ]; then
+			VM_PASSWORD="$FLAG_PASSWORD"
+			validation_result=$(validate_password "$VM_PASSWORD")
+			if [ $? -ne 0 ]; then
+				print_error "Invalid password: $validation_result"
+				exit 1
+			fi
+		else
+			print_error "Password is required in force mode. Use -p <password>"
+			exit 1
+		fi
+		
+		if [ -n "$FLAG_MEMORY" ]; then
+			VM_MEMORY="$FLAG_MEMORY"
+		else
+			VM_MEMORY="$DEFAULT_MEMORY"
+			print_info "Using default memory: ${VM_MEMORY}MB"
+		fi
+		
+		if [ -n "$FLAG_CPUS" ]; then
+			VM_CPUS="$FLAG_CPUS"
+		else
+			VM_CPUS="$DEFAULT_CPUS"
+			print_info "Using default CPUs: $VM_CPUS"
+		fi
+		
+		if [ -n "$FLAG_DISK_SIZE" ]; then
+			VM_DISK_SIZE="$FLAG_DISK_SIZE"
+		else
+			VM_DISK_SIZE="$DEFAULT_DISK_SIZE"
+			print_info "Using default disk size: $VM_DISK_SIZE"
+		fi
+		
+		if [ -n "$FLAG_OS" ]; then
+			VM_OS_CHOICE="$FLAG_OS"
+		else
+			VM_OS_CHOICE="$DEFAULT_OS"
+			print_info "Using default OS: Ubuntu 22.04"
+		fi
+		
+		if [ -n "$FLAG_ENABLE_ROOT" ]; then
+			ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+			if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+				if [ -n "$FLAG_ROOT_PASSWORD" ]; then
+					ROOT_PASSWORD="$FLAG_ROOT_PASSWORD"
+					validation_result=$(validate_password "$ROOT_PASSWORD")
+					if [ $? -ne 0 ]; then
+						print_error "Invalid root password: $validation_result"
+						exit 1
+					fi
+				else
+					ROOT_PASSWORD="$VM_PASSWORD"
+				fi
+			else
+				ROOT_PASSWORD=""
+			fi
+		else
+			ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
+			ROOT_PASSWORD=""
+			print_info "Root login disabled (default)"
+		fi
+		
+		print_success "Force mode configuration completed"
+	else
+		print_info "Running in interactive mode"
 		
 		if [ -n "$FLAG_USERNAME" ]; then
 			VM_USERNAME="$FLAG_USERNAME"
@@ -642,7 +723,7 @@ validate_force_mode() {
 			interactive_prompt_root
 		fi
 		
-		print_success "Force mode configuration completed"
+		print_success "Interactive mode configuration completed"
 	fi
 }
 
