@@ -556,6 +556,10 @@ parse_arguments() {
 }
 
 validate_force_mode() {
+	if [ -z "$HOST_MEMORY_MB" ] || [ -z "$HOST_CPUS" ]; then
+		get_host_info
+	fi
+	
 	if [ "$FORCE_MODE" = true ]; then
 		print_info "Running in force mode - using defaults for unspecified options"
 		
@@ -740,10 +744,11 @@ if [ -z "$VM_NAME" ]; then
 	exit 1
 fi
 
-validate_force_mode
-
 check_dependencies
 get_host_info
+
+validate_force_mode
+
 echo "=================================================="
 echo "VM Creation Wizard"
 echo "=================================================="
