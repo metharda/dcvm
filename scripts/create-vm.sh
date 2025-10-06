@@ -678,170 +678,21 @@ echo ""
 print_info "Setting up operating system for the VM..."
 select_os
 
-if [ "$FORCE_MODE" = true ]; then
-	if ! validate_username "$VM_USERNAME"; then
-		print_error "Invalid username: $VM_USERNAME"
-		print_error "Username requirements:"
-		echo "  - 3-32 characters long"
-		echo "  - Start with letter or underscore"
-		echo "  - Only letters, numbers, underscore, hyphen allowed"
-		exit 1
-	fi
-	
-	validation_result=$(validate_password "$VM_PASSWORD")
-	if [ $? -ne 0 ]; then
-		print_error "Invalid password: $validation_result"
-		exit 1
-	fi
-	
-	# Root password validation and assignment is handled in validate_force_mode; no need to duplicate here.
-	
-	print_success "Non-interactive configuration validated"
-else
-	print_info "Setting up user account..."
-	echo ""
-
-	while true; do
-		read -p "Enter username for VM (default: admin): " VM_USERNAME
-		VM_USERNAME=${VM_USERNAME:-admin}
-
-		if validate_username "$VM_USERNAME"; then
-			break
-		else
-			print_error "Invalid username! Requirements:"
-			echo "  - 3-32 characters long"
-			echo "  - Start with letter or underscore"
-			echo "  - Only letters, numbers, underscore, hyphen allowed"
-			echo "  - Examples: admin, user1, my_user, test-vm"
-			echo ""
-		fi
-	done
-
-	print_success "Username set to: $VM_USERNAME"
-
-	echo ""
-	print_info "Setting password for user '$VM_USERNAME'..."
-	while true; do
-		read_password "Password: " VM_PASSWORD
-
-		if [ -z "$VM_PASSWORD" ]; then
-			print_error "Password cannot be empty!"
-			echo ""
-			continue
-		fi
-
-		validation_result=$(validate_password "$VM_PASSWORD")
-		if [ $? -ne 0 ]; then
-			print_error "$validation_result"
-			echo ""
-			continue
-		fi
-
-		read_password "Retype password: " VM_PASSWORD_CONFIRM
-		if [ "$VM_PASSWORD" = "$VM_PASSWORD_CONFIRM" ]; then
-			print_success "User '$VM_USERNAME' password configured successfully"
-			break
-		else
-			print_error "Passwords do not match! Please try again."
-			echo ""
-		fi
-	done
-
-	echo ""
-	print_info "Root access configuration..."
-	while true; do
-		read -p "Enable root login? (y/N): " ENABLE_ROOT
-		ENABLE_ROOT=${ENABLE_ROOT:-n}
-
-		if [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]]; then
-			break
-		else
-			print_error "Please enter 'y' for yes or 'n' for no"
-		fi
-	done
-
-	ROOT_PASSWORD=""
-	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
-		while true; do
-			read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD
-			SAME_ROOT_PASSWORD=${SAME_ROOT_PASSWORD:-y}
-
-			if [[ "$SAME_ROOT_PASSWORD" =~ ^[YyNn]$ ]]; then
-				break
-			else
-				print_error "Please enter 'y' for yes or 'n' for no"
-			fi
-		done
-
-		if [[ "$SAME_ROOT_PASSWORD" =~ ^[Yy]$ ]]; then
-			ROOT_PASSWORD="$VM_PASSWORD"
-			print_success "Root will use the same password"
-		else
-			echo ""
-			print_info "Setting password for root user..."
-			while true; do
-				read_password "Password: " ROOT_PASSWORD
-
-				if [ -z "$ROOT_PASSWORD" ]; then
-					print_error "Password cannot be empty!"
-					echo ""
-					continue
-				fi
-
-				validation_result=$(validate_password "$ROOT_PASSWORD")
-				if [ $? -ne 0 ]; then
-					print_error "$validation_result"
-					echo ""
-					continue
-				fi
-
-				read_password "Retype password: " ROOT_PASSWORD_CONFIRM
-				if [ "$ROOT_PASSWORD" = "$ROOT_PASSWORD_CONFIRM" ]; then
-					print_success "Root password configured successfully"
-					break
-				else
-					print_error "Passwords do not match! Please try again."
-					echo ""
-				fi
-			done
-		fi
-		print_success "Root access enabled"
-	else
-		print_success "Root access disabled"
-	fi
-fi
-
 echo ""
 
 SSH_KEY=""
 if [ "$FLAG_WITH_SSH_KEY" = true ]; then
-	# SSH key flag is set
 	SETUP_SSH_KEY=true
-elif [ "$FORCE_MODE" = true ]; then
-	# Force mode without SSH key flag - prompt user
-	echo ""
-	interactive_prompt_ssh_key
-elif [ "$FORCE_MODE" = false ]; then
-	# Full interactive mode - ask user
-	echo ""
-	while true; do
-		read -p "Setup SSH key for passwordless authentication? (y/N): " ENABLE_SSH_KEY
-		ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-n}
-		
-		if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
-			if [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]]; then
-				SETUP_SSH_KEY=true
-			else
-				SETUP_SSH_KEY=false
-			fi
-			break
-		else
-			print_error "Please enter 'y' for yes or 'n' for no"
-		fi
-	done
+else
+	if [ "$FORCE_MODE" = false ]; then
+		echo ""
+		interactive_prompt_ssh_key
+	else
+		SETUP_SSH_KEY=false
+	fi
 fi
 
-if [ "$SETUP_SSH_KEY" = true ] || [ "$FLAG_WITH_SSH_KEY" = true ]; then
+if [ "$SETUP_SSH_KEY" = true ]; then
 	print_info "Setting up SSH Key Authentication (RSA)..."
 	
 	if [ -f ~/.ssh/id_rsa.pub ]; then
