@@ -5,21 +5,10 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-print_info() {
-	echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-print_success() {
-	echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_warning() {
-	echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-	echo -e "${RED}[ERROR]${NC} $1"
-}
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 get_host_info() {
 	HOST_MEMORY_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -234,8 +223,8 @@ interactive_prompt_disk() {
 interactive_prompt_root() {
 	print_info "Root access configuration..."
 	while true; do
-		read -p "Enable root login? (y/N): " ENABLE_ROOT
-		ENABLE_ROOT=${ENABLE_ROOT:-n}
+		read -p "Enable root login? (Y/n): " ENABLE_ROOT
+		ENABLE_ROOT=${ENABLE_ROOT:-y}
 
 		if [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]]; then
 			break
@@ -575,8 +564,15 @@ if [ -z "$VM_NAME" ]; then
 	exit 1
 fi
 
+if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
+	print_error "VM $VM_NAME already exists"
+	echo "Use: dcvm delete $VM_NAME (to delete it first)"
+	exit 1
+fi
+
 check_dependencies
 get_host_info
+
 echo "=================================================="
 echo "VM Creation Wizard"
 echo "=================================================="
@@ -587,22 +583,29 @@ echo "  Total CPUs: $HOST_CPUS"
 echo "  Total Memory: ${HOST_MEMORY_MB}MB ($(echo "scale=1; $HOST_MEMORY_MB/1024" | bc -l)GB)"
 echo "  Recommended VM Limits: ${MAX_VM_CPUS} CPUs, ${MAX_VM_MEMORY}MB RAM"
 echo ""
-
 print_info "Creating VM: $VM_NAME"
 
-echo ""
-
-print_info "Setting up operating system for the VM..."
 if [ -n "$FLAG_OS" ]; then
 	VM_OS_CHOICE="$FLAG_OS"
 else
 	VM_OS_CHOICE="${VM_OS_CHOICE:-$DEFAULT_OS}"
 fi
 select_os
+if [ "$FORCE_MODE" = true ]; then
+	echo ""
+	print_info "OS configuration"
+	print_success "Operating system set to: $VM_OS"
+else
+	echo ""
+	print_info "Setting up operating system for the VM..."
+fi
 
-echo ""
-print_info "Setting up user account..."
-echo ""
+if [ "$FORCE_MODE" = true ]; then
+	print_info "User account setup"
+else
+	echo ""
+	print_info "Setting up user account..."
+fi
 
 if [ -n "$FLAG_USERNAME" ]; then
 	VM_USERNAME="$FLAG_USERNAME"
@@ -614,25 +617,39 @@ if [ -n "$FLAG_USERNAME" ]; then
 		echo "  - Only letters, numbers, underscore, hyphen allowed"
 		exit 1
 	fi
-	print_success "Username set to: $VM_USERNAME"
+	if [ "$FORCE_MODE" = true ]; then
+		print_success "Username: $VM_USERNAME"
+	else
+		print_success "Username set to: $VM_USERNAME"
+	fi
 elif [ "$FORCE_MODE" = true ]; then
 	VM_USERNAME="$DEFAULT_USERNAME"
-	print_success "Username set to: $VM_USERNAME"
+	print_success "Username: $VM_USERNAME (default)"
 else
 	interactive_prompt_username
 fi
 
-echo ""
+if [ "$FORCE_MODE" != true ]; then
+	echo ""
+fi
 
 if [ -n "$FLAG_PASSWORD" ]; then
-	print_info "Setting password for user '$VM_USERNAME'..."
+	if [ "$FORCE_MODE" = true ]; then
+		print_info "Password setup"
+	else
+		print_info "Setting password for user '$VM_USERNAME'..."
+	fi
 	VM_PASSWORD="$FLAG_PASSWORD"
 	validation_result=$(validate_password "$VM_PASSWORD")
 	if [ $? -ne 0 ]; then
 		print_error "Invalid password: $validation_result"
 		exit 1
 	fi
-	print_success "User '$VM_USERNAME' password configured successfully"
+	if [ "$FORCE_MODE" = true ]; then
+		print_success "Password configured"
+	else
+		print_success "User '$VM_USERNAME' password configured successfully"
+	fi
 elif [ "$FORCE_MODE" = true ]; then
 	print_error "Password is required in force mode. Use -p <password>"
 	exit 1
@@ -640,10 +657,12 @@ else
 	interactive_prompt_password
 fi
 
-echo ""
+if [ "$FORCE_MODE" != true ]; then
+	echo ""
+fi
 
 if [ "$FORCE_MODE" = true ]; then
-	print_info "Root access configuration..."
+	print_info "Root access configuration"
 	if [ -n "$FLAG_ENABLE_ROOT" ]; then
 		ENABLE_ROOT="$FLAG_ENABLE_ROOT"
 	else
@@ -662,7 +681,6 @@ if [ "$FORCE_MODE" = true ]; then
 		else
 			ROOT_PASSWORD="$VM_PASSWORD"
 		fi
-		print_success "Root will use the same password"
 		print_success "Root access enabled"
 	else
 		print_success "Root access disabled"
@@ -693,7 +711,9 @@ else
 	fi
 fi
 
-echo ""
+if [ "$FORCE_MODE" != true ]; then
+	echo ""
+fi
 
 SSH_KEY=""
 SETUP_SSH_KEY=true
@@ -705,27 +725,50 @@ elif [ "$FLAG_WITH_SSH_KEY" = true ]; then
 fi
 
 if [ "$SETUP_SSH_KEY" = true ]; then
-	print_info "Setting up SSH Key Authentication (RSA)..."
+	if [ "$FORCE_MODE" = true ]; then
+		print_info "SSH key setup"
+	else
+		print_info "Setting up SSH Key Authentication (RSA)..."
+	fi
 	if [ -f ~/.ssh/id_rsa.pub ]; then
 		SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-		print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
+		if [ "$FORCE_MODE" = true ]; then
+			print_success "SSH key configured"
+		else
+			print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
+		fi
 	else
-		print_info "No RSA SSH key found. Creating new RSA SSH key..."
+		if [ "$FORCE_MODE" = true ]; then
+			print_info "Creating SSH key"
+		else
+			print_info "No RSA SSH key found. Creating new RSA SSH key..."
+		fi
 		if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
 			SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
-			print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+			if [ "$FORCE_MODE" = true ]; then
+				print_success "SSH key created"
+			else
+				print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
+			fi
 		else
 			print_error "Failed to create SSH key"
 			exit 1
 		fi
 	fi
 else
-	print_info "SSH key authentication disabled - using password-only authentication"
+	if [ "$FORCE_MODE" = true ]; then
+		print_info "SSH key disabled"
+	else
+		print_info "SSH key authentication disabled - using password-only authentication"
+	fi
 fi
 
-echo ""
-print_info "VM Resource Configuration..."
-echo ""
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Resource configuration"
+else
+	echo ""
+	print_info "VM Resource Configuration..."
+fi
 
 if [ "$FORCE_MODE" = true ]; then
 	VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
@@ -859,27 +902,32 @@ fi
 
 print_success "VM resources configured: ${VM_MEMORY}MB RAM, ${VM_CPUS} CPUs, ${VM_DISK_SIZE} disk"
 
-echo ""
-echo "=================================================="
-print_info "VM Configuration Summary"
-echo "=================================================="
-echo "VM Name: $VM_NAME"
-echo "Username: $VM_USERNAME"
-echo "Password: ****"
-if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
-	echo "Root Access: Enabled"
-	echo "Root Password: ****"
+if [ "$FORCE_MODE" = true ]; then
+	echo ""
+	print_info "Starting VM creation"
 else
-	echo "Root Access: Disabled"
+	echo ""
+	echo "=================================================="
+	print_info "VM Configuration Summary"
+	echo "=================================================="
+	echo "VM Name: $VM_NAME"
+	echo "Username: $VM_USERNAME"
+	echo "Password: ****"
+	if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+		echo "Root Access: Enabled"
+		echo "Root Password: ****"
+	else
+		echo "Root Access: Disabled"
+	fi
+	if [ -n "$SSH_KEY" ]; then
+		echo "SSH Key: Configured"
+	fi
+	echo "Memory: ${VM_MEMORY}MB"
+	echo "CPUs: $VM_CPUS"
+	echo "Disk: $VM_DISK_SIZE"
+	echo ""
+	echo ""
 fi
-if [ -n "$SSH_KEY" ]; then
-	echo "SSH Key: Configured"
-fi
-echo "Memory: ${VM_MEMORY}MB"
-echo "CPUs: $VM_CPUS"
-echo "Disk: $VM_DISK_SIZE"
-echo ""
-echo ""
 
 if [ "$FORCE_MODE" = true ]; then
 	CONFIRM="y"
@@ -899,13 +947,11 @@ else
 	done
 fi
 
-if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
-	print_error "VM $VM_NAME already exists"
-	echo "Use: dcvm delete $VM_NAME (to delete it first)"
-	exit 1
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Creating VM files"
+else
+	print_info "Starting VM creation process..."
 fi
-
-print_info "Starting VM creation process..."
 
 if [ ! -d "$DATACENTER_BASE/vms" ]; then
 	print_error "Directory $DATACENTER_BASE/vms does not exist"
@@ -922,7 +968,11 @@ if ! mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init; then
 	exit 1
 fi
 
-print_info "Generating secure password hash..."
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Generating password hash"
+else
+	print_info "Generating secure password hash..."
+fi
 PASSWORD_HASH=$(generate_password_hash "$VM_PASSWORD")
 if [ -z "$PASSWORD_HASH" ]; then
 	print_error "Failed to generate password hash"
@@ -1117,20 +1167,32 @@ ethernets:
     dhcp-identifier: mac
 NETWORK_EOF
 
-print_info "Creating cloud-init configuration..."
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Creating cloud-init config"
+else
+	print_info "Creating cloud-init configuration..."
+fi
 cd $DATACENTER_BASE/vms/$VM_NAME
 if ! genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1; then
 	print_error "Failed to create cloud-init ISO"
 	exit 1
 fi
 
-print_info "Creating VM disk ($VM_DISK_SIZE)..."
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Creating VM disk ($VM_DISK_SIZE)"
+else
+	print_info "Creating VM disk ($VM_DISK_SIZE)..."
+fi
 if ! qemu-img create -f qcow2 -F qcow2 -b $TEMPLATE_FILE ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1; then
 	print_error "Failed to create VM disk"
 	exit 1
 fi
 
-print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
+if [ "$FORCE_MODE" = true ]; then
+	print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)"
+else
+	print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
+fi
 if ! virt-install \
 	--name $VM_NAME \
 	--virt-type kvm \
@@ -1150,7 +1212,11 @@ if ! virt-install \
 fi
 
 if ! virsh autostart $VM_NAME >/dev/null 2>&1; then
-	print_warning "Failed to set VM autostart (VM created successfully)"
+	if [ "$FORCE_MODE" = true ]; then
+		print_warning "Failed to set VM autostart"
+	else
+		print_warning "Failed to set VM autostart (VM created successfully)"
+	fi
 fi
 
 echo ""

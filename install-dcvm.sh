@@ -118,7 +118,7 @@ detect_shell() {
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
-	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage)
+	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc)
 	local arch_packages=(qemu libvirt bridge-utils virt-install wget curl nfs-utils genisoimage)
 
 	if [[ -f /etc/os-release ]]; then
