@@ -35,8 +35,8 @@ Thumbs.db
 *.vhdx
 
 # Configuration files (may contain sensitive data)
-*.conf
 config/
+*.conf
 .env
 .env.*
 
@@ -69,7 +69,6 @@ cache/
 
 # VM storage directories (these should not be in version control)
 vms/
-storage/
 nfs-share/
 vm-storage/
 libvirt/

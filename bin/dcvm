@@ -1,0 +1,155 @@
+#!/bin/bash
+# DCVM - Datacenter Virtual Machine Manager
+# Main CLI entry point
+
+set -euo pipefail
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
+
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="/etc/dcvm-install.conf"
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+    LIB_DIR="${DCVM_LIB_DIR:-/usr/local/lib/dcvm}"
+else
+    DCVM_ROOT="$(dirname "$SCRIPT_DIR")"
+    LIB_DIR="$DCVM_ROOT/lib"
+fi
+if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
+    echo "Visit: https://github.com/metharda/dcvm"
+    exit 1
+fi
+
+show_version() {
+    echo "DCVM - Datacenter Virtual Machine Manager"
+    echo "Version: 1.0.0"
+    echo "https://github.com/metharda/dcvm"
+}
+
+show_usage() {
+    cat << EOF
+DCVM - Datacenter Virtual Machine Manager
+
+Usage: dcvm <command> [options]
+
+COMMANDS:
+  VM Management:
+    create <vm_name> [opts]    Create a new virtual machine
+    delete <vm_name>           Delete a virtual machine
+    list                       List all virtual machines
+    status [vm_name]          Show VM status
+    start <vm_name>           Start a virtual machine
+    stop <vm_name>            Stop a virtual machine
+    restart <vm_name>         Restart a virtual machine
+    console <vm_name>         Connect to VM console
+
+  Network Management:
+    network                   Show network information
+    setup-forwarding          Setup port forwarding
+    dhcp-cleanup             Clean DHCP leases
+
+  Storage & Backup:
+    backup <subcommand>       Backup management (create, restore, list, delete, export, import)
+    storage                  Show storage information
+    storage-cleanup          Clean up storage
+
+  System:
+    fix-lock                 Fix locked resources
+    uninstall                Uninstall DCVM completely
+    version                  Show version information
+    help                     Show this help message
+
+OPTIONS:
+  -h, --help               Show help for specific command
+  -v, --version            Show version information
+
+EXAMPLES:
+  dcvm create myvm -p password123 -m 2048 -c 2
+  dcvm list
+  dcvm network
+  dcvm backup create myvm
+  dcvm backup list
+
+For more information, visit: https://github.com/metharda/dcvm
+EOF
+}
+
+route_command() {
+    local command="$1"
+    shift
+
+    case "$command" in
+        create)
+            exec "$LIB_DIR/core/create-vm.sh" "$@"
+            ;;
+        delete)
+            exec "$LIB_DIR/core/delete-vm.sh" "$@"
+            ;;
+        list|status|start|stop|restart|console)
+            exec "$LIB_DIR/core/vm-manager.sh" "$command" "$@"
+            ;;
+        network)
+            exec "$LIB_DIR/core/vm-manager.sh" network "$@"
+            ;;
+        setup-forwarding)
+            exec "$LIB_DIR/network/setup-port-forwarding.sh" "$@"
+            ;;
+        clear-leases)
+            exec "$LIB_DIR/network/dhcp-cleanup.sh" "$@"
+            ;;
+        backup)
+            if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+                exec "$LIB_DIR/storage/backup.sh" --help
+            else
+                exec "$LIB_DIR/storage/backup.sh" "$@"
+            fi
+            ;;
+        restore)
+            exec "$LIB_DIR/storage/backup.sh" restore "$@"
+            ;;
+        storage|storage-cleanup)
+            exec "$LIB_DIR/storage/storage-manager.sh" "$command" "$@"
+            ;;
+        fix-lock)
+            exec "$LIB_DIR/utils/fix-lock.sh" "$@"
+            ;;
+        uninstall)
+            exec "$LIB_DIR/installation/uninstall-dcvm.sh" "$@"
+            ;;
+        version|-v|--version)
+            show_version
+            ;;
+        help|-h|--help)
+            show_usage
+            ;;
+        *)
+            print_error "Unknown command: $command"
+            echo ""
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        show_usage
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    route_command "$command" "$@"
+}
+main "$@"
