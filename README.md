@@ -2,16 +2,16 @@
 
 **DCVM** is a comprehensive bash script collection that allows you to easily manage your KVM/QEMU-based virtual datacenter environment. It's a powerful tool that automates virtual machine creation, management, backup, and monitoring operations.
 
-## 🚀 Quick Installation
+## Quick Installation
 
 You can setup dcvm quickly with `curl` or `wget` commands: (you should be in root user)
 
 | Method    | Command                                                                                           |
 | :-------- | :------------------------------------------------------------------------------------------------ |
-| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install/install-dcvm.sh)"`    |
-| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/install/install-dcvm.sh)"`    |
+| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
+| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
 
-## ✨ Features
+## Features
 
 ### Virtual Machine Management
 - **Automated VM Creation**: Debian 12-based VMs with cloud-init support
@@ -37,7 +37,7 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 - **Log Management**: Detailed operation logs
 - **Security**: SSH key-based secure access
 
-## 📋 Requirements
+## Requirements
 
 ### Hardware
 - **CPU**: VT-x/AMD-V capable processor
@@ -50,7 +50,7 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
 
-## 📦 Installation
+## Installation
 
 ### Quick Install (Recommended)
 
@@ -79,35 +79,7 @@ dcvm status
 
 For detailed installation instructions, see [Installation Guide](docs/installation.md).
 
-### 🔁 Shell Tab Completion (Bash/Zsh)
-
-We provide tab completion for dcvm commands, VM names and backup/DHCP subcommands.
-
-What it completes:
-- Top-level commands: create, delete, list, start, stop, restart, console, network, setup-forwarding, clear-leases, backup, storage, storage-cleanup, fix-lock, uninstall, version, help
-- VM names for commands like: delete, start, stop, restart, console, status, backup create/restore/delete/export/troubleshoot
-- DHCP helpers: subcommands (show, clear-mac, clear-vm, clear-all, cleanup, renew, files, help) and known MAC addresses from leases
-
-Quick enable (recommended on macOS zsh):
-1) Copy the completion script to a shared location:
-	sudo mkdir -p /usr/local/share/dcvm
-	sudo cp completions/dcvm-completion.sh /usr/local/share/dcvm/
-2) Add this line to your ~/.zshrc:
-	source /usr/local/share/dcvm/dcvm-completion.sh
-3) Restart your shell: exec zsh
-
-Bash (Linux) system-wide:
-1) Ensure bash-completion is installed.
-2) Copy the script to bash completion dir:
-	sudo mkdir -p /etc/bash_completion.d
-	sudo cp completions/dcvm-completion.sh /etc/bash_completion.d/dcvm
-3) Restart your shell.
-
-Notes:
-- The script auto-detects zsh and enables bashcompinit automatically.
-- Lease MAC suggestions read dnsmasq leases from /var/lib/libvirt/dnsmasq/<bridge>.leases when readable.
-
-## 🎯 Quick Start
+## Quick Start
 
 ### Create Your First VM
 
@@ -136,7 +108,7 @@ dcvm network
 ssh admin@<vm-ip>
 ```
 
-## 📚 Usage Guide
+## Usage Guide
 
 ### Basic Commands
 
@@ -171,41 +143,26 @@ dcvm --help                          # Show help
 
 For detailed usage, see [Usage Guide](docs/usage.md).
 
-## 📖 Documentation
+## Documentation
 
 - **[Installation Guide](docs/installation.md)** - Detailed installation instructions
 - **[Usage Guide](docs/usage.md)** - Complete command reference
 - **[Examples](docs/examples/)** - Practical examples and tutorials
-- **Configuration** - See `config/` directory for examples
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 dcvm/
 ├── bin/                          # Main executable
 │   └── dcvm                      # CLI entry point
 ├── lib/                          # Core libraries
-│   ├── core/                    # VM management
-│   ├── network/                 # Network utilities
-│   ├── storage/                 # Backup & storage
-│   └── utils/                   # Common utilities
-├── install/                      # Installation scripts
-├── config/                       # Configuration examples
+│   ├── core/                     # VM management
+│   ├── installation/             # Installation scripts                                 
+│   ├── network/                  # Network utilities
+│   ├── storage/                  # Backup & storage
+│   └── utils/                    # Common utilities
 ├── templates/                    # VM templates
-├── docs/                         # Documentation
-└── tests/                        # Tests (future)
-```
-dcvm backup list                                        # List all backups (grouped by VM)
-dcvm backup list my-vm                                  # List backups of a VM (shows date-id)
-dcvm backup delete my-vm                                # Interactive delete (choose 1,2,3)
-dcvm backup delete my-vm-10.01.2025                     # Delete backups of that day (by date-id)
-dcvm backup delete my-vm-10.01.2025-N                   # Delete the precise backup
-dcvm backup export my-vm 20250722_143052 /tmp           # Export as portable tar.gz (custom dir)
-dcvm backup import /tmp/my-vm-20250722_143052.tar.gz    # Import and restore
-
-# VM deletion
-dcvm delete my-vm                    # Delete specific VM
-dcvm uninstall                       # Uninstall the whole app
+└── docs/                         # Documentation
 ```
 
 ### Bulk Operations
@@ -258,9 +215,9 @@ dcvm create web-server nginx,mysql-server
 │   │   └── cloud-init/
 ├── storage/
 │   └── templates/          # Base OS images
-├── nfs-share/             # Shared files
-├── backups/               # VM backups
-└── scripts/               # Management scripts
+├── nfs-share/              # Shared files
+├── backups/                # VM backups
+└── scripts/                # Management scripts
 ```
 
 ## Script Descriptions
