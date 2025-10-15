@@ -64,13 +64,13 @@
 
 ### Network Scripts (lib/network/)
 
-**setup-port-forwarding.sh:**
+**port-forward.sh:**
 - Sources: common.sh
 - Uses: load_dcvm_config, get_vm_ip (extended as get_vm_ip_advanced)
 - Uses: All print functions
 - Special: Has enhanced IP detection with network scanning
 
-**dhcp-cleanup.sh:**
+**dhcp.sh:**
 - Sources: common.sh
 - Uses: load_dcvm_config
 - Uses: Print functions for cleanup operations
@@ -141,8 +141,8 @@ export -f get_system_info get_host_info
 ✓ lib/core/create-vm.sh (1241 lines)
 ✓ lib/core/delete-vm.sh (480 lines)
 ✓ lib/core/vm-manager.sh (716 lines)
-✓ lib/network/setup-port-forwarding.sh (319 lines)
-✓ lib/network/dhcp-cleanup.sh (251 lines)
+✓ lib/network/port-forward.sh (new)
+✓ lib/network/dhcp.sh (new)
 ✓ lib/storage/backup.sh (1465 lines)
 ✓ lib/storage/storage-manager.sh (90 lines)
 ✓ lib/utils/fix-lock.sh (587 lines)
@@ -160,8 +160,8 @@ export -f get_system_info get_host_info
 - [ ] VM deletion: `sudo dcvm delete testvm`
 - [ ] VM listing: `dcvm list`
 - [ ] VM status: `dcvm status testvm`
-- [ ] Network setup: `sudo dcvm setup-forwarding`
-- [ ] DHCP cleanup: `sudo dcvm dhcp-cleanup`
+- [ ] Network setup: `sudo dcvm network ports setup`
+- [ ] DHCP cleanup: `sudo dcvm network dhcp cleanup`
 - [ ] Backup: `sudo dcvm backup testvm`
 - [ ] Storage info: `dcvm storage`
 - [ ] Lock fixing: `sudo dcvm fix-lock testvm`

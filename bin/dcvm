@@ -54,9 +54,9 @@ COMMANDS:
     console <vm_name>         Connect to VM console
 
   Network Management:
-    network                   Show network information
-    setup-forwarding          Setup port forwarding
-    dhcp-cleanup             Clean DHCP leases
+        network                   Show network information
+        network ports <cmd>       Port forwarding mgmt (setup, show, rules, apply, clear, test)
+        network dhcp <cmd>        DHCP mgmt (show, clear-all, clear-vm, clear-mac, cleanup, renew)
 
   Storage & Backup:
     backup <subcommand>       Backup management (create, restore, list, delete, export, import)
@@ -99,13 +99,7 @@ route_command() {
             exec "$LIB_DIR/core/vm-manager.sh" "$command" "$@"
             ;;
         network)
-            exec "$LIB_DIR/core/vm-manager.sh" network "$@"
-            ;;
-        setup-forwarding)
-            exec "$LIB_DIR/network/setup-port-forwarding.sh" "$@"
-            ;;
-        clear-leases)
-            exec "$LIB_DIR/network/dhcp-cleanup.sh" "$@"
+            exec "$LIB_DIR/network/network-manager.sh" "$@"
             ;;
         backup)
             if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then

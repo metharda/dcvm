@@ -20,7 +20,7 @@ show_port_status() {
 		echo ""
 	else
 		print_warning "No port mappings file found"
-		print_info "Run: dcvm setup-forwarding"
+		print_info "Run: dcvm network ports setup"
 		echo ""
 	fi
 
@@ -91,7 +91,7 @@ show_enhanced_console() {
 			[ -n "$vm" ] && echo "  virsh console $vm  (Press Ctrl+] to exit)"
 		done
 	else
-		print_warning "No port mappings found. Run: dcvm setup-forwarding"
+	print_warning "No port mappings found. Run: dcvm network ports setup"
 	fi
 	echo ""
 	echo "Default login: admin / admin123"
@@ -113,7 +113,7 @@ start_vms() {
 				[ -n "$vm" ] && echo "Starting $vm..." && virsh start "$vm"
 			done
 			print_success "VM startup completed"
-			print_info "Wait 30-60 seconds, then run: dcvm setup-forwarding"
+			print_info "Wait 30-60 seconds, then run: dcvm network ports setup"
 		else
 			print_info "No stopped VMs found or all VMs already running"
 		fi
@@ -132,7 +132,7 @@ start_vms() {
 			echo "Starting VM '$target'..."
 			if virsh start "$target"; then
 				print_success "VM '$target' started successfully"
-				print_info "Wait 30-60 seconds for full boot, then run: dcvm setup-forwarding"
+				print_info "Wait 30-60 seconds for full boot, then run: dcvm network ports setup"
 			else
 				print_error "Failed to start VM '$target'"
 			fi
@@ -212,7 +212,7 @@ restart_vms() {
 				fi
 			done
 			print_success "Restart completed"
-			print_info "Wait 30-60 seconds, then run: dcvm setup-forwarding"
+			print_info "Wait 30-60 seconds, then run: dcvm network ports setup"
 		else
 			print_info "No VMs found"
 		fi
@@ -243,7 +243,7 @@ restart_vms() {
 			print_warning "VM '$target' is in unknown state"
 		fi
 
-		print_info "Wait 30-60 seconds for full boot, then run: dcvm setup-forwarding"
+	print_info "Wait 30-60 seconds for full boot, then run: dcvm network ports setup"
 	fi
 }
 
@@ -314,8 +314,8 @@ case $1 in
 	list_datacenter_vms
 	;;
 "setup-forwarding")
-	echo "Setting up port forwarding..."
-	"$SCRIPTS_PATH/setup-port-forwarding.sh"
+	echo "Setting up port forwarding... (deprecated: use 'dcvm network ports setup')"
+	"$SCRIPTS_PATH/../network/port-forward.sh" setup
 	;;
 "network")
 	echo "=== Network Information ==="
@@ -372,7 +372,7 @@ case $1 in
 	done
 	;;
 "clear-leases")
-	"$SCRIPTS_PATH/dhcp-cleanup.sh" "$@"
+	"$SCRIPTS_PATH/../network/dhcp.sh" clear-all
 	;;
 "uninstall")
 	require_confirmation "This will completely remove all Datacenter VM files, VMs, networks, and this script."

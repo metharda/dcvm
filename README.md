@@ -127,7 +127,7 @@ dcvm console myvm                    # Connect to console
 
 # Network
 dcvm network                         # Show network info
-dcvm setup-forwarding                # Setup port forwarding
+dcvm network ports setup             # Setup port forwarding
 
 # Storage & Backup
 dcvm backup myvm                     # Backup VM
@@ -174,7 +174,7 @@ dcvm stop                            # Stop all VMs
 dcvm restart                         # Restart all VMs
 
 # Network management
-dcvm setup-forwarding                # Port forwarding setup
+dcvm network ports setup             # Port forwarding setup
 dcvm clear-leases show               # Show DHCP leases
 dcvm clear-leases clear-all          # Clear all leases
 ```
@@ -232,7 +232,7 @@ dcvm create web-server nginx,mysql-server
 - **`backup.sh`**: Backup and restore
 - **`setup-port-forwarding.sh`**: Port forwarding setup
 - **`storage-manager.sh`**: Storage space management
-- **`dhcp-cleanup.sh`**: DHCP lease cleanup
+- **`dhcp.sh`**: DHCP management
 - **`fix-lock.sh`**: System lock fix
 
 ## Security

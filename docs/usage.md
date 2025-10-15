@@ -130,7 +130,7 @@ Shows:
 ### Setup Port Forwarding
 
 ```bash
-dcvm setup-forwarding
+dcvm network ports setup
 ```
 
 Automatically sets up port forwarding for:
@@ -140,7 +140,7 @@ Automatically sets up port forwarding for:
 ### Clean DHCP Leases
 
 ```bash
-dcvm dhcp-cleanup
+dcvm network dhcp cleanup
 ```
 
 Removes stale DHCP lease entries.

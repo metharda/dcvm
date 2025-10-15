@@ -57,6 +57,23 @@ detect_shell() {
 	echo "$shell_name|$config_file"
 }
 
+prompt_yes_no() {
+	local prompt="$1"
+	local default="${2:-N}"
+	local answer
+	while true; do
+		read -r -p "$prompt" answer || answer=""
+		if [[ -z "$answer" ]]; then
+			answer="$default"
+		fi
+		case "$answer" in
+			[Yy]|[Yy][Ee][Ss]) return 0 ;;
+			[Nn]|[Nn][Oo])    return 1 ;;
+			*) print_status_log "ERROR" "Please answer y or n" ;;
+		esac
+	done
+}
+
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
@@ -139,12 +156,8 @@ start_datacenter_network() {
 start_nfs_server() {
 	print_status_log "INFO" "Checking NFS server setup..."
 	
-	# Ask if user wants to setup NFS
-	echo ""
-	read -p "Do you want to setup NFS server for VM shared folders? [y/N]: " -n 1 -r
-	echo ""
-	
-	if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+	echo
+	if ! prompt_yes_no "Do you want to setup NFS server for VM shared folders? [y/N]: " "N"; then
 		print_status_log "INFO" "Skipping NFS server setup"
 		return 0
 	fi
@@ -283,8 +296,6 @@ create_network() {
 	
 	if virsh net-info "$net_name" >/dev/null 2>&1; then
 		print_status_log "INFO" "Network '$net_name' already exists."
-		
-		# Make sure it's started
 		if ! virsh net-list | grep -q "$net_name.*active"; then
 			print_status_log "INFO" "Starting existing network '$net_name'..."
 			virsh net-start "$net_name" 2>/dev/null || print_status_log "WARNING" "Could not start network"
@@ -471,9 +482,7 @@ install_completion() {
 
 	if [[ -t 0 && -t 1 ]]; then
 		echo
-		read -p "Enable dcvm tab-completion in your shell now? [y/N]: " -n 1 -r
-		echo
-		if [[ $REPLY =~ ^[Yy]$ ]]; then
+		if prompt_yes_no "Enable dcvm tab-completion in your shell now? [y/N]: " "N"; then
 			local shell_info; shell_info=$(detect_shell)
 			local shell_name="${shell_info%%|*}"
 			local config_file="${shell_info##*|}"
@@ -489,6 +498,10 @@ install_completion() {
 			else
 				grep -q "$completion_dst" "$config_file" 2>/dev/null || echo "source $completion_dst" >> "$config_file"
 				print_status_log "SUCCESS" "Added 'source $completion_dst' to $config_file"
+			fi
+
+			if [[ -n ${ZSH_VERSION-} || -n ${BASH_VERSION-} ]]; then
+				source "$completion_dst" 2>/dev/null && print_status_log "SUCCESS" "Completion enabled in current shell" || print_status_log "WARNING" "Could not enable completion in current shell. You can run: source $completion_dst"
 			fi
 		else
 			print_status_log "INFO" "You can enable later by adding: 'source $completion_dst' to your shell rc"

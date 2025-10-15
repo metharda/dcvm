@@ -51,8 +51,30 @@ for config_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.
 			print_info "Removing DCVM aliases from $config_file"
 			sed -i.bak '/alias dcvm/d' "$config_file" && print_success "Removed aliases from $config_file" || print_warning "Could not remove aliases from $config_file"
 		fi
+
+		if grep -q 'dcvm-completion.sh' "$config_file" 2>/dev/null; then
+			print_info "Removing dcvm completion source line from $config_file"
+			sed -i.bak '/dcvm-completion\.sh/d' "$config_file" && print_success "Removed completion sourcing from $config_file" || print_warning "Could not update $config_file"
+		fi
 	fi
 done
 
+print_info "Removing completion scripts"
+if [ -f "/etc/bash_completion.d/dcvm" ]; then
+    rm -f "/etc/bash_completion.d/dcvm" && print_success "Removed /etc/bash_completion.d/dcvm" || print_warning "Could not remove /etc/bash_completion.d/dcvm"
+fi
+if [ -f "/usr/local/share/dcvm/dcvm-completion.sh" ]; then
+    rm -f "/usr/local/share/dcvm/dcvm-completion.sh" && print_success "Removed /usr/local/share/dcvm/dcvm-completion.sh" || print_warning "Could not remove completion script"
+    rmdir "/usr/local/share/dcvm" 2>/dev/null || true
+fi
+
 print_success "DCVM uninstallation completed successfully"
 print_info "To reinstall, run: sudo bash lib/installation/install-dcvm.sh"
+
+if [[ -n ${BASH_VERSION-} ]]; then
+	complete -r dcvm 2>/dev/null || true
+fi
+if [[ -n ${ZSH_VERSION-} ]]; then
+	autoload -Uz bashcompinit 2>/dev/null && bashcompinit
+	complete -r dcvm 2>/dev/null || true
+fi

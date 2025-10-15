@@ -16,8 +16,8 @@ dcvm/
 │   │   └── vm-manager.sh        # VM management (start, stop, list, etc.)
 │   │
 │   ├── network/                 # Network management
-│   │   ├── setup-port-forwarding.sh  # Port forwarding setup
-│   │   └── dhcp-cleanup.sh           # DHCP lease cleanup
+│   │   ├── port-forward.sh      # Port forwarding management
+│   │   └── dhcp.sh              # DHCP management
 │   │
 │   ├── storage/                 # Storage & backup
 │   │   ├── backup.sh            # Backup and restore operations
@@ -74,8 +74,8 @@ Essential VM operations:
 
 #### `lib/network/`
 Network-related utilities:
-- **setup-port-forwarding.sh** - Configures NAT port forwarding
-- **dhcp-cleanup.sh** - Cleans up stale DHCP leases
+- **port-forward.sh** - Configures and manages NAT port forwarding
+- **dhcp.sh** - Shows and cleans DHCP leases
 
 #### `lib/storage/`
 Storage and backup management:
@@ -115,7 +115,7 @@ Test suite (planned for future development):
 
 ## File Naming Conventions
 
-- **Scripts**: Use kebab-case (e.g., `create-vm.sh`, `setup-port-forwarding.sh`)
+- **Scripts**: Use kebab-case (e.g., `create-vm.sh`, `port-forward.sh`)
 - **Documentation**: Use kebab-case (e.g., `installation.md`, `basic-vm-creation.md`)
 - **Configuration**: Use kebab-case with `.conf` extension
 

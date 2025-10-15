@@ -1181,7 +1181,7 @@ restore_vm() {
 	echo ""
 	if [ "$final_state" = "running" ]; then
 		echo "VM is ready to use!"
-		echo "  SSH access: dcvm setup-forwarding  (to configure ports)"
+		echo "  SSH access: dcvm network ports setup  (to configure ports)"
 		echo "  Console:    virsh console $vm_name"
 	else
 		echo "Manual startup required:"

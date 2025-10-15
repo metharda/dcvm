@@ -93,9 +93,8 @@ delete_single_vm() {
 	[ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
 	if [ -n "$MAC_ADDRESS" ]; then
 		cleanup_dhcp_lease "$MAC_ADDRESS"
-		# Also invoke centralized DHCP cleanup to refresh status/cache
-		if [ -f "$SCRIPT_DIR/../network/dhcp-cleanup.sh" ]; then
-			bash "$SCRIPT_DIR/../network/dhcp-cleanup.sh" clear-mac "$MAC_ADDRESS" >/dev/null 2>&1 || true
+		if [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
+			bash "$SCRIPT_DIR/../network/dhcp.sh" clear-mac "$MAC_ADDRESS" >/dev/null 2>&1 || true
 		fi
 	fi
 
@@ -143,11 +142,11 @@ delete_single_vm() {
 		print_success "✓ No DHCP leases found"
 	else
 		print_warning "✗ DHCP leases still exist"
-		if [ -f "$SCRIPT_DIR/../network/dhcp-cleanup.sh" ]; then
-			bash "$SCRIPT_DIR/../network/dhcp-cleanup.sh" clear-vm "$VM_NAME"
+		if [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
+			bash "$SCRIPT_DIR/../network/dhcp.sh" clear-vm "$VM_NAME"
 			sleep 1
 			dhcp_check=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
-			[ -z "$dhcp_check" ] && print_success "✓ DHCP leases cleared" || print_warning "⚠ DHCP leases may persist; try: dcvm dhcp cleanup"
+			[ -z "$dhcp_check" ] && print_success "✓ DHCP leases cleared" || print_warning "⚠ DHCP leases may persist; try: dcvm network dhcp cleanup"
 		fi
 	fi
 
