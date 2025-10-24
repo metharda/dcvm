@@ -14,15 +14,8 @@ NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 NETWORK_ONLY=0
 NETWORK_NAME_ARG=""
-
-# Optional: allow self-bootstrap when script is not run inside repo
-# You can override these via environment variables before running the installer
-# - DCVM_REPO_TARBALL_URL: direct tarball URL to download
-# - DCVM_REPO_SLUG: owner/repo (used to construct default tarball URL if above is empty)
-# - DCVM_REPO_BRANCH: branch name to download (default: main)
-DCVM_REPO_TARBALL_URL="${DCVM_REPO_TARBALL_URL:-}"
 DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
-DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
+DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-demo}"
 SOURCE_DIR=""
 TMP_WORKDIR=""
 
@@ -40,67 +33,39 @@ print_status() {
 }
 
 print_status_log() { print_status "$@"; }
-
-# Create and cleanup temp work dir if we need to download sources
 cleanup_tmp_dir() {
 	if [[ -n "$TMP_WORKDIR" && -d "$TMP_WORKDIR" ]]; then
 		rm -rf "$TMP_WORKDIR" 2>/dev/null || true
 	fi
 }
 
-download_repo_source() {
-	# Determine URL to download
-	local url="$DCVM_REPO_TARBALL_URL"
-	if [[ -z "$url" ]]; then
-		url="https://codeload.github.com/${DCVM_REPO_SLUG}/tar.gz/refs/heads/${DCVM_REPO_BRANCH}"
+clone_repo_source() {
+	if ! command -v git >/dev/null 2>&1; then
+		print_status_log "ERROR" "git is not installed. Please install git or clone the repository manually."
+		return 1
 	fi
 
 	TMP_WORKDIR=$(mktemp -d 2>/dev/null || mktemp -d -t dcvm)
 	trap cleanup_tmp_dir EXIT
 
-	print_status_log "INFO" "Fetching DCVM sources from: $url"
-	local tarball="$TMP_WORKDIR/dcvm.tar.gz"
-
-	if command -v curl >/dev/null 2>&1; then
-		if ! curl -L --fail -o "$tarball" "$url" 2>>"$LOG_FILE"; then
-			print_status_log "ERROR" "Failed to download sources via curl"
-			return 1
-		fi
-	elif command -v wget >/dev/null 2>&1; then
-		if ! wget -O "$tarball" "$url" 2>>"$LOG_FILE"; then
-			print_status_log "ERROR" "Failed to download sources via wget"
+	local repo_url="https://github.com/${DCVM_REPO_SLUG}.git"
+	print_status_log "INFO" "Cloning DCVM from $repo_url (branch: ${DCVM_REPO_BRANCH})"
+	if git clone --depth 1 --single-branch --branch "$DCVM_REPO_BRANCH" "$repo_url" "$TMP_WORKDIR/dcvm" >>"$LOG_FILE" 2>&1; then
+		if [[ -f "$TMP_WORKDIR/dcvm/bin/dcvm" && -d "$TMP_WORKDIR/dcvm/lib" ]]; then
+			SOURCE_DIR="$TMP_WORKDIR/dcvm"
+			print_status_log "SUCCESS" "Repository cloned to: $SOURCE_DIR"
+			return 0
+		else
+			print_status_log "ERROR" "Cloned repository missing expected layout (bin/ and lib/)"
 			return 1
 		fi
 	else
-		print_status_log "ERROR" "Neither curl nor wget found to download sources"
+		print_status_log "ERROR" "Failed to clone repository (see $LOG_FILE for details)"
 		return 1
 	fi
-
-	if ! tar -xzf "$tarball" -C "$TMP_WORKDIR" 2>>"$LOG_FILE"; then
-		print_status_log "ERROR" "Failed to extract downloaded tarball"
-		return 1
-	fi
-
-	# Find extracted top-level directory (usually repoName-branch)
-	local extracted_dir
-	extracted_dir=$(find "$TMP_WORKDIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-	if [[ -z "$extracted_dir" ]]; then
-		print_status_log "ERROR" "Could not locate extracted source directory"
-		return 1
-	fi
-
-	if [[ -f "$extracted_dir/bin/dcvm" && -d "$extracted_dir/lib" ]]; then
-		SOURCE_DIR="$extracted_dir"
-		print_status_log "SUCCESS" "Sources downloaded and ready at: $SOURCE_DIR"
-		return 0
-	fi
-
-	print_status_log "ERROR" "Downloaded archive doesn't contain expected layout (bin/ and lib/)"
-	return 1
 }
 
 ensure_source_dir() {
-	# First try relative to this script (when run inside repo)
 	local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	local repo_root; repo_root="$(cd "$script_dir/../.." && pwd)"
 
@@ -109,16 +74,79 @@ ensure_source_dir() {
 		return 0
 	fi
 
-	# Not in repo; try to download from tarball
-	print_status_log "WARNING" "DCVM repository files not found next to installer. Attempting to bootstrap from remote tarball..."
-	if download_repo_source; then
-		return 0
-	fi
-
-	print_status_log "ERROR" "Could not obtain DCVM sources automatically."
-	print_status_log "INFO" "You can set DCVM_REPO_TARBALL_URL to a tar.gz URL of the repository,"
-	print_status_log "INFO" "or set DCVM_REPO_SLUG (owner/repo) and DCVM_REPO_BRANCH, then re-run the installer."
+	SOURCE_DIR=""
 	return 1
+}
+
+fetch_file() {
+	local rel_path="$1"
+	local dest_path="$2" 
+	local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG}/${DCVM_REPO_BRANCH}"
+
+	mkdir -p "$(dirname "$dest_path")" 2>/dev/null || true
+
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL -o "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+	else
+		wget -q -O "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+	fi
+}
+
+install_by_fetch() {
+	local install_bin="$1" 
+	local install_lib="$2" 
+
+	print_status_log "INFO" "Fetching required files from ${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}"
+
+	local -a files_bin=(
+		"bin/dcvm"
+	)
+	local -a files_lib=(
+		"lib/core/create-vm.sh"
+		"lib/core/delete-vm.sh"
+		"lib/core/vm-manager.sh"
+		"lib/core/packer.sh"
+		"lib/core/create-from-iso.sh"
+		"lib/core/import-image.sh"
+		"lib/network/port-forward.sh"
+		"lib/network/dhcp.sh"
+		"lib/network/network-manager.sh"
+		"lib/storage/backup.sh"
+		"lib/storage/storage-manager.sh"
+		"lib/utils/common.sh"
+		"lib/utils/fix-lock.sh"
+		"lib/utils/dcvm-completion.sh"
+		"lib/installation/uninstall-dcvm.sh"
+	)
+
+	# Fetch bin
+	local ok=true
+	for f in "${files_bin[@]}"; do
+		local dest="$install_bin/$(basename "$f")"
+		if fetch_file "$f" "$dest"; then
+			chmod +x "$dest" 2>/dev/null || true
+			print_status_log "SUCCESS" "Fetched $(basename "$f")"
+		else
+			print_status_log "ERROR" "Failed to fetch $f"
+			ok=false
+		fi
+	done
+
+	for f in "${files_lib[@]}"; do
+		local rel_no_lib="${f#lib/}"
+		local dest="$install_lib/$rel_no_lib"
+		if fetch_file "$f" "$dest"; then
+			[[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
+			print_status_log "SUCCESS" "Fetched $rel_no_lib"
+		else
+			print_status_log "ERROR" "Failed to fetch $f"
+			ok=false
+		fi
+	done
+
+	$ok || { print_status_log "ERROR" "Some files failed to download. Please check network/branch and try again."; return 1; }
+
+	return 0
 }
 
 detect_shell() {
@@ -650,32 +678,34 @@ install_dcvm_command() {
     
 	mkdir -p "$install_bin" "$install_lib"
 
-	# Ensure we have a valid source directory to install from (repo or downloaded)
-	if ! ensure_source_dir; then
-		exit 1
-	fi
+	# Prefer local repository if present; otherwise fetch needed files
+	if ensure_source_dir; then
+		print_status_log "INFO" "Using local repository at: $SOURCE_DIR"
+		if cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm"; then
+			chmod +x "$install_bin/dcvm"
+			print_status_log "SUCCESS" "Installed dcvm command to $install_bin/dcvm"
+		else
+			print_status_log "ERROR" "Failed to copy dcvm command"
+			exit 1
+		fi
 
-	print_status_log "INFO" "Using source directory: $SOURCE_DIR"
+		if cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
+			print_status_log "SUCCESS" "Installed libraries to $install_lib/"
+		else
+			print_status_log "ERROR" "Failed to copy library files"
+			exit 1
+		fi
 
-	if cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm"; then
-		chmod +x "$install_bin/dcvm"
-		print_status_log "SUCCESS" "Installed dcvm command to $install_bin/dcvm"
+		if find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \; ; then
+			print_status_log "SUCCESS" "Made all library scripts executable"
+		else
+			print_status_log "WARNING" "Could not set executable permissions on some scripts"
+		fi
 	else
-		print_status_log "ERROR" "Failed to copy dcvm command"
-		exit 1
-	fi
-
-	if cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
-		print_status_log "SUCCESS" "Installed libraries to $install_lib/"
-	else
-		print_status_log "ERROR" "Failed to copy library files"
-		exit 1
-	fi
-
-	if find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \; ; then
-		print_status_log "SUCCESS" "Made all library scripts executable"
-	else
-		print_status_log "WARNING" "Could not set executable permissions on some scripts"
+		print_status_log "INFO" "Local repo not found; fetching files from remote"
+		if ! install_by_fetch "$install_bin" "$install_lib"; then
+			exit 1
+		fi
 	fi
 
 	if command -v dcvm >/dev/null 2>&1; then
