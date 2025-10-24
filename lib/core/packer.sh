@@ -1,71 +1,128 @@
 #!/bin/bash
 
 set -euo pipefail
+if [[ "${PACKER_DEBUG:-}" == "1" ]]; then
+  set -x
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
+if [[ -f "/etc/dcvm-install.conf" ]]; then
+  load_dcvm_config
+else
+  DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+  NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+  BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+fi
 
 ensure_packer() {
   if command -v packer >/dev/null 2>&1; then
     return 0
   fi
 
-  if [[ $EUID -ne 0 ]]; then
-    print_error "Packer is not installed. Please run with sudo to auto-install, or install it manually."
-    echo "Suggested (Debian/Ubuntu): sudo apt update && sudo apt install -y packer" >&2
-    return 1
-  fi
-
-  print_info "Packer not found. Attempting automatic installation..."
-  if [[ -f /etc/os-release ]]; then
-    . /etc/os-release
-    if [[ "$ID" == "debian" || "$ID" == "ubuntu" ]]; then
-      export DEBIAN_FRONTEND=noninteractive
-      if command -v apt >/dev/null 2>&1; then
-        if apt update -y && apt install -y packer; then
-          command -v packer >/dev/null 2>&1 && { print_success "Packer installed via apt"; return 0; }
-        fi
-      fi
-    fi
-  fi
-
-  local os arch
+  local os arch arch_id ver
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
   arch=$(uname -m)
-  local arch_id=""
   case "$arch" in
     x86_64|amd64) arch_id="amd64" ;;
     aarch64|arm64) arch_id="arm64" ;;
+    *) arch_id="" ;;
   esac
-  if [[ "$os" == "linux" && -n "$arch_id" ]]; then
-    local ver="${PACKER_VERSION:-1.11.2}"
-    local url="https://releases.hashicorp.com/packer/${ver}/packer_${ver}_${os}_${arch_id}.zip"
-    local tmpd
-    tmpd=$(mktemp -d)
-    print_info "Downloading packer ${ver} from HashiCorp releases"
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL -o "$tmpd/packer.zip" "$url" || true
-    else
-      wget -q -O "$tmpd/packer.zip" "$url" || true
+  ver="${PACKER_VERSION:-1.11.2}"
+
+  # Choose installation target directory (user-local if not root)
+  local target_dir
+  if [[ ${EUID:-1000} -eq 0 ]]; then
+    target_dir="/usr/local/bin"
+  else
+    target_dir="$HOME/.dcvm/bin"
+    mkdir -p "$target_dir" >/dev/null 2>&1 || true
+    # Prepend to PATH for current process so we can use it immediately
+    export PATH="$target_dir:$PATH"
+  fi
+
+  if [[ "$os" == "darwin" ]]; then
+    if command -v packer >/dev/null 2>&1; then return 0; fi
+    if command -v brew >/dev/null 2>&1; then
+      print_info "Installing Packer via Homebrew..."
+      if brew install packer >/dev/null 2>&1 || brew install hashicorp/tap/packer >/dev/null 2>&1; then
+        command -v packer >/dev/null 2>&1 && { print_success "Packer installed via Homebrew"; return 0; }
+      fi
     fi
-    if [[ -s "$tmpd/packer.zip" ]]; then
-      if ! command -v unzip >/dev/null 2>&1 && ! command -v bsdtar >/dev/null 2>&1; then
-        if [[ -f /etc/os-release && ( "$ID" == "debian" || "$ID" == "ubuntu" ) ]] && command -v apt >/dev/null 2>&1; then
-          apt update -y && apt install -y unzip || true
+    if [[ -n "$arch_id" ]]; then
+      local url="https://releases.hashicorp.com/packer/${ver}/packer_${ver}_darwin_${arch_id}.zip"
+      local tmpd
+      tmpd=$(mktemp -d)
+      print_info "Downloading Packer ${ver} for macOS (${arch_id})"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$tmpd/packer.zip" "$url" || true
+      else
+        wget -q -O "$tmpd/packer.zip" "$url" || true
+      fi
+      if [[ -s "$tmpd/packer.zip" ]]; then
+        if command -v unzip >/dev/null 2>&1; then
+          unzip -o "$tmpd/packer.zip" -d "$target_dir" >/dev/null 2>&1 || true
+        elif command -v bsdtar >/dev/null 2>&1; then
+          bsdtar -xf "$tmpd/packer.zip" -C "$target_dir" || true
+        fi
+        chmod +x "$target_dir/packer" 2>/dev/null || true
+        rm -rf "$tmpd" || true
+        if command -v packer >/dev/null 2>&1 || [[ -x "$target_dir/packer" ]]; then
+          print_success "Packer installed to $target_dir/packer"
+          return 0
         fi
       fi
-      if command -v unzip >/dev/null 2>&1; then
-        unzip -o "$tmpd/packer.zip" -d /usr/local/bin >/dev/null 2>&1 || true
-      elif command -v bsdtar >/dev/null 2>&1; then
-        bsdtar -xf "$tmpd/packer.zip" -C /usr/local/bin || true
+    fi
+    print_error "Could not install Packer automatically on macOS. Please install Homebrew and run: brew install packer"
+    return 1
+  fi
+
+  if [[ "$os" == "linux" ]]; then
+    if command -v packer >/dev/null 2>&1; then return 0; fi
+    if [[ -f /etc/os-release ]]; then
+      . /etc/os-release
+      if [[ "$ID" == "debian" || "$ID" == "ubuntu" ]]; then
+        if command -v apt >/dev/null 2>&1; then
+          print_info "Installing Packer via apt..."
+          if [[ ${EUID:-1000} -eq 0 ]]; then
+            export DEBIAN_FRONTEND=noninteractive
+            if apt update -y && apt install -y packer; then
+              command -v packer >/dev/null 2>&1 && { print_success "Packer installed via apt"; return 0; }
+            fi
+          else
+            print_warning "Not running as root; skipping apt install. Falling back to user-local install."
+          fi
+        fi
       fi
-      chmod +x /usr/local/bin/packer 2>/dev/null || true
-      rm -rf "$tmpd" || true
-      if command -v packer >/dev/null 2>&1; then
-        print_success "Packer installed to /usr/local/bin/packer"
-        return 0
+    fi
+    if [[ -n "$arch_id" ]]; then
+      local url="https://releases.hashicorp.com/packer/${ver}/packer_${ver}_linux_${arch_id}.zip"
+      local tmpd
+      tmpd=$(mktemp -d)
+      print_info "Downloading Packer ${ver} for Linux (${arch_id})"
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$tmpd/packer.zip" "$url" || true
+      else
+        wget -q -O "$tmpd/packer.zip" "$url" || true
+      fi
+      if [[ -s "$tmpd/packer.zip" ]]; then
+        if ! command -v unzip >/dev/null 2>&1 && ! command -v bsdtar >/dev/null 2>&1; then
+          if [[ -f /etc/os-release && ( "$ID" == "debian" || "$ID" == "ubuntu" ) ]] && command -v apt >/dev/null 2>&1 && [[ ${EUID:-1000} -eq 0 ]]; then
+            apt update -y && apt install -y unzip || true
+          fi
+        fi
+        if command -v unzip >/dev/null 2>&1; then
+          unzip -o "$tmpd/packer.zip" -d "$target_dir" >/dev/null 2>&1 || true
+        elif command -v bsdtar >/dev/null 2>&1; then
+          bsdtar -xf "$tmpd/packer.zip" -C "$target_dir" || true
+        fi
+        chmod +x "$target_dir/packer" 2>/dev/null || true
+        rm -rf "$tmpd" || true
+        if command -v packer >/dev/null 2>&1 || [[ -x "$target_dir/packer" ]]; then
+          print_success "Packer installed to $target_dir/packer"
+          return 0
+        fi
       fi
     fi
   fi
@@ -163,6 +220,7 @@ run_packer() {
       [[ -n "$ONLY_TARGET" ]] && args+=("-only" "$ONLY_TARGET")
       for vf in "${VAR_FILES[@]}"; do args+=("-var-file" "$vf"); done
   for kv in "${VAR_KVS[@]}"; do args+=("-var" "$kv"); done
+      print_info "Executing: (cd $tpl_dir && ${base[*]} ${args[*]} $tpl_file)"
       ( cd "$tpl_dir" && "${base[@]}" "${args[@]}" "$tpl_file" )
       ;;
     validate|inspect|init)
@@ -171,6 +229,7 @@ run_packer() {
         for vf in "${VAR_FILES[@]}"; do args+=("-var-file" "$vf"); done
         for kv in "${VAR_KVS[@]}"; do args+=("-var" "$kv"); done
       }
+      print_info "Executing: (cd $tpl_dir && ${base[*]} ${args[*]} $tpl_file)"
       ( cd "$tpl_dir" && "${base[@]}" "${args[@]}" "$tpl_file" )
       ;;
   esac
@@ -241,8 +300,6 @@ main() {
       ensure_packer || exit 1
       run_packer "$CMD"; exit 0 ;;
     build)
-      require_root
-      check_dependencies virsh qemu-img
       ensure_packer || exit 1
       local stamp
       stamp=$(mktemp)
@@ -255,7 +312,19 @@ main() {
         exit 1
       fi
       rm -f "$stamp" || true
-      auto_import "$VM_NAME" "$artifact"
+      local host_os
+      host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
+      if [[ "${DCVM_SKIP_IMPORT:-0}" == "1" ]]; then
+        print_info "Skipping auto-import (DCVM_SKIP_IMPORT=1). Artifact ready at: $artifact"
+        exit 0
+      fi
+      if [[ "$host_os" == "linux" ]] && command -v virsh >/dev/null 2>&1; then
+        auto_import "$VM_NAME" "$artifact"
+      else
+        print_info "Auto-import is only supported on Linux with libvirt (virsh)."
+        print_info "Built artifact: $artifact"
+        print_info "To import later on a Linux host, copy the artifact and run: dcvm import-image $VM_NAME --image <path>"
+      fi
       ;;
   esac
 }
