@@ -19,13 +19,19 @@ This guide will walk you through installing DCVM (Datacenter Virtual Machine Man
 
 ### Using curl
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install/install-dcvm.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
 ### Using wget
 ```bash
-bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/install/install-dcvm.sh)"
+sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
+
+Optional: you can override the download source via environment variables if needed:
+
+- DCVM_REPO_TARBALL_URL: Full tar.gz URL to download the repo
+- DCVM_REPO_SLUG: owner/repo (default: metharda/dcvm)
+- DCVM_REPO_BRANCH: branch name (default: main)
 
 ## Manual Installation
 
@@ -50,7 +56,7 @@ cd dcvm
 ### 3. Run the Installer
 
 ```bash
-sudo bash install/install-dcvm.sh
+sudo bash lib/installation/install-dcvm.sh
 ```
 
 ### 4. Follow the Installation Wizard

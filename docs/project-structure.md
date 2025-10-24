@@ -27,7 +27,7 @@ dcvm/
 │       ├── common.sh            # Shared functions (logging, validation, etc.)
 │       └── fix-lock.sh          # Resource lock fixing
 │
-├── install/                      # Installation related files
+├── lib/installation/             # Installation related files
 │   ├── install-dcvm.sh          # Main installer
 │   └── uninstall-dcvm.sh        # Uninstaller
 │
@@ -35,8 +35,8 @@ dcvm/
 │   ├── dcvm.conf.example        # Main configuration example
 │   └── network.conf.example     # Network configuration example
 │
-├── templates/                    # VM templates and images
-│   └── .gitkeep                 # (Templates are downloaded at runtime)
+├── templates/                    # (Deprecated placeholder)
+│   └── .gitkeep                 # Cloud images are stored at runtime under $DATACENTER_BASE/storage/templates
 │
 ├── docs/                         # Documentation
 │   ├── installation.md          # Installation guide
@@ -87,7 +87,7 @@ Shared utilities and helpers:
 - **common.sh** - Common functions (logging, validation, config loading)
 - **fix-lock.sh** - Fixes resource locks
 
-### `install/`
+### `lib/installation/`
 Installation and removal scripts:
 - **install-dcvm.sh** - Installs DCVM, dependencies, and configuration
 - **uninstall-dcvm.sh** - Removes DCVM and optionally cleans up data
@@ -100,7 +100,7 @@ Configuration file templates and examples:
 Users can copy these to `/etc/` and customize as needed.
 
 ### `templates/`
-Storage for VM template images (qcow2 files). Templates are downloaded automatically when needed.
+Deprecated in repository. Cloud images are downloaded to `$DATACENTER_BASE/storage/templates` during runtime by the installer or on first VM creation.
 
 ### `docs/`
 Comprehensive documentation:

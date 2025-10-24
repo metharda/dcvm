@@ -45,6 +45,9 @@ Usage: dcvm <command> [options]
 COMMANDS:
   VM Management:
     create <vm_name> [opts]    Create a new virtual machine
+        create-iso <vm> --iso <p>  Create a VM from a custom installer ISO
+        import-image <vm> --image <p>  Import an existing disk image (qcow2/raw)
+                packer <sub> [...]     Run Packer (init/validate/build) and auto-import artifacts
     delete <vm_name>           Delete a virtual machine
     list                       List all virtual machines
     status [vm_name]          Show VM status
@@ -91,6 +94,15 @@ route_command() {
     case "$command" in
         create)
             exec "$LIB_DIR/core/create-vm.sh" "$@"
+            ;;
+        create-iso)
+            exec "$LIB_DIR/core/create-from-iso.sh" "$@"
+            ;;
+        import-image)
+            exec "$LIB_DIR/core/import-image.sh" "$@"
+            ;;
+        packer)
+            exec "$LIB_DIR/core/packer.sh" "$@"
             ;;
         delete)
             exec "$LIB_DIR/core/delete-vm.sh" "$@"

@@ -138,15 +138,15 @@ export -f get_system_info get_host_info
 
 ## Scripts Updated
 
-✓ lib/core/create-vm.sh (1241 lines)
-✓ lib/core/delete-vm.sh (480 lines)
-✓ lib/core/vm-manager.sh (716 lines)
+✓ lib/core/create-vm.sh
+✓ lib/core/delete-vm.sh
+✓ lib/core/vm-manager.sh
 ✓ lib/network/port-forward.sh (new)
 ✓ lib/network/dhcp.sh (new)
-✓ lib/storage/backup.sh (1465 lines)
-✓ lib/storage/storage-manager.sh (90 lines)
-✓ lib/utils/fix-lock.sh (587 lines)
-✓ lib/installation/uninstall-dcvm.sh (89 lines)
+✓ lib/storage/backup.sh
+✓ lib/storage/storage-manager.sh
+✓ lib/utils/fix-lock.sh
+✓ lib/installation/uninstall-dcvm.sh
 
 ## Not Updated (By Design)
 

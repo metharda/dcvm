@@ -15,6 +15,17 @@ BRIDGE_NAME="virbr-dc"
 NETWORK_ONLY=0
 NETWORK_NAME_ARG=""
 
+# Optional: allow self-bootstrap when script is not run inside repo
+# You can override these via environment variables before running the installer
+# - DCVM_REPO_TARBALL_URL: direct tarball URL to download
+# - DCVM_REPO_SLUG: owner/repo (used to construct default tarball URL if above is empty)
+# - DCVM_REPO_BRANCH: branch name to download (default: main)
+DCVM_REPO_TARBALL_URL="${DCVM_REPO_TARBALL_URL:-}"
+DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
+DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
+SOURCE_DIR=""
+TMP_WORKDIR=""
+
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
 
 print_status() {
@@ -29,6 +40,86 @@ print_status() {
 }
 
 print_status_log() { print_status "$@"; }
+
+# Create and cleanup temp work dir if we need to download sources
+cleanup_tmp_dir() {
+	if [[ -n "$TMP_WORKDIR" && -d "$TMP_WORKDIR" ]]; then
+		rm -rf "$TMP_WORKDIR" 2>/dev/null || true
+	fi
+}
+
+download_repo_source() {
+	# Determine URL to download
+	local url="$DCVM_REPO_TARBALL_URL"
+	if [[ -z "$url" ]]; then
+		url="https://codeload.github.com/${DCVM_REPO_SLUG}/tar.gz/refs/heads/${DCVM_REPO_BRANCH}"
+	fi
+
+	TMP_WORKDIR=$(mktemp -d 2>/dev/null || mktemp -d -t dcvm)
+	trap cleanup_tmp_dir EXIT
+
+	print_status_log "INFO" "Fetching DCVM sources from: $url"
+	local tarball="$TMP_WORKDIR/dcvm.tar.gz"
+
+	if command -v curl >/dev/null 2>&1; then
+		if ! curl -L --fail -o "$tarball" "$url" 2>>"$LOG_FILE"; then
+			print_status_log "ERROR" "Failed to download sources via curl"
+			return 1
+		fi
+	elif command -v wget >/dev/null 2>&1; then
+		if ! wget -O "$tarball" "$url" 2>>"$LOG_FILE"; then
+			print_status_log "ERROR" "Failed to download sources via wget"
+			return 1
+		fi
+	else
+		print_status_log "ERROR" "Neither curl nor wget found to download sources"
+		return 1
+	fi
+
+	if ! tar -xzf "$tarball" -C "$TMP_WORKDIR" 2>>"$LOG_FILE"; then
+		print_status_log "ERROR" "Failed to extract downloaded tarball"
+		return 1
+	fi
+
+	# Find extracted top-level directory (usually repoName-branch)
+	local extracted_dir
+	extracted_dir=$(find "$TMP_WORKDIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+	if [[ -z "$extracted_dir" ]]; then
+		print_status_log "ERROR" "Could not locate extracted source directory"
+		return 1
+	fi
+
+	if [[ -f "$extracted_dir/bin/dcvm" && -d "$extracted_dir/lib" ]]; then
+		SOURCE_DIR="$extracted_dir"
+		print_status_log "SUCCESS" "Sources downloaded and ready at: $SOURCE_DIR"
+		return 0
+	fi
+
+	print_status_log "ERROR" "Downloaded archive doesn't contain expected layout (bin/ and lib/)"
+	return 1
+}
+
+ensure_source_dir() {
+	# First try relative to this script (when run inside repo)
+	local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	local repo_root; repo_root="$(cd "$script_dir/../.." && pwd)"
+
+	if [[ -f "$repo_root/bin/dcvm" && -d "$repo_root/lib" ]]; then
+		SOURCE_DIR="$repo_root"
+		return 0
+	fi
+
+	# Not in repo; try to download from tarball
+	print_status_log "WARNING" "DCVM repository files not found next to installer. Attempting to bootstrap from remote tarball..."
+	if download_repo_source; then
+		return 0
+	fi
+
+	print_status_log "ERROR" "Could not obtain DCVM sources automatically."
+	print_status_log "INFO" "You can set DCVM_REPO_TARBALL_URL to a tar.gz URL of the repository,"
+	print_status_log "INFO" "or set DCVM_REPO_SLUG (owner/repo) and DCVM_REPO_BRANCH, then re-run the installer."
+	return 1
+}
 
 detect_shell() {
 	local shell_name="unknown"
@@ -464,19 +555,18 @@ setup_aliases() {
 install_completion() {
 	local install_share="/usr/local/share/dcvm"
 	local completion_dst="$install_share/dcvm-completion.sh"
-	local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-	local repo_root="$(cd "$script_dir/../.." && pwd)"
+	local install_lib="/usr/local/lib/dcvm"
 
 	mkdir -p "$install_share" 2>/dev/null || true
-	if [[ -f "$repo_root/lib/utils/dcvm-completion.sh" ]]; then
-		if cp "$repo_root/lib/utils/dcvm-completion.sh" "$completion_dst" 2>/dev/null; then
+	if [[ -f "$install_lib/utils/dcvm-completion.sh" ]]; then
+		if cp "$install_lib/utils/dcvm-completion.sh" "$completion_dst" 2>/dev/null; then
 			print_status_log "SUCCESS" "Installed completion script to $completion_dst"
 		else
 			print_status_log "WARNING" "Could not copy completion script"
 			return 0
 		fi
 	else
-		print_status_log "INFO" "Completion script not found in repo; skipping"
+		print_status_log "INFO" "Completion script not found in installed libraries; skipping"
 		return 0
 	fi
 
@@ -557,47 +647,35 @@ install_dcvm_command() {
 
 	local install_bin="/usr/local/bin"
 	local install_lib="/usr/local/lib/dcvm"
-	
-	local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-	local repo_root="$(cd "$script_dir/../.." && pwd)"
-	
-	print_status_log "INFO" "Script directory: $script_dir"
-	print_status_log "INFO" "Repository root: $repo_root"
-
+    
 	mkdir -p "$install_bin" "$install_lib"
 
-	if [[ -f "$repo_root/bin/dcvm" && -d "$repo_root/lib" ]]; then
-		print_status_log "INFO" "Found DCVM files in repository. Installing..."
-		
-		if cp "$repo_root/bin/dcvm" "$install_bin/dcvm"; then
-			chmod +x "$install_bin/dcvm"
-			print_status_log "SUCCESS" "Installed dcvm command to $install_bin/dcvm"
-		else
-			print_status_log "ERROR" "Failed to copy dcvm command"
-			exit 1
-		fi
-		
-		if cp -r "$repo_root/lib/"* "$install_lib/"; then
-			print_status_log "SUCCESS" "Installed libraries to $install_lib/"
-		else
-			print_status_log "ERROR" "Failed to copy library files"
-			exit 1
-		fi
-		
-		if find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;; then
-			print_status_log "SUCCESS" "Made all library scripts executable"
-		else
-			print_status_log "WARNING" "Could not set executable permissions on some scripts"
-		fi
-	else
-		print_status_log "ERROR" "Installation directories not found."
-		print_status_log "ERROR" "Looking for:"
-		print_status_log "ERROR" "  - $repo_root/bin/dcvm"
-		print_status_log "ERROR" "  - $repo_root/lib/"
-		[[ -f "$repo_root/bin/dcvm" ]] && print_status_log "INFO" "✓ bin/dcvm exists" || print_status_log "ERROR" "✗ bin/dcvm NOT found"
-		[[ -d "$repo_root/lib" ]] && print_status_log "INFO" "✓ lib/ exists" || print_status_log "ERROR" "✗ lib/ NOT found"
-		print_status_log "INFO" "Please run this installer from within the dcvm repository."
+	# Ensure we have a valid source directory to install from (repo or downloaded)
+	if ! ensure_source_dir; then
 		exit 1
+	fi
+
+	print_status_log "INFO" "Using source directory: $SOURCE_DIR"
+
+	if cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm"; then
+		chmod +x "$install_bin/dcvm"
+		print_status_log "SUCCESS" "Installed dcvm command to $install_bin/dcvm"
+	else
+		print_status_log "ERROR" "Failed to copy dcvm command"
+		exit 1
+	fi
+
+	if cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
+		print_status_log "SUCCESS" "Installed libraries to $install_lib/"
+	else
+		print_status_log "ERROR" "Failed to copy library files"
+		exit 1
+	fi
+
+	if find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \; ; then
+		print_status_log "SUCCESS" "Made all library scripts executable"
+	else
+		print_status_log "WARNING" "Could not set executable permissions on some scripts"
 	fi
 
 	if command -v dcvm >/dev/null 2>&1; then

@@ -1,7 +1,7 @@
 # DCVM tab-completion for Bash and Zsh
 
 _dcvm_commands() {
-  echo "create delete list status start stop restart console network backup storage uninstall version help"
+  echo "create create-iso import-image packer delete list status start stop restart console network backup storage uninstall version help"
 }
 
 _dcvm_vm_list() {
@@ -91,6 +91,29 @@ _dcvm_completion() {
 
     create)
       COMPREPLY=()
+      ;;
+
+    packer)
+      if [[ ${COMP_CWORD} -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "build validate init inspect help" -- "$cur") )
+      else
+        local sub="${COMP_WORDS[2]}"
+        case "$sub" in
+          build)
+            if [[ ${COMP_CWORD} -eq 3 ]]; then
+              COMPREPLY=()
+            else
+              COMPREPLY=( $(compgen -W "--template --only --var-file --var --artifact --os-variant -m --memory -c --cpus --attach-cidata -h --help" -- "$cur") )
+            fi
+            ;;
+          validate|init|inspect)
+            COMPREPLY=( $(compgen -W "--template --var-file --var -h --help" -- "$cur") )
+            ;;
+          help)
+            COMPREPLY=()
+            ;;
+        esac
+      fi
       ;;
 
     backup)
