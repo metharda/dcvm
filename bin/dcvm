@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # DCVM - Datacenter Virtual Machine Manager
 # Main CLI entry point
 
@@ -32,7 +32,7 @@ fi
 
 show_version() {
     echo "DCVM - Datacenter Virtual Machine Manager"
-    echo "Version: 1.0.0"
+    echo "Version: 0.5.2"
     echo "https://github.com/metharda/dcvm"
 }
 
@@ -46,8 +46,6 @@ COMMANDS:
   VM Management:
     create <vm_name> [opts]    Create a new virtual machine
         create-iso <vm> --iso <p>  Create a VM from a custom installer ISO
-        import-image <vm> --image <p>  Import an existing disk image (qcow2/raw)
-                packer <sub> [...]     Run Packer (init/validate/build) and auto-import artifacts
     delete <vm_name>           Delete a virtual machine
     list                       List all virtual machines
     status [vm_name]          Show VM status
@@ -97,12 +95,6 @@ route_command() {
             ;;
         create-iso)
             exec "$LIB_DIR/core/create-from-iso.sh" "$@"
-            ;;
-        import-image)
-            exec "$LIB_DIR/core/import-image.sh" "$@"
-            ;;
-        packer)
-            exec "$LIB_DIR/core/packer.sh" "$@"
             ;;
         delete)
             exec "$LIB_DIR/core/delete-vm.sh" "$@"

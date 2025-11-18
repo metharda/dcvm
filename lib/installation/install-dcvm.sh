@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -105,9 +105,7 @@ install_by_fetch() {
 		"lib/core/create-vm.sh"
 		"lib/core/delete-vm.sh"
 		"lib/core/vm-manager.sh"
-		"lib/core/packer.sh"
 		"lib/core/create-from-iso.sh"
-		"lib/core/import-image.sh"
 		"lib/network/port-forward.sh"
 		"lib/network/dhcp.sh"
 		"lib/network/network-manager.sh"
@@ -119,7 +117,6 @@ install_by_fetch() {
 		"lib/installation/uninstall-dcvm.sh"
 	)
 
-	# Fetch bin
 	local ok=true
 	for f in "${files_bin[@]}"; do
 		local dest="$install_bin/$(basename "$f")"

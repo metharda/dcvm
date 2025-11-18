@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -353,8 +353,8 @@ if [ "$VM_NAME" = "--all" ]; then
 
 	[ -z "$VM_LIST" ] && print_warning "No VMs found" && exit 0
 
-	local total_vms=0
-	local failed_vms=0
+	total_vms=0
+	failed_vms=0
 	
 	for vm in $VM_LIST; do
 		total_vms=$((total_vms + 1))

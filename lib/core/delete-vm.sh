@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
@@ -42,8 +42,9 @@ cleanup_dhcp_lease() {
 	print_info "Clearing DHCP lease for MAC: $mac_address"
 
 	if [ -f "$lease_file" ]; then
-		local before=$(wc -l < "$lease_file")
-		sed -i "/[[:space:]]$mac_address[[:space:]]/d" "$lease_file"
+		local before
+		before=$(wc -l < "$lease_file")
+		sed -i "/[[:space:]]${mac_address}[[:space:]]/d" "$lease_file"
 		local after=$(wc -l < "$lease_file")
 		local removed=$((before - after))
 		[ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found"
