@@ -8,8 +8,8 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 
 | Method    | Command                                                                                           |
 | :-------- | :------------------------------------------------------------------------------------------------ |
-| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)"`    |
-| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/install-dcvm.sh)"`    |
+| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
+| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
 
 ## Features
 
@@ -46,32 +46,66 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 - **Network**: Internet connection
 
 ### Software
-- **Operating System**: Ubuntu 20.04,22.04 Debian 11,12
+- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
 
-## Manual Installation
+## Installation
 
-If you prefer step-by-step installation: (you should be in root user)
+### Quick Install (Recommended)
 
-### 1. Download Repository
+See installation commands at the top of this README.
+
+### Manual Installation
+
+If you prefer step-by-step installation:
+
+#### 1. Clone Repository
 ```bash
 git clone https://github.com/metharda/dcvm.git
 cd dcvm
 ```
 
-### 2. Run Installation Script
+#### 2. Run Installation Script
 ```bash
-./install-dcvm.sh
+sudo bash install/install-dcvm.sh
 ```
 
-### 3. Start System
+#### 3. Verify Installation
 ```bash
-# Start new session for system aliases
-source ~/.bashrc
-
-# Check VM manager
+dcvm --version
 dcvm status
+```
+
+For detailed installation instructions, see [Installation Guide](docs/installation.md).
+
+## Quick Start
+
+### Create Your First VM
+
+```bash
+# Interactive mode (recommended for first time)
+dcvm create myvm
+
+# Or use force mode with defaults
+dcvm create myvm -f -p mypassword123
+```
+
+### Check VM Status
+
+```bash
+dcvm list
+dcvm status myvm
+```
+
+### Connect to Your VM
+
+```bash
+# Find VM IP
+dcvm network
+
+# SSH into VM
+ssh admin@<vm-ip>
 ```
 
 ## Usage Guide
@@ -79,36 +113,56 @@ dcvm status
 ### Basic Commands
 
 ```bash
-# VM creation
-dcvm create my-vm                    # Basic VM
-dcvm create web-server nginx         # Web server with nginx
-dcvm create db-server mysql-server   # Database server with MySQL
+# Create VMs
+dcvm create myvm                     # Interactive mode
+dcvm create webserver -f -p pass123  # Force mode with password
 
-# VM control
-dcvm start my-vm                     # Start VM
-dcvm stop my-vm                      # Stop VM
-dcvm restart my-vm                   # Restart VM
+# Manage VMs
+dcvm list                            # List all VMs
+dcvm start myvm                      # Start VM
+dcvm stop myvm                       # Stop VM
+dcvm restart myvm                    # Restart VM
+dcvm delete myvm                     # Delete VM
+dcvm console myvm                    # Connect to console
 
-# Status checking
-dcvm status                          # General status
-dcvm ports                           # Port information
-dcvm network                         # Network information
-dcvm console                         # Connection information
+# Network
+dcvm network                         # Show network info
+dcvm network ports setup             # Setup port forwarding
 
-# Backup
-dcvm backup create my-vm                                # Create backup
-dcvm backup restore my-vm                               # Restore backup (latest)
-dcvm backup list                                        # List all backups (grouped by VM)
-dcvm backup list my-vm                                  # List backups of a VM (shows date-id)
-dcvm backup delete my-vm                                # Interactive delete (choose 1,2,3)
-dcvm backup delete my-vm-10.01.2025                     # Delete backups of that day (by date-id)
-dcvm backup delete my-vm-10.01.2025-N                   # Delete the precise backup
-dcvm backup export my-vm 20250722_143052 /tmp           # Export as portable tar.gz (custom dir)
-dcvm backup import /tmp/my-vm-20250722_143052.tar.gz    # Import and restore
+# Storage & Backup
+dcvm backup myvm                     # Backup VM
+dcvm restore myvm                    # Restore VM
+dcvm storage                         # Show storage info
+dcvm storage-cleanup                 # Clean up storage
 
-# VM deletion
-dcvm delete my-vm                    # Delete specific VM
-dcvm uninstall                       # Uninstall the whole app
+# System
+dcvm fix-lock                        # Fix locked resources
+dcvm --version                       # Show version
+dcvm --help                          # Show help
+```
+
+For detailed usage, see [Usage Guide](docs/usage.md).
+
+## Documentation
+
+- **[Installation Guide](docs/installation.md)** - Detailed installation instructions
+- **[Usage Guide](docs/usage.md)** - Complete command reference
+- **[Examples](docs/examples/)** - Practical examples and tutorials
+
+## Project Structure
+
+```
+dcvm/
+├── bin/                          # Main executable
+│   └── dcvm                      # CLI entry point
+├── lib/                          # Core libraries
+│   ├── core/                     # VM management
+│   ├── installation/             # Installation scripts                                 
+│   ├── network/                  # Network utilities
+│   ├── storage/                  # Backup & storage
+│   └── utils/                    # Common utilities
+├── templates/                    # VM templates
+└── docs/                         # Documentation
 ```
 
 ### Bulk Operations
@@ -120,7 +174,7 @@ dcvm stop                            # Stop all VMs
 dcvm restart                         # Restart all VMs
 
 # Network management
-dcvm setup-forwarding                # Port forwarding setup
+dcvm network ports setup             # Port forwarding setup
 dcvm clear-leases show               # Show DHCP leases
 dcvm clear-leases clear-all          # Clear all leases
 ```
@@ -161,9 +215,9 @@ dcvm create web-server nginx,mysql-server
 │   │   └── cloud-init/
 ├── storage/
 │   └── templates/          # Base OS images
-├── nfs-share/             # Shared files
-├── backups/               # VM backups
-└── scripts/               # Management scripts
+├── nfs-share/              # Shared files
+├── backups/                # VM backups
+└── scripts/                # Management scripts
 ```
 
 ## Script Descriptions
@@ -178,7 +232,7 @@ dcvm create web-server nginx,mysql-server
 - **`backup.sh`**: Backup and restore
 - **`setup-port-forwarding.sh`**: Port forwarding setup
 - **`storage-manager.sh`**: Storage space management
-- **`dhcp-cleanup.sh`**: DHCP lease cleanup
+- **`dhcp.sh`**: DHCP management
 - **`fix-lock.sh`**: System lock fix
 
 ## Security

@@ -1,32 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-CONFIG_FILE="/etc/dcvm-install.conf"
-if [[ -f "$CONFIG_FILE" ]]; then
-	source "$CONFIG_FILE"
-else
-	DATACENTER_BASE="/srv/datacenter"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../utils/common.sh"
+
+load_dcvm_config
+
 BACKUP_DIR="$DATACENTER_BASE/backups"
 LOG_FILE="/var/log/dcvm-backup.log"
 DATE=$(date +%Y%m%d_%H%M%S)
 KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
 COMPRESSION_ENABLED=true
-FIX_LOCK_SCRIPT="$DATACENTER_BASE/scripts/fix-lock.sh"
 
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}" >>"$LOG_FILE"; }
-
-generate_random_mac() { printf "52:54:00:%02x:%02x:%02x\n" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)); }
+log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
 get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
 list_backup_timestamps_desc() { collect_backup_timestamps "$1" "" "desc"; }
 list_day_backup_timestamps_asc() { collect_backup_timestamps "$1" "$2" "asc"; }
@@ -177,10 +163,6 @@ ensure_backing_image() {
 	fi
 }
 
-check_vm_exists() { virsh list --all 2>/dev/null | grep -q " $1 "; }
-
-get_vm_state() { virsh domstate "$1" 2>/dev/null; }
-
 wait_for_vm_state() {
 	local vm_name="$1"
 	local desired_state="$2"
@@ -196,11 +178,6 @@ wait_for_vm_state() {
 		count=$((count + 1))
 	done
 	return 1
-}
-
-get_vm_disk_path() {
-	local vm_name="$1"
-	virsh domblklist "$vm_name" --details 2>/dev/null | grep "disk" | grep "file" | awk '{print $4}' | head -1
 }
 
 is_lock_error() {
@@ -1204,7 +1181,7 @@ restore_vm() {
 	echo ""
 	if [ "$final_state" = "running" ]; then
 		echo "VM is ready to use!"
-		echo "  SSH access: dcvm setup-forwarding  (to configure ports)"
+		echo "  SSH access: dcvm network ports setup  (to configure ports)"
 		echo "  Console:    virsh console $vm_name"
 	else
 		echo "Manual startup required:"
@@ -1362,40 +1339,82 @@ backup_vm() {
 	return 0
 }
 
+show_help() {
+	cat <<EOF
+DCVM Backup & Restore Management
+
+Usage: dcvm backup <subcommand> [options]
+
+SUBCOMMANDS:
+  create <vm_name>                                  Create a new backup of VM
+  restore <vm_name> [backup_date]                   Restore VM from backup
+  list [vm_name]                                    List all or specific VM backups
+  delete <selector>                                 Delete backups (see selectors below)
+  export <vm_name> [backup_date] [output_dir]       Export backup as portable package
+  import <package_path|directory> [new_vm_name]     Import and restore backup package
+  troubleshoot <vm_name>                            Diagnose and fix VM startup issues
+
+DELETE SELECTORS:
+  <vm_name>                      Interactive numbered selection
+  <vm_name-dd.mm.yyyy>          Latest backup of specific day
+  <vm_name-dd.mm.yyyy-N>        Nth backup of specific day (1-based index)
+  <vm_name-dd.mm.yyyy-HH:MM:SS> Precise backup by timestamp
+  --all | all                    Delete ALL backups (requires confirmation)
+
+CONFIGURATION:
+  Backup Location:    $BACKUP_DIR
+  Retention Policy:   Keep last $KEEP_BACKUPS backups per VM
+  Compression:        $([ "$COMPRESSION_ENABLED" = true ] && echo "Enabled (gzip)" || echo "Disabled")
+  Shutdown Timeout:   ${SHUTDOWN_TIMEOUT}s
+
+EXAMPLES:
+  # Create backups
+  dcvm backup create datacenter-vm1
+
+  # Restore backups
+  dcvm backup restore datacenter-vm1                     # Restore from latest
+  dcvm backup restore datacenter-vm1 20250722_143052     # Restore from specific backup
+
+  # List backups
+  dcvm backup list                                       # List all backups
+  dcvm backup list datacenter-vm1                        # List backups of specific VM
+
+  # Delete backups
+  dcvm backup delete vm1                                 # Interactive delete (numbered menu)
+  dcvm backup delete vm1-10.01.2025                      # Delete latest backup of Jan 10, 2025
+  dcvm backup delete vm1-10.01.2025-2                    # Delete 2nd backup of Jan 10, 2025
+  dcvm backup delete vm1-10.01.2025-14:30:00             # Delete backup at 14:30:00
+  dcvm backup delete --all                               # Delete ALL backups (confirmation required)
+
+  # Export/Import backups
+  dcvm backup export vm1 /tmp                            # Export latest backup to /tmp
+  dcvm backup export vm1 20250722_143052 /tmp            # Export specific backup by timestamp
+  dcvm backup export vm1 28.09.2025-1 /tmp               # Export using day+index selector
+  dcvm backup import /tmp/vm1-20250722_143052.tar.gz     # Import and restore backup package
+
+  # Troubleshoot
+  dcvm backup troubleshoot vm1                           # Diagnose VM startup problems
+
+NOTES:
+  - Backups include VM disk (qcow2) and configuration (XML)
+  - Export creates portable .tar.gz packages for transfer between hosts
+  - Import automatically detects and restores VM from package
+  - Restore will COMPLETELY REPLACE existing VM (confirmation required)
+  - Old backups are auto-cleaned based on retention policy
+  - VM is gracefully shut down before backup (timeout: ${SHUTDOWN_TIMEOUT}s)
+
+For more information: https://github.com/metharda/dcvm
+EOF
+}
+
 if [ $# -lt 1 ]; then
-	echo "VM Backup & Restore Script"
-	echo "Usage: dcvm backup create <vm_name>"
-	echo "       dcvm backup restore <vm_name> [backup_date]"
-	echo "       dcvm backup list [vm_name]"
-	echo "       dcvm backup delete <vm_name>|<vm_name-dd.mm.yyyy>|<vm_name-dd.mm.yyyy-N>|<vm_name-dd.mm.yyyy-HH:MM:SS>|--all|all"
-	echo "       dcvm backup export <vm_name> [backup_date] [output_dir]"
-	echo "       dcvm backup import <package_path|directory> [new_vm_name]"
-	echo "       dcvm backup troubleshoot <vm_name>"
-	echo ""
-	echo "Examples:"
-	echo "  dcvm backup create datacenter-vm1             			# Create backup"
-	echo "  dcvm backup restore datacenter-vm1            			# Restore from latest backup"
-	echo "  dcvm backup restore datacenter-vm1 20250722_143052  	# Restore from specific backup"
-	echo "  dcvm backup list                                		# List all backups"
-	echo "  dcvm backup list datacenter-vm1               			# List backups of a VM"
-	echo "  dcvm backup delete vm1                         			# Interactive delete (numbered)"
-	echo "  dcvm backup delete vm1-10.01.2025            			# Delete by date-id (day, latest of day)"
-	echo "  dcvm backup delete vm1-10.01.2025-2          			# Delete Nth backup of the day"
-	echo "  dcvm backup delete vm1-10.01.2025-14:30:00   			# Delete precise backup"
-	echo "  dcvm backup delete --all                      			# Delete ALL backups across ALL VMs"
-	echo "  dcvm backup export vm1 /tmp                 			# Export latest backup to custom dir"
-	echo "  dcvm backup export vm1 20250722_143052 /tmp   			# Export specific backup by timestamp"
-	echo "  dcvm backup export vm1 28.09.2025-1 /tmp     			# Export using day+index selector"
-	echo "  dcvm backup import /tmp/vm1-20250722_143052.tar.gz 		# Import and restore on this host"
-	echo "  dcvm backup troubleshoot vm1                  			# Fix VM startup issues"
-	echo ""
-	echo "Options:"
-	echo "  Backups are stored in: $BACKUP_DIR"
-	echo "  Retention: $KEEP_BACKUPS backups per VM"
-	echo "  Compression: $([ "$COMPRESSION_ENABLED" = true ] && echo "Enabled" || echo "Disabled")"
-	echo ""
-	echo "WARNING: Restore will COMPLETELY REPLACE the existing VM!"
-	exit 1
+	show_help
+	exit 0
+fi
+
+if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
+	show_help
+	exit 0
 fi
 
 SUBCOMMAND="$1"
