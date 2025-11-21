@@ -8,8 +8,28 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 
 | Method    | Command                                                                                           |
 | :-------- | :------------------------------------------------------------------------------------------------ |
-| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
-| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/demo/lib/installation/install-dcvm.sh)"`    |
+| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`    |
+| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`    |
+
+### Custom Branch or Fork Installation
+
+You can install from a different branch or fork using environment variables:
+
+```bash
+# Install from a specific branch
+DCVM_REPO_BRANCH=develop bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/develop/lib/installation/install-dcvm.sh)"
+
+# Install from a fork
+DCVM_REPO_SLUG=yourusername/dcvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/yourusername/dcvm/main/lib/installation/install-dcvm.sh)"
+
+# Install from a fork with specific branch
+DCVM_REPO_SLUG=yourusername/dcvm DCVM_REPO_BRANCH=feature-test bash -c "$(curl -fsSL https://raw.githubusercontent.com/yourusername/dcvm/feature-test/lib/installation/install-dcvm.sh)"
+```
+
+**Available environment variables:**
+- `DCVM_REPO_SLUG`: Repository in format `owner/repo` (default: `metharda/dcvm`)
+- `DCVM_REPO_BRANCH`: Branch name (default: `main`)
+
 
 ## Features
 
