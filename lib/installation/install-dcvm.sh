@@ -15,7 +15,7 @@ BRIDGE_NAME="virbr-dc"
 NETWORK_ONLY=0
 NETWORK_NAME_ARG=""
 DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
-DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-demo}"
+DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
 SOURCE_DIR=""
 TMP_WORKDIR=""
 
@@ -31,37 +31,11 @@ print_status() {
 	"ERROR") echo -e "${RED}[ERROR]${NC} $message" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${RED}[ERROR]${NC} $message" ;;
 	esac
 }
-
 print_status_log() { print_status "$@"; }
+
 cleanup_tmp_dir() {
 	if [[ -n "$TMP_WORKDIR" && -d "$TMP_WORKDIR" ]]; then
 		rm -rf "$TMP_WORKDIR" 2>/dev/null || true
-	fi
-}
-
-clone_repo_source() {
-	if ! command -v git >/dev/null 2>&1; then
-		print_status_log "ERROR" "git is not installed. Please install git or clone the repository manually."
-		return 1
-	fi
-
-	TMP_WORKDIR=$(mktemp -d 2>/dev/null || mktemp -d -t dcvm)
-	trap cleanup_tmp_dir EXIT
-
-	local repo_url="https://github.com/${DCVM_REPO_SLUG}.git"
-	print_status_log "INFO" "Cloning DCVM from $repo_url (branch: ${DCVM_REPO_BRANCH})"
-	if git clone --depth 1 --single-branch --branch "$DCVM_REPO_BRANCH" "$repo_url" "$TMP_WORKDIR/dcvm" >>"$LOG_FILE" 2>&1; then
-		if [[ -f "$TMP_WORKDIR/dcvm/bin/dcvm" && -d "$TMP_WORKDIR/dcvm/lib" ]]; then
-			SOURCE_DIR="$TMP_WORKDIR/dcvm"
-			print_status_log "SUCCESS" "Repository cloned to: $SOURCE_DIR"
-			return 0
-		else
-			print_status_log "ERROR" "Cloned repository missing expected layout (bin/ and lib/)"
-			return 1
-		fi
-	else
-		print_status_log "ERROR" "Failed to clone repository (see $LOG_FILE for details)"
-		return 1
 	fi
 }
 
@@ -92,54 +66,132 @@ fetch_file() {
 	fi
 }
 
+discover_repo_files() {
+	local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG}/git/trees/${DCVM_REPO_BRANCH}?recursive=1"
+	local response
+	
+	if command -v curl >/dev/null 2>&1; then
+		response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>&1)
+	elif command -v wget >/dev/null 2>&1; then
+		response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>&1)
+	else
+		print_status_log "ERROR" "Neither curl nor wget is available"
+		return 1
+	fi
+	
+	if [[ -z "$response" ]] || [[ "$response" == *"Not Found"* ]] || [[ "$response" == *"rate limit"* ]]; then
+		print_status_log "WARNING" "GitHub API request failed or rate limited"
+		echo "$response" >> "$LOG_FILE" 2>/dev/null
+		return 1
+	fi
+	
+	local files
+	if command -v python3 >/dev/null 2>&1; then
+		files=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'tree' in data:
+        for item in data['tree']:
+            path = item.get('path', '')
+            if path == 'bin/dcvm' or (path.startswith('lib/') and path.endswith('.sh')):
+                print(path)
+except:
+    pass
+" 2>/dev/null)
+	else
+		files=$(echo "$response" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//' | grep -E '^(bin/dcvm$|lib/.+\.sh$)')
+	fi
+	if [[ -z "$files" ]]; then
+		return 1
+	fi
+	echo "$files"
+}
+
 install_by_fetch() {
 	local install_bin="$1" 
-	local install_lib="$2" 
+	local install_lib="$2"
+	
+	if ensure_source_dir; then
+		print_status_log "INFO" "Using local repository at: $SOURCE_DIR"
+	
+		if [[ -f "$SOURCE_DIR/bin/dcvm" ]]; then
+			cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
+			print_status_log "SUCCESS" "Copied dcvm from local repository"
+		fi
+		
+		if [[ -d "$SOURCE_DIR/lib" ]]; then
+			cp -r "$SOURCE_DIR/lib/"* "$install_lib/"
+			find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
+			print_status_log "SUCCESS" "Copied all libraries from local repository"
+		fi
+		
+		return 0
+	fi
 
-	print_status_log "INFO" "Fetching required files from ${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}"
-
-	local -a files_bin=(
-		"bin/dcvm"
-	)
-	local -a files_lib=(
-		"lib/core/create-vm.sh"
-		"lib/core/delete-vm.sh"
-		"lib/core/vm-manager.sh"
-		"lib/core/create-from-iso.sh"
-		"lib/network/port-forward.sh"
-		"lib/network/dhcp.sh"
-		"lib/network/network-manager.sh"
-		"lib/storage/backup.sh"
-		"lib/storage/storage-manager.sh"
-		"lib/utils/common.sh"
-		"lib/utils/fix-lock.sh"
-		"lib/utils/dcvm-completion.sh"
-		"lib/installation/uninstall-dcvm.sh"
-	)
+	print_status_log "INFO" "Discovering repository files from ${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}"
+	
+	local discovered_files
+	discovered_files=$(discover_repo_files)
+	
+	if [[ -z "$discovered_files" ]]; then
+		print_status_log "WARNING" "Could not discover files via GitHub API"
+		print_status_log "INFO" "Attempting to clone repository instead..."
+		
+		if clone_repo_source; then
+			print_status_log "INFO" "Repository cloned successfully, using local files"
+			if [[ -f "$SOURCE_DIR/bin/dcvm" ]]; then
+				cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
+				print_status_log "SUCCESS" "Copied dcvm from cloned repository"
+			fi
+			
+			if [[ -d "$SOURCE_DIR/lib" ]]; then
+				cp -r "$SOURCE_DIR/lib/"* "$install_lib/"
+				find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
+				print_status_log "SUCCESS" "Copied all libraries from cloned repository"
+			fi
+			return 0
+		else
+			print_status_log "ERROR" "Failed to discover files and clone repository failed"
+			print_status_log "ERROR" "Please ensure git is installed or check network connectivity"
+			return 1
+		fi
+	fi
+	
+	local file_count=$(echo "$discovered_files" | wc -l | tr -d ' ')
+	print_status_log "INFO" "Found $file_count files to fetch"
 
 	local ok=true
-	for f in "${files_bin[@]}"; do
-		local dest="$install_bin/$(basename "$f")"
-		if fetch_file "$f" "$dest"; then
-			chmod +x "$dest" 2>/dev/null || true
-			print_status_log "SUCCESS" "Fetched $(basename "$f")"
-		else
-			print_status_log "ERROR" "Failed to fetch $f"
-			ok=false
+	local fetched_count=0
+	
+	while IFS= read -r file_path; do
+		[[ -z "$file_path" ]] && continue
+		
+		if [[ "$file_path" == bin/* ]]; then
+			local dest="$install_bin/$(basename "$file_path")"
+			if fetch_file "$file_path" "$dest"; then
+				chmod +x "$dest" 2>/dev/null || true
+				print_status_log "SUCCESS" "Fetched $(basename "$file_path")"
+				((fetched_count++))
+			else
+				print_status_log "ERROR" "Failed to fetch $file_path"
+				ok=false
+			fi
+		elif [[ "$file_path" == lib/* ]]; then
+			local rel_no_lib="${file_path#lib/}"
+			local dest="$install_lib/$rel_no_lib"
+			if fetch_file "$file_path" "$dest"; then
+				[[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
+				print_status_log "SUCCESS" "Fetched $rel_no_lib"
+				((fetched_count++))
+			else
+				print_status_log "ERROR" "Failed to fetch $file_path"
+				ok=false
+			fi
 		fi
-	done
+	done <<< "$discovered_files"
 
-	for f in "${files_lib[@]}"; do
-		local rel_no_lib="${f#lib/}"
-		local dest="$install_lib/$rel_no_lib"
-		if fetch_file "$f" "$dest"; then
-			[[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
-			print_status_log "SUCCESS" "Fetched $rel_no_lib"
-		else
-			print_status_log "ERROR" "Failed to fetch $f"
-			ok=false
-		fi
-	done
+	print_status_log "INFO" "Successfully fetched $fetched_count/$file_count files"
 
 	$ok || { print_status_log "ERROR" "Some files failed to download. Please check network/branch and try again."; return 1; }
 
@@ -675,34 +727,10 @@ install_dcvm_command() {
     
 	mkdir -p "$install_bin" "$install_lib"
 
-	# Prefer local repository if present; otherwise fetch needed files
-	if ensure_source_dir; then
-		print_status_log "INFO" "Using local repository at: $SOURCE_DIR"
-		if cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm"; then
-			chmod +x "$install_bin/dcvm"
-			print_status_log "SUCCESS" "Installed dcvm command to $install_bin/dcvm"
-		else
-			print_status_log "ERROR" "Failed to copy dcvm command"
-			exit 1
-		fi
-
-		if cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
-			print_status_log "SUCCESS" "Installed libraries to $install_lib/"
-		else
-			print_status_log "ERROR" "Failed to copy library files"
-			exit 1
-		fi
-
-		if find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \; ; then
-			print_status_log "SUCCESS" "Made all library scripts executable"
-		else
-			print_status_log "WARNING" "Could not set executable permissions on some scripts"
-		fi
-	else
-		print_status_log "INFO" "Local repo not found; fetching files from remote"
-		if ! install_by_fetch "$install_bin" "$install_lib"; then
-			exit 1
-		fi
+	# This function will first check for local repo, then fetch from remote if needed
+	if ! install_by_fetch "$install_bin" "$install_lib"; then
+		print_status_log "ERROR" "Failed to install DCVM files"
+		exit 1
 	fi
 
 	if command -v dcvm >/dev/null 2>&1; then
@@ -758,6 +786,9 @@ main() {
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}" == "" ]]; then
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
+		echo "Repository: ${DCVM_REPO_SLUG}"
+		echo "Branch: ${DCVM_REPO_BRANCH}"
+		echo ""
 
 		if [[ -t 0 && -t 1 ]]; then
 			echo "Please choose the installation directory for Datacenter VM."
