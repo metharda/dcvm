@@ -161,7 +161,17 @@ interactive_prompt_ssh_key() {
 
 check_dependencies() {
 	local missing_deps=()
-	for cmd in virsh virt-install qemu-img genisoimage openssl bc; do
+	local iso_tool=""
+	
+	if command -v mkisofs >/dev/null 2>&1; then
+		iso_tool="mkisofs"
+	elif command -v genisoimage >/dev/null 2>&1; then
+		iso_tool="genisoimage"
+	else
+		missing_deps+=("genisoimage or mkisofs")
+	fi
+
+	for cmd in virsh virt-install qemu-img openssl bc; do
 		command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
 	done
 	if [ ${#missing_deps[@]} -gt 0 ]; then
@@ -180,6 +190,7 @@ select_os() {
 			echo "  2) Debian 11"
 			echo "  3) Ubuntu 22.04"
 			echo "  4) Ubuntu 20.04"
+			echo "  5) Arch Linux"
 			read -p "Select the operating system for the VM [3]: " VM_OS_CHOICE
 			VM_OS_CHOICE=${VM_OS_CHOICE:-3}
 			break
@@ -194,12 +205,14 @@ select_os() {
 	   OS_VARIANT="ubuntu22.04"; OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img" ;;
 	4) VM_OS="ubuntu20.04"; TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
 	   OS_VARIANT="ubuntu20.04"; OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img" ;;
+	5) VM_OS="archlinux"; TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
+	   OS_VARIANT="archlinux"; OS_URL="https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg" ;;
 	*)
 		if [ "$FORCE_MODE" = true ]; then
-			print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1, 2, 3, or 4."
+			print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1, 2, 3, 4 or 5."
 			exit 1
 		else
-			echo "Invalid selection! Please enter 1, 2, 3, or 4."
+			echo "Invalid selection! Please enter 1, 2, 3, 4 or 5."
 			echo ""
 			select_os
 			return
@@ -256,7 +269,7 @@ Options:
   -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)
   -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
   -d, --disk <size>              		# Set disk size (default: 20G)
-  -o, --os <os_choice>          		# Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04 (default: 3)
+  -o, --os <os_choice>          		# Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04, 5=Arch (default: 3)
   -k, --packages <packages>     		# Comma-separated package list
   --with-ssh-key                 		# Add SSH key for passwordless authentication
   --without-ssh-key              		# Disable SSH key setup (password-only)
@@ -694,9 +707,25 @@ ethernets:
     dhcp-identifier: mac
 NETWORK_EOF
 
+if [ "$VM_OS" = "archlinux" ]; then
+cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: true
+    dhcp-identifier: mac
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+NETWORK_EOF
+fi
+
 [ "$FORCE_MODE" = true ] && print_info "Creating cloud-init config" || print_info "Creating cloud-init configuration..."
 cd $DATACENTER_BASE/vms/$VM_NAME
-genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
+if command -v mkisofs >/dev/null 2>&1; then
+    mkisofs -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
+else
+    genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
+fi
 
 [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
 qemu-img create -f qcow2 -F qcow2 -b $TEMPLATE_FILE ${VM_NAME}-disk.qcow2 $VM_DISK_SIZE >/dev/null 2>&1 || { print_error "Failed to create VM disk"; exit 1; }
