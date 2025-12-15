@@ -5,24 +5,28 @@ This guide will walk you through installing DCVM (Datacenter Virtual Machine Man
 ## Prerequisites
 
 ### Hardware Requirements
+
 - **CPU**: VT-x/AMD-V capable processor (hardware virtualization support)
 - **RAM**: Minimum 4GB (8GB+ recommended)
 - **Disk**: 50GB+ free space
 - **Network**: Internet connection for downloading VM templates
 
 ### Software Requirements
-- **Operating System**: Ubuntu 20.04/22.04 or Debian 11/12
+
+- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
 - **Privileges**: Root access required
 - **Virtualization**: KVM/QEMU support
 
 ## Quick Installation
 
 ### Using curl
+
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
 ### Using wget
+
 ```bash
 sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
@@ -62,6 +66,7 @@ sudo bash lib/installation/install-dcvm.sh
 ### 4. Follow the Installation Wizard
 
 The installer will prompt you for:
+
 - Installation directory (default: `/srv/datacenter`)
 - Network name (default: `datacenter-net`)
 - Bridge name (default: `virbr-dc`)
@@ -113,6 +118,7 @@ dcvm network
 Location: `/etc/dcvm-install.conf`
 
 Edit this file to customize:
+
 - Base directory
 - Network settings
 - Storage configuration
@@ -129,6 +135,7 @@ For advanced network configuration, see [Networking Guide](networking.md).
 If you get an error about virtualization support:
 
 **BIOS Settings:**
+
 1. Reboot your system
 2. Enter BIOS/UEFI settings
 3. Enable Intel VT-x or AMD-V
@@ -162,6 +169,10 @@ Manually install dependencies:
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients \
     bridge-utils virt-manager nfs-kernel-server
+
+# Arch Linux
+sudo pacman -S qemu-full libvirt virt-install virt-viewer \
+    bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode
 ```
 
 ## Uninstallation
@@ -177,6 +188,7 @@ sudo bash /srv/datacenter/install/uninstall-dcvm.sh
 ## Next Steps
 
 After installation:
+
 1. Read the [Usage Guide](usage.md)
 2. Create your first VM
 3. Explore [Examples](examples/)
@@ -184,5 +196,6 @@ After installation:
 ## Support
 
 For issues and questions:
+
 - GitHub Issues: https://github.com/metharda/dcvm/issues
 - Documentation: https://github.com/metharda/dcvm/docs

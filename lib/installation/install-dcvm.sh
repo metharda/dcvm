@@ -246,7 +246,7 @@ install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
 	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc)
-	local arch_packages=(qemu libvirt bridge-utils virt-install wget curl nfs-utils genisoimage)
+	local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux)
 
 	if [[ -f /etc/os-release ]]; then
 		. /etc/os-release
@@ -399,6 +399,7 @@ check_cloud_images() {
 		"debian-11-generic-amd64.qcow2|Debian 11|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
 		"ubuntu-20.04-server-cloudimg-amd64.img|Ubuntu 20.04|https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
 		"ubuntu-22.04-server-cloudimg-amd64.img|Ubuntu 22.04|https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+		"Arch-Linux-x86_64-cloudimg.qcow2|Arch Linux|https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg"
 	)
 
 	local missing_images=()

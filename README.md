@@ -6,47 +6,51 @@
 
 You can setup dcvm quickly with `curl` or `wget` commands: (you should be in root user)
 
-| Method    | Command                                                                                           |
-| :-------- | :------------------------------------------------------------------------------------------------ |
-| **curl**  | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`    |
-| **wget**  | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`    |
+| Method   | Command                                                                                                         |
+| :------- | :-------------------------------------------------------------------------------------------------------------- |
+| **curl** | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"` |
+| **wget** | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`  |
 
 ### Custom Branch or Fork Installation
 
 You can install from a different branch or fork using environment variables:
 
-| Use Case | Command |
-| :------- | :------ |
-| **Install from a specific branch** | `DCVM_REPO_BRANCH=<awesome-branch> bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/<awesome-branch>/lib/installation/install-dcvm.sh)"` |
-| **Install from a fork** | `DCVM_REPO_SLUG=<yourusername>/dcvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/<yourusername>/dcvm/main/lib/installation/install-dcvm.sh)"` |
+| Use Case                                     | Command                                                                                                                                                                              |
+| :------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Install from a specific branch**           | `DCVM_REPO_BRANCH=<awesome-branch> bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/<awesome-branch>/lib/installation/install-dcvm.sh)"`                        |
+| **Install from a fork**                      | `DCVM_REPO_SLUG=<yourusername>/dcvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/<yourusername>/dcvm/main/lib/installation/install-dcvm.sh)"`                             |
 | **Install from a fork with specific branch** | `DCVM_REPO_SLUG=yourusername/dcvm DCVM_REPO_BRANCH=feature-test bash -c "$(curl -fsSL https://raw.githubusercontent.com/<yourusername>/dcvm/main/lib/installation/install-dcvm.sh)"` |
 
 **Available environment variables:**
+
 - `DCVM_REPO_SLUG`: Repository in format `owner/repo` (default: `metharda/dcvm`)
 - `DCVM_REPO_BRANCH`: Branch name (default: `main`)
-
 
 ## Features
 
 ### Virtual Machine Management
-- **Automated VM Creation**: Debian 12-based VMs with cloud-init support
+
+- **Automated VM Creation**: Debian 12, Ubuntu 20.04/22.04 and Arch Linux based VMs with cloud-init support
 - **User-Friendly Wizard**: Step-by-step VM configuration
 - **Resource Optimization**: Automatic sizing based on host system resources
 - **Package Management**: Pre-installed packages like nginx, apache2, mysql-server, docker
 
 ### Network Management
+
 - **Isolated Network**: Private datacenter-net network (10.10.10.0/24)
 - **Automatic DHCP**: Dynamic IP assignment
 - **Port Forwarding**: Automatic port forwarding for SSH and HTTP access
 - **Connection Testing**: VM accessibility verification
 
 ### Storage & Backup
+
 - **Shared NFS**: File sharing between VMs
 - **Automated Backup**: Snapshot backup system
 - **Storage Monitoring**: Disk usage tracking and cleanup
 - **Archiving**: Automatic archiving of old files
 
 ### System Management
+
 - **Centralized Management**: All operations through `dcvm` command
 - **System Services**: systemd integration
 - **Log Management**: Detailed operation logs
@@ -55,13 +59,15 @@ You can install from a different branch or fork using environment variables:
 ## Requirements
 
 ### Hardware
+
 - **CPU**: VT-x/AMD-V capable processor
 - **RAM**: Minimum 4GB (8GB+ recommended)
 - **Disk**: 50GB+ free space
 - **Network**: Internet connection
 
 ### Software
-- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12
+
+- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
 
@@ -76,17 +82,20 @@ See installation commands at the top of this README.
 If you prefer step-by-step installation:
 
 #### 1. Clone Repository
+
 ```bash
 git clone https://github.com/metharda/dcvm.git
 cd dcvm
 ```
 
 #### 2. Run Installation Script
+
 ```bash
 sudo bash install/install-dcvm.sh
 ```
 
 #### 3. Verify Installation
+
 ```bash
 dcvm --version
 dcvm status
@@ -172,7 +181,7 @@ dcvm/
 │   └── dcvm                      # CLI entry point
 ├── lib/                          # Core libraries
 │   ├── core/                     # VM management
-│   ├── installation/             # Installation scripts                                 
+│   ├── installation/             # Installation scripts
 │   ├── network/                  # Network utilities
 │   ├── storage/                  # Backup & storage
 │   └── utils/                    # Common utilities
@@ -210,12 +219,14 @@ dcvm create web-server nginx,mysql-server
 ## Network Configuration
 
 ### Default Network Settings
+
 - **Network Range**: 10.10.10.0/24
 - **Gateway**: 10.10.10.1
 - **DHCP Pool**: 10.10.10.100-10.10.10.254
 - **DNS**: Host system DNS
 
 ### Port Mapping
+
 - **SSH**: 2220+ ports (per VM)
 - **HTTP**: 8080+ ports (per VM)
 - **Access**: `ssh -p 2221 admin@host-ip`
@@ -238,10 +249,12 @@ dcvm create web-server nginx,mysql-server
 ## Script Descriptions
 
 ### Main Scripts
+
 - **`install-dcvm.sh`**: System installation and startup
 - **`vm-manager.sh`**: Central VM management interface
 
 ### Helper Scripts
+
 - **`create-vm.sh`**: New VM creation wizard
 - **`delete-vm.sh`**: VM deletion and cleanup
 - **`backup.sh`**: Backup and restore
@@ -253,12 +266,14 @@ dcvm create web-server nginx,mysql-server
 ## Security
 
 ### Access Control
+
 - SSH key-based authentication
 - Strong password policies
 - Isolated network environment
 - Privilege control
 
 ### Security Best Practices
+
 ```bash
 # SSH key creation
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/dcvm-key
@@ -273,6 +288,7 @@ ufw allow 8080:8090/tcp  # HTTP ports
 ## Monitoring and Maintenance
 
 ### System Status
+
 ```bash
 dcvm status                 # General system status
 virsh list --all           # All VMs
@@ -280,6 +296,7 @@ virsh net-list             # Network status
 ```
 
 ### Log Files
+
 ```bash
 tail -f /var/log/datacenter-startup.log        # System logs
 tail -f /var/log/datacenter-storage.log        # Storage logs
@@ -287,6 +304,7 @@ journalctl -u libvirtd                         # KVM/QEMU logs
 ```
 
 ### Performance Monitoring
+
 ```bash
 # VM resource usage
 virsh domstats --cpu-total --balloon
@@ -303,6 +321,7 @@ virsh domblkstat vm-name vda
 ### Common Issues
 
 #### No KVM Support
+
 ```bash
 # Check CPU virtualization support
 egrep -c '(vmx|svm)' /proc/cpuinfo
@@ -314,6 +333,7 @@ modprobe kvm_amd    # For AMD
 ```
 
 #### Network Connection Issues
+
 ```bash
 # Restart network
 virsh net-destroy datacenter-net
@@ -324,6 +344,7 @@ dcvm clear-leases clear-all
 ```
 
 #### VM Startup Issues
+
 ```bash
 # Check VM state
 virsh domstate vm-name
@@ -336,6 +357,7 @@ ls -la /srv/datacenter/vms/vm-name/
 ```
 
 ### Complete System Reset
+
 ```bash
 # WARNING: Deletes all VMs!
 dcvm delete --all
