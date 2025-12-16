@@ -63,7 +63,7 @@ cd dcvm
    main "$@"
    ```
 
-4. **Add route in `bin/dcvm`:**
+4. **Add route in `dcvm`:**
    ```bash
    # In the case statement
    my-feature)
@@ -150,7 +150,7 @@ cd dcvm
 sudo bash lib/core/your-script.sh
 
 # Test through main CLI
-sudo ./bin/dcvm your-command
+sudo ./dcvm your-command
 ```
 
 ### Future: Automated Tests
@@ -225,7 +225,7 @@ Describe how you tested your changes.
    vim lib/core/my-operation.sh
    ```
 
-2. Add route in `bin/dcvm`:
+2. Add route in `dcvm`:
    ```bash
    my-operation)
        exec "$LIB_DIR/core/my-operation.sh" "$@"

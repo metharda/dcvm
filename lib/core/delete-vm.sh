@@ -35,20 +35,40 @@ cleanup_port_forwarding_for_vm() {
 
 cleanup_dhcp_lease() {
 	local mac_address="$1"
+	local vm_name="$2"
 	local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
+	local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
 
-	[ -z "$mac_address" ] && return
+	[ -z "$mac_address" ] && [ -z "$vm_name" ] && return
 
-	print_info "Clearing DHCP lease for MAC: $mac_address"
+	print_info "Clearing DHCP lease for MAC: ${mac_address:-unknown}, VM: ${vm_name:-unknown}"
 
-	if [ -f "$lease_file" ]; then
-		local before
-		before=$(wc -l < "$lease_file")
-		sed -i "/[[:space:]]${mac_address}[[:space:]]/d" "$lease_file"
+	local removed=0
+
+	if [ -f "$lease_file" ] && [ -n "$mac_address" ]; then
+		local before=$(wc -l < "$lease_file")
+		sed -i "/${mac_address}/Id" "$lease_file"
 		local after=$(wc -l < "$lease_file")
-		local removed=$((before - after))
-		[ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found"
+		removed=$((before - after))
 	fi
+
+	if [ -f "$lease_file" ] && [ -n "$vm_name" ]; then
+		local before=$(wc -l < "$lease_file")
+		sed -i "/${vm_name}/Id" "$lease_file"
+		local after=$(wc -l < "$lease_file")
+		removed=$((removed + before - after))
+	fi
+
+	if [ -f "$status_file" ]; then
+		if [ -n "$mac_address" ]; then
+			sed -i "/${mac_address}/Id" "$status_file"
+		fi
+		if [ -n "$vm_name" ]; then
+			sed -i "/${vm_name}/Id" "$status_file"
+		fi
+	fi
+
+	[ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found in files"
 
 	local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
 	[ -n "$dnsmasq_pid" ] && kill -HUP "$dnsmasq_pid" 2>/dev/null && print_info "DHCP service refreshed"
@@ -92,8 +112,8 @@ delete_single_vm() {
 	fi
 
 	[ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
-	if [ -n "$MAC_ADDRESS" ]; then
-		cleanup_dhcp_lease "$MAC_ADDRESS"
+	if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
+		cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"
 		if [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
 			bash "$SCRIPT_DIR/../network/dhcp.sh" clear-mac "$MAC_ADDRESS" >/dev/null 2>&1 || true
 		fi

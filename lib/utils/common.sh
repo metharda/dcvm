@@ -43,6 +43,7 @@ load_dcvm_config() {
     DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
     NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
     BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+    NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
 }
 
 require_root() {
@@ -139,20 +140,21 @@ get_vm_ip() {
     local attempts="${2:-1}"
     local ip=""
     local count=0
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
     
     while [ -z "$ip" ] && [ $count -lt $attempts ]; do
-        ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+        ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         if [ -z "$ip" ]; then
-            ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+            ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         fi
         if [ -z "$ip" ]; then
             local network_name="${NETWORK_NAME:-datacenter-net}"
-            ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+            ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         fi
         if [ -z "$ip" ]; then
             local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
             if [ -n "$mac" ]; then
-                ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+                ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
             fi
         fi
         if [ -z "$ip" ] && [ $attempts -gt 1 ]; then

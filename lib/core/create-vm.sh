@@ -2,12 +2,20 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
+source "$SCRIPT_DIR/../utils/mirror-manager.sh"
 
 load_dcvm_config
 
 DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+
+declare -A TEMPLATE_SHA256
+TEMPLATE_SHA256["ubuntu-22.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["debian-12-generic-amd64.qcow2"]=""
+TEMPLATE_SHA256["debian-11-generic-amd64.qcow2"]=""
+TEMPLATE_SHA256["ubuntu-20.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["Arch-Linux-x86_64-cloudimg.qcow2"]=""
 
 interactive_prompt_username() {
 	while true; do
@@ -208,11 +216,22 @@ select_os() {
 	5) VM_OS="archlinux"; TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
 	   OS_VARIANT="archlinux"; OS_URL="https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg" ;;
 	*)
+
+		if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
+			print_info "Detected ISO file - switching to custom ISO installation mode..."
+			exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
+				${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
+				${FLAG_CPUS:+-c "$FLAG_CPUS"} \
+				${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
+				${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
+				${FORCE_MODE:+-f}
+			exit $?
+		fi
 		if [ "$FORCE_MODE" = true ]; then
-			print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1, 2, 3, 4 or 5."
+			print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1-5 or path to ISO file."
 			exit 1
 		else
-			echo "Invalid selection! Please enter 1, 2, 3, 4 or 5."
+			echo "Invalid selection! Please enter 1-5 or full path to an ISO file."
 			echo ""
 			select_os
 			return
@@ -222,9 +241,16 @@ select_os() {
 	if [ ! -f "$TEMPLATE_FILE" ]; then
 		echo "Base template for $VM_OS not found. Downloading..."
 		mkdir -p "$DATACENTER_BASE/storage/templates"
-		wget --show-progress -O "$TEMPLATE_FILE" "$OS_URL"
-		[ $? -ne 0 ] && { echo "Failed to download $VM_OS template. Please check your internet connection."; exit 1; }
-		echo "$VM_OS template downloaded successfully."
+		local tmpl_key
+		tmpl_key="$(basename "$TEMPLATE_FILE")"
+		local expected_sha
+		expected_sha="${TEMPLATE_SHA256[$tmpl_key]:-}"
+		if download_with_mirrors "$tmpl_key" "$TEMPLATE_FILE" 104857600 "$expected_sha"; then
+			echo "$VM_OS template downloaded successfully."
+		else
+			print_error "Failed to download $VM_OS template. Please check your internet connection or mirrors." 
+			exit 1
+		fi
 	fi
 }
 
@@ -254,6 +280,7 @@ FLAG_ENABLE_ROOT=""
 FLAG_ROOT_PASSWORD=""
 FLAG_WITH_SSH_KEY=false
 FLAG_DISABLE_SSH_KEY=false
+FLAG_STATIC_IP=""
 ADDITIONAL_PACKAGES=""
 
 show_usage() {
@@ -269,12 +296,17 @@ Options:
   -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)
   -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
   -d, --disk <size>              		# Set disk size (default: 20G)
-  -o, --os <os_choice>          		# Set OS: 1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04, 5=Arch (default: 3)
+  -o, --os <os_choice|iso_path>  		# Set OS: 1-5 or path to ISO file
   -k, --packages <packages>     		# Comma-separated package list
+  --ip <address>                 		# Set static IP (e.g., 10.10.10.50) - DHCP if not specified
   --with-ssh-key                 		# Add SSH key for passwordless authentication
   --without-ssh-key              		# Disable SSH key setup (password-only)
   -f, --force                    		# Force mode - uses defaults for unspecified options (no prompts)
   -h, --help                     		# Show this help
+
+OS Options:
+  1 = Debian 12      2 = Debian 11      3 = Ubuntu 22.04 (default)
+  4 = Ubuntu 20.04   5 = Arch Linux     /path/to/file.iso = Custom ISO
 
 Modes:
   Interactive Mode (default)     		# Prompts for unspecified options
@@ -290,6 +322,10 @@ Force Mode Examples (uses defaults for unspecified options):
   dcvm create db-server -f -p secret -m 4096 -c 4 -k mysql-server,php   # Custom memory/CPU, default disk/OS
   dcvm create test-vm -f -p mypass -o 1 --enable-root       			# Custom OS, root enabled
   dcvm create admin-vm -f -p mypass -r rootpass123          			# Different root password
+
+ISO Installation Examples:
+  dcvm create custom-vm -f -o /path/to/ubuntu.iso -m 4096   			# Install from ISO file
+  dcvm create win-vm -f -o /isos/windows.iso -d 100G -m 8192 			# Windows from ISO
 
 Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io
 EOF
@@ -307,6 +343,7 @@ parse_arguments() {
 			-o|--os) FLAG_OS="$2"; shift 2 ;;
 			-d|--disk) FLAG_DISK_SIZE="$2"; shift 2 ;;
 			-k|--packages) ADDITIONAL_PACKAGES="$2"; shift 2 ;;
+			--ip) FLAG_STATIC_IP="$2"; shift 2 ;;
 			--with-ssh-key) FLAG_WITH_SSH_KEY=true; shift ;;
 			--without-ssh-key) FLAG_DISABLE_SSH_KEY=true; shift ;;
 			-f|--force) FORCE_MODE=true; shift ;;
@@ -335,14 +372,34 @@ if [ -z "$VM_NAME" ]; then
 	exit 0
 fi
 
-if virsh list --all 2>/dev/null | grep -q " $VM_NAME "; then
-	print_error "VM $VM_NAME already exists"
-	echo "Use: dcvm delete $VM_NAME (to delete it first)"
-	exit 1
-fi
+# Support comma-separated VM names (vm1,vm2,vm3)
+IFS=',' read -ra VM_NAMES <<< "$VM_NAME"
+
+# Validate all VM names first
+for vm in "${VM_NAMES[@]}"; do
+	vm=$(echo "$vm" | xargs)  # trim whitespace
+	[ -z "$vm" ] && continue
+	if virsh list --all 2>/dev/null | grep -q " $vm "; then
+		print_error "VM $vm already exists"
+		echo "Use: dcvm delete $vm (to delete it first)"
+		exit 1
+	fi
+done
 
 check_dependencies
 get_host_info
+
+# If multiple VMs, force mode is required
+if [ ${#VM_NAMES[@]} -gt 1 ] && [ "$FORCE_MODE" != true ]; then
+	print_error "Multiple VMs require force mode (-f) with password (-p)"
+	echo "Example: dcvm create vm1,vm2,vm3 -f -p mypassword"
+	exit 1
+fi
+
+# Create each VM
+for VM_NAME in "${VM_NAMES[@]}"; do
+	VM_NAME=$(echo "$VM_NAME" | xargs)  # trim whitespace
+	[ -z "$VM_NAME" ] && continue
 
 echo "=================================================="
 echo "VM Creation Wizard"
@@ -554,7 +611,7 @@ fi
 [ ! -d "$DATACENTER_BASE/vms" ] && { print_error "Directory $DATACENTER_BASE/vms does not exist"; exit 1; }
 [ ! -f "$TEMPLATE_FILE" ] && { print_error "Base template $TEMPLATE_FILE not found"; exit 1; }
 
-mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init || { print_error "Failed to create VM directory structure"; exit 1; }
+mkdir -p $DATACENTER_BASE/vms/$VM_NAME/cloud-init || { print_error "Failed to create cloud-init directory"; exit 1; }
 
 [ "$FORCE_MODE" = true ] && print_info "Generating password hash" || print_info "Generating secure password hash..."
 PASSWORD_HASH=$(generate_password_hash "$VM_PASSWORD")
@@ -565,7 +622,9 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 	IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
 	for package in "${PACKAGES[@]}"; do
 		package=$(echo "$package" | xargs)
-		PACKAGE_LIST="${PACKAGE_LIST}  - ${package}\n"
+		# Build package list with proper newlines for YAML
+		PACKAGE_LIST="${PACKAGE_LIST}
+  - ${package}"
 	done
 fi
 
@@ -603,8 +662,7 @@ packages:
   - nano
   - vim
   - tree
-  - unzip
-$(if [ -n "$PACKAGE_LIST" ]; then echo -e "$PACKAGE_LIST"; fi)
+  - unzip$(if [ -n "$PACKAGE_LIST" ]; then echo "$PACKAGE_LIST"; fi)
 
 bootcmd:
   - echo '$VM_USERNAME:$VM_PASSWORD' | chpasswd
@@ -699,16 +757,53 @@ instance-id: $VM_NAME-$(date +%s)
 local-hostname: $VM_NAME
 METADATA_EOF
 
-cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
+# Get network subnet from config or use default
+NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
+
+if [ -n "$FLAG_STATIC_IP" ]; then
+    # Validate static IP format
+    if [[ ! "$FLAG_STATIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        print_error "Invalid IP address format: $FLAG_STATIC_IP"
+        exit 1
+    fi
+    print_info "Using static IP: $FLAG_STATIC_IP"
+    
+    cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<NETWORK_EOF
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: false
+    addresses:
+      - ${FLAG_STATIC_IP}/24
+    gateway4: ${NETWORK_SUBNET}.1
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+NETWORK_EOF
+else
+    cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
 version: 2
 ethernets:
   enp1s0:
     dhcp4: true
     dhcp-identifier: mac
 NETWORK_EOF
+fi
 
 if [ "$VM_OS" = "archlinux" ]; then
-cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
+    if [ -n "$FLAG_STATIC_IP" ]; then
+        cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<NETWORK_EOF
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: false
+    addresses:
+      - ${FLAG_STATIC_IP}/24
+    gateway4: ${NETWORK_SUBNET}.1
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+NETWORK_EOF
+    else
+        cat >$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config <<'NETWORK_EOF'
 version: 2
 ethernets:
   enp1s0:
@@ -717,14 +812,16 @@ ethernets:
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
+    fi
 fi
 
+# Cloud-init based installation
 [ "$FORCE_MODE" = true ] && print_info "Creating cloud-init config" || print_info "Creating cloud-init configuration..."
 cd $DATACENTER_BASE/vms/$VM_NAME
 if command -v mkisofs >/dev/null 2>&1; then
-    mkisofs -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
+	mkisofs -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
 else
-    genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
+	genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || { print_error "Failed to create cloud-init ISO"; exit 1; }
 fi
 
 [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
@@ -768,3 +865,10 @@ echo ""
 echo "Wait 2-3 minutes for cloud-init to complete setup"
 echo "   Monitor: virsh console $VM_NAME"
 echo "   Check logs: tail -f /var/log/cloud-init-output.log (inside VM)"
+
+done  # End of VM_NAMES loop
+
+if [ ${#VM_NAMES[@]} -gt 1 ]; then
+	echo ""
+	print_success "All ${#VM_NAMES[@]} VMs created successfully!"
+fi

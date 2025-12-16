@@ -3,6 +3,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
+MIRROR_MANAGER="$SCRIPT_DIR/../utils/mirror-manager.sh"
+if [ -f "$MIRROR_MANAGER" ]; then
+    source "$MIRROR_MANAGER"
+elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
+    source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
+fi
+
 load_dcvm_config
 
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -92,6 +99,18 @@ get_backup_config_path() {
 
 download_cloud_image() {
 	local filename="$1"; local target_path="$2"
+	
+	if type download_with_mirrors &>/dev/null; then
+		print_info "Downloading cloud image $filename using mirror-manager..."
+		if download_with_mirrors "$filename" "$target_path" 100000000; then
+			print_success "Downloaded backing image: $filename"
+			return 0
+		else
+			print_error "Failed to download backing image: $filename"
+			return 1
+		fi
+	fi
+	
 	local url=""
 	case "$filename" in
 		ubuntu-22.04-server-cloudimg-amd64.img)
@@ -102,6 +121,8 @@ download_cloud_image() {
 			url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2";;
 		debian-11-generic-amd64.qcow2)
 			url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2";;
+		Arch-Linux-x86_64-cloudimg.qcow2)
+			url="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2";;
 	esac
 	if [ -z "$url" ]; then
 		print_warning "Unknown backing image '$filename'. Please place it at: $target_path"
@@ -187,6 +208,58 @@ is_lock_error() {
 		return 0
 	fi
 	return 1
+}
+
+get_host_ssh_key() {
+	local key_file=""
+	for f in ~/.ssh/id_rsa.pub ~/.ssh/id_ed25519.pub ~/.ssh/id_ecdsa.pub; do
+		[ -f "$f" ] && { key_file="$f"; break; }
+	done
+	[ -z "$key_file" ] && return 1
+	cat "$key_file"
+}
+
+create_ssh_cleanup_script() {
+	cat <<'SCRIPT_EOF'
+#!/bin/bash
+# Remove SSH host keys and authorized_keys for portable export
+rm -f /etc/ssh/ssh_host_*
+rm -f /root/.ssh/authorized_keys
+for home in /home/*; do
+    [ -d "$home/.ssh" ] && rm -f "$home/.ssh/authorized_keys"
+done
+echo "SSH keys cleaned for export"
+SCRIPT_EOF
+}
+
+create_ssh_setup_script() {
+	local ssh_key="$1"
+	cat <<SCRIPT_EOF
+#!/bin/bash
+# Regenerate SSH host keys
+dpkg-reconfigure openssh-server 2>/dev/null || ssh-keygen -A 2>/dev/null || {
+    for type in rsa ecdsa ed25519; do
+        [ -f "/etc/ssh/ssh_host_\${type}_key" ] || ssh-keygen -t \$type -f "/etc/ssh/ssh_host_\${type}_key" -N "" -q
+    done
+}
+# Add new authorized key
+if [ -n "$ssh_key" ]; then
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    echo "$ssh_key" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    for home in /home/*; do
+        if [ -d "\$home" ]; then
+            mkdir -p "\$home/.ssh"
+            echo "$ssh_key" >> "\$home/.ssh/authorized_keys"
+            chmod 600 "\$home/.ssh/authorized_keys"
+            chown -R \$(basename "\$home"):\$(basename "\$home") "\$home/.ssh" 2>/dev/null || true
+        fi
+    done
+fi
+systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
+echo "SSH keys regenerated and configured"
+SCRIPT_EOF
 }
 
 get_file_size() { [ -f "$1" ] && du -h "$1" | cut -f1 || echo "0"; }
@@ -637,6 +710,8 @@ export_backup() {
 	tmpdir=$(mktemp -d)
 	cp "$disk_backup" "$tmpdir/" || { rm -rf "$tmpdir"; print_error "Failed to copy disk backup"; return 1; }
 	cp "$config_backup" "$tmpdir/" || { rm -rf "$tmpdir"; print_error "Failed to copy config backup"; return 1; }
+	create_ssh_cleanup_script > "$tmpdir/ssh-cleanup.sh"
+	chmod +x "$tmpdir/ssh-cleanup.sh"
 
 	cat >"$tmpdir/manifest.txt" <<EOF
 vm_name=$vm_name
@@ -645,12 +720,16 @@ disk_file=$(basename "$disk_backup")
 config_file=$(basename "$config_backup")
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 dcvm_version=portable
+ssh_cleanup=true
 EOF
+
+	print_info "Export package includes SSH cleanup script (run inside VM after import)"
 
 	(cd "$tmpdir" && tar -czf "$pkg_path" .) || { rm -rf "$tmpdir"; print_error "Failed to create export archive"; return 1; }
 	rm -rf "$tmpdir"
 
 	print_success "Export created: $pkg_path"
+	print_info "After importing on another host, run 'dcvm backup ssh-setup <vm_name>' to configure SSH keys"
 	echo "$pkg_path"
 	return 0
 }
@@ -1191,6 +1270,13 @@ restore_vm() {
 	fi
 	echo ""
 
+	echo ""
+	read -p "Configure SSH keys for this VM? (recommended after import/restore) (Y/n): " setup_ssh
+	setup_ssh=${setup_ssh:-y}
+	if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
+		ssh_setup_vm "$vm_name"
+	fi
+
 	log "SUCCESS" "Restore completed successfully for VM: $vm_name from backup: $backup_date"
 	return 0
 }
@@ -1339,6 +1425,91 @@ backup_vm() {
 	return 0
 }
 
+ssh_setup_vm() {
+	local vm_name="$1"
+	
+	if [ -z "$vm_name" ]; then
+		print_error "VM name required for 'ssh-setup'"
+		return 1
+	fi
+	
+	if ! check_vm_exists "$vm_name"; then
+		print_error "VM '$vm_name' does not exist"
+		return 1
+	fi
+	
+	local vm_state
+	vm_state=$(get_vm_state "$vm_name")
+	if [ "$vm_state" != "running" ]; then
+		print_info "Starting VM '$vm_name'..."
+		virsh start "$vm_name" >/dev/null 2>&1 || { print_error "Failed to start VM"; return 1; }
+		print_info "Waiting for VM to boot (30s)..."
+		sleep 30
+	fi
+	
+	local vm_ip
+	vm_ip=$(get_vm_ip "$vm_name" 2>/dev/null)
+	if [ -z "$vm_ip" ]; then
+		print_error "Could not determine VM IP address"
+		print_info "Try waiting longer for VM to boot and get DHCP lease"
+		return 1
+	fi
+	
+	local ssh_key
+	ssh_key=$(get_host_ssh_key)
+	
+	local setup_script
+	setup_script=$(create_ssh_setup_script "$ssh_key")
+	
+	print_info "VM IP: $vm_ip"
+	print_info "Configuring SSH on VM..."
+	
+	echo ""
+	print_warning "You will be prompted for VM password to configure SSH"
+	print_info "This will regenerate SSH host keys and add your SSH public key"
+	echo ""
+	
+	local tmp_script
+	tmp_script=$(mktemp)
+	echo "$setup_script" > "$tmp_script"
+	chmod +x "$tmp_script"
+	
+	local connected=false
+	for user in root admin ubuntu debian; do
+		if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes "$user@$vm_ip" "echo ok" 2>/dev/null; then
+			print_info "Connected as $user (key already works)"
+			scp -o StrictHostKeyChecking=no "$tmp_script" "$user@$vm_ip:/tmp/ssh-setup.sh" 2>/dev/null
+			ssh -o StrictHostKeyChecking=no "$user@$vm_ip" "sudo bash /tmp/ssh-setup.sh; rm -f /tmp/ssh-setup.sh" 2>/dev/null
+			connected=true
+			break
+		fi
+	done
+	
+	if [ "$connected" != true ]; then
+		print_info "Attempting password-based SSH (you will be prompted)..."
+		for user in root admin ubuntu debian; do
+			if scp -o StrictHostKeyChecking=no "$tmp_script" "$user@$vm_ip:/tmp/ssh-setup.sh" 2>/dev/null; then
+				ssh -o StrictHostKeyChecking=no "$user@$vm_ip" "sudo bash /tmp/ssh-setup.sh; rm -f /tmp/ssh-setup.sh" 2>/dev/null && connected=true && break
+			fi
+		done
+	fi
+	
+	rm -f "$tmp_script"
+	
+	if [ "$connected" = true ]; then
+		print_success "SSH configured successfully on $vm_name"
+		print_info "You can now connect with: ssh <user>@$vm_ip"
+	else
+		print_warning "Could not automatically configure SSH"
+		print_info "Manual steps:"
+		echo "  1. Connect to VM console: virsh console $vm_name"
+		echo "  2. Regenerate SSH host keys: sudo dpkg-reconfigure openssh-server"
+		echo "  3. Add your SSH key to ~/.ssh/authorized_keys"
+	fi
+	
+	return 0
+}
+
 show_help() {
 	cat <<EOF
 DCVM Backup & Restore Management
@@ -1352,6 +1523,7 @@ SUBCOMMANDS:
   delete <selector>                                 Delete backups (see selectors below)
   export <vm_name> [backup_date] [output_dir]       Export backup as portable package
   import <package_path|directory> [new_vm_name]     Import and restore backup package
+  ssh-setup <vm_name>                               Configure SSH keys on imported VM
   troubleshoot <vm_name>                            Diagnose and fix VM startup issues
 
 DELETE SELECTORS:
@@ -1478,6 +1650,13 @@ case "$SUBCOMMAND" in
 		exit 1
 	fi
 	import_backup "$VM_NAME" "$BACKUP_DATE"; exit $?
+	;;
+"ssh-setup")
+	if [ -z "$VM_NAME" ]; then
+		print_error "VM name required for 'ssh-setup'"
+		exit 1
+	fi
+	ssh_setup_vm "$VM_NAME"; exit $?
 	;;
 "troubleshoot")
 	if [ -z "$VM_NAME" ]; then

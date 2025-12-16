@@ -151,7 +151,7 @@ export -f get_system_info get_host_info
 ## Not Updated (By Design)
 
 - lib/installation/install-dcvm.sh - Has its own print_status for logging
-- bin/dcvm - CLI wrapper, minimal functions needed
+- dcvm - CLI wrapper, minimal functions needed
 
 ## Testing Checklist
 

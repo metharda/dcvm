@@ -123,7 +123,7 @@ Test suite (planned for future development):
 
 When a user runs `dcvm <command>`, the flow is:
 
-1. **bin/dcvm** receives the command
+1. **dcvm** receives the command
 2. Routes to appropriate script in **lib/**
 3. Script sources **lib/utils/common.sh** for shared functions
 4. Loads configuration from `/etc/dcvm-install.conf`
@@ -148,7 +148,7 @@ When a user runs `dcvm <command>`, the flow is:
    - General utilities → `lib/utils/`
 
 2. Create the script with proper shebang and documentation
-3. Add route in `bin/dcvm`
+3. Add route in `dcvm`
 4. Update documentation in `docs/`
 5. Add examples if applicable
 

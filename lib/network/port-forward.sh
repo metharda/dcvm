@@ -13,9 +13,10 @@ HTTP_PORT_START=${HTTP_PORT_START:-8081}
 
 detect_host_ip() {
     local host_ip=""
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
     for interface in eth0 ens3 ens18 enp0s3 wlan0; do
         host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-        [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^10\.10\.10\. ]] && break
+        [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
     done
     [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
     [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
@@ -23,6 +24,8 @@ detect_host_ip() {
 }
 
 cleanup_port_forwarding() {
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    local subnet_regex="${subnet//./\\.}"
     print_info "Cleaning up existing datacenter port forwarding rules"
     for port in {2220..2299} {8080..8179}; do
         while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q ":$port "; do
@@ -30,8 +33,8 @@ cleanup_port_forwarding() {
             [ -n "$line" ] && iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
         done
     done
-    while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "10\.10\.10\."; do
-        local line=$(iptables -L FORWARD -n --line-numbers | grep "10\.10\.10\." | head -1 | awk '{print $1}')
+    while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "${subnet_regex}\."; do
+        local line=$(iptables -L FORWARD -n --line-numbers | grep "${subnet_regex}\." | head -1 | awk '{print $1}')
         [ -n "$line" ] && iptables -D FORWARD "$line" 2>/dev/null || break
     done
     print_success "Cleanup completed"
@@ -41,21 +44,24 @@ get_vm_ip_advanced() {
     local vm_name="$1"
     local ip=""
     local attempts=0
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    local subnet_regex="${subnet//./\\.}"
+    
     print_info "Looking for IP address of $vm_name"
     while [ -z "$ip" ] && [ $attempts -lt 15 ]; do
         ip=$(get_vm_ip "$vm_name" 1)
         if [ "$ip" = "N/A" ] || [ -z "$ip" ]; then
             local mac=$(get_vm_mac "$vm_name")
             if [ -n "$mac" ]; then
-                ip=$(ip neigh show | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
-                [ -z "$ip" ] && ip=$(arp -a | grep "$mac" | grep -oE '10\.10\.10\.[0-9]+' | head -1)
+                ip=$(ip neigh show | grep "$mac" | grep -oE "${subnet_regex}\.[0-9]+" | head -1)
+                [ -z "$ip" ] && ip=$(arp -a | grep "$mac" | grep -oE "${subnet_regex}\.[0-9]+" | head -1)
             fi
         fi
         if [ -z "$ip" ] || [ "$ip" = "N/A" ]; then
             if [ $attempts -eq 10 ]; then
                 print_info "Attempting network scan as last resort"
                 for i in {100..254}; do
-                    local test_ip="10.10.10.$i"
+                    local test_ip="${subnet}.$i"
                     if check_ping "$test_ip"; then
                         local test_mac=$(ip neigh show "$test_ip" 2>/dev/null | awk '{print $5}')
                         local vm_mac=$(get_vm_mac "$vm_name")
@@ -66,7 +72,7 @@ get_vm_ip_advanced() {
                 done
             fi
         fi
-        if [ -n "$ip" ] && [ "$ip" != "N/A" ] && [[ $ip =~ ^10\.10\.10\.[0-9]+$ ]]; then
+        if [ -n "$ip" ] && [ "$ip" != "N/A" ] && [[ $ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
             if check_ping "$ip"; then
                 print_success "$vm_name IP found and reachable: $ip"; break
             else
@@ -136,11 +142,13 @@ cmd_setup() {
     local HOST_IP=$(detect_host_ip); print_info "Host IP detected: $HOST_IP"
     local ssh_port=$SSH_PORT_START http_port=$HTTP_PORT_START
     print_info "Configuring port forwarding for discovered VMs"
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    local subnet_regex="${subnet//./\\.}"
     echo "$VM_LIST" | while read vm; do
         [ -z "$vm" ] && continue
         if ! virsh list | grep -q "$vm.*running"; then print_warning "Skipping $vm (not running - start it first)"; continue; fi
         local vm_ip=$(get_vm_ip_advanced "$vm")
-        if [ -n "$vm_ip" ] && [[ $vm_ip =~ ^10\.10\.10\.[0-9]+$ ]]; then
+        if [ -n "$vm_ip" ] && [[ $vm_ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
             setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"
             ssh_port=$((ssh_port + 1)); http_port=$((http_port + 1))
         else
