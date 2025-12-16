@@ -53,6 +53,13 @@
 - Uses: get_host_info, read_password, generate_password_hash
 - Uses: All print functions
 
+**custom-iso.sh:**
+- Sources: common.sh
+- Uses: load_dcvm_config, require_root
+- Uses: All print functions
+- Special: Interactive prompts for ISO installation settings
+- Supports: VNC, SPICE, and console graphics modes
+
 **delete-vm.sh:**
 - Sources: common.sh
 - Uses: load_dcvm_config, get_vm_ip, get_vm_mac, get_vm_disk_path
@@ -139,13 +146,17 @@ export -f get_system_info get_host_info
 ## Scripts Updated
 
 ✓ lib/core/create-vm.sh
+✓ lib/core/custom-iso.sh
 ✓ lib/core/delete-vm.sh
 ✓ lib/core/vm-manager.sh
-✓ lib/network/port-forward.sh (new)
-✓ lib/network/dhcp.sh (new)
+✓ lib/network/network-manager.sh
+✓ lib/network/port-forward.sh
+✓ lib/network/dhcp.sh
 ✓ lib/storage/backup.sh
 ✓ lib/storage/storage-manager.sh
 ✓ lib/utils/fix-lock.sh
+✓ lib/utils/dcvm-completion.sh
+✓ lib/installation/self-update.sh
 ✓ lib/installation/uninstall-dcvm.sh
 
 ## Not Updated (By Design)
@@ -157,8 +168,10 @@ export -f get_system_info get_host_info
 
 - [ ] VM creation (interactive): `sudo dcvm create testvm`
 - [ ] VM creation (force): `sudo dcvm create testvm -f -p pass123`
+- [ ] VM creation (ISO): `sudo dcvm create-iso testvm --iso /path/to/iso`
 - [ ] VM deletion: `sudo dcvm delete testvm`
 - [ ] VM listing: `dcvm list`
+- [ ] Self-update: `sudo dcvm self-update --check`
 - [ ] VM status: `dcvm status testvm`
 - [ ] Network setup: `sudo dcvm network ports setup`
 - [ ] DHCP cleanup: `sudo dcvm network dhcp cleanup`

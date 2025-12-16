@@ -336,7 +336,7 @@ else
 fi
 echo ""
 if [ -n "$STATIC_IP" ]; then
-    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    subnet="${NETWORK_SUBNET:-10.10.10}"
     echo "Network configuration for VM:"
     echo "  IP Address: $STATIC_IP/24"
     echo "  Gateway: ${subnet}.1"

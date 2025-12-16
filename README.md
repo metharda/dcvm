@@ -31,6 +31,7 @@ You can install from a different branch or fork using environment variables:
 ### Virtual Machine Management
 
 - **Automated VM Creation**: Debian 12, Ubuntu 20.04/22.04 and Arch Linux based VMs with cloud-init support
+- **Custom ISO Support**: Create VMs from any installer ISO (Windows, Arch, Fedora, etc.)
 - **User-Friendly Wizard**: Step-by-step VM configuration
 - **Resource Optimization**: Automatic sizing based on host system resources
 - **Package Management**: Pre-installed packages like nginx, apache2, mysql-server, docker
@@ -52,6 +53,7 @@ You can install from a different branch or fork using environment variables:
 ### System Management
 
 - **Centralized Management**: All operations through `dcvm` command
+- **Self-Update**: Update DCVM with a single command
 - **System Services**: systemd integration
 - **Log Management**: Detailed operation logs
 - **Security**: SSH key-based secure access
@@ -140,6 +142,8 @@ ssh admin@<vm-ip>
 # Create VMs
 dcvm create myvm                     # Interactive mode
 dcvm create webserver -f -p pass123  # Force mode with password
+dcvm create myvm -o /path/to/iso     # Create from custom ISO
+dcvm create-iso myvm --iso /path/to/archlinux.iso  # Alternative ISO syntax
 
 # Manage VMs
 dcvm list                            # List all VMs
@@ -161,6 +165,9 @@ dcvm storage-cleanup                 # Clean up storage
 
 # System
 dcvm fix-lock                        # Fix locked resources
+dcvm self-update                     # Update to latest version
+dcvm self-update --check             # Check for updates
+dcvm uninstall                       # Uninstall DCVM
 dcvm --version                       # Show version
 dcvm --help                          # Show help
 ```

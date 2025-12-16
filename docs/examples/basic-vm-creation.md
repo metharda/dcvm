@@ -297,6 +297,73 @@ dockerhost: 10.10.10.12 - Docker container host
 EOF
 ```
 
+## Custom ISO Examples
+
+### Example 11: Arch Linux from ISO
+
+Install Arch Linux manually using the official ISO:
+
+```bash
+dcvm create-iso archvm --iso ~/Downloads/archlinux-2024.01.01-x86_64.iso \
+  -m 4096 \
+  -c 4 \
+  -d 50G \
+  --graphics vnc \
+  --os-variant archlinux
+```
+
+**After running:**
+```bash
+# Get VNC port
+virsh vncdisplay archvm
+
+# Connect with VNC client to complete installation
+```
+
+### Example 12: Windows 10 VM
+
+Create a Windows 10 VM:
+
+```bash
+dcvm create-iso winvm --iso ~/Downloads/Win10_22H2_English_x64.iso \
+  -m 8192 \
+  -c 4 \
+  -d 100G \
+  --graphics spice \
+  --os-variant win10 \
+  --boot cdrom,hd
+```
+
+**Tips for Windows:**
+- Use at least 4GB RAM
+- SPICE provides better graphics performance
+- After installation, install virtio drivers for better performance
+
+### Example 13: Fedora Workstation
+
+```bash
+dcvm create-iso fedora --iso ~/Downloads/Fedora-Workstation-Live-x86_64-39.iso \
+  -m 4096 \
+  -c 4 \
+  -d 40G \
+  --graphics spice \
+  --os-variant fedora39
+```
+
+### Example 14: Custom Linux Distro
+
+For any custom or unsupported Linux distribution:
+
+```bash
+dcvm create-iso customvm --iso /path/to/custom-linux.iso \
+  -m 2048 \
+  -c 2 \
+  -d 30G \
+  --graphics vnc
+```
+
+**Note:** Leave `--os-variant` empty for generic settings.
+
 ## Next Steps
 
 - Learn about [Networking](../networking.md)

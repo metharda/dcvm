@@ -61,6 +61,59 @@ dcvm create myvm \
 - `--without-ssh-key`: Disable SSH key (password only)
 - `-f, --force`: Force mode (no prompts)
 
+### Creating a VM from Custom ISO
+
+For installing operating systems not available via cloud-init (Windows, Arch Linux, custom distros, etc.):
+
+#### Interactive ISO Mode
+```bash
+dcvm create myvm -o /path/to/installer.iso
+# or
+dcvm create-iso myvm --iso /path/to/installer.iso
+```
+
+The wizard will prompt you for:
+- Memory allocation
+- CPU count
+- Disk size
+- Graphics type (VNC, SPICE, or none)
+- OS variant (for libvirt optimization)
+- Boot order
+- Static IP (optional)
+
+#### ISO Mode with Options
+```bash
+dcvm create-iso archvm --iso /path/to/archlinux.iso \
+  -m 4096 \
+  -c 4 \
+  -d 50G \
+  --graphics vnc \
+  --os-variant archlinux \
+  --boot cdrom,hd
+```
+
+**ISO Options:**
+- `--iso, -o`: Path to installer ISO (required)
+- `-m, --memory`: Memory in MB
+- `-c, --cpus`: Number of CPUs
+- `-d, --disk`: Disk size (formats: 20G, 512M, 1T)
+- `--graphics`: vnc, spice, or none (default: vnc)
+- `--os-variant`: libosinfo variant (e.g., ubuntu22.04, win10, archlinux)
+- `--boot`: Boot order (default: cdrom,hd)
+- `--ip`: Static IP address (manual configuration required in VM)
+- `--copy-iso`: Copy ISO to VM directory
+
+**Connecting to Installer:**
+```bash
+# Get VNC display port
+virsh vncdisplay myvm
+
+# Console (for --graphics none)
+dcvm console myvm
+```
+
+**Note:** Force mode (-f) is not supported for ISO installations as they require interactive setup.
+
 ### Listing VMs
 
 ```bash
@@ -366,6 +419,43 @@ For advanced topics, see:
 - [Troubleshooting](troubleshooting.md)
 - [Examples](examples/)
 
+## Updating DCVM
+
+### Check for Updates
+
+```bash
+dcvm self-update --check
+```
+
+### Update to Latest Version
+
+```bash
+dcvm self-update
+```
+
+### Force Update
+
+```bash
+dcvm self-update --force
+```
+
+The self-update command will:
+- Check the current installed version
+- Compare with the latest version on GitHub
+- Backup current installation
+- Download and install new files
+- Restore backup if update fails
+
+## Uninstalling DCVM
+
+To completely remove DCVM from your system:
+
+```bash
+dcvm uninstall
+```
+
+**Warning:** This will remove all DCVM files but will NOT delete your VMs.
+
 ## Getting Help
 
 ```bash
@@ -374,6 +464,8 @@ dcvm help
 
 # Command-specific help
 dcvm create --help
+dcvm create-iso --help
+dcvm self-update --help
 ```
 
 ## Next Steps

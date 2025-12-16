@@ -180,10 +180,30 @@ sudo pacman -S qemu-full libvirt virt-install virt-viewer \
 To completely remove DCVM:
 
 ```bash
-sudo bash /srv/datacenter/install/uninstall-dcvm.sh
+dcvm uninstall
 ```
 
-**Warning**: This will remove all VMs and data!
+Or manually:
+
+```bash
+sudo bash /usr/local/lib/dcvm/installation/uninstall-dcvm.sh
+```
+
+**Warning**: This will remove DCVM but will NOT delete your VMs!
+
+## Updating DCVM
+
+To update to the latest version:
+
+```bash
+dcvm self-update
+```
+
+To check for updates without installing:
+
+```bash
+dcvm self-update --check
+```
 
 ## Next Steps
 
