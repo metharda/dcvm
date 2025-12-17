@@ -903,9 +903,19 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}"
 			echo "This determines the IP range for your VMs."
 			read -p "Network subnet (e.g., 10.10.10, 192.168.100) [default: 10.10.10]: " USER_SUBNET || USER_SUBNET=""
 			NETWORK_SUBNET=${USER_SUBNET:-10.10.10}
-			if [[ ! "$NETWORK_SUBNET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-				echo "Invalid subnet format. Using default: 10.10.10"
+		
+		if [[ ! "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+			echo "Invalid subnet format. Using default: 10.10.10"
+			NETWORK_SUBNET="10.10.10"
+		else
+			local oct1="${BASH_REMATCH[1]}"
+			local oct2="${BASH_REMATCH[2]}"
+			local oct3="${BASH_REMATCH[3]}"
+			
+			if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
+				echo "Invalid subnet: octets must be 0-255. Using default: 10.10.10"
 				NETWORK_SUBNET="10.10.10"
+			fi
 			fi
 		else
 			echo "Non-interactive installation detected. Using default values."

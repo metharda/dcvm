@@ -48,9 +48,8 @@ cleanup_dhcp_lease() {
 	if [ -f "$lease_file" ] && [ -n "$mac_address" ]; then
 		local before
 		before=$(wc -l < "$lease_file")
-		# Escape special regex characters in MAC address
 		local escaped_mac
-		escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[\^$.*\/[\]]/\\&/g')
+		escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
 		sed -i "/${escaped_mac}/Id" "$lease_file"
 		local after
 		after=$(wc -l < "$lease_file")
@@ -60,9 +59,8 @@ cleanup_dhcp_lease() {
 	if [ -f "$lease_file" ] && [ -n "$vm_name" ]; then
 		local before
 		before=$(wc -l < "$lease_file")
-		# Escape special regex characters in VM name
 		local escaped_name
-		escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[\^$.*\/[\]]/\\&/g')
+		escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
 		sed -i "/${escaped_name}/Id" "$lease_file"
 		local after
 		after=$(wc -l < "$lease_file")
@@ -72,12 +70,12 @@ cleanup_dhcp_lease() {
 	if [ -f "$status_file" ]; then
 		if [ -n "$mac_address" ]; then
 			local escaped_mac
-			escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[\^$.*\/[\]]/\\&/g')
+			escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
 			sed -i "/${escaped_mac}/Id" "$status_file"
 		fi
 		if [ -n "$vm_name" ]; then
 			local escaped_name
-			escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[\^$.*\/[\]]/\\&/g')
+			escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
 			sed -i "/${escaped_name}/Id" "$status_file"
 		fi
 	fi
@@ -278,9 +276,9 @@ delete_all_vms() {
 	[ -d "$DATACENTER_BASE/vms" ] && find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null
 
 	echo ""
-	print_success "======================================="
+	print_success "================================="
 	print_success "     MASS DELETION COMPLETED"
-	print_success "======================================="
+	print_success "================================="
 	echo ""
 	print_info "Final verification:"
 	

@@ -44,6 +44,19 @@ load_dcvm_config() {
     NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
     BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
     NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
+    
+    if [[ "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        local oct1="${BASH_REMATCH[1]}"
+        local oct2="${BASH_REMATCH[2]}"
+        local oct3="${BASH_REMATCH[3]}"
+        if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
+            echo "WARNING: Invalid NETWORK_SUBNET octets ($NETWORK_SUBNET), using default 10.10.10" >&2
+            NETWORK_SUBNET="10.10.10"
+        fi
+    else
+        echo "WARNING: Invalid NETWORK_SUBNET format ($NETWORK_SUBNET), using default 10.10.10" >&2
+        NETWORK_SUBNET="10.10.10"
+    fi
 }
 
 require_root() {

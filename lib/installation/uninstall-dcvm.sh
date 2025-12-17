@@ -13,6 +13,7 @@ else
     DATACENTER_BASE="/srv/datacenter"
     NETWORK_NAME="datacenter-net"
     BRIDGE_NAME="virbr-dc"
+    NETWORK_SUBNET="10.10.10"
 fi
 
 require_confirmation "This will completely remove DCVM and all datacenter VMs"
@@ -52,8 +53,9 @@ main() {
             [[ -n "$line" ]] && iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
         done
     done
-    while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "10\.10\.10\."; do
-        line=$(iptables -L FORWARD -n --line-numbers | grep "10\.10\.10\." | head -1 | awk '{print $1}')
+    # Use configured subnet instead of hardcoded value
+    while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "${NETWORK_SUBNET}\\."; do
+        line=$(iptables -L FORWARD -n --line-numbers | grep "${NETWORK_SUBNET}\\." | head -1 | awk '{print $1}')
         [[ -n "$line" ]] && iptables -D FORWARD "$line" 2>/dev/null || break
     done
     command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables/rules.v4 2>/dev/null || true

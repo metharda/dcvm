@@ -5,6 +5,18 @@ source "$SCRIPT_DIR/../utils/common.sh"
 
 load_dcvm_config
 
+VM_NAME=""
+ISO_PATH=""
+MEMORY=""
+CPUS=""
+DISK_SIZE=""
+OS_VARIANT=""
+GRAPHICS=""
+BOOT_ORDER=""
+STATIC_IP=""
+COPY_ISO=""
+FORCE_MODE=false
+
 show_usage() {
   cat <<EOF
 Create VM from Custom ISO (Interactive Mode)
@@ -32,18 +44,6 @@ Examples:
   dcvm create-iso myvm --iso /path/to/arch.iso --graphics none
 EOF
 }
-
-VM_NAME=""
-ISO_PATH=""
-MEMORY=""
-CPUS=""
-DISK_SIZE=""
-OS_VARIANT=""
-GRAPHICS=""
-BOOT_ORDER=""
-STATIC_IP=""
-COPY_ISO=""
-FORCE_MODE=false
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -117,10 +117,11 @@ interactive_prompt_disk() {
     while true; do
         read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " DISK_SIZE
         DISK_SIZE=${DISK_SIZE:-20G}
-        if [[ ! "$DISK_SIZE" =~ ^[0-9]+[GMT]$ ]]; then
+        if [[ ! "$DISK_SIZE" =~ ^[0-9]+[GMTgmt]$ ]]; then
             print_error "Invalid format. Use number + G/M/T (e.g., 20G, 512M, 1T)"
             continue
         fi
+        DISK_SIZE=${DISK_SIZE^^}
         break
     done
 }
@@ -189,9 +190,10 @@ parse_args "$@"
 
 if [ "$FORCE_MODE" = true ]; then
     echo ""
-    print_warning "Force mode (-f) is not supported for ISO installations."
+    print_error "Force mode (-f) is not supported for ISO installations."
     print_info "ISO installations require interactive setup for graphics, OS variant, and other options."
-    echo ""
+    print_info "Remove the -f flag and run again."
+    exit 1
 fi
 
 if [ -z "$VM_NAME" ]; then
@@ -278,9 +280,10 @@ if [ "$COPY_ISO" = "true" ]; then
     print_success "ISO copied to: $INSTALL_ISO"
 fi
 
-iso_size=$(stat -c%s "$INSTALL_ISO" 2>/dev/null || echo 0)
-if [ "$iso_size" -lt 52428800 ]; then
+iso_size=$(stat -c%s "$INSTALL_ISO" 2>/dev/null || stat -f%z "$INSTALL_ISO" 2>/dev/null || echo 0)
+if [ "$iso_size" -lt 10485760 ]; then
     print_warning "ISO file is smaller than expected ($(($iso_size / 1048576))MB). It may not be a valid installer ISO."
+    print_info "Some netinstall ISOs can be small, but verify the file is correct before continuing."
 fi
 
 print_info "Creating disk: $DISK_PATH ($DISK_SIZE)"
@@ -301,9 +304,8 @@ VIRT_INSTALL_OPTS=(
 if [ "$GRAPHICS" = "none" ]; then
     VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
 else
-    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=0.0.0.0")
+    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
 fi
-
 [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
 
 print_info "Starting installer from ISO"

@@ -9,6 +9,7 @@ load_dcvm_config
 DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
 NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
 BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-22.04-server-cloudimg-amd64.img"]=""
@@ -372,12 +373,11 @@ if [ -z "$VM_NAME" ]; then
 	exit 0
 fi
 
-# Support comma-separated VM names (vm1,vm2,vm3)
 IFS=',' read -ra VM_NAMES <<< "$VM_NAME"
 
-# Validate all VM names first
+
 for vm in "${VM_NAMES[@]}"; do
-	vm=$(echo "$vm" | xargs)  # trim whitespace
+	vm=$(echo "$vm" | xargs) 
 	[ -z "$vm" ] && continue
 	if virsh list --all 2>/dev/null | grep -q " $vm "; then
 		print_error "VM $vm already exists"
@@ -389,21 +389,19 @@ done
 check_dependencies
 get_host_info
 
-# If multiple VMs, force mode is required
 if [ ${#VM_NAMES[@]} -gt 1 ] && [ "$FORCE_MODE" != true ]; then
 	print_error "Multiple VMs require force mode (-f) with password (-p)"
 	echo "Example: dcvm create vm1,vm2,vm3 -f -p mypassword"
 	exit 1
 fi
 
-# Create each VM
 for VM_NAME in "${VM_NAMES[@]}"; do
-	VM_NAME=$(echo "$VM_NAME" | xargs)  # trim whitespace
+	VM_NAME=$(echo "$VM_NAME" | xargs) 
 	[ -z "$VM_NAME" ] && continue
 
-echo "=================================================="
-echo "VM Creation Wizard"
-echo "=================================================="
+echo "===================="
+echo " VM Creation Wizard"
+echo "===================="
 echo ""
 echo "Host System Information:"
 echo "  CPU: $HOST_CPU_MODEL"
@@ -622,7 +620,6 @@ if [ -n "$ADDITIONAL_PACKAGES" ]; then
 	IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
 	for package in "${PACKAGES[@]}"; do
 		package=$(echo "$package" | xargs)
-		# Build package list with proper newlines for YAML
 		PACKAGE_LIST="${PACKAGE_LIST}
   - ${package}"
 	done
@@ -757,13 +754,25 @@ instance-id: $VM_NAME-$(date +%s)
 local-hostname: $VM_NAME
 METADATA_EOF
 
-# Get network subnet from config or use default
-NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
-
 if [ -n "$FLAG_STATIC_IP" ]; then
-    # Validate static IP format
-    if [[ ! "$FLAG_STATIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ ! "$FLAG_STATIC_IP" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
         print_error "Invalid IP address format: $FLAG_STATIC_IP"
+        exit 1
+    fi
+    
+    local oct1="${BASH_REMATCH[1]}"
+    local oct2="${BASH_REMATCH[2]}"
+    local oct3="${BASH_REMATCH[3]}"
+    local oct4="${BASH_REMATCH[4]}"
+    
+    if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ] || [ "$oct4" -gt 255 ]; then
+        print_error "Invalid IP address: octets must be 0-255"
+        exit 1
+    fi
+    
+    local subnet_prefix="${NETWORK_SUBNET}"
+    if [[ ! "$FLAG_STATIC_IP" =~ ^${subnet_prefix}\. ]]; then
+        print_error "IP address $FLAG_STATIC_IP is not in subnet ${subnet_prefix}.0/24"
         exit 1
     fi
     print_info "Using static IP: $FLAG_STATIC_IP"
@@ -815,7 +824,6 @@ NETWORK_EOF
     fi
 fi
 
-# Cloud-init based installation
 [ "$FORCE_MODE" = true ] && print_info "Creating cloud-init config" || print_info "Creating cloud-init configuration..."
 cd $DATACENTER_BASE/vms/$VM_NAME
 if command -v mkisofs >/dev/null 2>&1; then
@@ -847,7 +855,7 @@ virsh autostart $VM_NAME >/dev/null 2>&1 || { [ "$FORCE_MODE" = true ] && print_
 
 echo ""
 echo "=================================================="
-print_success "VM $VM_NAME created successfully!"
+print_success " VM $VM_NAME created successfully!"
 echo "=================================================="
 echo ""
 echo "Connection Methods:"
@@ -866,7 +874,7 @@ echo "Wait 2-3 minutes for cloud-init to complete setup"
 echo "   Monitor: virsh console $VM_NAME"
 echo "   Check logs: tail -f /var/log/cloud-init-output.log (inside VM)"
 
-done  # End of VM_NAMES loop
+done
 
 if [ ${#VM_NAMES[@]} -gt 1 ]; then
 	echo ""

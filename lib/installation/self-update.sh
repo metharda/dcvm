@@ -32,7 +32,7 @@ EOF
 
 get_current_version() {
     if [[ -f "$INSTALL_BIN/dcvm" ]]; then
-        grep -oP 'Version: \K[0-9.]+' "$INSTALL_BIN/dcvm" 2>/dev/null || echo "unknown"
+        sed -n 's/.*Version: \([0-9][0-9.]*\).*/\1/p' "$INSTALL_BIN/dcvm" 2>/dev/null | head -1 || echo "unknown"
     else
         echo "not-installed"
     fi
@@ -51,7 +51,7 @@ get_remote_version() {
         return 1
     fi
     
-    echo "$content" | grep -oP 'Version: \K[0-9.]+' 2>/dev/null || echo "unknown"
+    echo "$content" | sed -n 's/.*Version: \([0-9][0-9.]*\).*/\1/p' | head -1 || echo "unknown"
 }
 
 fetch_file() {
@@ -154,8 +154,8 @@ do_update() {
     while IFS= read -r file_path; do
         [[ -z "$file_path" ]] && continue
         
-        if [[ "$file_path" == "dcvm" ]] || [[ "$file_path" == bin/* ]]; then
-            local dest="$INSTALL_BIN/$(basename "$file_path")"
+        if [[ "$file_path" == "dcvm" ]]; then
+            local dest="$INSTALL_BIN/dcvm"
             if fetch_file "$file_path" "$dest"; then
                 chmod +x "$dest" 2>/dev/null || true
                 ((updated_count++))

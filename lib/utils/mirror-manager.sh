@@ -19,7 +19,6 @@ https://mirror.leaseweb.net/debian-cdimage/cloud/bullseye/latest/debian-11-gener
 MIRROR_ubuntu_2204="
 https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://releases.ubuntu.com/jammy/ubuntu-22.04-server-cloudimg-amd64.img
-http://old-releases.ubuntu.com/releases/jammy/ubuntu-22.04-server-cloudimg-amd64.img
 https://mirror.rackspace.com/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://mirror.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
@@ -30,7 +29,6 @@ https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/jammy/release/u
 MIRROR_ubuntu_2004="
 https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://releases.ubuntu.com/focal/ubuntu-20.04-server-cloudimg-amd64.img
-http://old-releases.ubuntu.com/releases/focal/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirror.hetzner.de/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
