@@ -154,7 +154,7 @@ do_update() {
     while IFS= read -r file_path; do
         [[ -z "$file_path" ]] && continue
         
-        if [[ "$file_path" == bin/* ]]; then
+        if [[ "$file_path" == "dcvm" ]] || [[ "$file_path" == bin/* ]]; then
             local dest="$INSTALL_BIN/$(basename "$file_path")"
             if fetch_file "$file_path" "$dest"; then
                 chmod +x "$dest" 2>/dev/null || true

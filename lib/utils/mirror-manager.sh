@@ -85,11 +85,21 @@ test_url() {
     local timeout="${2:-10}"
     
     if command -v curl >/dev/null 2>&1; then
-        curl -sS -o /dev/null --connect-timeout "$timeout" --max-time "$timeout" -I "$url" 2>/dev/null
-        return $?
+        local err
+        err=$(curl -sS -o /dev/null --connect-timeout "$timeout" --max-time "$timeout" -I "$url" 2>&1)
+        local status=$?
+        if [ $status -ne 0 ]; then
+            echo "Error: curl failed to access $url: $err" >&2
+        fi
+        return $status
     elif command -v wget >/dev/null 2>&1; then
-        wget --spider --timeout="$timeout" -q "$url" 2>/dev/null
-        return $?
+        local err
+        err=$(wget --spider --timeout="$timeout" -q "$url" 2>&1)
+        local status=$?
+        if [ $status -ne 0 ]; then
+            echo "Error: wget failed to access $url: $err" >&2
+        fi
+        return $status
     fi
     return 1
 }
@@ -173,11 +183,23 @@ ensure_aria2c() {
     if [[ "${DCVM_AUTO_INSTALL_ARIA2:-false}" == "true" ]] && [[ $(id -u) -eq 0 ]]; then
         echo "INFO: Attempting to install aria2c automatically (DCVM_AUTO_INSTALL_ARIA2=true)" >&2
         if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -y && apt-get install -y aria2 && return 0 || return 1
+            if apt-get update -y && apt-get install -y aria2; then
+                return 0
+            else
+                return 1
+            fi
         elif command -v yum >/dev/null 2>&1; then
-            yum install -y aria2 && return 0 || return 1
+            if yum install -y aria2; then
+                return 0
+            else
+                return 1
+            fi
         elif command -v pacman >/dev/null 2>&1; then
-            pacman -Sy --noconfirm aria2 && return 0 || return 1
+            if pacman -Sy --noconfirm aria2; then
+                return 0
+            else
+                return 1
+            fi
         else
             echo "No supported package manager found to install aria2c automatically." >&2
             return 1

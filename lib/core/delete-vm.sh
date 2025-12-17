@@ -46,25 +46,39 @@ cleanup_dhcp_lease() {
 	local removed=0
 
 	if [ -f "$lease_file" ] && [ -n "$mac_address" ]; then
-		local before=$(wc -l < "$lease_file")
-		sed -i "/${mac_address}/Id" "$lease_file"
-		local after=$(wc -l < "$lease_file")
+		local before
+		before=$(wc -l < "$lease_file")
+		# Escape special regex characters in MAC address
+		local escaped_mac
+		escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[\^$.*\/[\]]/\\&/g')
+		sed -i "/${escaped_mac}/Id" "$lease_file"
+		local after
+		after=$(wc -l < "$lease_file")
 		removed=$((before - after))
 	fi
 
 	if [ -f "$lease_file" ] && [ -n "$vm_name" ]; then
-		local before=$(wc -l < "$lease_file")
-		sed -i "/${vm_name}/Id" "$lease_file"
-		local after=$(wc -l < "$lease_file")
+		local before
+		before=$(wc -l < "$lease_file")
+		# Escape special regex characters in VM name
+		local escaped_name
+		escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[\^$.*\/[\]]/\\&/g')
+		sed -i "/${escaped_name}/Id" "$lease_file"
+		local after
+		after=$(wc -l < "$lease_file")
 		removed=$((removed + before - after))
 	fi
 
 	if [ -f "$status_file" ]; then
 		if [ -n "$mac_address" ]; then
-			sed -i "/${mac_address}/Id" "$status_file"
+			local escaped_mac
+			escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[\^$.*\/[\]]/\\&/g')
+			sed -i "/${escaped_mac}/Id" "$status_file"
 		fi
 		if [ -n "$vm_name" ]; then
-			sed -i "/${vm_name}/Id" "$status_file"
+			local escaped_name
+			escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[\^$.*\/[\]]/\\&/g')
+			sed -i "/${escaped_name}/Id" "$status_file"
 		fi
 	fi
 
