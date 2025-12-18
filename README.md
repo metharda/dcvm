@@ -373,3 +373,6 @@ dcvm delete --all
 systemctl restart libvirtd
 ./install-dcvm.sh
 ```
+## License
+This project is licensed under the Apache License, Version 2.0.
+See the `LICENSE` file for details.

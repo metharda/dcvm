@@ -1,0 +1,55 @@
+name: Lint Shell Scripts
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/lint.yaml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/lint.yaml'
+
+jobs:
+  lint:
+    name: Bash lint (bash -n + shellcheck)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+
+      - name: Find shell files
+        id: find_files
+        run: |
+          set -euo pipefail
+          # include top-level `dcvm` and all tracked shell scripts
+          files=$(git ls-files -- "dcvm" "*.sh" || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$files" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run bash -n and shellcheck
+        run: |
+          set -euo pipefail
+          files="${{ steps.find_files.outputs.files }}"
+          if [[ -z "$files" ]]; then
+            echo "No shell files found to lint"
+            exit 0
+          fi
+          # iterate unique files
+          echo "$files" | tr '\n' ' ' | xargs -n1 -I{} bash -c '
+            if [[ -f "{}" ]]; then
+              echo "-- Linting {} --"
+              bash -n "{}"
+              shellcheck "{}"
+            fi'

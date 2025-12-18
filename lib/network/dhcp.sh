@@ -40,8 +40,8 @@ clear_all_leases() {
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
   local pid_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.pid"
 
-  [ -f "$lease_file" ] && > "$lease_file" && echo "Cleared lease file"
-  [ -f "$status_file" ] && > "$status_file" && echo "Cleared status file"
+  [ -f "$lease_file" ] && >"$lease_file" && echo "Cleared lease file"
+  [ -f "$status_file" ] && >"$status_file" && echo "Cleared status file"
   [ -f "$pid_file" ] && rm -f "$pid_file"
 
   reload_dnsmasq
@@ -73,20 +73,26 @@ clear_vm_lease() {
     local found=false
     if [ -f "$lease_file" ]; then
       if grep -qi "$vm_name" "$lease_file"; then
-        print_info "Found '$vm_name' in lease file"; sed -i "/$vm_name/Id" "$lease_file"; found=true
+        print_info "Found '$vm_name' in lease file"
+        sed -i "/$vm_name/Id" "$lease_file"
+        found=true
       fi
     fi
     if [ -f "$status_file" ]; then
       if grep -qi "$vm_name" "$status_file"; then
-        print_info "Found '$vm_name' in status file"; sed -i "/$vm_name/Id" "$status_file"; found=true
+        print_info "Found '$vm_name' in status file"
+        sed -i "/$vm_name/Id" "$status_file"
+        found=true
       fi
     fi
     if [ "$found" = true ]; then
-      print_success "Cleared leases containing '$vm_name'"; reload_dnsmasq
+      print_success "Cleared leases containing '$vm_name'"
+      reload_dnsmasq
       print_info "Restarting network to refresh libvirt cache..."
       virsh net-destroy "$NETWORK_NAME" 2>/dev/null && sleep 1 && virsh net-start "$NETWORK_NAME" 2>/dev/null && print_success "Network restarted" || print_warning "Network restart not needed or failed"
     else
-      print_warning "No leases found for '$vm_name'"; return 0
+      print_warning "No leases found for '$vm_name'"
+      return 0
     fi
   fi
 }
@@ -108,23 +114,29 @@ cleanup_stale_leases() {
             if echo "$existing_vms" | grep -qx "$hostname"; then
               keep_lease=true
             else
-              print_info "Removing lease for non-existent VM: $hostname ($ip, $mac)"; macs_to_remove+=("$mac"); ((removed_count++))
+              print_info "Removing lease for non-existent VM: $hostname ($ip, $mac)"
+              macs_to_remove+=("$mac")
+              ((removed_count++))
             fi
           else
             keep_lease=true
           fi
         else
-          print_info "Removing expired lease: $ip (${hostname:-unknown}, $mac)"; macs_to_remove+=("$mac"); ((removed_count++))
+          print_info "Removing expired lease: $ip (${hostname:-unknown}, $mac)"
+          macs_to_remove+=("$mac")
+          ((removed_count++))
         fi
         if [ "$keep_lease" = true ]; then
-          echo "$timestamp $mac $ip $hostname $client_id" >> "$temp_file"
+          echo "$timestamp $mac $ip $hostname $client_id" >>"$temp_file"
         fi
       fi
-    done < "$lease_file"
+    done <"$lease_file"
     if [ -f "$temp_file" ]; then
-      mv "$temp_file" "$lease_file"; print_success "Cleaned lease file (removed $removed_count lease(s))"
+      mv "$temp_file" "$lease_file"
+      print_success "Cleaned lease file (removed $removed_count lease(s))"
     else
-      > "$lease_file"; print_info "No valid leases found, cleared lease file"
+      >"$lease_file"
+      print_info "No valid leases found, cleared lease file"
     fi
   fi
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
@@ -133,7 +145,10 @@ cleanup_stale_leases() {
     while IFS= read -r line; do
       local keep_line=true
       for mac in "${macs_to_remove[@]}"; do
-        if echo "$line" | grep -q "$mac"; then keep_line=false; break; fi
+        if echo "$line" | grep -q "$mac"; then
+          keep_line=false
+          break
+        fi
       done
       if [ "$keep_line" = true ] && echo "$line" | grep -q '"hostname"'; then
         local hostname=$(echo "$line" | grep -oP '"hostname":\s*"\K[^"]+')
@@ -141,8 +156,8 @@ cleanup_stale_leases() {
           if ! echo "$existing_vms" | grep -qx "$hostname"; then keep_line=false; fi
         fi
       fi
-      if [ "$keep_line" = true ]; then echo "$line" >> "$temp_status"; fi
-    done < "$status_file"
+      if [ "$keep_line" = true ]; then echo "$line" >>"$temp_status"; fi
+    done <"$status_file"
     [ -f "$temp_status" ] && mv "$temp_status" "$status_file"
   fi
   reload_dnsmasq
@@ -156,7 +171,9 @@ force_renew_all() {
   print_info "Forcing DHCP renewal for all running VMs"
   local running_vms=$(virsh list | grep running | awk '{print $2}' | while read vm; do is_vm_in_network "$vm" && echo "$vm"; done)
   if [ -n "$running_vms" ]; then
-    echo "Found running VMs: $running_vms"; clear_all_leases; sleep 5
+    echo "Found running VMs: $running_vms"
+    clear_all_leases
+    sleep 5
     echo "$running_vms" | while read vm; do
       if [ -n "$vm" ]; then
         print_info "Forcing DHCP renewal on $vm"
@@ -219,15 +236,40 @@ main() {
 
   local subcmd="${1:-help}"
   case "$subcmd" in
-    show) shift; show_current_leases "$@" ;;
-    clear-all) shift; clear_all_leases "$@" ;;
-    clear-vm) shift; clear_vm_lease "$@" ;;
-    clear-mac) shift; clear_lease_by_mac "$@" ;;
-    cleanup) shift; cleanup_stale_leases "$@" ;;
-    renew) shift; force_renew_all "$@" ;;
-    files) shift; show_lease_files "$@" ;;
-    help|--help|-h) dhcp_help ;;
-    *) print_error "Unknown command: $subcmd"; echo "Use: dcvm network dhcp help"; exit 1 ;;
+  show)
+    shift
+    show_current_leases "$@"
+    ;;
+  clear-all)
+    shift
+    clear_all_leases "$@"
+    ;;
+  clear-vm)
+    shift
+    clear_vm_lease "$@"
+    ;;
+  clear-mac)
+    shift
+    clear_lease_by_mac "$@"
+    ;;
+  cleanup)
+    shift
+    cleanup_stale_leases "$@"
+    ;;
+  renew)
+    shift
+    force_renew_all "$@"
+    ;;
+  files)
+    shift
+    show_lease_files "$@"
+    ;;
+  help | --help | -h) dhcp_help ;;
+  *)
+    print_error "Unknown command: $subcmd"
+    echo "Use: dcvm network dhcp help"
+    exit 1
+    ;;
   esac
 }
 

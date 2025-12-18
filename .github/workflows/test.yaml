@@ -1,0 +1,95 @@
+name: Run Quick Tests (matrix)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/test.yaml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/test.yaml'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quick-test:
+    name: Quick test-suite (matrix)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-22.04]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache test artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .test-cache
+          key: ${{ runner.os }}-test-${{ hashFiles('**/lib/utils/test-suite.sh') }}
+
+      - name: Install deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y bash curl wget coreutils bc shellcheck
+
+      - name: Ensure test script is executable
+        run: |
+          if [[ -f lib/utils/test-suite.sh ]]; then
+            chmod +x lib/utils/test-suite.sh
+          else
+            echo "::error::lib/utils/test-suite.sh not found"
+            exit 1
+          fi
+
+      - name: Run quick tests
+        run: |
+          set -euo pipefail
+          bash lib/utils/test-suite.sh --quick
+
+  quick-test-container:
+    name: Quick test-suite in container
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache test artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .test-cache
+          key: ${{ runner.os }}-container-test-${{ hashFiles('**/lib/utils/test-suite.sh') }}
+
+      - name: Install deps
+        run: |
+          set -euo pipefail
+          apt-get update -y
+          apt-get install -y bash curl wget coreutils bc shellcheck
+
+      - name: Ensure test script is executable
+        run: |
+          if [[ -f lib/utils/test-suite.sh ]]; then
+            chmod +x lib/utils/test-suite.sh
+          else
+            echo "::error::lib/utils/test-suite.sh not found"
+            exit 1
+          fi
+
+      - name: Run quick tests
+        run: |
+          set -euo pipefail
+          bash lib/utils/test-suite.sh --quick
