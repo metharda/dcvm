@@ -8,28 +8,28 @@ THRESHOLD=85
 LOG_FILE="/var/log/datacenter-storage.log"
 
 check_vm_storage() {
-	local vm_name="$1"
-	local ssh_port="$2"
-	local usage=$(ssh -o ConnectTimeout=5 admin@$(get_host_ip) -p "$ssh_port" "df / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null)
+  local vm_name="$1"
+  local ssh_port="$2"
+  local usage=$(ssh -o ConnectTimeout=5 admin@$(get_host_ip) -p "$ssh_port" "df / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null)
 
-	if [ -z "$usage" ]; then
-		log_to_file "$LOG_FILE" "Failed to check disk usage for $vm_name"
-		return 1
-	fi
+  if [ -z "$usage" ]; then
+    log_to_file "$LOG_FILE" "Failed to check disk usage for $vm_name"
+    return 1
+  fi
 
-	log_to_file "$LOG_FILE" "$vm_name disk usage: $usage%"
+  log_to_file "$LOG_FILE" "$vm_name disk usage: $usage%"
 
-	if [ $usage -gt $THRESHOLD ]; then
-		log_to_file "$LOG_FILE" "$vm_name exceeds threshold ($THRESHOLD%), starting cleanup"
-		cleanup_old_files "$vm_name" "$ssh_port"
-	fi
+  if [ $usage -gt $THRESHOLD ]; then
+    log_to_file "$LOG_FILE" "$vm_name exceeds threshold ($THRESHOLD%), starting cleanup"
+    cleanup_old_files "$vm_name" "$ssh_port"
+  fi
 }
 
 cleanup_old_files() {
-	local vm_name="$1"
-	local ssh_port="$2"
+  local vm_name="$1"
+  local ssh_port="$2"
 
-	ssh admin@$(get_host_ip) -p "$ssh_port" <<'EOSSH'
+  ssh admin@$(get_host_ip) -p "$ssh_port" <<'EOSSH'
         mkdir -p /mnt/shared/archived-files/$(hostname)
         
         find /tmp -type f -mtime +30 -exec sh -c '
@@ -52,33 +52,33 @@ cleanup_old_files() {
         ' sh {} +
 EOSSH
 
-	log_to_file "$LOG_FILE" "Cleanup completed for $vm_name"
+  log_to_file "$LOG_FILE" "Cleanup completed for $vm_name"
 }
 
 main() {
-	load_dcvm_config
-	SHARED_STORAGE="$DATACENTER_BASE/nfs-share"
-	
-	log_to_file "$LOG_FILE" "Starting storage management check"
-	sleep 30
+  load_dcvm_config
+  SHARED_STORAGE="$DATACENTER_BASE/nfs-share"
 
-	local vm_list=$(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$" | while read vm; do
-		is_vm_in_network "$vm" && echo "$vm"
-	done)
+  log_to_file "$LOG_FILE" "Starting storage management check"
+  sleep 30
 
-	echo "$vm_list" | while read vm_name; do
-		if [ -n "$vm_name" ]; then
-			local mapping=$(read_port_mappings | grep "^$vm_name ")
-			if [ -n "$mapping" ]; then
-				local ssh_port=$(echo "$mapping" | awk '{print $3}')
-				[ -n "$ssh_port" ] && check_vm_storage "$vm_name" "$ssh_port"
-			fi
-		fi
-	done
+  local vm_list=$(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$" | while read vm; do
+    is_vm_in_network "$vm" && echo "$vm"
+  done)
 
-	log_to_file "$LOG_FILE" "Storage management check completed"
+  echo "$vm_list" | while read vm_name; do
+    if [ -n "$vm_name" ]; then
+      local mapping=$(read_port_mappings | grep "^$vm_name ")
+      if [ -n "$mapping" ]; then
+        local ssh_port=$(echo "$mapping" | awk '{print $3}')
+        [ -n "$ssh_port" ] && check_vm_storage "$vm_name" "$ssh_port"
+      fi
+    fi
+  done
+
+  log_to_file "$LOG_FILE" "Storage management check completed"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	main "$@"
+  main "$@"
 fi

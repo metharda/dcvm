@@ -18,25 +18,25 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="/etc/dcvm-install.conf"
 if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
-    LIB_DIR="${DCVM_LIB_DIR:-/usr/local/lib/dcvm}"
+  source "$CONFIG_FILE"
+  LIB_DIR="${DCVM_LIB_DIR:-/usr/local/lib/dcvm}"
 else
-    LIB_DIR="$SCRIPT_DIR/lib"
+  LIB_DIR="$SCRIPT_DIR/lib"
 fi
 if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
-    echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
-    echo "Visit: https://github.com/metharda/dcvm"
-    exit 1
+  echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
+  echo "Visit: https://github.com/metharda/dcvm"
+  exit 1
 fi
 
 show_version() {
-    echo "DCVM - Datacenter Virtual Machine Manager"
-    echo "Version: 0.7.1"
-    echo "https://github.com/metharda/dcvm"
+  echo "DCVM - Datacenter Virtual Machine Manager"
+  echo "Version: 0.7.1"
+  echo "https://github.com/metharda/dcvm"
 }
 
 show_usage() {
-    cat << EOF
+  cat <<EOF
 DCVM - Datacenter Virtual Machine Manager
 
 Usage: dcvm <command> [options]
@@ -86,70 +86,70 @@ EOF
 }
 
 route_command() {
-    local command="$1"
-    shift
-    case "$command" in
-        create)
-            exec "$LIB_DIR/core/create-vm.sh" "$@"
-            ;;
-        create-iso)
-            exec "$LIB_DIR/core/custom-iso.sh" "$@"
-            ;;
-        delete)
-            exec "$LIB_DIR/core/delete-vm.sh" "$@"
-            ;;
-        list|status|start|stop|restart|console)
-            exec "$LIB_DIR/core/vm-manager.sh" "$command" "$@"
-            ;;
-        network)
-            exec "$LIB_DIR/network/network-manager.sh" "$@"
-            ;;
-        backup)
-            if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-                exec "$LIB_DIR/storage/backup.sh" --help
-            else
-                exec "$LIB_DIR/storage/backup.sh" "$@"
-            fi
-            ;;
-        restore)
-            exec "$LIB_DIR/storage/backup.sh" restore "$@"
-            ;;
-        storage|storage-cleanup)
-            exec "$LIB_DIR/storage/storage-manager.sh" "$command" "$@"
-            ;;
-        fix-lock)
-            exec "$LIB_DIR/utils/fix-lock.sh" "$@"
-            ;;
-        self-update|update)
-            exec "$LIB_DIR/installation/self-update.sh" "$@"
-            ;;
-        uninstall)
-            exec "$LIB_DIR/installation/uninstall-dcvm.sh" "$@"
-            ;;
-        version|-v|--version)
-            show_version
-            ;;
-        help|-h|--help)
-            show_usage
-            ;;
-        *)
-            print_error "Unknown command: $command"
-            echo ""
-            show_usage
-            exit 1
-            ;;
-    esac
+  local command="$1"
+  shift
+  case "$command" in
+  create)
+    exec "$LIB_DIR/core/create-vm.sh" "$@"
+    ;;
+  create-iso)
+    exec "$LIB_DIR/core/custom-iso.sh" "$@"
+    ;;
+  delete)
+    exec "$LIB_DIR/core/delete-vm.sh" "$@"
+    ;;
+  list | status | start | stop | restart | console)
+    exec "$LIB_DIR/core/vm-manager.sh" "$command" "$@"
+    ;;
+  network)
+    exec "$LIB_DIR/network/network-manager.sh" "$@"
+    ;;
+  backup)
+    if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+      exec "$LIB_DIR/storage/backup.sh" --help
+    else
+      exec "$LIB_DIR/storage/backup.sh" "$@"
+    fi
+    ;;
+  restore)
+    exec "$LIB_DIR/storage/backup.sh" restore "$@"
+    ;;
+  storage | storage-cleanup)
+    exec "$LIB_DIR/storage/storage-manager.sh" "$command" "$@"
+    ;;
+  fix-lock)
+    exec "$LIB_DIR/utils/fix-lock.sh" "$@"
+    ;;
+  self-update | update)
+    exec "$LIB_DIR/installation/self-update.sh" "$@"
+    ;;
+  uninstall)
+    exec "$LIB_DIR/installation/uninstall-dcvm.sh" "$@"
+    ;;
+  version | -v | --version)
+    show_version
+    ;;
+  help | -h | --help)
+    show_usage
+    ;;
+  *)
+    print_error "Unknown command: $command"
+    echo ""
+    show_usage
+    exit 1
+    ;;
+  esac
 }
 
 main() {
-    if [ $# -eq 0 ]; then
-        show_usage
-        exit 0
-    fi
+  if [ $# -eq 0 ]; then
+    show_usage
+    exit 0
+  fi
 
-    local command="$1"
-    shift
+  local command="$1"
+  shift
 
-    route_command "$command" "$@"
+  route_command "$command" "$@"
 }
 main "$@"
