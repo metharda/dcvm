@@ -22,7 +22,7 @@ print_status() {
 }
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}"; }
-log_message() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"; }
+log_message() { log "INFO" "$1"; }
 log_to_file() {
     local log_file="${1:-/var/log/dcvm.log}"
     local message="$2"
@@ -43,6 +43,20 @@ load_dcvm_config() {
     DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
     NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
     BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+    NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
+    
+    if [[ "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        local oct1="${BASH_REMATCH[1]}"
+        local oct2="${BASH_REMATCH[2]}"
+        local oct3="${BASH_REMATCH[3]}"
+        if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
+            echo "WARNING: Invalid NETWORK_SUBNET octets ($NETWORK_SUBNET), using default 10.10.10" >&2
+            NETWORK_SUBNET="10.10.10"
+        fi
+    else
+        echo "WARNING: Invalid NETWORK_SUBNET format ($NETWORK_SUBNET), using default 10.10.10" >&2
+        NETWORK_SUBNET="10.10.10"
+    fi
 }
 
 require_root() {
@@ -124,11 +138,6 @@ validate_password() {
     return 0
 }
 
-vm_exists() {
-    local vm_name="$1"
-    virsh list --all 2>/dev/null | grep -q " $vm_name "
-}
-
 get_vm_state() {
     local vm_name="$1"
     virsh domstate "$vm_name" 2>/dev/null || echo "not-found"
@@ -139,20 +148,21 @@ get_vm_ip() {
     local attempts="${2:-1}"
     local ip=""
     local count=0
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
     
     while [ -z "$ip" ] && [ $count -lt $attempts ]; do
-        ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+        ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         if [ -z "$ip" ]; then
-            ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+            ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         fi
         if [ -z "$ip" ]; then
             local network_name="${NETWORK_NAME:-datacenter-net}"
-            ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+            ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
         fi
         if [ -z "$ip" ]; then
             local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
             if [ -n "$mac" ]; then
-                ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep '^10\.10\.10\.' | head -1)
+                ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
             fi
         fi
         if [ -z "$ip" ] && [ $attempts -gt 1 ]; then
@@ -161,6 +171,13 @@ get_vm_ip() {
         count=$((count + 1))
     done
     
+    if [ -z "$ip" ]; then
+        local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
+        if [ -f "$static_conf" ]; then
+            ip=$(grep '^IP=' "$static_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+        fi
+    fi
+
     if [ -z "$ip" ]; then
         echo "N/A"
         return 1
@@ -298,6 +315,8 @@ check_vm_exists() {
     virsh list --all 2>/dev/null | grep -q " $vm_name "
 }
 
+vm_exists() { check_vm_exists "$@"; }
+
 list_all_vms() {
     virsh list --all | grep -E "(running|shut off)" | while read line; do
         vm=$(echo "$line" | awk '{print $2}')
@@ -400,6 +419,188 @@ stop_vm_gracefully() {
     return 0
 }
 
+reload_dnsmasq() {
+    local bridge="${BRIDGE_NAME:-virbr-dc}"
+    local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${bridge}" | grep -v grep | awk '{print $2}' | head -1)
+    if [ -n "$dnsmasq_pid" ]; then
+        kill -HUP "$dnsmasq_pid" 2>/dev/null && return 0 || return 1
+    fi
+    return 1
+}
+
+interactive_prompt_memory_common() {
+    local var_name="${1:-VM_MEMORY}"
+    local host_mem=$(free -m | awk '/^Mem:/ {print $2}')
+    local max_mem=$((host_mem * 75 / 100))
+    local result=""
+    
+    while true; do
+        read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " result
+        result=${result:-2048}
+        if [[ ! "$result" =~ ^[0-9]+$ ]]; then
+            print_error "Memory must be a number"
+            continue
+        fi
+        if [ "$result" -lt 512 ]; then
+            print_error "Memory must be at least 512MB"
+            continue
+        fi
+        if [ "$result" -gt "$max_mem" ]; then
+            print_warning "Requested ${result}MB exceeds recommended ${max_mem}MB"
+            read -p "Continue anyway? (y/N): " cont
+            [[ ! "$cont" =~ ^[Yy]$ ]] && continue
+        fi
+        break
+    done
+    printf -v "$var_name" '%s' "$result"
+}
+
+interactive_prompt_cpus_common() {
+    local var_name="${1:-VM_CPUS}"
+    local host_cpus=$(nproc)
+    local max_cpus=$((host_cpus > 1 ? host_cpus - 1 : 1))
+    local result=""
+    
+    while true; do
+        read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " result
+        result=${result:-2}
+        if [[ ! "$result" =~ ^[0-9]+$ ]]; then
+            print_error "CPU count must be a number"
+            continue
+        fi
+        if [ "$result" -lt 1 ]; then
+            print_error "CPU count must be at least 1"
+            continue
+        fi
+        if [ "$result" -gt "$max_cpus" ]; then
+            print_warning "Requested ${result} CPUs exceeds recommended ${max_cpus}"
+            read -p "Continue anyway? (y/N): " cont
+            [[ ! "$cont" =~ ^[Yy]$ ]] && continue
+        fi
+        break
+    done
+    printf -v "$var_name" '%s' "$result"
+}
+
+interactive_prompt_disk_common() {
+    local var_name="${1:-VM_DISK_SIZE}"
+    local result=""
+    
+    while true; do
+        read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " result
+        result=${result:-20G}
+        result=${result^^}
+        if [[ ! "$result" =~ ^[0-9]+[GMT]$ ]]; then
+            print_error "Invalid format. Use number + G/M/T (e.g., 20G, 512M, 1T)"
+            continue
+        fi
+        local size_num=$(echo "$result" | sed 's/[GMT]$//')
+        local size_unit=$(echo "$result" | sed 's/^[0-9]*//')
+        case "$size_unit" in
+            "M") [ "$size_num" -lt 100 ] && { print_error "Minimum disk size is 100M"; continue; } ;;
+            "G") [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ] && { print_error "Disk size must be between 1G and 1000G"; continue; } ;;
+            "T") [ "$size_num" -gt 10 ] && { print_error "Maximum disk size is 10T"; continue; } ;;
+        esac
+        break
+    done
+    printf -v "$var_name" '%s' "$result"
+}
+
+detect_host_ip() {
+    local host_ip=""
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    for interface in eth0 ens3 ens18 enp0s3 wlan0; do
+        host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
+        [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
+    done
+    [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
+    [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
+    echo "$host_ip"
+}
+
+get_fix_lock_script_path() {
+    local script_dir="${1:-}"
+    if [ -n "$script_dir" ] && [ -f "$script_dir/../utils/fix-lock.sh" ]; then
+        echo "$script_dir/../utils/fix-lock.sh"
+    elif [ -f "/usr/local/lib/dcvm/utils/fix-lock.sh" ]; then
+        echo "/usr/local/lib/dcvm/utils/fix-lock.sh"
+    else
+        echo ""
+    fi
+}
+
+validate_ip_in_subnet() {
+    local ip="$1"
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    
+    if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        print_error "Invalid IP address format: $ip"
+        return 1
+    fi
+    
+    local oct1="${BASH_REMATCH[1]}"
+    local oct2="${BASH_REMATCH[2]}"
+    local oct3="${BASH_REMATCH[3]}"
+    local oct4="${BASH_REMATCH[4]}"
+    
+    if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ] || [ "$oct4" -gt 255 ]; then
+        print_error "Invalid IP address: octets must be 0-255"
+        return 1
+    fi
+    
+    if [[ ! "$ip" =~ ^${subnet}\. ]]; then
+        print_error "IP address $ip is not in subnet ${subnet}.0/24"
+        print_info "Valid range: ${subnet}.2 - ${subnet}.254"
+        return 1
+    fi
+    
+    if [ "$oct4" -lt 2 ] || [ "$oct4" -gt 254 ]; then
+        print_error "Last octet must be between 2-254 (1 is gateway, 255 is broadcast)"
+        return 1
+    fi
+    
+    return 0
+}
+
+interactive_prompt_static_ip_common() {
+    local var_name="${1:-STATIC_IP}"
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    local result=""
+    
+    echo ""
+    print_info "Static IP Configuration..."
+    echo "  Network subnet: ${subnet}.0/24"
+    echo "  Gateway: ${subnet}.1"
+    echo "  Valid range: ${subnet}.2 - ${subnet}.254"
+    echo ""
+    
+    while true; do
+        read -p "Use static IP? (y/N, default: DHCP): " use_static
+        use_static=${use_static:-n}
+        
+        if [[ "$use_static" =~ ^[Nn]$ ]]; then
+            result=""
+            print_success "Using DHCP for automatic IP assignment"
+            break
+        elif [[ "$use_static" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Enter static IP (e.g., ${subnet}.50): " result
+                if [ -z "$result" ]; then
+                    print_error "IP address cannot be empty"
+                    continue
+                fi
+                if validate_ip_in_subnet "$result"; then
+                    print_success "Static IP set to: $result"
+                    break 2
+                fi
+            done
+        else
+            print_error "Please enter 'y' for static IP or 'n' for DHCP"
+        fi
+    done
+    printf -v "$var_name" '%s' "$result"
+}
+
 export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
@@ -411,3 +612,6 @@ export -f get_system_info get_host_info
 export -f check_port_connectivity is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
+export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f validate_ip_in_subnet interactive_prompt_static_ip_common
+export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common

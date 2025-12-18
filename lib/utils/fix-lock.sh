@@ -3,17 +3,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-VM_NAME="$1"
+VM_NAME=""
 VERBOSE=false
 EXIT_CODE=0
 
 print_verbose() {
     [ "$VERBOSE" = true ] && echo -e "${BLUE}[DEBUG]${NC} $1"
 }
-
-[ -z "$VM_NAME" ] && print_error "VM name required. Usage: $0 <vm_name|--all> [--verbose]" && exit 1
-
-[ "$2" = "--verbose" ] || [ "$VM_NAME" = "--verbose" ] && VERBOSE=true
 
 check_permissions
 check_dependencies virsh lsof
@@ -346,33 +342,45 @@ except Exception as e:
 	[ $step_errors -gt 0 ] && return 1 || return 0
 }
 
-if [ "$VM_NAME" = "--all" ]; then
-	print_info "Fixing locks for all VMs"
+main() {
+	VM_NAME="$1"
 
-	VM_LIST=$(virsh list --all --name 2>/dev/null | grep -v "^$" || true)
+	[ -z "$VM_NAME" ] && print_error "VM name required. Usage: $0 <vm_name|--all> [--verbose]" && exit 1
 
-	[ -z "$VM_LIST" ] && print_warning "No VMs found" && exit 0
+	[ "$2" = "--verbose" ] || [ "$VM_NAME" = "--verbose" ] && VERBOSE=true
 
-	total_vms=0
-	failed_vms=0
-	
-	for vm in $VM_LIST; do
-		total_vms=$((total_vms + 1))
-		echo "Processing VM $total_vms: $vm"
-		echo "----------------------------------------"
+	if [ "$VM_NAME" = "--all" ]; then
+		print_info "Fixing locks for all VMs"
+
+		VM_LIST=$(virsh list --all --name 2>/dev/null | grep -v "^$" || true)
+
+		[ -z "$VM_LIST" ] && print_warning "No VMs found" && exit 0
+
+		total_vms=0
+		failed_vms=0
 		
-		fix_vm_locks "$vm" || { failed_vms=$((failed_vms + 1)); print_error "Failed to fix locks for $vm"; }
-		echo ""
-	done
+		for vm in $VM_LIST; do
+			total_vms=$((total_vms + 1))
+			echo "Processing VM $total_vms: $vm"
+			echo "----------------------------------------"
+			
+			fix_vm_locks "$vm" || { failed_vms=$((failed_vms + 1)); print_error "Failed to fix locks for $vm"; }
+			echo ""
+		done
 
-	echo "=========================================="
-	echo "Summary:"
-	echo "  Total VMs processed: $total_vms"
-	echo "  Successful: $((total_vms - failed_vms))"
-	echo "  Failed: $failed_vms"
-	echo "=========================================="
-	
-	[ $failed_vms -gt 0 ] && print_warning "Some VMs had issues during lock fix" && exit 1 || { print_success "Lock fix completed successfully for all VMs"; exit 0; }
-else
-	fix_vm_locks "$VM_NAME" && exit 0 || { print_error "Lock fix failed for $VM_NAME"; exit 1; }
+		echo "=========================================="
+		echo "Summary:"
+		echo "  Total VMs processed: $total_vms"
+		echo "  Successful: $((total_vms - failed_vms))"
+		echo "  Failed: $failed_vms"
+		echo "=========================================="
+		
+		[ $failed_vms -gt 0 ] && print_warning "Some VMs had issues during lock fix" && exit 1 || { print_success "Lock fix completed successfully for all VMs"; exit 0; }
+	else
+		fix_vm_locks "$VM_NAME" && exit 0 || { print_error "Lock fix failed for $VM_NAME"; exit 1; }
+	fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
 fi

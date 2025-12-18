@@ -21,8 +21,7 @@ if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
     LIB_DIR="${DCVM_LIB_DIR:-/usr/local/lib/dcvm}"
 else
-    DCVM_ROOT="$(dirname "$SCRIPT_DIR")"
-    LIB_DIR="$DCVM_ROOT/lib"
+    LIB_DIR="$SCRIPT_DIR/lib"
 fi
 if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
@@ -66,6 +65,7 @@ COMMANDS:
 
   System:
     fix-lock                 Fix locked resources
+    self-update              Update DCVM to the latest version
     uninstall                Uninstall DCVM completely
     version                  Show version information
     help                     Show this help message
@@ -88,13 +88,12 @@ EOF
 route_command() {
     local command="$1"
     shift
-
     case "$command" in
         create)
             exec "$LIB_DIR/core/create-vm.sh" "$@"
             ;;
         create-iso)
-            exec "$LIB_DIR/core/create-from-iso.sh" "$@"
+            exec "$LIB_DIR/core/custom-iso.sh" "$@"
             ;;
         delete)
             exec "$LIB_DIR/core/delete-vm.sh" "$@"
@@ -120,6 +119,9 @@ route_command() {
             ;;
         fix-lock)
             exec "$LIB_DIR/utils/fix-lock.sh" "$@"
+            ;;
+        self-update|update)
+            exec "$LIB_DIR/installation/self-update.sh" "$@"
             ;;
         uninstall)
             exec "$LIB_DIR/installation/uninstall-dcvm.sh" "$@"

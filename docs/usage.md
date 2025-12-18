@@ -18,14 +18,15 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 12, Debian 11, Ubuntu 22.04, Ubuntu 20.04)
+- Operating system (Debian 12, Debian 11, Ubuntu 22.04, Ubuntu 20.04, Arch Linux)
 - Username (default: admin)
 - Password
 - Root access settings
+- SSH key setup
+- **Static IP configuration** (new!)
 - Memory allocation
 - CPU count
 - Disk size
-- SSH key setup
 
 #### Force Mode (Non-Interactive)
 ```bash
@@ -53,13 +54,78 @@ dcvm create myvm \
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
 - `-d, --disk`: Disk size (default: 20G)
-- `-o, --os`: OS choice (1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04)
+- `-o, --os`: OS choice (1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04, 5=ArchLinux)
+- `--ip`: Static IP address (e.g., 10.10.10.50) - uses DHCP if not specified
+
+Note about multiple VMs and `--ip`:
+
+- When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
+  - vm1 → 10.10.10.50
+  - vm2 → 10.10.10.51
+  - vm3 → 10.10.10.52
+- If the auto-increment would exceed `.254`, DCVM uses a fallback algorithm that assigns descending addresses from the base so addresses remain within the valid `.2-.254` range. Example:
+  - Base `10.10.10.254` for 3 VMs → 254, 253, 252
+
+Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
 - `-r, --root-password`: Set root password
 - `-k, --packages`: Comma-separated package list
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
 - `-f, --force`: Force mode (no prompts)
+
+### Creating a VM from Custom ISO
+
+For installing operating systems not available via cloud-init (Windows, Arch Linux, custom distros, etc.):
+
+#### Interactive ISO Mode
+```bash
+dcvm create myvm -o /path/to/installer.iso
+# or
+dcvm create-iso myvm --iso /path/to/installer.iso
+```
+
+The wizard will prompt you for:
+- Memory allocation
+- CPU count
+- Disk size
+- Graphics type (VNC, SPICE, or none)
+- OS variant (for libvirt optimization)
+- Boot order
+- Static IP (optional)
+
+#### ISO Mode with Options
+```bash
+dcvm create-iso archvm --iso /path/to/archlinux.iso \
+  -m 4096 \
+  -c 4 \
+  -d 50G \
+  --graphics vnc \
+  --os-variant archlinux \
+  --boot cdrom,hd
+```
+
+**ISO Options:**
+- `--iso, -o`: Path to installer ISO (required)
+- `-m, --memory`: Memory in MB
+- `-c, --cpus`: Number of CPUs
+- `-d, --disk`: Disk size (formats: 20G, 512M, 1T)
+- `--graphics`: vnc, spice, or none (default: vnc)
+- `--os-variant`: libosinfo variant (e.g., ubuntu22.04, win10, archlinux)
+- `--boot`: Boot order (default: cdrom,hd)
+- `--ip`: Static IP address (manual configuration required in VM)
+- `--copy-iso`: Copy ISO to VM directory
+
+**Connecting to Installer:**
+```bash
+# Get VNC display port
+virsh vncdisplay myvm
+
+# Console (for --graphics none)
+dcvm console myvm
+```
+
+**Note:** Force mode (-f) is not supported for ISO installations as they require interactive setup.
 
 ### Listing VMs
 
@@ -366,6 +432,43 @@ For advanced topics, see:
 - [Troubleshooting](troubleshooting.md)
 - [Examples](examples/)
 
+## Updating DCVM
+
+### Check for Updates
+
+```bash
+dcvm self-update --check
+```
+
+### Update to Latest Version
+
+```bash
+dcvm self-update
+```
+
+### Force Update
+
+```bash
+dcvm self-update --force
+```
+
+The self-update command will:
+- Check the current installed version
+- Compare with the latest version on GitHub
+- Backup current installation
+- Download and install new files
+- Restore backup if update fails
+
+## Uninstalling DCVM
+
+To completely remove DCVM from your system:
+
+```bash
+dcvm uninstall
+```
+
+**Warning:** This will remove all DCVM files but will NOT delete your VMs.
+
 ## Getting Help
 
 ```bash
@@ -374,6 +477,8 @@ dcvm help
 
 # Command-specific help
 dcvm create --help
+dcvm create-iso --help
+dcvm self-update --help
 ```
 
 ## Next Steps

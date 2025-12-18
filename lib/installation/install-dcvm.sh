@@ -39,11 +39,32 @@ cleanup_tmp_dir() {
 	fi
 }
 
+clone_repo_source() {
+	if ! command -v git >/dev/null 2>&1; then
+		print_status_log "WARNING" "git is not available for repository cloning"
+		return 1
+	fi
+	
+	TMP_WORKDIR=$(mktemp -d)
+	trap cleanup_tmp_dir EXIT
+	
+	local repo_url="https://github.com/${DCVM_REPO_SLUG}.git"
+	print_status_log "INFO" "Cloning repository from $repo_url"
+	
+	if git clone --depth 1 --branch "$DCVM_REPO_BRANCH" "$repo_url" "$TMP_WORKDIR/dcvm" 2>>"$LOG_FILE"; then
+		SOURCE_DIR="$TMP_WORKDIR/dcvm"
+		return 0
+	else
+		print_status_log "ERROR" "Failed to clone repository"
+		return 1
+	fi
+}
+
 ensure_source_dir() {
 	local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	local repo_root; repo_root="$(cd "$script_dir/../.." && pwd)"
 
-	if [[ -f "$repo_root/bin/dcvm" && -d "$repo_root/lib" ]]; then
+	if [[ -f "$repo_root/dcvm" && -d "$repo_root/lib" ]]; then
 		SOURCE_DIR="$repo_root"
 		return 0
 	fi
@@ -71,15 +92,36 @@ discover_repo_files() {
 	local response
 	
 	if command -v curl >/dev/null 2>&1; then
-		response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>&1)
+		response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"$LOG_FILE")
 	elif command -v wget >/dev/null 2>&1; then
-		response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>&1)
+		response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"$LOG_FILE")
 	else
 		print_status_log "ERROR" "Neither curl nor wget is available"
 		return 1
 	fi
 	
-	if [[ -z "$response" ]] || [[ "$response" == *"Not Found"* ]] || [[ "$response" == *"rate limit"* ]]; then
+	local has_error
+	if [[ -z "$response" ]]; then
+		has_error=1
+	else
+		if command -v python3 >/dev/null 2>&1; then
+			has_error=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(1 if 'message' in data else 0)
+except Exception:
+    print(1)
+")
+		else
+			if [[ "$response" == *'"message"'* ]]; then
+				has_error=1
+			else
+				has_error=0
+			fi
+		fi
+	fi
+	if [[ "$has_error" -eq 1 ]]; then
 		print_status_log "WARNING" "GitHub API request failed or rate limited"
 		echo "$response" >> "$LOG_FILE" 2>/dev/null
 		return 1
@@ -94,13 +136,16 @@ try:
     if 'tree' in data:
         for item in data['tree']:
             path = item.get('path', '')
-            if path == 'bin/dcvm' or (path.startswith('lib/') and path.endswith('.sh')):
+            if path == 'dcvm' or (path.startswith('lib/') and path.endswith('.sh')):
                 print(path)
 except:
     pass
 " 2>/dev/null)
+	elif command -v jq >/dev/null 2>&1; then
+		files=$(echo "$response" | jq -r '.tree[]? | select(.path == "dcvm" or (.path | startswith("lib/") and endswith(".sh"))) | .path' 2>/dev/null)
 	else
-		files=$(echo "$response" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//' | grep -E '^(bin/dcvm$|lib/.+\.sh$)')
+		print_status_log "WARNING" "Using basic JSON parsing; install python3 or jq for better reliability"
+		files=$(echo "$response" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//' | grep -E '^(dcvm$|lib/.+\.sh$)')
 	fi
 	if [[ -z "$files" ]]; then
 		return 1
@@ -115,13 +160,20 @@ install_by_fetch() {
 	if ensure_source_dir; then
 		print_status_log "INFO" "Using local repository at: $SOURCE_DIR"
 	
-		if [[ -f "$SOURCE_DIR/bin/dcvm" ]]; then
-			cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
+		if [[ -f "$SOURCE_DIR/dcvm" ]]; then
+			if ! cp "$SOURCE_DIR/dcvm" "$install_bin/dcvm"; then
+				print_status_log "ERROR" "Failed to copy dcvm from local repository"
+				return 1
+			fi
+			chmod +x "$install_bin/dcvm"
 			print_status_log "SUCCESS" "Copied dcvm from local repository"
 		fi
 		
 		if [[ -d "$SOURCE_DIR/lib" ]]; then
-			cp -r "$SOURCE_DIR/lib/"* "$install_lib/"
+			if ! cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
+				print_status_log "ERROR" "Failed to copy libraries from local repository"
+				return 1
+			fi
 			find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
 			print_status_log "SUCCESS" "Copied all libraries from local repository"
 		fi
@@ -140,8 +192,8 @@ install_by_fetch() {
 		
 		if clone_repo_source; then
 			print_status_log "INFO" "Repository cloned successfully, using local files"
-			if [[ -f "$SOURCE_DIR/bin/dcvm" ]]; then
-				cp "$SOURCE_DIR/bin/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
+			if [[ -f "$SOURCE_DIR/dcvm" ]]; then
+				cp "$SOURCE_DIR/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
 				print_status_log "SUCCESS" "Copied dcvm from cloned repository"
 			fi
 			
@@ -158,7 +210,7 @@ install_by_fetch() {
 		fi
 	fi
 	
-	local file_count=$(echo "$discovered_files" | wc -l | tr -d ' ')
+	local file_count=$(echo "$discovered_files" | grep -c '^.')
 	print_status_log "INFO" "Found $file_count files to fetch"
 
 	local ok=true
@@ -245,8 +297,8 @@ prompt_yes_no() {
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
-	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc)
-	local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux)
+	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish)
+	local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish)
 
 	if [[ -f /etc/os-release ]]; then
 		. /etc/os-release
@@ -372,6 +424,8 @@ check_directory_structure() {
 		"$DATACENTER_BASE/storage/templates"
 		"$DATACENTER_BASE/nfs-share"
 		"$DATACENTER_BASE/backups"
+		"$DATACENTER_BASE/config"
+		"$DATACENTER_BASE/config/network"
 	)
 
 	for dir in "${directories[@]}"; do
@@ -391,21 +445,70 @@ check_directory_structure() {
 	print_status_log "SUCCESS" "Directory structure verified"
 }
 
+source_mirror_manager() {
+	local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	local repo_mirror="$script_dir/../utils/mirror-manager.sh"
+	local installed_mirror="/usr/local/lib/dcvm/utils/mirror-manager.sh"
+	local loaded_from=""
+	
+	if [[ -f "$repo_mirror" ]]; then
+		loaded_from="$repo_mirror"
+	elif [[ -f "$installed_mirror" ]]; then
+		loaded_from="$installed_mirror"
+	elif [[ -n "$SOURCE_DIR" && -f "$SOURCE_DIR/lib/utils/mirror-manager.sh" ]]; then
+		loaded_from="$SOURCE_DIR/lib/utils/mirror-manager.sh"
+	else
+		return 1
+	fi
+
+	source "$loaded_from"
+	print_status_log "INFO" "Using mirror-manager: $loaded_from"
+
+	if ! declare -F get_mirrors >/dev/null 2>&1; then
+		print_status_log "ERROR" "mirror-manager loaded but get_mirrors() is missing"
+		return 1
+	fi
+	if ! get_mirrors "debian-12-generic-amd64.qcow2" >/dev/null 2>&1; then
+		print_status_log "ERROR" "mirror-manager loaded but MIRRORS are not accessible (get_mirrors failed)"
+		return 1
+	fi
+
+	return 0
+}
+
+declare -A IMAGE_LABELS
+IMAGE_LABELS["debian-12-generic-amd64.qcow2"]="Debian 12"
+IMAGE_LABELS["debian-11-generic-amd64.qcow2"]="Debian 11"
+IMAGE_LABELS["ubuntu-22.04-server-cloudimg-amd64.img"]="Ubuntu 22.04"
+IMAGE_LABELS["ubuntu-20.04-server-cloudimg-amd64.img"]="Ubuntu 20.04"
+IMAGE_LABELS["Arch-Linux-x86_64-cloudimg.qcow2"]="Arch Linux"
+
+IMAGE_ORDER=(
+	"debian-11-generic-amd64.qcow2"
+	"debian-12-generic-amd64.qcow2"
+	"ubuntu-20.04-server-cloudimg-amd64.img"
+	"ubuntu-22.04-server-cloudimg-amd64.img"
+	"Arch-Linux-x86_64-cloudimg.qcow2"
+)
+
 check_cloud_images() {
 	print_status_log "INFO" "Checking for cloud images..."
-
-	local images=(
-		"debian-12-generic-amd64.qcow2|Debian 12|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-		"debian-11-generic-amd64.qcow2|Debian 11|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
-		"ubuntu-20.04-server-cloudimg-amd64.img|Ubuntu 20.04|https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
-		"ubuntu-22.04-server-cloudimg-amd64.img|Ubuntu 22.04|https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
-		"Arch-Linux-x86_64-cloudimg.qcow2|Arch Linux|https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg"
-	)
+	
+	if ! source_mirror_manager; then
+		print_status_log "WARNING" "mirror-manager.sh not found, cloud images will be downloaded when creating VMs"
+		return 0
+	fi
+	
+	local images=()
+	for filename in "${IMAGE_ORDER[@]}"; do
+		local label="${IMAGE_LABELS[$filename]:-Unknown}"
+		images+=("$filename|$label")
+	done
 
 	local missing_images=()
 
 	for entry in "${images[@]}"; do
-		IFS='|' read -r filename label url <<<"$entry"
+		IFS='|' read -r filename label <<<"$entry"
 		local image_path="$DATACENTER_BASE/storage/templates/$filename"
 		if [[ -f "$image_path" ]]; then
 			local size=$(du -h "$image_path" 2>/dev/null | cut -f1 || echo "unknown")
@@ -427,15 +530,15 @@ check_cloud_images() {
 				case $yn in
 				"Yes, download now")
 					for entry in "${missing_images[@]}"; do
-						IFS='|' read -r filename label url <<<"$entry"
+						IFS='|' read -r filename label <<<"$entry"
 						local image_path="$DATACENTER_BASE/storage/templates/$filename"
 						print_status_log "INFO" "Downloading $label cloud image..."
-						if wget --show-progress -O "$image_path" "$url" 2>&1; then
-							print_status_log "SUCCESS" "$label cloud image downloaded"
+						if download_with_mirrors "$filename" "$image_path" 104857600; then
+							print_status_log "SUCCESS" "$label cloud image downloaded successfully"
 						else
-							print_status_log "WARNING" "Failed to download $label - will download when creating VM"
-							rm -f "$image_path" 2>/dev/null
+							print_status_log "WARNING" "Failed to download $label - will attempt later when creating VM"
 						fi
+						echo ""
 					done
 					break
 					;;
@@ -456,10 +559,11 @@ check_cloud_images() {
 create_network() {
 	local net_name="$1"
 	local bridge_name="$2"
-	local ip_addr="10.10.10.1"
+	local subnet="${NETWORK_SUBNET:-10.10.10}"
+	local ip_addr="${subnet}.1"
 	local netmask="255.255.255.0"
-	local dhcp_start="10.10.10.10"
-	local dhcp_end="10.10.10.100"
+	local dhcp_start="${subnet}.10"
+	local dhcp_end="${subnet}.200"
 	
 	print_status_log "INFO" "Checking network '$net_name'..."
 	
@@ -650,7 +754,7 @@ install_completion() {
 
 	if [[ -t 0 && -t 1 ]]; then
 		echo
-		if prompt_yes_no "Enable dcvm tab-completion in your shell now? [y/N]: " "N"; then
+		if prompt_yes_no "Enable dcvm tab-completion in your shell now? [Y/n]: " "Y"; then
 			local shell_info; shell_info=$(detect_shell)
 			local shell_name="${shell_info%%|*}"
 			local config_file="${shell_info##*|}"
@@ -728,7 +832,6 @@ install_dcvm_command() {
     
 	mkdir -p "$install_bin" "$install_lib"
 
-	# This function will first check for local repo, then fetch from remote if needed
 	if ! install_by_fetch "$install_bin" "$install_lib"; then
 		print_status_log "ERROR" "Failed to install DCVM files"
 		exit 1
@@ -769,12 +872,12 @@ main() {
 	install_required_packages
 	check_kvm_support
 	install_dcvm_command
-	install_completion
 	start_libvirtd
-	enable_ip_forwarding
 	check_directory_structure
 	check_cloud_images
+	enable_ip_forwarding
 	create_datacenter_network
+	install_completion
 	start_nfs_server
 	start_existing_vms
 	setup_aliases
@@ -804,17 +907,40 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}"
 			echo "Please enter the bridge name for the datacenter."
 			read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
 			BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+
+			echo ""
+			echo "Network IP Configuration (default: 10.10.10.0/24)"
+			echo "This determines the IP range for your VMs."
+			read -p "Network subnet (e.g., 10.10.10, 192.168.100) [default: 10.10.10]: " USER_SUBNET || USER_SUBNET=""
+			NETWORK_SUBNET=${USER_SUBNET:-10.10.10}
+		
+			if [[ ! "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+				echo "Invalid subnet format. Using default: 10.10.10"
+				NETWORK_SUBNET="10.10.10"
+			else
+				oct1="${BASH_REMATCH[1]}"
+				oct2="${BASH_REMATCH[2]}"
+				oct3="${BASH_REMATCH[3]}"
+				
+				if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
+					echo "Invalid subnet: octets must be 0-255. Using default: 10.10.10"
+					NETWORK_SUBNET="10.10.10"
+				fi
+			fi
 		else
 			echo "Non-interactive installation detected. Using default values."
 			DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
+			NETWORK_SUBNET="10.10.10"
 		fi
 
 		echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
 		echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
 		echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
+		echo "NETWORK_SUBNET=\"$NETWORK_SUBNET\"" >>"$CONFIG_FILE"
 		echo "Installation directory set to: $DATACENTER_BASE"
 		echo "Network name set to: $NETWORK_NAME"
 		echo "Bridge name set to: $BRIDGE_NAME"
+		echo "Network subnet set to: $NETWORK_SUBNET.0/24"
 	else
 		source "$CONFIG_FILE"
 		echo "Using existing configuration:"
@@ -839,4 +965,7 @@ for arg in "$@"; do
 done
 
 echo "Executing DCVM installer..." >&2
-main "$@"
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

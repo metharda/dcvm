@@ -22,6 +22,7 @@
 - validate_vm_name() - Validate VM name format (3-64 chars, alphanumeric)
 - validate_username() - Validate username (3-32 chars, starts with letter)
 - validate_password() - Validate password (4-128 chars)
+- validate_ip_in_subnet() - Validate IP address is within configured subnet
 
 **VM Management:**
 - vm_exists() - Check if VM exists in libvirt
@@ -34,6 +35,12 @@
 - read_password() - Securely read password from stdin
 - generate_password_hash() - Generate salted SHA-512 hash
 - generate_random_mac() - Generate random MAC address
+
+**Interactive Prompts (Shared):**
+- interactive_prompt_memory_common() - Memory size prompt with validation
+- interactive_prompt_cpus_common() - CPU count prompt with validation
+- interactive_prompt_disk_common() - Disk size prompt with validation
+- interactive_prompt_static_ip_common() - Static IP prompt with subnet validation
 
 **File Operations:**
 - create_dir_safe() - Create directory with permissions
@@ -48,10 +55,21 @@
 ### Core Scripts (lib/core/)
 
 **create-vm.sh:**
-- Sources: common.sh
+- Sources: common.sh, mirror-manager.sh
 - Uses: load_dcvm_config, validate_vm_name, validate_username, validate_password
 - Uses: get_host_info, read_password, generate_password_hash
+- Uses: validate_ip_in_subnet for static IP validation
 - Uses: All print functions
+- Structure: Modular with helper functions (setup_user_account, setup_root_access, setup_ssh_key, setup_static_ip, setup_vm_resources, etc.)
+
+**custom-iso.sh:**
+- Sources: common.sh
+- Uses: load_dcvm_config, require_root, validate_ip_in_subnet
+- Uses: interactive_prompt_memory_common, interactive_prompt_cpus_common, interactive_prompt_disk_common
+- Uses: All print functions
+- Special: Interactive prompts for ISO installation settings
+- Supports: VNC, SPICE, and console graphics modes
+- Structure: Modular with helper functions (validate_vm_not_exists, show_iso_header, collect_vm_options, etc.)
 
 **delete-vm.sh:**
 - Sources: common.sh
@@ -139,26 +157,32 @@ export -f get_system_info get_host_info
 ## Scripts Updated
 
 ✓ lib/core/create-vm.sh
+✓ lib/core/custom-iso.sh
 ✓ lib/core/delete-vm.sh
 ✓ lib/core/vm-manager.sh
-✓ lib/network/port-forward.sh (new)
-✓ lib/network/dhcp.sh (new)
+✓ lib/network/network-manager.sh
+✓ lib/network/port-forward.sh
+✓ lib/network/dhcp.sh
 ✓ lib/storage/backup.sh
 ✓ lib/storage/storage-manager.sh
 ✓ lib/utils/fix-lock.sh
+✓ lib/utils/dcvm-completion.sh
+✓ lib/installation/self-update.sh
 ✓ lib/installation/uninstall-dcvm.sh
 
 ## Not Updated (By Design)
 
 - lib/installation/install-dcvm.sh - Has its own print_status for logging
-- bin/dcvm - CLI wrapper, minimal functions needed
+- dcvm - CLI wrapper, minimal functions needed
 
 ## Testing Checklist
 
 - [ ] VM creation (interactive): `sudo dcvm create testvm`
 - [ ] VM creation (force): `sudo dcvm create testvm -f -p pass123`
+- [ ] VM creation (ISO): `sudo dcvm create-iso testvm --iso /path/to/iso`
 - [ ] VM deletion: `sudo dcvm delete testvm`
 - [ ] VM listing: `dcvm list`
+- [ ] Self-update: `sudo dcvm self-update --check`
 - [ ] VM status: `dcvm status testvm`
 - [ ] Network setup: `sudo dcvm network ports setup`
 - [ ] DHCP cleanup: `sudo dcvm network dhcp cleanup`

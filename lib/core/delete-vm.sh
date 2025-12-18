@@ -3,8 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-
 cleanup_port_forwarding_for_vm() {
 	local vm_ip="$1"
 	local ssh_port="$2"
@@ -35,20 +33,52 @@ cleanup_port_forwarding_for_vm() {
 
 cleanup_dhcp_lease() {
 	local mac_address="$1"
+	local vm_name="$2"
 	local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
+	local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
 
-	[ -z "$mac_address" ] && return
+	[ -z "$mac_address" ] && [ -z "$vm_name" ] && return
 
-	print_info "Clearing DHCP lease for MAC: $mac_address"
+	print_info "Clearing DHCP lease for MAC: ${mac_address:-unknown}, VM: ${vm_name:-unknown}"
 
-	if [ -f "$lease_file" ]; then
+	local removed=0
+
+	if [ -f "$lease_file" ] && [ -n "$mac_address" ]; then
 		local before
 		before=$(wc -l < "$lease_file")
-		sed -i "/[[:space:]]${mac_address}[[:space:]]/d" "$lease_file"
-		local after=$(wc -l < "$lease_file")
-		local removed=$((before - after))
-		[ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found"
+		local escaped_mac
+		escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
+		sed -i "/${escaped_mac}/Id" "$lease_file"
+		local after
+		after=$(wc -l < "$lease_file")
+		removed=$((before - after))
 	fi
+
+	if [ -f "$lease_file" ] && [ -n "$vm_name" ]; then
+		local before
+		before=$(wc -l < "$lease_file")
+		local escaped_name
+		escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
+		sed -i "/${escaped_name}/Id" "$lease_file"
+		local after
+		after=$(wc -l < "$lease_file")
+		removed=$((removed + before - after))
+	fi
+
+	if [ -f "$status_file" ]; then
+		if [ -n "$mac_address" ]; then
+			local escaped_mac
+			escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
+			sed -i "/${escaped_mac}/Id" "$status_file"
+		fi
+		if [ -n "$vm_name" ]; then
+			local escaped_name
+			escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
+			sed -i "/${escaped_name}/Id" "$status_file"
+		fi
+	fi
+
+	[ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found in files"
 
 	local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
 	[ -n "$dnsmasq_pid" ] && kill -HUP "$dnsmasq_pid" 2>/dev/null && print_info "DHCP service refreshed"
@@ -92,8 +122,8 @@ delete_single_vm() {
 	fi
 
 	[ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
-	if [ -n "$MAC_ADDRESS" ]; then
-		cleanup_dhcp_lease "$MAC_ADDRESS"
+	if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
+		cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"
 		if [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
 			bash "$SCRIPT_DIR/../network/dhcp.sh" clear-mac "$MAC_ADDRESS" >/dev/null 2>&1 || true
 		fi
@@ -112,6 +142,10 @@ delete_single_vm() {
 	fi
 
 	[ -d "$DATACENTER_BASE/vms/$VM_NAME" ] && rm -rf "$DATACENTER_BASE/vms/$VM_NAME" && print_info "VM directory removed"
+
+	if [ -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" ]; then
+		rm -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" && print_info "Removed host static IP record"
+	fi
 
 	if [ -f ~/.ssh/config ]; then
 		sed -i "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
@@ -244,9 +278,7 @@ delete_all_vms() {
 	[ -d "$DATACENTER_BASE/vms" ] && find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null
 
 	echo ""
-	print_success "======================================="
-	print_success "     MASS DELETION COMPLETED"
-	print_success "======================================="
+	print_success "MASS DELETION COMPLETED"
 	echo ""
 	print_info "Final verification:"
 	
@@ -258,18 +290,25 @@ delete_all_vms() {
 	[ -z "$remaining" ] && print_success "✓ All datacenter VMs successfully removed" || { print_warning "✗ Some VMs may still exist:" && echo "$remaining"; }
 }
 
-[ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
+main() {
+	load_dcvm_config
+	[ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
 
-case "$1" in
-	--all)
-		delete_all_vms
-		;;
-	*)
-		delete_single_vm "$1"
-		;;
-esac
+	case "$1" in
+		--all|-a)
+			delete_all_vms
+			;;
+		*)
+			delete_single_vm "$1"
+			;;
+	esac
 
-echo ""
-print_info "Remaining datacenter VMs:"
-list_datacenter_vms || print_info "No datacenter VMs remaining"
-echo ""
+	echo ""
+	print_info "Remaining datacenter VMs:"
+	list_datacenter_vms || print_info "No datacenter VMs remaining"
+	echo ""
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

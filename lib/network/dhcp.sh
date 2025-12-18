@@ -3,10 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-require_root
-check_dependencies virsh
-
 show_current_leases() {
   echo "Current DHCP leases:"
   virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
@@ -216,15 +212,25 @@ Examples:
 EOF
 }
 
-subcmd="${1:-help}"
-case "$subcmd" in
-  show) shift; show_current_leases "$@" ;;
-  clear-all) shift; clear_all_leases "$@" ;;
-  clear-vm) shift; clear_vm_lease "$@" ;;
-  clear-mac) shift; clear_lease_by_mac "$@" ;;
-  cleanup) shift; cleanup_stale_leases "$@" ;;
-  renew) shift; force_renew_all "$@" ;;
-  files) shift; show_lease_files "$@" ;;
-  help|--help|-h) dhcp_help ;;
-  *) print_error "Unknown command: $subcmd"; echo "Use: dcvm network dhcp help"; exit 1 ;;
-esac
+main() {
+  load_dcvm_config
+  require_root
+  check_dependencies virsh
+
+  local subcmd="${1:-help}"
+  case "$subcmd" in
+    show) shift; show_current_leases "$@" ;;
+    clear-all) shift; clear_all_leases "$@" ;;
+    clear-vm) shift; clear_vm_lease "$@" ;;
+    clear-mac) shift; clear_lease_by_mac "$@" ;;
+    cleanup) shift; cleanup_stale_leases "$@" ;;
+    renew) shift; force_renew_all "$@" ;;
+    files) shift; show_lease_files "$@" ;;
+    help|--help|-h) dhcp_help ;;
+    *) print_error "Unknown command: $subcmd"; echo "Use: dcvm network dhcp help"; exit 1 ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

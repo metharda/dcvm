@@ -46,4 +46,55 @@ sudo dcvm storage-cleanup
 sudo dcvm fix-lock
 ```
 
+## Custom ISO VM issues
+
+### Cannot connect to VNC
+```bash
+# Get VNC display port
+virsh vncdisplay <vm_name>
+
+# Check if VM is running
+dcvm status <vm_name>
+
+# Try console mode instead
+dcvm console <vm_name>
+```
+
+### ISO not booting
+- Verify ISO file is valid and not corrupted
+- Check boot order is set to `cdrom,hd`
+- Try with `--graphics none` for text-based installers
+
+### OS variant not found
+```bash
+# List available OS variants
+osinfo-query os | grep -i <distro_name>
+
+# Or leave empty for generic settings
+dcvm create-iso myvm --iso /path/to/iso
+```
+
+## Update issues
+
+### Self-update fails
+```bash
+# Check network connectivity
+curl -I https://raw.githubusercontent.com/metharda/dcvm/main/dcvm
+
+# Force update
+dcvm self-update --force
+
+# Manual update (re-run installer)
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
+```
+
+### Version mismatch after update
+```bash
+# Check current version
+dcvm --version
+
+# Force reinstall
+dcvm self-update --force
+```
+
 If the problem persists, please open an issue with logs from `/var/log/datacenter-startup.log` (or `/tmp/dcvm-install.log`).

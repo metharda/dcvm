@@ -63,7 +63,7 @@ cd dcvm
    main "$@"
    ```
 
-4. **Add route in `bin/dcvm`:**
+4. **Add route in `dcvm`:**
    ```bash
    # In the case statement
    my-feature)
@@ -150,7 +150,7 @@ cd dcvm
 sudo bash lib/core/your-script.sh
 
 # Test through main CLI
-sudo ./bin/dcvm your-command
+sudo ./dcvm your-command
 ```
 
 ### Future: Automated Tests
@@ -162,6 +162,29 @@ When test framework is implemented:
 # Run integration tests
 ./tests/integration/test-your-feature.sh
 ```
+
+### Requirement: Tests for New Features
+
+All new features or behavioral changes MUST include tests demonstrating the intended behavior.
+
+- If the change is a small utility or pure function, add a unit-like script under `tests/unit/` that exercises the function.
+- For CLI behavior, add a quick integration test under `tests/integration/` that calls the command non-interactively (use `-f`/`--force` where appropriate) and asserts expected exit codes and outputs.
+- For changes that touch libvirt/network or storage and cannot run in CI-hosted environments, add a documented integration test and mark it as `manual` or provide a self-hosted runner workflow.
+
+How to run the repository test-suite (added):
+
+```bash
+# Syntax + shellcheck checks
+./lib/utils/test-suite.sh --syntax
+
+# Quick tests (recommended for CI)
+./lib/utils/test-suite.sh --quick
+
+# Full tests (requires self-hosted runner with libvirt/qemu)
+DCVM_CI_ALLOW_FULL=yes sudo ./lib/utils/test-suite.sh --full
+```
+
+Include the tests in your PR and reference them in the PR description. CI must pass for the PR to be merged.
 
 ## Documentation
 
@@ -225,7 +248,7 @@ Describe how you tested your changes.
    vim lib/core/my-operation.sh
    ```
 
-2. Add route in `bin/dcvm`:
+2. Add route in `dcvm`:
    ```bash
    my-operation)
        exec "$LIB_DIR/core/my-operation.sh" "$@"

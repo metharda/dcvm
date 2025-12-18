@@ -11,11 +11,13 @@ dcvm/
 │
 ├── lib/                          # Core library functions
 │   ├── core/                    # Core VM operations
-│   │   ├── create-vm.sh         # VM creation script
+│   │   ├── create-vm.sh         # VM creation with cloud-init
+│   │   ├── custom-iso.sh        # VM creation from custom ISO
 │   │   ├── delete-vm.sh         # VM deletion script
 │   │   └── vm-manager.sh        # VM management (start, stop, list, etc.)
 │   │
 │   ├── network/                 # Network management
+│   │   ├── network-manager.sh   # Network information and routing
 │   │   ├── port-forward.sh      # Port forwarding management
 │   │   └── dhcp.sh              # DHCP management
 │   │
@@ -25,10 +27,12 @@ dcvm/
 │   │
 │   └── utils/                   # Utility functions
 │       ├── common.sh            # Shared functions (logging, validation, etc.)
+│       ├── dcvm-completion.sh   # Shell completion script
 │       └── fix-lock.sh          # Resource lock fixing
 │
 ├── lib/installation/             # Installation related files
 │   ├── install-dcvm.sh          # Main installer
+│   ├── self-update.sh           # Self-update functionality
 │   └── uninstall-dcvm.sh        # Uninstaller
 │
 ├── config/                       # Configuration templates and examples
@@ -69,6 +73,7 @@ Core functionality organized by category:
 #### `lib/core/`
 Essential VM operations:
 - **create-vm.sh** - Creates new VMs with cloud-init support
+- **custom-iso.sh** - Creates VMs from custom installer ISOs (Windows, Arch, etc.)
 - **delete-vm.sh** - Safely removes VMs
 - **vm-manager.sh** - Controls VM lifecycle (start, stop, restart, console, list)
 
@@ -90,6 +95,7 @@ Shared utilities and helpers:
 ### `lib/installation/`
 Installation and removal scripts:
 - **install-dcvm.sh** - Installs DCVM, dependencies, and configuration
+- **self-update.sh** - Updates DCVM to the latest version from GitHub
 - **uninstall-dcvm.sh** - Removes DCVM and optionally cleans up data
 
 ### `config/`
@@ -123,7 +129,7 @@ Test suite (planned for future development):
 
 When a user runs `dcvm <command>`, the flow is:
 
-1. **bin/dcvm** receives the command
+1. **dcvm** receives the command
 2. Routes to appropriate script in **lib/**
 3. Script sources **lib/utils/common.sh** for shared functions
 4. Loads configuration from `/etc/dcvm-install.conf`
@@ -148,7 +154,7 @@ When a user runs `dcvm <command>`, the flow is:
    - General utilities → `lib/utils/`
 
 2. Create the script with proper shebang and documentation
-3. Add route in `bin/dcvm`
+3. Add route in `dcvm`
 4. Update documentation in `docs/`
 5. Add examples if applicable
 
