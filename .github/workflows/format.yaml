@@ -1,0 +1,85 @@
+name: Format Shell Scripts (shfmt)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch: {}
+
+jobs:
+  format:
+    name: Format with shfmt (runs only when other checks passed)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (write enabled)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Verify required checks passed
+        uses: actions/github-script@v6
+        id: verify_checks
+        with:
+          script: |
+            const head = context.payload.pull_request?.head?.sha || process.env.GITHUB_SHA
+            if (!head) core.setFailed('No head sha available')
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            // expected check run names (jobs) that must be successful
+            const expected = [
+              'Bash lint (bash -n + shellcheck)',
+              'Quick test-suite (matrix)',
+              'Quick test-suite in container',
+              'Check `dcvm` version was bumped'
+            ]
+            const resp = await github.rest.checks.listForRef({ owner, repo, ref: head })
+            const runs = resp.data.check_runs || []
+            const statusByName = {}
+            for (const r of runs) statusByName[r.name] = r.conclusion || r.status
+
+            const missing = expected.filter(n => !(n in statusByName))
+            if (missing.length > 0) {
+              core.setFailed(`Required checks not found yet: ${missing.join(', ')}`)
+            }
+            const failed = expected.filter(n => statusByName[n] !== 'success')
+            if (failed.length > 0) {
+              core.setFailed(`Required checks not successful: ${failed.join(', ')}`)
+            }
+
+      - name: Install shfmt
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y curl
+          curl -sSL "https://github.com/mvdan/sh/releases/download/v3.4.0/shfmt_v3.4.0_linux_amd64" -o /usr/local/bin/shfmt
+          chmod +x /usr/local/bin/shfmt
+
+      - name: Find shell files
+        id: find_files
+        run: |
+          set -euo pipefail
+          files=$(git ls-files "dcvm" "lib/**/*.sh" || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$files" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run shfmt and commit if changes
+        run: |
+          set -euo pipefail
+          files="${{ steps.find_files.outputs.files }}"
+          if [[ -z "$files" ]]; then
+            echo "No shell files to format"
+            exit 0
+          fi
+          echo "$files" | tr '\n' ' ' | xargs -n1 -I{} sh -c 'if [[ -f "{}" ]]; then echo "Formatting {}"; shfmt -w -i 2 "{}"; fi'
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "chore: format shell scripts with shfmt [ci skip]" || true
+            git push
+            echo "Formatted files pushed to branch"
+          else
+            echo "No formatting changes"
+          fi

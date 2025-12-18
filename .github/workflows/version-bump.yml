@@ -36,12 +36,12 @@ jobs:
           HEAD_FILE=repo-head/$FILE
 
           if [[ ! -f "$BASE_FILE" || ! -f "$HEAD_FILE" ]]; then
-            echo "::error ::$FILE must exist in both base and head branches"
+            echo "::error::$FILE must exist in both base and head branches"
             exit 1
           fi
 
           if diff -q "$BASE_FILE" "$HEAD_FILE" >/dev/null; then
-            echo "::error ::$FILE was not modified in this PR. Please bump the version inside the file."
+            echo "::error::$FILE was not modified in this PR. Please bump the version inside the file."
             exit 1
           fi
 
@@ -53,7 +53,7 @@ jobs:
           head_v=$(extract_version "$HEAD_FILE")
 
           if [[ -z "$base_v" || -z "$head_v" ]]; then
-            echo "::error ::Could not find 'Version: X.Y.Z' in $FILE on base or head."
+            echo "::error::Could not find 'Version: X.Y.Z' in $FILE on base or head."
             exit 1
           fi
 
@@ -66,15 +66,15 @@ jobs:
           # ensure numeric
           for v in $bmaj $bmin $bpatch $hmaj $hmin $hpatch; do
             if ! [[ "$v" =~ ^[0-9]+$ ]]; then
-              echo "::error ::Version components must be numeric"
+              echo "::error::Version components must be numeric"
               exit 1
             fi
           done
 
-          if (( hmaj < bmaj )); then echo "::error ::Major version decreased"; exit 1; fi
-          if (( hmaj == bmaj && hmin < bmin )); then echo "::error ::Minor version decreased"; exit 1; fi
+          if (( hmaj < bmaj )); then echo "::error::Major version decreased"; exit 1; fi
+          if (( hmaj == bmaj && hmin < bmin )); then echo "::error::Minor version decreased"; exit 1; fi
           if (( hmaj == bmaj && hmin == bmin && hpatch <= bpatch )); then
-            echo "::error ::Patch version must be increased (at least +1)"; exit 1
+            echo "::error::Patch version must be increased (at least +1)"; exit 1
           fi
 
           echo "Version bump validation passed"
