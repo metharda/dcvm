@@ -5,6 +5,9 @@ on:
     types: [opened, reopened, synchronize]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   format:
     name: Format with shfmt (runs only when other checks passed)
@@ -106,6 +109,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run shfmt and commit if changes
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           files="${{ steps.find_files.outputs.files }}"
@@ -139,6 +145,12 @@ jobs:
           else
             echo "::error::Unable to determine branch name for push"
             exit 1
+          fi
+
+          # Skip push on forks where token lacks permission
+          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
+            echo "::warning::Cannot push formatting changes from fork ($HEAD_REPO). Please run shfmt locally."
+            exit 0
           fi
 
           echo "Pushing formatting changes to ${target_ref}"
