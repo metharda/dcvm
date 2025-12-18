@@ -3,8 +3,16 @@ name: Lint Shell Scripts
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/lint.yaml'
   push:
     branches: [ main ]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/lint.yaml'
 
 jobs:
   lint:
@@ -24,8 +32,8 @@ jobs:
         id: find_files
         run: |
           set -euo pipefail
-          # include top-level `dcvm` and all .sh under lib/
-          files=$(git ls-files "dcvm" "*.sh" "lib/**/*.sh" || true)
+          # include top-level `dcvm` and all tracked shell scripts
+          files=$(git ls-files -- "dcvm" "*.sh" || true)
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$files" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT

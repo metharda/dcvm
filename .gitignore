@@ -105,6 +105,6 @@ dhcp.conf
 dnsmasq.conf
 
 # Test files
-test-*
+test/
 *-test
 testing/

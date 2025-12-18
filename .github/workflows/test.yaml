@@ -3,8 +3,16 @@ name: Run Quick Tests (matrix)
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/test.yaml'
   push:
     branches: [ main ]
+    paths:
+      - 'dcvm'
+      - '**/*.sh'
+      - '.github/workflows/test.yaml'
 
 jobs:
   quick-test:
@@ -18,10 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up container (if any)
-        if: ${{ matrix.container != '' }}
-        run: echo "Running tests inside container: ${{ matrix.container }}"
 
       - name: Cache test artifacts
         uses: actions/cache@v4
