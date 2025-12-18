@@ -196,18 +196,18 @@ test_shellcheck() {
 	local lib_dir="${SCRIPT_DIR}/.."
 	local error_count=0
 	
-	for script in "$lib_dir"/**/*.sh; do
-		if [ -f "$script" ]; then
-			local name=$(basename "$script")
-			local errors=$(shellcheck --severity=error "$script" 2>&1 | grep -c "error" || true)
-			if [ "$errors" -eq 0 ]; then
-				log_test "PASS" "Shellcheck: $name"
-			else
-				log_test "FAIL" "Shellcheck: $name" "$errors error(s)"
-				((error_count += errors))
-			fi
+	while IFS= read -r -d '' script; do
+		local name
+		name=$(basename "$script")
+		local errors
+		errors=$(shellcheck --severity=error "$script" 2>&1 | grep -c "error" || true)
+		if [ "$errors" -eq 0 ]; then
+			log_test "PASS" "Shellcheck: $name"
+		else
+			log_test "FAIL" "Shellcheck: $name" "$errors error(s)"
+			((error_count += errors))
 		fi
-	done
+	done < <(find "$lib_dir" -type f -name '*.sh' -print0)
 }
 
 test_configuration() {
