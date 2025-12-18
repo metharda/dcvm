@@ -18,14 +18,15 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 12, Debian 11, Ubuntu 22.04, Ubuntu 20.04)
+- Operating system (Debian 12, Debian 11, Ubuntu 22.04, Ubuntu 20.04, Arch Linux)
 - Username (default: admin)
 - Password
 - Root access settings
+- SSH key setup
+- **Static IP configuration** (new!)
 - Memory allocation
 - CPU count
 - Disk size
-- SSH key setup
 
 #### Force Mode (Non-Interactive)
 ```bash
@@ -53,7 +54,19 @@ dcvm create myvm \
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
 - `-d, --disk`: Disk size (default: 20G)
-- `-o, --os`: OS choice (1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04)
+- `-o, --os`: OS choice (1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04, 5=ArchLinux)
+- `--ip`: Static IP address (e.g., 10.10.10.50) - uses DHCP if not specified
+
+Note about multiple VMs and `--ip`:
+
+- When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
+  - vm1 → 10.10.10.50
+  - vm2 → 10.10.10.51
+  - vm3 → 10.10.10.52
+- If the auto-increment would exceed `.254`, DCVM uses a fallback algorithm that assigns descending addresses from the base so addresses remain within the valid `.2-.254` range. Example:
+  - Base `10.10.10.254` for 3 VMs → 254, 253, 252
+
+Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
 - `-r, --root-password`: Set root password
 - `-k, --packages`: Comma-separated package list

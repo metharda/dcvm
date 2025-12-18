@@ -7,6 +7,34 @@ This guide explains DCVM networking and how to operate it.
 - Host IP on the bridge: `10.10.10.1`.
 - DHCP range: `10.10.10.10` – `10.10.10.100`.
 
+## Static IP Configuration
+
+VMs can be configured with static IP addresses during creation. The static IP must be within the network subnet.
+
+### Creating VM with Static IP
+
+**Interactive Mode:**
+```bash
+dcvm create myvm
+# During interactive prompts, select "y" for static IP
+# Enter an IP like 10.10.10.50
+```
+
+**Force Mode:**
+```bash
+dcvm create myvm -f -p password123 --ip 10.10.10.50
+```
+
+### Static IP Requirements
+- IP must be in the configured subnet (default: `10.10.10.0/24`)
+- Valid range: `10.10.10.2` - `10.10.10.254`
+- `10.10.10.1` is reserved for the gateway
+- `10.10.10.255` is the broadcast address
+- Avoid IPs in the DHCP range if possible
+
+### Custom ISO VMs
+For custom ISO installations, static IP is noted during creation but must be configured manually inside the VM during OS installation.
+
 ## Quick commands
 
 - Show network summary:

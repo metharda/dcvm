@@ -44,6 +44,11 @@ https://mirror.netcologne.de/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.
 https://cloud-images.archlinux.org/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirror.archlinux.org/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirrors.ocf.berkeley.edu/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirror.hetzner.de/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirror.sjc01.us.leaseweb.net/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirror.frankfurt.linode.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
 SUPPORTED_IMAGES="debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2"
 

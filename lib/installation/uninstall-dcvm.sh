@@ -5,20 +5,20 @@ source "$SCRIPT_DIR/../utils/common.sh"
 
 CONFIG_FILE="/etc/dcvm-install.conf"
 
-if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
-    print_info "Loaded configuration from $CONFIG_FILE"
-else
-    print_error "Configuration file $CONFIG_FILE not found. Using default values"
-    DATACENTER_BASE="/srv/datacenter"
-    NETWORK_NAME="datacenter-net"
-    BRIDGE_NAME="virbr-dc"
-    NETWORK_SUBNET="10.10.10"
-fi
-
-require_confirmation "This will completely remove DCVM and all datacenter VMs"
-
 main() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        print_info "Loaded configuration from $CONFIG_FILE"
+    else
+        print_error "Configuration file $CONFIG_FILE not found. Using default values"
+        DATACENTER_BASE="/srv/datacenter"
+        NETWORK_NAME="datacenter-net"
+        BRIDGE_NAME="virbr-dc"
+        NETWORK_SUBNET="10.10.10"
+    fi
+
+    require_confirmation "This will completely remove DCVM and all datacenter VMs"
+
     print_info "Stopping and removing datacenter storage service"
     systemctl stop datacenter-storage.timer 2>/dev/null || true
     systemctl disable datacenter-storage.timer 2>/dev/null || true
@@ -53,7 +53,6 @@ main() {
             [[ -n "$line" ]] && iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
         done
     done
-    # Use configured subnet instead of hardcoded value
     while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "${NETWORK_SUBNET}\\."; do
         line=$(iptables -L FORWARD -n --line-numbers | grep "${NETWORK_SUBNET}\\." | head -1 | awk '{print $1}')
         [[ -n "$line" ]] && iptables -D FORWARD "$line" 2>/dev/null || break
@@ -119,4 +118,6 @@ main() {
     fi
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

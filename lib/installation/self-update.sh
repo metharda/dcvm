@@ -208,20 +208,26 @@ check_update() {
     fi
 }
 
-CHECK_ONLY=false
-FORCE=false
+main() {
+    local CHECK_ONLY=false
+    local FORCE=false
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --check) CHECK_ONLY=true; shift ;;
-        --force) FORCE=true; shift ;;
-        -h|--help) show_usage; exit 0 ;;
-        *) print_error "Unknown option: $1"; show_usage; exit 1 ;;
-    esac
-done
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check) CHECK_ONLY=true; shift ;;
+            --force) FORCE=true; shift ;;
+            -h|--help) show_usage; exit 0 ;;
+            *) print_error "Unknown option: $1"; show_usage; exit 1 ;;
+        esac
+    done
 
-if [[ "$CHECK_ONLY" == "true" ]]; then
-    check_update
-else
-    do_update "$FORCE"
+    if [[ "$CHECK_ONLY" == "true" ]]; then
+        check_update
+    else
+        do_update "$FORCE"
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
 fi

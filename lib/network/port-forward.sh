@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
-
-load_dcvm_config
-require_root
-check_dependencies iptables virsh
 
 SSH_PORT_START=${SSH_PORT_START:-2221}
 HTTP_PORT_START=${HTTP_PORT_START:-8081}
 
+if ! command -v detect_host_ip &>/dev/null; then
 detect_host_ip() {
     local host_ip=""
     local subnet="${NETWORK_SUBNET:-10.10.10}"
@@ -22,6 +18,7 @@ detect_host_ip() {
     [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
     echo "$host_ip"
 }
+fi
 
 cleanup_port_forwarding() {
     local subnet="${NETWORK_SUBNET:-10.10.10}"
@@ -253,14 +250,24 @@ Examples:
 EOF
 }
 
-subcmd="${1:-help}"
-case "$subcmd" in
-    setup) shift; cmd_setup "$@" ;;
-    show) shift; cmd_show "$@" ;;
-    rules) shift; cmd_rules "$@" ;;
-    apply) shift; cmd_apply "$@" ;;
-    clear) shift; cmd_clear "$@" ;;
-    test) shift; cmd_test "$@" ;;
-    help|--help|-h) cmd_help ;;
-    *) print_error "Unknown command: $subcmd"; echo "Use: dcvm network ports help"; exit 1 ;;
-esac
+main() {
+    load_dcvm_config
+    require_root
+    check_dependencies iptables virsh
+
+    local subcmd="${1:-help}"
+    case "$subcmd" in
+        setup) shift; cmd_setup "$@" ;;
+        show) shift; cmd_show "$@" ;;
+        rules) shift; cmd_rules "$@" ;;
+        apply) shift; cmd_apply "$@" ;;
+        clear) shift; cmd_clear "$@" ;;
+        test) shift; cmd_test "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *) print_error "Unknown command: $subcmd"; echo "Use: dcvm network ports help"; exit 1 ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

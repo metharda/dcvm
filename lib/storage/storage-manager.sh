@@ -3,16 +3,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-
-SHARED_STORAGE="$DATACENTER_BASE/nfs-share"
+SHARED_STORAGE=""
 THRESHOLD=85
 LOG_FILE="/var/log/datacenter-storage.log"
 
 check_vm_storage() {
 	local vm_name="$1"
 	local ssh_port="$2"
-
 	local usage=$(ssh -o ConnectTimeout=5 admin@$(get_host_ip) -p "$ssh_port" "df / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null)
 
 	if [ -z "$usage" ]; then
@@ -59,6 +56,9 @@ EOSSH
 }
 
 main() {
+	load_dcvm_config
+	SHARED_STORAGE="$DATACENTER_BASE/nfs-share"
+	
 	log_to_file "$LOG_FILE" "Starting storage management check"
 	sleep 30
 
@@ -79,4 +79,6 @@ main() {
 	log_to_file "$LOG_FILE" "Storage management check completed"
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

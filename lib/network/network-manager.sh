@@ -5,10 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-require_root
-check_dependencies virsh iptables
-
 print_header() { echo -e "\n=== $1 ===\n"; }
 
 cmd_show() {
@@ -20,6 +16,26 @@ cmd_show() {
   local dhcp_leases
   dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || true)
   [ -n "${dhcp_leases:-}" ] && echo "$dhcp_leases" || echo "No active DHCP leases found via virsh"
+
+  echo ""; echo "Static IP assignments (host-recorded):"
+  local static_dir="${DATACENTER_BASE:-/srv/datacenter}/config/network"
+  if [ -d "$static_dir" ]; then
+    local any=false
+    printf "  %-20s %-15s %-25s %-8s\n" "VM_NAME" "IP" "ASSIGNED_AT" "SOURCE"
+    echo "---------------------------------------------------------------------------"
+    for f in "$static_dir"/*.conf; do
+      [ -f "$f" ] || continue
+      any=true
+      vmname=$(basename "$f" .conf)
+      ip=$(awk -F'=' '/^IP=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "")
+      at=$(awk -F'=' '/^ASSIGNED_AT=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "")
+      src=$(awk -F'=' '/^SOURCE=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "static")
+      printf "  %-20s %-15s %-25s %-8s\n" "$vmname" "$ip" "$at" "$src"
+    done
+    $any || echo "  (no host-recorded static IPs)"
+  else
+    echo "  (no host-recorded static IPs)"
+  fi
 
   echo ""; echo "Port mappings (saved):"
   local port_file=$(get_port_mappings_file)
@@ -123,7 +139,7 @@ Usage: dcvm network <subcommand> [options]
 Subcommands:
   show                 Show network overview (default)
   status               Show concise network/bridge status
-  start|stop|restart   Control the libvirt network: ${NETWORK_NAME}
+  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter}
   leases               List current DHCP leases and files
   bridge               Show bridge details, routes, dnsmasq
   ip-forwarding [on|off|show]
@@ -144,24 +160,34 @@ Examples:
 EOF
 }
 
-subcmd="${1:-show}"; shift || true
-case "$subcmd" in
-  show|info)           cmd_show "$@" ;;
-  status)              cmd_status "$@" ;;
-  start)               cmd_start "$@" ;;
-  stop)                cmd_stop "$@" ;;
-  restart)             cmd_restart "$@" ;;
-  leases)              cmd_leases "$@" ;;
-  bridge)              cmd_bridge "$@" ;;
-  ip-forwarding|ipfwd) cmd_ip_forwarding "${1:-show}" ;;
-  config)              cmd_config "$@" ;;
-  help|-h|--help)      cmd_help ;;
-  ports|dhcp)
-    set +e
-    if [ "$subcmd" = "ports" ]; then exec "$SCRIPT_DIR/port-forward.sh" "$@"; else exec "$SCRIPT_DIR/dhcp.sh" "$@"; fi
-    ;;
-  *)
-    print_error "Unknown network subcommand: $subcmd"
-    echo "Use: dcvm network help"; exit 1
-    ;;
-esac
+main() {
+  load_dcvm_config
+  require_root
+  check_dependencies virsh iptables
+
+  local subcmd="${1:-show}"; shift || true
+  case "$subcmd" in
+    show|info)           cmd_show "$@" ;;
+    status)              cmd_status "$@" ;;
+    start)               cmd_start "$@" ;;
+    stop)                cmd_stop "$@" ;;
+    restart)             cmd_restart "$@" ;;
+    leases)              cmd_leases "$@" ;;
+    bridge)              cmd_bridge "$@" ;;
+    ip-forwarding|ipfwd) cmd_ip_forwarding "${1:-show}" ;;
+    config)              cmd_config "$@" ;;
+    help|-h|--help)      cmd_help ;;
+    ports|dhcp)
+      set +e
+      if [ "$subcmd" = "ports" ]; then exec "$SCRIPT_DIR/port-forward.sh" "$@"; else exec "$SCRIPT_DIR/dhcp.sh" "$@"; fi
+      ;;
+    *)
+      print_error "Unknown network subcommand: $subcmd"
+      echo "Use: dcvm network help"; exit 1
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

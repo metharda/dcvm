@@ -12,6 +12,7 @@ fi
 
 load_dcvm_config
 
+FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
 LOG_FILE="/var/log/dcvm-backup.log"
 DATE=$(date +%Y%m%d_%H%M%S)
@@ -208,58 +209,6 @@ is_lock_error() {
 		return 0
 	fi
 	return 1
-}
-
-get_host_ssh_key() {
-	local key_file=""
-	for f in ~/.ssh/id_rsa.pub ~/.ssh/id_ed25519.pub ~/.ssh/id_ecdsa.pub; do
-		[ -f "$f" ] && { key_file="$f"; break; }
-	done
-	[ -z "$key_file" ] && return 1
-	cat "$key_file"
-}
-
-create_ssh_cleanup_script() {
-	cat <<'SCRIPT_EOF'
-#!/bin/bash
-# Remove SSH host keys and authorized_keys for portable export
-rm -f /etc/ssh/ssh_host_*
-rm -f /root/.ssh/authorized_keys
-for home in /home/*; do
-    [ -d "$home/.ssh" ] && rm -f "$home/.ssh/authorized_keys"
-done
-echo "SSH keys cleaned for export"
-SCRIPT_EOF
-}
-
-create_ssh_setup_script() {
-	local ssh_key="$1"
-	cat <<SCRIPT_EOF
-#!/bin/bash
-# Regenerate SSH host keys
-dpkg-reconfigure openssh-server 2>/dev/null || ssh-keygen -A 2>/dev/null || {
-    for type in rsa ecdsa ed25519; do
-        [ -f "/etc/ssh/ssh_host_\${type}_key" ] || ssh-keygen -t \$type -f "/etc/ssh/ssh_host_\${type}_key" -N "" -q
-    done
-}
-# Add new authorized key
-if [ -n "$ssh_key" ]; then
-    mkdir -p /root/.ssh
-    chmod 700 /root/.ssh
-    echo "$ssh_key" >> /root/.ssh/authorized_keys
-    chmod 600 /root/.ssh/authorized_keys
-    for home in /home/*; do
-        if [ -d "\$home" ]; then
-            mkdir -p "\$home/.ssh"
-            echo "$ssh_key" >> "\$home/.ssh/authorized_keys"
-            chmod 600 "\$home/.ssh/authorized_keys"
-            chown -R \$(basename "\$home"):\$(basename "\$home") "\$home/.ssh" 2>/dev/null || true
-        fi
-    done
-fi
-systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
-echo "SSH keys regenerated and configured"
-SCRIPT_EOF
 }
 
 get_file_size() { [ -f "$1" ] && du -h "$1" | cut -f1 || echo "0"; }
@@ -710,8 +659,58 @@ export_backup() {
 	tmpdir=$(mktemp -d)
 	cp "$disk_backup" "$tmpdir/" || { rm -rf "$tmpdir"; print_error "Failed to copy disk backup"; return 1; }
 	cp "$config_backup" "$tmpdir/" || { rm -rf "$tmpdir"; print_error "Failed to copy config backup"; return 1; }
-	create_ssh_cleanup_script > "$tmpdir/ssh-cleanup.sh"
-	chmod +x "$tmpdir/ssh-cleanup.sh"
+
+	local work_disk="$tmpdir/$(basename "$disk_backup")"
+	local ssh_cleaned=false
+	if command -v guestfish >/dev/null 2>&1; then
+		print_info "Cleaning authorized_keys from disk image for secure export..."
+		set +e
+		if [[ "$work_disk" == *.gz ]]; then
+			local tmp_img="${work_disk%.gz}.tmp.$$"
+			if gunzip -c "$work_disk" > "$tmp_img" 2>/dev/null; then
+				if guestfish --rw -a "$tmp_img" -i <<'GFSCMDS' 2>/dev/null
+-rm /root/.ssh/authorized_keys
+-glob rm /home/*/.ssh/authorized_keys
+GFSCMDS
+				then
+					ssh_cleaned=true
+				fi
+				gzip -c "$tmp_img" > "$work_disk" 2>/dev/null
+				rm -f "$tmp_img" 2>/dev/null
+			fi
+		else
+			if guestfish --rw -a "$work_disk" -i <<'GFSCMDS' 2>/dev/null
+-rm /root/.ssh/authorized_keys
+-glob rm /home/*/.ssh/authorized_keys
+GFSCMDS
+			then
+				ssh_cleaned=true
+			fi
+		fi
+		set -e
+		if [ "$ssh_cleaned" = true ]; then
+			print_success "authorized_keys removed from export image."
+		else
+			print_warning "Could not clean authorized_keys from disk image (guestfish failed)."
+		fi
+	else
+		print_warning "guestfish not installed; authorized_keys NOT removed from export. Install libguestfs-tools for secure exports."
+	fi
+
+	local vm_cloud_dir="${DATACENTER_BASE}/vms/${vm_name}/cloud-init"
+	if [ -d "$vm_cloud_dir" ]; then
+		mkdir -p "$tmpdir/cloud-init"
+		if [ -f "$vm_cloud_dir/user-data" ]; then
+			awk 'BEGIN{skip=0}
+			{ if ($0 ~ /^[[:space:]]*ssh_authorized_keys:/) {skip=1; next} 
+			  if (skip==1) { if ($0 ~ /^[[:space:]]*-/) next; else skip=0 }
+			  if (skip==0) print }
+			' "$vm_cloud_dir/user-data" > "$tmpdir/cloud-init/user-data" || cp "$vm_cloud_dir/user-data" "$tmpdir/cloud-init/user-data"
+		fi
+		[ -f "$vm_cloud_dir/meta-data" ] && cp "$vm_cloud_dir/meta-data" "$tmpdir/cloud-init/" || true
+		[ -f "$vm_cloud_dir/network-config" ] && cp "$vm_cloud_dir/network-config" "$tmpdir/cloud-init/" || true
+		rm -f "$tmpdir/cloud-init"/*authorized_keys 2>/dev/null || true
+	fi
 
 	cat >"$tmpdir/manifest.txt" <<EOF
 vm_name=$vm_name
@@ -720,10 +719,9 @@ disk_file=$(basename "$disk_backup")
 config_file=$(basename "$config_backup")
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 dcvm_version=portable
-ssh_cleanup=true
 EOF
 
-	print_info "Export package includes SSH cleanup script (run inside VM after import)"
+	print_info "authorized_keys sanitized from export for security"
 
 	(cd "$tmpdir" && tar -czf "$pkg_path" .) || { rm -rf "$tmpdir"; print_error "Failed to create export archive"; return 1; }
 	rm -rf "$tmpdir"
@@ -799,16 +797,163 @@ import_backup() {
 	rm -rf "$workdir"
 
 	print_success "Import completed. Proceeding to restore..."
-	restore_vm "$vm_target" "$date_part"
+	restore_vm "$vm_target" "$date_part" "" "from_import"
 	return $?
+}
+
+backup_vm() {
+	local vm_name="$1"
+	local was_running=false
+
+	print_info "Starting backup for VM: $vm_name"
+	log "INFO" "Starting backup for VM: $vm_name"
+
+	if ! check_vm_exists "$vm_name"; then
+		print_error "VM '$vm_name' does not exist"
+		log "ERROR" "VM '$vm_name' does not exist"
+		return 1
+	fi
+
+	local vm_disk_path=$(get_vm_disk_path "$vm_name")
+	if [ -z "$vm_disk_path" ]; then
+		print_error "Could not find disk path for VM '$vm_name'"
+		log "ERROR" "Could not find disk path for VM '$vm_name'"
+		return 1
+	fi
+
+	print_info "VM disk path: $vm_disk_path"
+	print_info "Disk size: $(get_file_size "$vm_disk_path")"
+
+	local vm_state=$(get_vm_state "$vm_name")
+	print_info "VM current state: $vm_state"
+
+	if [ "$vm_state" = "running" ]; then
+		was_running=true
+		print_info "Shutting down VM for consistent backup..."
+
+		if virsh shutdown "$vm_name" >/dev/null 2>&1; then
+			print_info "Shutdown command sent, waiting up to ${SHUTDOWN_TIMEOUT}s..."
+
+			if wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
+				print_success "VM shut down gracefully"
+				log "INFO" "VM $vm_name shut down gracefully"
+			else
+				print_warning "Graceful shutdown timeout, forcing shutdown..."
+				virsh destroy "$vm_name" >/dev/null 2>&1
+				sleep 5
+				log "WARNING" "Forced shutdown of VM $vm_name"
+			fi
+		else
+			print_error "Failed to send shutdown command"
+			log "ERROR" "Failed to send shutdown command to VM $vm_name"
+			return 1
+		fi
+	fi
+
+	if ! mkdir -p "$BACKUP_DIR"; then
+		print_error "Failed to create backup directory: $BACKUP_DIR"
+		log "ERROR" "Failed to create backup directory: $BACKUP_DIR"
+		return 1
+	fi
+
+	local backup_folder_name="${vm_name}-$DATE"
+	local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
+	mkdir -p "$backup_folder_path" || { print_error "Failed to create folder: $backup_folder_path"; return 1; }
+
+	local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
+	local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
+
+	print_info "Backing up VM disk..."
+	if cp "$vm_disk_path" "$disk_backup"; then
+		local disk_size=$(get_file_size "$disk_backup")
+		print_success "Disk backup completed ($disk_size)"
+		log "INFO" "Disk backup completed for $vm_name: $disk_size"
+
+		disk_backup=$(compress_backup "$disk_backup" "$vm_name")
+	else
+		print_error "Failed to backup VM disk"
+		log "ERROR" "Failed to backup VM disk for $vm_name"
+
+		if [ "$was_running" = true ]; then
+			print_info "Restarting VM..."
+			virsh start "$vm_name" >/dev/null 2>&1
+		fi
+		return 1
+	fi
+
+	print_info "Backing up VM configuration..."
+	if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
+		print_success "Configuration backup completed"
+		log "INFO" "Configuration backup completed for $vm_name"
+	else
+		print_error "Failed to backup VM configuration"
+		log "ERROR" "Failed to backup VM configuration for $vm_name"
+	fi
+
+	if [ "$was_running" = true ]; then
+		print_info "Restarting VM..."
+		if virsh start "$vm_name" >/dev/null 2>&1; then
+			print_success "VM restarted successfully"
+			log "INFO" "VM $vm_name restarted successfully"
+		else
+			print_error "Failed to restart VM"
+			log "ERROR" "Failed to restart VM $vm_name"
+		fi
+	fi
+
+	cleanup_old_backups "$vm_name"
+
+	echo ""
+	echo "=================================================="
+	print_success "Backup completed for VM: $vm_name"
+	echo "=================================================="
+	echo "Backup files created:"
+	echo "  Disk: $(basename "$disk_backup")"
+	echo "  Config: $(basename "$config_backup")"
+	echo "  Location: $backup_folder_path"
+	echo "  Timestamp: $DATE"
+	if [ "$COMPRESSION_ENABLED" = true ]; then
+		echo "  Compression: Enabled"
+	fi
+	echo ""
+
+	log "SUCCESS" "Backup completed successfully for VM: $vm_name"
+	return 0
+}
+
+compress_backup() {
+	local file_path="$1"
+	local vm_name="$2"
+
+	if [ "$COMPRESSION_ENABLED" = true ]; then
+		print_info "Compressing backup..."
+		local compressed_file="${file_path}.gz"
+
+		if gzip "$file_path"; then
+			local original_size=$(get_file_size "$file_path")
+			local compressed_size=$(get_file_size "$compressed_file")
+			print_success "Compression completed (${compressed_size})"
+			log "INFO" "Compressed backup for $vm_name: $original_size -> $compressed_size"
+			echo "$compressed_file"
+		else
+			print_error "Compression failed, keeping uncompressed backup"
+			log "ERROR" "Failed to compress backup for $vm_name"
+			echo "$file_path"
+		fi
+	else
+		echo "$file_path"
+	fi
 }
 
 restore_vm() {
 	local vm_name="$1"
 	local backup_date="$2"
 	local opt_third="$3"
+	local opt_fourth="$4"
 	local force_restore=""
+	local from_import=""
 	if [ "$opt_third" = "true" ]; then force_restore="true"; fi
+	if [ "$opt_fourth" = "from_import" ]; then from_import="true"; fi
 	local final_state="shut off"
 	local skip_auto_start=false
 	local start_error=""
@@ -849,11 +994,10 @@ restore_vm() {
 		print_warning "VM '$vm_name' already exists (state: $vm_state)"
 
 		if [ "$force_restore" != "true" ]; then
-			echo ""
 			print_warning "This will COMPLETELY REPLACE the existing VM!"
 			print_warning "All current data in the VM will be LOST!"
-			echo ""
 			read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
+			echo ""
 
 			if [ "$confirm" != "yes" ]; then
 				print_info "Restore cancelled by user"
@@ -1245,6 +1389,14 @@ restore_vm() {
 		print_info "Last error was: $start_error"
 	fi
 
+	if [ "$from_import" = "true" ]; then
+		read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh
+		setup_ssh=${setup_ssh:-y}
+		if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
+			ssh_setup_vm "$vm_name"
+		fi
+	fi
+
 	echo ""
 	echo "=================================================="
 	print_success "Restore completed for VM: $vm_name"
@@ -1270,163 +1422,15 @@ restore_vm() {
 	fi
 	echo ""
 
-	echo ""
-	read -p "Configure SSH keys for this VM? (recommended after import/restore) (Y/n): " setup_ssh
-	setup_ssh=${setup_ssh:-y}
-	if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
-		ssh_setup_vm "$vm_name"
-	fi
-
 	log "SUCCESS" "Restore completed successfully for VM: $vm_name from backup: $backup_date"
-	return 0
-}
-
-compress_backup() {
-	local file_path="$1"
-	local vm_name="$2"
-
-	if [ "$COMPRESSION_ENABLED" = true ]; then
-		print_info "Compressing backup..."
-		local compressed_file="${file_path}.gz"
-
-		if gzip "$file_path"; then
-			local original_size=$(get_file_size "$file_path")
-			local compressed_size=$(get_file_size "$compressed_file")
-			print_success "Compression completed (${compressed_size})"
-			log "INFO" "Compressed backup for $vm_name: $original_size -> $compressed_size"
-			echo "$compressed_file"
-		else
-			print_error "Compression failed, keeping uncompressed backup"
-			log "ERROR" "Failed to compress backup for $vm_name"
-			echo "$file_path"
-		fi
-	else
-		echo "$file_path"
-	fi
-}
-
-backup_vm() {
-	local vm_name="$1"
-	local was_running=false
-
-	print_info "Starting backup for VM: $vm_name"
-	log "INFO" "Starting backup for VM: $vm_name"
-
-	if ! check_vm_exists "$vm_name"; then
-		print_error "VM '$vm_name' does not exist"
-		log "ERROR" "VM '$vm_name' does not exist"
-		return 1
-	fi
-
-	local vm_disk_path=$(get_vm_disk_path "$vm_name")
-	if [ -z "$vm_disk_path" ]; then
-		print_error "Could not find disk path for VM '$vm_name'"
-		log "ERROR" "Could not find disk path for VM '$vm_name'"
-		return 1
-	fi
-
-	print_info "VM disk path: $vm_disk_path"
-	print_info "Disk size: $(get_file_size "$vm_disk_path")"
-
-	local vm_state=$(get_vm_state "$vm_name")
-	print_info "VM current state: $vm_state"
-
-	if [ "$vm_state" = "running" ]; then
-		was_running=true
-		print_info "Shutting down VM for consistent backup..."
-
-		if virsh shutdown "$vm_name" >/dev/null 2>&1; then
-			print_info "Shutdown command sent, waiting up to ${SHUTDOWN_TIMEOUT}s..."
-
-			if wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
-				print_success "VM shut down gracefully"
-				log "INFO" "VM $vm_name shut down gracefully"
-			else
-				print_warning "Graceful shutdown timeout, forcing shutdown..."
-				virsh destroy "$vm_name" >/dev/null 2>&1
-				sleep 5
-				log "WARNING" "Forced shutdown of VM $vm_name"
-			fi
-		else
-			print_error "Failed to send shutdown command"
-			log "ERROR" "Failed to send shutdown command to VM $vm_name"
-			return 1
-		fi
-	fi
-
-	if ! mkdir -p "$BACKUP_DIR"; then
-		print_error "Failed to create backup directory: $BACKUP_DIR"
-		log "ERROR" "Failed to create backup directory: $BACKUP_DIR"
-		return 1
-	fi
-
-	local backup_folder_name="${vm_name}-$DATE"
-	local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
-	mkdir -p "$backup_folder_path" || { print_error "Failed to create folder: $backup_folder_path"; return 1; }
-
-	local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
-	local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
-
-	print_info "Backing up VM disk..."
-	if cp "$vm_disk_path" "$disk_backup"; then
-		local disk_size=$(get_file_size "$disk_backup")
-		print_success "Disk backup completed ($disk_size)"
-		log "INFO" "Disk backup completed for $vm_name: $disk_size"
-
-		disk_backup=$(compress_backup "$disk_backup" "$vm_name")
-	else
-		print_error "Failed to backup VM disk"
-		log "ERROR" "Failed to backup VM disk for $vm_name"
-
-		if [ "$was_running" = true ]; then
-			print_info "Restarting VM..."
-			virsh start "$vm_name" >/dev/null 2>&1
-		fi
-		return 1
-	fi
-
-	print_info "Backing up VM configuration..."
-	if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
-		print_success "Configuration backup completed"
-		log "INFO" "Configuration backup completed for $vm_name"
-	else
-		print_error "Failed to backup VM configuration"
-		log "ERROR" "Failed to backup VM configuration for $vm_name"
-	fi
-
-	if [ "$was_running" = true ]; then
-		print_info "Restarting VM..."
-		if virsh start "$vm_name" >/dev/null 2>&1; then
-			print_success "VM restarted successfully"
-			log "INFO" "VM $vm_name restarted successfully"
-		else
-			print_error "Failed to restart VM"
-			log "ERROR" "Failed to restart VM $vm_name"
-		fi
-	fi
-
-	cleanup_old_backups "$vm_name"
-
-	echo ""
-	echo "=================================================="
-	print_success "Backup completed for VM: $vm_name"
-	echo "=================================================="
-	echo "Backup files created:"
-	echo "  Disk: $(basename "$disk_backup")"
-	echo "  Config: $(basename "$config_backup")"
-	echo "  Location: $backup_folder_path"
-	echo "  Timestamp: $DATE"
-	if [ "$COMPRESSION_ENABLED" = true ]; then
-		echo "  Compression: Enabled"
-	fi
-	echo ""
-
-	log "SUCCESS" "Backup completed successfully for VM: $vm_name"
 	return 0
 }
 
 ssh_setup_vm() {
 	local vm_name="$1"
+	local ssh_wait_total=120
+	local ssh_wait_interval=5
+	local ssh_waited=0
 	
 	if [ -z "$vm_name" ]; then
 		print_error "VM name required for 'ssh-setup'"
@@ -1435,6 +1439,16 @@ ssh_setup_vm() {
 	
 	if ! check_vm_exists "$vm_name"; then
 		print_error "VM '$vm_name' does not exist"
+		return 1
+	fi
+
+	echo ""
+	print_info "Which user should the SSH key be added for?"
+	read -r -p "Username (e.g., root, ubuntu, debian, admin): " target_user
+	target_user=${target_user:-root}
+	
+	if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+		print_error "Invalid username: $target_user"
 		return 1
 	fi
 	
@@ -1454,57 +1468,123 @@ ssh_setup_vm() {
 		print_info "Try waiting longer for VM to boot and get DHCP lease"
 		return 1
 	fi
-	
-	local ssh_key
-	ssh_key=$(get_host_ssh_key)
-	
-	local setup_script
-	setup_script=$(create_ssh_setup_script "$ssh_key")
-	
-	print_info "VM IP: $vm_ip"
-	print_info "Configuring SSH on VM..."
-	
-	echo ""
-	print_warning "You will be prompted for VM password to configure SSH"
-	print_info "This will regenerate SSH host keys and add your SSH public key"
+
+	print_info "Waiting for SSH on $vm_ip (timeout ${ssh_wait_total}s)..."
+	while ! bash -c "</dev/tcp/$vm_ip/22" 2>/dev/null; do
+		if [ "$ssh_waited" -ge "$ssh_wait_total" ]; then
+			print_warning "SSH port not open after ${ssh_wait_total}s; will continue attempts anyway"
+			break
+		fi
+		sleep "$ssh_wait_interval"
+		ssh_waited=$((ssh_waited + ssh_wait_interval))
+		echo -n "."
+	done
 	echo ""
 	
-	local tmp_script
-	tmp_script=$(mktemp)
-	echo "$setup_script" > "$tmp_script"
-	chmod +x "$tmp_script"
-	
-	local connected=false
-	for user in root admin ubuntu debian; do
-		if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes "$user@$vm_ip" "echo ok" 2>/dev/null; then
-			print_info "Connected as $user (key already works)"
-			scp -o StrictHostKeyChecking=no "$tmp_script" "$user@$vm_ip:/tmp/ssh-setup.sh" 2>/dev/null
-			ssh -o StrictHostKeyChecking=no "$user@$vm_ip" "sudo bash /tmp/ssh-setup.sh; rm -f /tmp/ssh-setup.sh" 2>/dev/null
-			connected=true
+	local ssh_pubkey=""
+	for keyfile in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
+		if [ -f "$keyfile" ]; then
+			ssh_pubkey="$keyfile"
 			break
 		fi
 	done
 	
-	if [ "$connected" != true ]; then
-		print_info "Attempting password-based SSH (you will be prompted)..."
-		for user in root admin ubuntu debian; do
-			if scp -o StrictHostKeyChecking=no "$tmp_script" "$user@$vm_ip:/tmp/ssh-setup.sh" 2>/dev/null; then
-				ssh -o StrictHostKeyChecking=no "$user@$vm_ip" "sudo bash /tmp/ssh-setup.sh; rm -f /tmp/ssh-setup.sh" 2>/dev/null && connected=true && break
-			fi
-		done
+	if [ -z "$ssh_pubkey" ]; then
+		print_error "No SSH public key found in ~/.ssh/"
+		print_info "Generate one with: ssh-keygen -t ed25519"
+		return 1
 	fi
 	
-	rm -f "$tmp_script"
-	
-	if [ "$connected" = true ]; then
-		print_success "SSH configured successfully on $vm_name"
-		print_info "You can now connect with: ssh <user>@$vm_ip"
+	print_info "VM IP: $vm_ip"
+	print_info "Target user: $target_user"
+	print_info "SSH public key: $ssh_pubkey"
+	echo ""
+	print_info "Using ssh-copy-id to securely copy your public key..."
+	print_warning "You will be prompted for the password of '$target_user' on the VM"
+	echo ""
+
+	local tmp_out
+	tmp_out=$(mktemp)
+	local tmp_fifo
+	tmp_fifo=$(mktemp -u)
+	mkfifo "$tmp_fifo"
+
+	# IMPORTANT: redirect stdout first, then stderr to stdout, so *both* streams go to FIFO
+	(ssh-copy-id -o StrictHostKeyChecking=no -i "$ssh_pubkey" "${target_user}@${vm_ip}" > "$tmp_fifo" 2>&1 ) &
+	local scp_pid=$!
+	while IFS= read -r line; do
+		# Save raw output for later parsing
+		echo "$line" >> "$tmp_out"
+
+		# Normalize ssh-copy-id prefix to keep output clean
+		local normalized="$line"
+		normalized=${normalized#/usr/bin/ssh-copy-id: }
+		normalized=${normalized#ssh-copy-id: }
+
+		# Skip empty lines (ssh-copy-id prints lots of them)
+		if [ -z "$normalized" ]; then
+			continue
+		fi
+
+		case "$normalized" in
+			*": INFO: "*)
+				msg="${normalized#*: INFO: }"
+				# Hide very verbose guidance; keep key facts
+				case "$msg" in
+					Now\ try\ logging\ into\ the\ machine,*|and\ check\ to\ make\ sure* )
+						;;
+					*)
+						print_info "$msg" ;;
+					esac
+				;;
+			*": WARNING: "*)
+				print_warning "${normalized#*: WARNING: }" ;;
+			*"'s password:"*|*" password:"*|*Password:*)
+				# Keep password prompts as-is so the UX stays familiar
+				printf "%s\n" "$normalized" ;;
+			*)
+				# For non-tagged lines, avoid adding noise; still show important failures
+				if echo "$normalized" | grep -qi "permission denied"; then
+					print_warning "$normalized"
+				else
+					print_info "$normalized"
+				fi
+				;;
+		esac
+	done < "$tmp_fifo"
+
+	wait "$scp_pid"
+	local scp_rc=$?
+	local scp_output
+	scp_output=$(cat "$tmp_out") || scp_output=""
+	rm -f "$tmp_out" "$tmp_fifo"
+
+	if echo "$scp_output" | grep -qi "All keys were skipped"; then
+		print_warning "All keys were skipped because they already exist on the remote system. Use -f to force installation if appropriate."
+	fi
+
+	if echo "$scp_output" | grep -qi "permission denied"; then
+		echo ""
+		while IFS= read -r p; do
+			print_warning "$p"
+		done <<< "$(echo "$scp_output" | grep -i "permission denied" )"
+	fi
+
+	if [ $scp_rc -eq 0 ]; then
+		print_success "SSH key copied successfully!"
+		print_info "You can now connect with: ssh $target_user@$vm_ip"
+		if ssh -o BatchMode=yes -o ConnectTimeout=5 "${target_user}@${vm_ip}" "echo 'Connection test successful'" 2>/dev/null; then
+			print_success "SSH connection verified - key-based authentication works!"
+		fi
 	else
-		print_warning "Could not automatically configure SSH"
+		print_warning "ssh-copy-id exited with code $scp_rc"
+		print_error "Failed to copy SSH key"
 		print_info "Manual steps:"
 		echo "  1. Connect to VM console: virsh console $vm_name"
-		echo "  2. Regenerate SSH host keys: sudo dpkg-reconfigure openssh-server"
-		echo "  3. Add your SSH key to ~/.ssh/authorized_keys"
+		echo "  2. Ensure the user '$target_user' exists and has a password set"
+		echo "  3. Check that SSH password authentication is enabled in /etc/ssh/sshd_config"
+		echo "  4. Run manually: ssh-copy-id $target_user@$vm_ip"
+		return 1
 	fi
 	
 	return 0
@@ -1579,95 +1659,111 @@ For more information: https://github.com/metharda/dcvm
 EOF
 }
 
-if [ $# -lt 1 ]; then
-	show_help
-	exit 0
+main() {
+	if [ $# -lt 1 ]; then
+		show_help
+		exit 0
+	fi
+
+	if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
+		show_help
+		exit 0
+	fi
+
+	local SUBCOMMAND="$1"
+	local VM_NAME="$2"
+	local BACKUP_DATE="$3"
+
+	for cmd in virsh cp gzip gunzip wget qemu-img; do
+		if ! command -v "$cmd" >/dev/null 2>&1; then
+			print_error "Required command not found: $cmd"
+			exit 1
+		fi
+	done
+
+	local LOG_DIR
+	LOG_DIR=$(dirname "$LOG_FILE")
+	if [ ! -d "$LOG_DIR" ]; then
+		mkdir -p "$LOG_DIR" 2>/dev/null || {
+			print_warning "Cannot create log directory, logging to stdout only"
+			LOG_FILE="/dev/null"
+		}
+	fi
+
+	case "$SUBCOMMAND" in
+		"create")
+			if [ -z "$VM_NAME" ]; then
+				print_error "VM name required for 'create'"
+				exit 1
+			fi
+			backup_vm "$VM_NAME"
+			exit $?
+			;;
+		"restore")
+			if [ -z "$VM_NAME" ]; then
+				print_error "VM name required for 'restore'"
+				exit 1
+			fi
+			restore_vm "$VM_NAME" "$BACKUP_DATE"
+			exit $?
+			;;
+		"list")
+			if [ -n "$VM_NAME" ]; then
+				list_backups "$VM_NAME"
+				exit $?
+			else
+				list_all_backups
+				exit $?
+			fi
+			;;
+		"delete")
+			if [ -z "$VM_NAME" ]; then
+				print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>|--all|all"
+				exit 1
+			fi
+			delete_backups "$VM_NAME"
+			exit $?
+			;;
+		"export")
+			if [ -z "$VM_NAME" ]; then
+				print_error "VM name required for 'export'"
+				exit 1
+			fi
+			export_backup "$VM_NAME" "$BACKUP_DATE" "$4"
+			exit $?
+			;;
+		"import")
+			if [ -z "$VM_NAME" ]; then
+				print_error "Package path or directory required for 'import'"
+				exit 1
+			fi
+			import_backup "$VM_NAME" "$BACKUP_DATE"
+			exit $?
+			;;
+		"ssh-setup")
+			if [ -z "$VM_NAME" ]; then
+				print_error "VM name required for 'ssh-setup'"
+				exit 1
+			fi
+			ssh_setup_vm "$VM_NAME"
+			exit $?
+			;;
+		"troubleshoot")
+			if [ -z "$VM_NAME" ]; then
+				print_error "VM name required for 'troubleshoot'"
+				exit 1
+			fi
+			troubleshoot_vm "$VM_NAME"
+			exit $?
+			;;
+		*)
+			print_error "Unknown subcommand: $SUBCOMMAND"
+			echo "Valid subcommands: create, restore, list, delete, export, import, troubleshoot"
+			exit 1
+			;;
+	esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
 fi
-
-if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
-	show_help
-	exit 0
-fi
-
-SUBCOMMAND="$1"
-VM_NAME="$2"
-BACKUP_DATE="$3"
-
-for cmd in virsh cp gzip gunzip wget qemu-img; do
-	if ! command -v "$cmd" >/dev/null 2>&1; then
-		print_error "Required command not found: $cmd"
-		exit 1
-	fi
-done
-
-LOG_DIR=$(dirname "$LOG_FILE")
-if [ ! -d "$LOG_DIR" ]; then
-	mkdir -p "$LOG_DIR" 2>/dev/null || {
-		print_warning "Cannot create log directory, logging to stdout only"
-		LOG_FILE="/dev/null"
-	}
-fi
-
-case "$SUBCOMMAND" in
-"create")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for 'create'"
-		exit 1
-	fi
-	backup_vm "$VM_NAME"; exit $?
-	;;
-"restore")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for 'restore'"
-		exit 1
-	fi
-	restore_vm "$VM_NAME" "$BACKUP_DATE"; exit $?
-	;;
-"list")
-	if [ -n "$VM_NAME" ]; then
-		list_backups "$VM_NAME"; exit $?
-	else
-		list_all_backups; exit $?
-	fi
-	;;
-"delete")
-	if [ -z "$VM_NAME" ]; then
-		print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>|--all|all"
-		exit 1
-	fi
-	delete_backups "$VM_NAME"; exit $?
-	;;
-"export")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for 'export'"
-		exit 1
-	fi
-	export_backup "$VM_NAME" "$BACKUP_DATE" "$4"; exit $?
-	;;
-"import")
-	if [ -z "$VM_NAME" ]; then
-		print_error "Package path or directory required for 'import'"
-		exit 1
-	fi
-	import_backup "$VM_NAME" "$BACKUP_DATE"; exit $?
-	;;
-"ssh-setup")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for 'ssh-setup'"
-		exit 1
-	fi
-	ssh_setup_vm "$VM_NAME"; exit $?
-	;;
-"troubleshoot")
-	if [ -z "$VM_NAME" ]; then
-		print_error "VM name required for 'troubleshoot'"
-		exit 1
-	fi
-	troubleshoot_vm "$VM_NAME"; exit $?
-	;;
-*)
-	print_error "Unknown subcommand: $SUBCOMMAND"
-	echo "Valid subcommands: create, restore, list, delete, export, import, troubleshoot"
-	exit 1
-	;;
-esac

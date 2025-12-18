@@ -297,8 +297,8 @@ prompt_yes_no() {
 install_required_packages() {
 	print_status "INFO" "Checking and installing required packages..."
 
-	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc)
-	local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux)
+	local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish)
+	local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish)
 
 	if [[ -f /etc/os-release ]]; then
 		. /etc/os-release
@@ -424,6 +424,8 @@ check_directory_structure() {
 		"$DATACENTER_BASE/storage/templates"
 		"$DATACENTER_BASE/nfs-share"
 		"$DATACENTER_BASE/backups"
+		"$DATACENTER_BASE/config"
+		"$DATACENTER_BASE/config/network"
 	)
 
 	for dir in "${directories[@]}"; do
@@ -481,6 +483,14 @@ IMAGE_LABELS["ubuntu-22.04-server-cloudimg-amd64.img"]="Ubuntu 22.04"
 IMAGE_LABELS["ubuntu-20.04-server-cloudimg-amd64.img"]="Ubuntu 20.04"
 IMAGE_LABELS["Arch-Linux-x86_64-cloudimg.qcow2"]="Arch Linux"
 
+IMAGE_ORDER=(
+	"debian-11-generic-amd64.qcow2"
+	"debian-12-generic-amd64.qcow2"
+	"ubuntu-20.04-server-cloudimg-amd64.img"
+	"ubuntu-22.04-server-cloudimg-amd64.img"
+	"Arch-Linux-x86_64-cloudimg.qcow2"
+)
+
 check_cloud_images() {
 	print_status_log "INFO" "Checking for cloud images..."
 	
@@ -490,8 +500,8 @@ check_cloud_images() {
 	fi
 	
 	local images=()
-	for filename in "${!IMAGE_LABELS[@]}"; do
-		local label="${IMAGE_LABELS[$filename]}"
+	for filename in "${IMAGE_ORDER[@]}"; do
+		local label="${IMAGE_LABELS[$filename]:-Unknown}"
 		images+=("$filename|$label")
 	done
 
@@ -744,7 +754,7 @@ install_completion() {
 
 	if [[ -t 0 && -t 1 ]]; then
 		echo
-		if prompt_yes_no "Enable dcvm tab-completion in your shell now? [y/N]: " "N"; then
+		if prompt_yes_no "Enable dcvm tab-completion in your shell now? [Y/n]: " "Y"; then
 			local shell_info; shell_info=$(detect_shell)
 			local shell_name="${shell_info%%|*}"
 			local config_file="${shell_info##*|}"
@@ -862,12 +872,12 @@ main() {
 	install_required_packages
 	check_kvm_support
 	install_dcvm_command
-	install_completion
 	start_libvirtd
-	enable_ip_forwarding
 	check_directory_structure
 	check_cloud_images
+	enable_ip_forwarding
 	create_datacenter_network
+	install_completion
 	start_nfs_server
 	start_existing_vms
 	setup_aliases
@@ -904,18 +914,18 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}"
 			read -p "Network subnet (e.g., 10.10.10, 192.168.100) [default: 10.10.10]: " USER_SUBNET || USER_SUBNET=""
 			NETWORK_SUBNET=${USER_SUBNET:-10.10.10}
 		
-		if [[ ! "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-			echo "Invalid subnet format. Using default: 10.10.10"
-			NETWORK_SUBNET="10.10.10"
-		else
-			local oct1="${BASH_REMATCH[1]}"
-			local oct2="${BASH_REMATCH[2]}"
-			local oct3="${BASH_REMATCH[3]}"
-			
-			if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
-				echo "Invalid subnet: octets must be 0-255. Using default: 10.10.10"
+			if [[ ! "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+				echo "Invalid subnet format. Using default: 10.10.10"
 				NETWORK_SUBNET="10.10.10"
-			fi
+			else
+				oct1="${BASH_REMATCH[1]}"
+				oct2="${BASH_REMATCH[2]}"
+				oct3="${BASH_REMATCH[3]}"
+				
+				if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
+					echo "Invalid subnet: octets must be 0-255. Using default: 10.10.10"
+					NETWORK_SUBNET="10.10.10"
+				fi
 			fi
 		else
 			echo "Non-interactive installation detected. Using default values."
@@ -955,4 +965,7 @@ for arg in "$@"; do
 done
 
 echo "Executing DCVM installer..." >&2
-main "$@"
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

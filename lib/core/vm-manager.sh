@@ -3,8 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-
 show_port_status() {
 	echo "=== Datacenter VM Port Status ==="
 	echo ""
@@ -273,114 +271,122 @@ show_enhanced_status() {
 	done
 }
 
-case $1 in
-"start")
-	start_vms "$2"
-	;;
-"stop")
-	stop_vms "$2"
-	;;
-"restart")
-	restart_vms "$2"
-	;;
-"create")
-	[ -z "$2" ] && print_error "VM name required. Usage: dcvm create <vm_name>" && exit 1
-	shift
-	"$SCRIPTS_PATH/create-vm.sh" "$@"
-	;;
-"delete")
-	[ -z "$2" ] && print_error "VM name required. Usage: dcvm delete <vm_name>" && exit 1
-	"$SCRIPTS_PATH/delete-vm.sh" "$2"
-	;;
-"backup")
-	[ -z "$2" ] && print_error "Backup action required. Usage: dcvm backup {create|restore|list|delete|export|import|troubleshoot}" && exit 1
-	shift
-	"$SCRIPTS_PATH/backup.sh" "$@"
-	;;
-"status")
-	show_enhanced_status
-	;;
-"ports")
-	show_port_status
-	;;
-"console")
-	show_enhanced_console
-	;;
-"list")
-	echo "Available VMs:"
-	virsh list --all
-	echo ""
-	echo "VMs using $NETWORK_NAME:"
-	list_datacenter_vms
-	;;
-"setup-forwarding")
-	echo "Setting up port forwarding... (deprecated: use 'dcvm network ports setup')"
-	"$SCRIPTS_PATH/../network/port-forward.sh" setup
-	;;
-"network")
-	echo "=== Network Information ==="
-	echo ""
-	echo "Virtual Networks:"
-	virsh net-list
-	echo ""
-	echo "Datacenter Network Details:"
-	virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
-	echo ""
-	echo "=== ALL DHCP LEASES ==="
-	echo ""
-	echo "Active DHCP Leases (via virsh):"
-	dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
-	[ -n "$dhcp_leases" ] && echo "$dhcp_leases" || echo "No active DHCP leases found via virsh"
-	echo ""
-	echo "Raw DHCP Lease Files:"
-	if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
-		lease_count=$(wc -l </var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases)
-		echo "Lease file entries: $lease_count"
-		if [ "$lease_count" -gt 0 ]; then
-			echo "Raw lease file content:"
-			cat /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases | while read line; do
-				echo "  $line"
+main() {
+	load_dcvm_config
+
+	case $1 in
+		"start")
+			start_vms "$2"
+			;;
+		"stop")
+			stop_vms "$2"
+			;;
+		"restart")
+			restart_vms "$2"
+			;;
+		"create")
+			[ -z "$2" ] && print_error "VM name required. Usage: dcvm create <vm_name>" && exit 1
+			shift
+			"$SCRIPTS_PATH/create-vm.sh" "$@"
+			;;
+		"delete")
+			[ -z "$2" ] && print_error "VM name required. Usage: dcvm delete <vm_name>" && exit 1
+			"$SCRIPTS_PATH/delete-vm.sh" "$2"
+			;;
+		"backup")
+			[ -z "$2" ] && print_error "Backup action required. Usage: dcvm backup {create|restore|list|delete|export|import|troubleshoot}" && exit 1
+			shift
+			"$SCRIPTS_PATH/backup.sh" "$@"
+			;;
+		"status")
+			show_enhanced_status
+			;;
+		"ports")
+			show_port_status
+			;;
+		"console")
+			show_enhanced_console
+			;;
+		"list")
+			echo "Available VMs:"
+			virsh list --all
+			echo ""
+			echo "VMs using $NETWORK_NAME:"
+			list_datacenter_vms
+			;;
+		"setup-forwarding")
+			echo "Setting up port forwarding... (deprecated: use 'dcvm network ports setup')"
+			"$SCRIPTS_PATH/../network/port-forward.sh" setup
+			;;
+		"network")
+			echo "=== Network Information ==="
+			echo ""
+			echo "Virtual Networks:"
+			virsh net-list
+			echo ""
+			echo "Datacenter Network Details:"
+			virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
+			echo ""
+			echo "=== ALL DHCP LEASES ==="
+			echo ""
+			echo "Active DHCP Leases (via virsh):"
+			dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
+			[ -n "$dhcp_leases" ] && echo "$dhcp_leases" || echo "No active DHCP leases found via virsh"
+			echo ""
+			echo "Raw DHCP Lease Files:"
+			if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
+				lease_count=$(wc -l </var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases)
+				echo "Lease file entries: $lease_count"
+				if [ "$lease_count" -gt 0 ]; then
+					echo "Raw lease file content:"
+					cat /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases | while read line; do
+						echo "  $line"
+					done
+				else
+					echo "Lease file is empty"
+				fi
+			else
+				echo "Lease file not found: /var/lib/libvirt/dnsmasq/virbr-dc.leases"
+			fi
+			echo ""
+			if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
+				status_count=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.status)
+				echo "Status file entries: $status_count"
+				if [ "$status_count" -gt 0 ]; then
+					echo "Status file content:"
+					cat /var/lib/libvirt/dnsmasq/virbr-dc.status | while read line; do
+						echo "  $line"
+					done
+				else
+					echo "Status file is empty"
+				fi
+			else
+				echo "Status file not found: /var/lib/libvirt/dnsmasq/virbr-dc.status"
+			fi
+			echo ""
+			echo "Additional DHCP lease locations:"
+			for lease_file in /var/lib/dhcp/dhcpd.leases /var/lib/libvirt/dnsmasq/*.leases; do
+				if [ -f "$lease_file" ]; then
+					echo "Found: $lease_file"
+					[ -s "$lease_file" ] && echo "  (Contains data - $(wc -l <"$lease_file") lines)" || echo "  (Empty file)"
+				fi
 			done
-		else
-			echo "Lease file is empty"
-		fi
-	else
-		echo "Lease file not found: /var/lib/libvirt/dnsmasq/virbr-dc.leases"
-	fi
-	echo ""
-	if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-		status_count=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.status)
-		echo "Status file entries: $status_count"
-		if [ "$status_count" -gt 0 ]; then
-			echo "Status file content:"
-			cat /var/lib/libvirt/dnsmasq/virbr-dc.status | while read line; do
-				echo "  $line"
-			done
-		else
-			echo "Status file is empty"
-		fi
-	else
-		echo "Status file not found: /var/lib/libvirt/dnsmasq/virbr-dc.status"
-	fi
-	echo ""
-	echo "Additional DHCP lease locations:"
-	for lease_file in /var/lib/dhcp/dhcpd.leases /var/lib/libvirt/dnsmasq/*.leases; do
-		if [ -f "$lease_file" ]; then
-			echo "Found: $lease_file"
-			[ -s "$lease_file" ] && echo "  (Contains data - $(wc -l <"$lease_file") lines)" || echo "  (Empty file)"
-		fi
-	done
-	;;
-"clear-leases")
-	"$SCRIPTS_PATH/../network/dhcp.sh" clear-all
-	;;
-"uninstall")
-	require_confirmation "This will completely remove all Datacenter VM files, VMs, networks, and this script."
-	"$SCRIPTS_PATH/uninstall-dcvm.sh"
-	;;
-*)
-	print_error "Unknown command: $1"
-	print_info "Run 'dcvm' without arguments for help"
-	exit 1
-	;;
-esac
+			;;
+		"clear-leases")
+			"$SCRIPTS_PATH/../network/dhcp.sh" clear-all
+			;;
+		"uninstall")
+			require_confirmation "This will completely remove all Datacenter VM files, VMs, networks, and this script."
+			"$SCRIPTS_PATH/uninstall-dcvm.sh"
+			;;
+		*)
+			print_error "Unknown command: $1"
+			print_info "Run 'dcvm' without arguments for help"
+			exit 1
+			;;
+	esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

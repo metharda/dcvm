@@ -3,8 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-
 VM_NAME=""
 ISO_PATH=""
 MEMORY=""
@@ -67,71 +65,18 @@ parse_args() {
   done
 }
 
-interactive_prompt_memory() {
-    local host_mem=$(free -m | awk '/^Mem:/ {print $2}')
-    local max_mem=$((host_mem * 75 / 100))
-    while true; do
-        read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " MEMORY
-        MEMORY=${MEMORY:-2048}
-        if [[ ! "$MEMORY" =~ ^[0-9]+$ ]]; then
-            print_error "Memory must be a number"
-            continue
-        fi
-        if [ "$MEMORY" -lt 512 ]; then
-            print_error "Memory must be at least 512MB"
-            continue
-        fi
-        if [ "$MEMORY" -gt "$max_mem" ]; then
-            print_warning "Requested ${MEMORY}MB exceeds recommended ${max_mem}MB"
-            read -p "Continue anyway? (y/N): " cont
-            [[ ! "$cont" =~ ^[Yy]$ ]] && continue
-        fi
-        break
-    done
-}
-
-interactive_prompt_cpus() {
-    local host_cpus=$(nproc)
-    local max_cpus=$((host_cpus > 1 ? host_cpus - 1 : 1))
-    while true; do
-        read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " CPUS
-        CPUS=${CPUS:-2}
-        if [[ ! "$CPUS" =~ ^[0-9]+$ ]]; then
-            print_error "CPU count must be a number"
-            continue
-        fi
-        if [ "$CPUS" -lt 1 ]; then
-            print_error "CPU count must be at least 1"
-            continue
-        fi
-        if [ "$CPUS" -gt "$max_cpus" ]; then
-            print_warning "Requested ${CPUS} CPUs exceeds recommended ${max_cpus}"
-            read -p "Continue anyway? (y/N): " cont
-            [[ ! "$cont" =~ ^[Yy]$ ]] && continue
-        fi
-        break
-    done
-}
-
-interactive_prompt_disk() {
-    while true; do
-        read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " DISK_SIZE
-        DISK_SIZE=${DISK_SIZE:-20G}
-        if [[ ! "$DISK_SIZE" =~ ^[0-9]+[GMTgmt]$ ]]; then
-            print_error "Invalid format. Use number + G/M/T (e.g., 20G, 512M, 1T)"
-            continue
-        fi
-        DISK_SIZE=${DISK_SIZE^^}
-        break
-    done
-}
+interactive_prompt_memory() { interactive_prompt_memory_common "MEMORY"; }
+interactive_prompt_cpus() { interactive_prompt_cpus_common "CPUS"; }
+interactive_prompt_disk() { interactive_prompt_disk_common "DISK_SIZE"; }
 
 interactive_prompt_graphics() {
-    echo ""
-    echo "Graphics options:"
-    echo "  1) VNC (recommended for graphical installers)"
-    echo "  2) SPICE (better performance, requires virt-viewer)"
-    echo "  3) None (text console only)"
+    cat <<-EOF
+	
+	Graphics options:
+	  1) VNC (recommended for graphical installers)
+	  2) SPICE (better performance, requires virt-viewer)
+	  3) None (text console only)
+	EOF
     while true; do
         read -p "Select graphics [1]: " choice
         choice=${choice:-1}
@@ -145,18 +90,22 @@ interactive_prompt_graphics() {
 }
 
 interactive_prompt_os_variant() {
-    echo ""
-    echo "OS Variant helps libvirt optimize settings for the guest OS."
-    echo "Common variants: ubuntu22.04, ubuntu20.04, debian12, debian11, fedora39, centos9, win10, win11"
-    echo "Leave empty for generic settings, or run 'osinfo-query os' for full list."
+    cat <<-EOF
+	
+	OS Variant helps libvirt optimize settings for the guest OS.
+	Common variants: ubuntu22.04, ubuntu20.04, debian12, debian11, fedora39, centos9, win10, win11
+	Leave empty for generic settings, or run 'osinfo-query os' for full list.
+	EOF
     read -p "OS variant (optional): " OS_VARIANT
 }
 
 interactive_prompt_boot_order() {
-    echo ""
-    echo "Boot order determines which device boots first."
-    echo "  cdrom,hd = CD-ROM first, then hard disk (default for install)"
-    echo "  hd,cdrom = Hard disk first, then CD-ROM"
+    cat <<-EOF
+	
+	Boot order determines which device boots first.
+	  cdrom,hd = CD-ROM first, then hard disk (default for install)
+	  hd,cdrom = Hard disk first, then CD-ROM
+	EOF
     read -p "Boot order [cdrom,hd]: " BOOT_ORDER
     BOOT_ORDER=${BOOT_ORDER:-cdrom,hd}
 }
@@ -171,152 +120,196 @@ interactive_prompt_copy_iso() {
     fi
 }
 
+# Note: validate_ip_in_subnet is now in common.sh
+
 interactive_prompt_static_ip() {
+    # Custom ISO requires manual network config, so we just note the desired IP
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
     echo ""
-    read -p "Set a static IP for this VM? (configure manually in VM) (y/N): " ip_choice
-    if [[ "$ip_choice" =~ ^[Yy]$ ]]; then
-        local subnet="${NETWORK_SUBNET:-10.10.10}"
-        while true; do
-            read -p "Static IP address (e.g., ${subnet}.50): " STATIC_IP
-            if [[ "$STATIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                break
-            fi
-            print_error "Invalid IP format. Use: x.x.x.x"
-        done
+    print_info "Static IP Configuration (manual setup required in VM)"
+    echo "  Network subnet: ${subnet}.0/24"
+    echo "  Gateway: ${subnet}.1"
+    echo "  Valid range: ${subnet}.2 - ${subnet}.254"
+    echo ""
+    
+    while true; do
+        read -p "Use static IP? (y/N, default: DHCP): " use_static
+        use_static=${use_static:-n}
+        
+        if [[ "$use_static" =~ ^[Nn]$ ]]; then
+            STATIC_IP=""
+            print_info "Using DHCP - configure network in VM after installation"
+            break
+        elif [[ "$use_static" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Enter static IP (e.g., ${subnet}.50): " STATIC_IP
+                if [ -z "$STATIC_IP" ]; then
+                    print_error "IP address cannot be empty"
+                    continue
+                fi
+                if validate_ip_in_subnet "$STATIC_IP"; then
+                    print_success "Static IP set to: $STATIC_IP (configure manually in VM)"
+                    break 2
+                fi
+            done
+        else
+            print_error "Please enter 'y' for static IP or 'n' for DHCP"
+        fi
+    done
+}
+
+# =============================================================================
+# HELPER FUNCTIONS FOR VM CREATION
+# =============================================================================
+
+validate_vm_not_exists() {
+    if virsh list --all --name 2>/dev/null | grep -qx "$VM_NAME"; then
+        print_error "VM '$VM_NAME' already exists"
+        echo "Use: dcvm delete $VM_NAME (to delete it first)"
+        exit 1
     fi
 }
 
-parse_args "$@"
-
-if [ "$FORCE_MODE" = true ]; then
-    echo ""
-    print_error "Force mode (-f) is not supported for ISO installations."
-    print_info "ISO installations require interactive setup for graphics, OS variant, and other options."
-    print_info "Remove the -f flag and run again."
-    exit 1
-fi
-
-if [ -z "$VM_NAME" ]; then
-    show_usage
-    exit 1
-fi
-
-if [ -z "$ISO_PATH" ]; then
-    echo ""
-    read -p "Enter path to ISO file: " ISO_PATH
-fi
-if [ ! -f "$ISO_PATH" ]; then
-    print_error "ISO file not found: $ISO_PATH"
-    exit 1
-fi
-
-if virsh list --all --name 2>/dev/null | grep -qx "$VM_NAME"; then
-    print_error "VM '$VM_NAME' already exists"
-    echo "Use: dcvm delete $VM_NAME (to delete it first)"
-    exit 1
-fi
-
-echo ""
-echo "=================================================="
-echo "Custom ISO VM Creation"
-echo "=================================================="
-echo ""
-echo "VM Name: $VM_NAME"
-echo "ISO: $ISO_PATH"
-echo ""
-
-[ -z "$MEMORY" ] && interactive_prompt_memory
-[ -z "$CPUS" ] && interactive_prompt_cpus
-[ -z "$DISK_SIZE" ] && interactive_prompt_disk
-[ -z "$GRAPHICS" ] && interactive_prompt_graphics
-[ -z "$OS_VARIANT" ] && interactive_prompt_os_variant
-[ -z "$BOOT_ORDER" ] && interactive_prompt_boot_order
-[ -z "$COPY_ISO" ] && interactive_prompt_copy_iso
-[ -z "$STATIC_IP" ] && interactive_prompt_static_ip
-
-echo ""
-echo "=================================================="
-echo "VM Configuration Summary"
-echo "=================================================="
-echo "  Name:       $VM_NAME"
-echo "  ISO:        $(basename "$ISO_PATH")"
-echo "  Memory:     ${MEMORY}MB"
-echo "  CPUs:       $CPUS"
-echo "  Disk:       $DISK_SIZE"
-echo "  Graphics:   $GRAPHICS"
-echo "  OS Variant: ${OS_VARIANT:-generic}"
-echo "  Boot Order: $BOOT_ORDER"
-echo "  Copy ISO:   $COPY_ISO"
-[ -n "$STATIC_IP" ] && echo "  Static IP:  $STATIC_IP"
-echo ""
-
-read -p "Create VM with these settings? (Y/n): " confirm
-confirm=${confirm:-y}
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    print_info "Cancelled."
-    exit 0
-fi
-
-require_root
-
-for cmd in virsh virt-install qemu-img; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        print_error "Required command not found: $cmd"
+prompt_iso_path() {
+    if [ -z "$ISO_PATH" ]; then
+        echo ""
+        read -p "Enter path to ISO file: " ISO_PATH
+    fi
+    if [ ! -f "$ISO_PATH" ]; then
+        print_error "ISO file not found: $ISO_PATH"
         exit 1
     fi
-done
+}
 
-VM_DIR="$DATACENTER_BASE/vms/$VM_NAME"
-DISK_PATH="$VM_DIR/${VM_NAME}-disk.qcow2"
+show_iso_header() {
+    cat <<EOF
 
-mkdir -p "$VM_DIR" || { print_error "Failed to create VM directory"; exit 1; }
+==================================================
+Custom ISO VM Creation
+==================================================
 
-INSTALL_ISO="$ISO_PATH"
-if [ "$COPY_ISO" = "true" ]; then
-    iso_name=$(basename "$ISO_PATH")
-    INSTALL_ISO="$VM_DIR/$iso_name"
-    print_info "Copying ISO to VM directory..."
-    cp "$ISO_PATH" "$INSTALL_ISO" || { print_error "Failed to copy ISO"; exit 1; }
-    print_success "ISO copied to: $INSTALL_ISO"
-fi
+VM Name: $VM_NAME
+ISO: $ISO_PATH
 
-iso_size=$(stat -c%s "$INSTALL_ISO" 2>/dev/null || stat -f%z "$INSTALL_ISO" 2>/dev/null || echo 0)
-if [ "$iso_size" -lt 10485760 ]; then
-    print_warning "ISO file is smaller than expected ($(($iso_size / 1048576))MB). It may not be a valid installer ISO."
-    print_info "Some netinstall ISOs can be small, but verify the file is correct before continuing."
-fi
+EOF
+}
 
-print_info "Creating disk: $DISK_PATH ($DISK_SIZE)"
-qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE" >/dev/null 2>&1 || { print_error "qemu-img create failed"; exit 1; }
+collect_vm_options() {
+    [ -z "$MEMORY" ] && interactive_prompt_memory
+    [ -z "$CPUS" ] && interactive_prompt_cpus
+    [ -z "$DISK_SIZE" ] && interactive_prompt_disk
+    [ -z "$GRAPHICS" ] && interactive_prompt_graphics
+    [ -z "$OS_VARIANT" ] && interactive_prompt_os_variant
+    [ -z "$BOOT_ORDER" ] && interactive_prompt_boot_order
+    [ -z "$COPY_ISO" ] && interactive_prompt_copy_iso
+    [ -z "$STATIC_IP" ] && interactive_prompt_static_ip
+}
 
+show_vm_summary() {
+    cat <<EOF
 
-VIRT_INSTALL_OPTS=(
-    --name "$VM_NAME"
-    --memory "$MEMORY"
-    --vcpus "$CPUS"
-    --disk "path=$DISK_PATH,format=qcow2,bus=virtio"
-    --network "network=$NETWORK_NAME,model=virtio"
-    --cdrom "$INSTALL_ISO"
-    --boot "$BOOT_ORDER"
-    --noautoconsole
-)
+==================================================
+VM Configuration Summary
+==================================================
+  Name:       $VM_NAME
+  ISO:        $(basename "$ISO_PATH")
+  Memory:     ${MEMORY}MB
+  CPUs:       $CPUS
+  Disk:       $DISK_SIZE
+  Graphics:   $GRAPHICS
+  OS Variant: ${OS_VARIANT:-generic}
+  Boot Order: $BOOT_ORDER
+  Copy ISO:   $COPY_ISO
+EOF
+    [ -n "$STATIC_IP" ] && echo "  Static IP:  $STATIC_IP (manual config)"
+    echo ""
+}
 
-if [ "$GRAPHICS" = "none" ]; then
-    VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
-else
-    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
-fi
-[ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
+confirm_creation() {
+    read -p "Create VM with these settings? (Y/n): " confirm
+    confirm=${confirm:-y}
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Cancelled."
+        exit 0
+    fi
+}
 
-print_info "Starting installer from ISO"
-print_info "  VM: $VM_NAME"
-print_info "  Memory: ${MEMORY}MB, CPUs: $CPUS"
-print_info "  Disk: $DISK_SIZE"
-print_info "  Graphics: $GRAPHICS"
+check_iso_dependencies() {
+    require_root
+    for cmd in virsh virt-install qemu-img; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            print_error "Required command not found: $cmd"
+            exit 1
+        fi
+    done
+}
 
-virt-install "${VIRT_INSTALL_OPTS[@]}" || { print_error "virt-install failed"; exit 1; }
+prepare_vm_directory() {
+    VM_DIR="$DATACENTER_BASE/vms/$VM_NAME"
+    DISK_PATH="$VM_DIR/${VM_NAME}-disk.qcow2"
+    mkdir -p "$VM_DIR" || { print_error "Failed to create VM directory"; exit 1; }
+}
 
-cat > "$VM_DIR/vm-info.txt" <<EOF
+copy_iso_if_needed() {
+    INSTALL_ISO="$ISO_PATH"
+    if [ "$COPY_ISO" = "true" ]; then
+        local iso_name
+        iso_name=$(basename "$ISO_PATH")
+        INSTALL_ISO="$VM_DIR/$iso_name"
+        print_info "Copying ISO to VM directory..."
+        cp "$ISO_PATH" "$INSTALL_ISO" || { print_error "Failed to copy ISO"; exit 1; }
+        print_success "ISO copied to: $INSTALL_ISO"
+    fi
+}
+
+validate_iso_size() {
+    local iso_size
+    iso_size=$(stat -c%s "$INSTALL_ISO" 2>/dev/null || stat -f%z "$INSTALL_ISO" 2>/dev/null || echo 0)
+    if [ "$iso_size" -lt 10485760 ]; then
+        print_warning "ISO file is smaller than expected ($(($iso_size / 1048576))MB). It may not be a valid installer ISO."
+        print_info "Some netinstall ISOs can be small, but verify the file is correct before continuing."
+    fi
+}
+
+create_vm_disk() {
+    print_info "Creating disk: $DISK_PATH ($DISK_SIZE)"
+    qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE" >/dev/null 2>&1 || { print_error "qemu-img create failed"; exit 1; }
+}
+
+build_virt_install_opts() {
+    VIRT_INSTALL_OPTS=(
+        --name "$VM_NAME"
+        --memory "$MEMORY"
+        --vcpus "$CPUS"
+        --disk "path=$DISK_PATH,format=qcow2,bus=virtio"
+        --network "network=$NETWORK_NAME,model=virtio"
+        --cdrom "$INSTALL_ISO"
+        --boot "$BOOT_ORDER"
+        --noautoconsole
+    )
+
+    if [ "$GRAPHICS" = "none" ]; then
+        VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
+    else
+        VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
+    fi
+    [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
+}
+
+run_virt_install() {
+    cat <<EOF
+[INFO] Starting installer from ISO
+  VM: $VM_NAME
+  Memory: ${MEMORY}MB, CPUs: $CPUS
+  Disk: $DISK_SIZE
+  Graphics: $GRAPHICS
+EOF
+
+    virt-install "${VIRT_INSTALL_OPTS[@]}" || { print_error "virt-install failed"; exit 1; }
+}
+
+save_vm_info() {
+    cat > "$VM_DIR/vm-info.txt" <<EOF
 VM_NAME=$VM_NAME
 CREATED=$(date '+%Y-%m-%d %H:%M:%S')
 ISO=$INSTALL_ISO
@@ -326,25 +319,72 @@ DISK_SIZE=$DISK_SIZE
 STATIC_IP=$STATIC_IP
 NETWORK=$NETWORK_NAME
 EOF
+}
 
-print_success "Installer launched for VM '$VM_NAME'"
-echo ""
-echo "Connect to installer UI:"
-if [ "$GRAPHICS" = "none" ]; then
-    echo "  Console: virsh console $VM_NAME"
-else
-    echo "  VNC: virsh vncdisplay $VM_NAME"
-    echo "  Or use a VNC client to connect to the host"
-fi
-echo ""
-if [ -n "$STATIC_IP" ]; then
-    subnet="${NETWORK_SUBNET:-10.10.10}"
-    echo "Network configuration for VM:"
-    echo "  IP Address: $STATIC_IP/24"
-    echo "  Gateway: ${subnet}.1"
-    echo "  DNS: 8.8.8.8, 8.8.4.4"
+show_post_creation_info() {
+    print_success "Installer launched for VM '$VM_NAME'"
     echo ""
+    echo "Connect to installer UI:"
+    if [ "$GRAPHICS" = "none" ]; then
+        echo "  Console: virsh console $VM_NAME"
+    else
+        echo "  VNC: virsh vncdisplay $VM_NAME"
+        echo "  Or use a VNC client to connect to the host"
+    fi
+    echo ""
+    if [ -n "$STATIC_IP" ]; then
+        local subnet="${NETWORK_SUBNET:-10.10.10}"
+        cat <<EOF
+Network configuration for VM:
+  IP Address: $STATIC_IP/24
+  Gateway: ${subnet}.1
+  DNS: 8.8.8.8, 8.8.4.4
+
+EOF
+    fi
+    cat <<EOF
+After installation completes:
+  1. Configure network inside the VM
+  2. Run: dcvm network ports setup
+EOF
+}
+
+main() {
+    load_dcvm_config
+    parse_args "$@"
+
+    # Force mode not supported for ISO installations
+    if [ "$FORCE_MODE" = true ]; then
+        echo ""
+        print_error "Force mode (-f) is not supported for custom ISO installations."
+        print_info "Custom ISO installations require interactive setup for graphics, OS variant, and other options."
+        print_info "Remove the -f flag and run again."
+        exit 1
+    fi
+
+    # Validate VM name
+    if [ -z "$VM_NAME" ]; then
+        show_usage
+        exit 1
+    fi
+
+    prompt_iso_path
+    validate_vm_not_exists
+    show_iso_header
+    collect_vm_options
+    show_vm_summary
+    confirm_creation
+    check_iso_dependencies
+    prepare_vm_directory
+    copy_iso_if_needed
+    validate_iso_size
+    create_vm_disk
+    build_virt_install_opts
+    run_virt_install
+    save_vm_info
+    show_post_creation_info
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
 fi
-print_info "After installation completes:"
-echo "  1. Configure network inside the VM"
-echo "  2. Run: dcvm network ports setup"

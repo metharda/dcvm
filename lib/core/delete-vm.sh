@@ -3,8 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-load_dcvm_config
-
 cleanup_port_forwarding_for_vm() {
 	local vm_ip="$1"
 	local ssh_port="$2"
@@ -145,6 +143,10 @@ delete_single_vm() {
 
 	[ -d "$DATACENTER_BASE/vms/$VM_NAME" ] && rm -rf "$DATACENTER_BASE/vms/$VM_NAME" && print_info "VM directory removed"
 
+	if [ -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" ]; then
+		rm -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" && print_info "Removed host static IP record"
+	fi
+
 	if [ -f ~/.ssh/config ]; then
 		sed -i "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
 		sed -i "/^Host $VM_NAME$/,/^$/{d;}" ~/.ssh/config
@@ -276,9 +278,7 @@ delete_all_vms() {
 	[ -d "$DATACENTER_BASE/vms" ] && find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null
 
 	echo ""
-	print_success "================================="
-	print_success "     MASS DELETION COMPLETED"
-	print_success "================================="
+	print_success "MASS DELETION COMPLETED"
 	echo ""
 	print_info "Final verification:"
 	
@@ -290,18 +290,25 @@ delete_all_vms() {
 	[ -z "$remaining" ] && print_success "✓ All datacenter VMs successfully removed" || { print_warning "✗ Some VMs may still exist:" && echo "$remaining"; }
 }
 
-[ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
+main() {
+	load_dcvm_config
+	[ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
 
-case "$1" in
-	--all)
-		delete_all_vms
-		;;
-	*)
-		delete_single_vm "$1"
-		;;
-esac
+	case "$1" in
+		--all|-a)
+			delete_all_vms
+			;;
+		*)
+			delete_single_vm "$1"
+			;;
+	esac
 
-echo ""
-print_info "Remaining datacenter VMs:"
-list_datacenter_vms || print_info "No datacenter VMs remaining"
-echo ""
+	echo ""
+	print_info "Remaining datacenter VMs:"
+	list_datacenter_vms || print_info "No datacenter VMs remaining"
+	echo ""
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi
