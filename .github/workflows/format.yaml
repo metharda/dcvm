@@ -135,7 +135,7 @@ jobs:
           fi
 
           git add -A
-          git commit -m "chore: format shell scripts with shfmt [ci skip]" || true
+          git commit -m "chore: format shell scripts with shfmt" || true
 
           # Determine target ref for push (supports PRs and pushes)
           if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
