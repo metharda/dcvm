@@ -14,6 +14,10 @@ on:
       - '**/*.sh'
       - '.github/workflows/test.yaml'
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   quick-test:
     name: Quick test-suite (matrix)
@@ -52,7 +56,7 @@ jobs:
       - name: Run quick tests
         run: |
           set -euo pipefail
-          bash lib/utils/test-suite.sh quick
+          bash lib/utils/test-suite.sh --quick
 
   quick-test-container:
     name: Quick test-suite in container
@@ -88,4 +92,4 @@ jobs:
       - name: Run quick tests
         run: |
           set -euo pipefail
-          bash lib/utils/test-suite.sh quick
+          bash lib/utils/test-suite.sh --quick
