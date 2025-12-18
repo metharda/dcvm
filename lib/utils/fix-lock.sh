@@ -3,7 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Global variables
 VM_NAME=""
 VERBOSE=false
 EXIT_CODE=0
@@ -343,7 +342,6 @@ except Exception as e:
 	[ $step_errors -gt 0 ] && return 1 || return 0
 }
 
-# Main entry point
 main() {
 	VM_NAME="$1"
 
@@ -383,7 +381,6 @@ main() {
 	fi
 }
 
-# Execution trigger - only run main if script is executed directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 	main "$@"
 fi

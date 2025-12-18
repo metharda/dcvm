@@ -120,10 +120,7 @@ interactive_prompt_copy_iso() {
     fi
 }
 
-# Note: validate_ip_in_subnet is now in common.sh
-
 interactive_prompt_static_ip() {
-    # Custom ISO requires manual network config, so we just note the desired IP
     local subnet="${NETWORK_SUBNET:-10.10.10}"
     echo ""
     print_info "Static IP Configuration (manual setup required in VM)"
@@ -157,10 +154,6 @@ interactive_prompt_static_ip() {
         fi
     done
 }
-
-# =============================================================================
-# HELPER FUNCTIONS FOR VM CREATION
-# =============================================================================
 
 validate_vm_not_exists() {
     if virsh list --all --name 2>/dev/null | grep -qx "$VM_NAME"; then
@@ -353,7 +346,6 @@ main() {
     load_dcvm_config
     parse_args "$@"
 
-    # Force mode not supported for ISO installations
     if [ "$FORCE_MODE" = true ]; then
         echo ""
         print_error "Force mode (-f) is not supported for custom ISO installations."
@@ -362,7 +354,6 @@ main() {
         exit 1
     fi
 
-    # Validate VM name
     if [ -z "$VM_NAME" ]; then
         show_usage
         exit 1

@@ -153,24 +153,70 @@ do_update() {
     
     while IFS= read -r file_path; do
         [[ -z "$file_path" ]] && continue
-        
+        if [[ "$file_path" == /* ]] || [[ "$file_path" == *".."* ]]; then
+            print_warning "Skipping unsafe path from repository: $file_path"
+            ok=false
+            continue
+        fi
+
         if [[ "$file_path" == "dcvm" ]]; then
             local dest="$INSTALL_BIN/dcvm"
-            if fetch_file "$file_path" "$dest"; then
+            local tmp_dest="${dest}.tmp.$$"
+            mkdir -p "$(dirname "$tmp_dest")" 2>/dev/null || true
+
+            if fetch_file "$file_path" "$tmp_dest"; then
+                if command -v readlink >/dev/null 2>&1; then
+                    local tmp_abs
+                    tmp_abs=$(readlink -f "$tmp_dest" 2>/dev/null || true)
+                    local bin_abs
+                    bin_abs=$(readlink -f "$INSTALL_BIN" 2>/dev/null || true)
+                    case "$tmp_abs" in
+                        "$bin_abs"/*) ;;
+                        *) print_error "Refusing to install $file_path outside $INSTALL_BIN"; rm -f "$tmp_dest"; ok=false; continue ;;
+                    esac
+                fi
+                mv -f "$tmp_dest" "$dest"
                 chmod +x "$dest" 2>/dev/null || true
                 ((updated_count++))
             else
+                rm -f "$tmp_dest" 2>/dev/null || true
                 ok=false
             fi
+
         elif [[ "$file_path" == lib/* ]]; then
             local rel_no_lib="${file_path#lib/}"
+            if [[ "$rel_no_lib" == *".."* || "$rel_no_lib" == /* ]]; then
+                print_warning "Skipping unsafe lib path: $file_path"
+                ok=false
+                continue
+            fi
             local dest="$INSTALL_LIB/$rel_no_lib"
-            if fetch_file "$file_path" "$dest"; then
+            local tmp_dest="${dest}.tmp.$$"
+            mkdir -p "$(dirname "$tmp_dest")" 2>/dev/null || true
+
+            if fetch_file "$file_path" "$tmp_dest"; then
+                if command -v readlink >/dev/null 2>&1; then
+                    local tmp_abs
+                    tmp_abs=$(readlink -f "$tmp_dest" 2>/dev/null || true)
+                    local lib_abs
+                    lib_abs=$(readlink -f "$INSTALL_LIB" 2>/dev/null || true)
+                    case "$tmp_abs" in
+                        "$lib_abs"/*) ;;
+                        *) print_error "Refusing to install $file_path outside $INSTALL_LIB"; rm -f "$tmp_dest"; ok=false; continue ;;
+                    esac
+                fi
+                mv -f "$tmp_dest" "$dest"
                 [[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
                 ((updated_count++))
             else
+                rm -f "$tmp_dest" 2>/dev/null || true
                 ok=false
             fi
+
+        else
+            print_warning "Skipping unexpected repository path: $file_path"
+            ok=false
+            continue
         fi
     done <<< "$files"
     

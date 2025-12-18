@@ -1509,19 +1509,15 @@ ssh_setup_vm() {
 	tmp_fifo=$(mktemp -u)
 	mkfifo "$tmp_fifo"
 
-	# IMPORTANT: redirect stdout first, then stderr to stdout, so *both* streams go to FIFO
 	(ssh-copy-id -o StrictHostKeyChecking=no -i "$ssh_pubkey" "${target_user}@${vm_ip}" > "$tmp_fifo" 2>&1 ) &
 	local scp_pid=$!
 	while IFS= read -r line; do
-		# Save raw output for later parsing
 		echo "$line" >> "$tmp_out"
 
-		# Normalize ssh-copy-id prefix to keep output clean
 		local normalized="$line"
 		normalized=${normalized#/usr/bin/ssh-copy-id: }
 		normalized=${normalized#ssh-copy-id: }
 
-		# Skip empty lines (ssh-copy-id prints lots of them)
 		if [ -z "$normalized" ]; then
 			continue
 		fi
@@ -1529,7 +1525,6 @@ ssh_setup_vm() {
 		case "$normalized" in
 			*": INFO: "*)
 				msg="${normalized#*: INFO: }"
-				# Hide very verbose guidance; keep key facts
 				case "$msg" in
 					Now\ try\ logging\ into\ the\ machine,*|and\ check\ to\ make\ sure* )
 						;;
@@ -1540,10 +1535,8 @@ ssh_setup_vm() {
 			*": WARNING: "*)
 				print_warning "${normalized#*: WARNING: }" ;;
 			*"'s password:"*|*" password:"*|*Password:*)
-				# Keep password prompts as-is so the UX stays familiar
 				printf "%s\n" "$normalized" ;;
 			*)
-				# For non-tagged lines, avoid adding noise; still show important failures
 				if echo "$normalized" | grep -qi "permission denied"; then
 					print_warning "$normalized"
 				else
