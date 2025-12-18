@@ -887,7 +887,7 @@ main() {
 	show_datacenter_summary
 }
 
-if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}" == "" ]]; then
+dcvm_init() {
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		echo "Welcome to DCVM Installer!"
 		echo "Repository: ${DCVM_REPO_SLUG}"
@@ -948,24 +948,23 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0:-/dev/stdin}" ]] || [[ "${BASH_SOURCE[0]}"
 		echo "  Network name: $NETWORK_NAME"
 		echo "  Bridge name: $BRIDGE_NAME"
 	fi
-else
-	[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
-fi
 
-NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
+	NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
 
-for arg in "$@"; do
-	case $arg in
-	--network-only) NETWORK_ONLY=1 ;;
-	--network-name=*) NETWORK_NAME_ARG="${arg#*=}" ;;
-	--network-name)
-		[[ -n "${2:-}" ]] && NETWORK_NAME_ARG="$2" || { echo "Error: --network-name requires a value" >&2; exit 1; }
-		;;
-	esac
-done
+	for arg in "$@"; do
+		case $arg in
+		--network-only) NETWORK_ONLY=1 ;;
+		--network-name=*) NETWORK_NAME_ARG="${arg#*=}" ;;
+		--network-name)
+			[[ -n "${2:-}" ]] && NETWORK_NAME_ARG="$2" || { echo "Error: --network-name requires a value" >&2; exit 1; }
+			;;
+		esac
+	done
 
-echo "Executing DCVM installer..." >&2
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	echo "Executing DCVM installer..." >&2
 	main "$@"
+}
+
+if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] || [[ -z "${BASH_SOURCE[0]:-}" ]]; then
+	dcvm_init "$@"
 fi

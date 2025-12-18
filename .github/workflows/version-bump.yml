@@ -1,0 +1,84 @@
+name: Enforce Version Bump
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check `dcvm` version was bumped
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: repo-base
+
+      - name: Checkout head ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: repo-head
+
+      - name: Validate version bump in `dcvm`
+        run: |
+          set -euo pipefail
+
+          FILE=dcvm
+          BASE_FILE=repo-base/$FILE
+          HEAD_FILE=repo-head/$FILE
+
+          if [[ ! -f "$BASE_FILE" || ! -f "$HEAD_FILE" ]]; then
+            echo "::error ::$FILE must exist in both base and head branches"
+            exit 1
+          fi
+
+          if diff -q "$BASE_FILE" "$HEAD_FILE" >/dev/null; then
+            echo "::error ::$FILE was not modified in this PR. Please bump the version inside the file."
+            exit 1
+          fi
+
+          extract_version() {
+            grep -m1 -Eo 'Version: [0-9]+\.[0-9]+\.[0-9]+' "$1" | awk '{print $2}' || true
+          }
+
+          base_v=$(extract_version "$BASE_FILE")
+          head_v=$(extract_version "$HEAD_FILE")
+
+          if [[ -z "$base_v" || -z "$head_v" ]]; then
+            echo "::error ::Could not find 'Version: X.Y.Z' in $FILE on base or head."
+            exit 1
+          fi
+
+          echo "Base version: $base_v"
+          echo "Head version: $head_v"
+
+          IFS=. read -r bmaj bmin bpatch <<<"$base_v"
+          IFS=. read -r hmaj hmin hpatch <<<"$head_v"
+
+          # ensure numeric
+          for v in $bmaj $bmin $bpatch $hmaj $hmin $hpatch; do
+            if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+              echo "::error ::Version components must be numeric"
+              exit 1
+            fi
+          done
+
+          if (( hmaj < bmaj )); then echo "::error ::Major version decreased"; exit 1; fi
+          if (( hmaj == bmaj && hmin < bmin )); then echo "::error ::Minor version decreased"; exit 1; fi
+          if (( hmaj == bmaj && hmin == bmin && hpatch <= bpatch )); then
+            echo "::error ::Patch version must be increased (at least +1)"; exit 1
+          fi
+
+          echo "Version bump validation passed"
+
+      - name: Success message
+        if: success()
+        run: echo "Version bump check OK"
