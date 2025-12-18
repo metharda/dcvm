@@ -7,12 +7,6 @@ on:
       - 'dcvm'
       - '**/*.sh'
       - '.github/workflows/test.yaml'
-  push:
-    branches: [ main ]
-    paths:
-      - 'dcvm'
-      - '**/*.sh'
-      - '.github/workflows/test.yaml'
 
 defaults:
   run:

@@ -7,12 +7,6 @@ on:
       - 'dcvm'
       - '**/*.sh'
       - '.github/workflows/lint.yaml'
-  push:
-    branches: [ main ]
-    paths:
-      - 'dcvm'
-      - '**/*.sh'
-      - '.github/workflows/lint.yaml'
 
 jobs:
   lint:
