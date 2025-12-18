@@ -236,14 +236,16 @@ test_dependencies() {
 	echo ""
 	log_test "INFO" "DEPENDENCY TESTS"
 	
-	local required_commands=(
-		"virsh"
-		"virt-install"
-		"qemu-img"
+	local required_always=(
 		"openssl"
 		"bc"
 		"curl"
 		"wget"
+	)
+	local required_virtualization=(
+		"virsh"
+		"virt-install"
+		"qemu-img"
 	)
 	
 	local optional_commands=(
@@ -252,11 +254,23 @@ test_dependencies() {
 		"shellcheck"
 	)
 	
-	for cmd in "${required_commands[@]}"; do
+	for cmd in "${required_always[@]}"; do
 		if check_command_exists "$cmd"; then
 			log_test "PASS" "Required: $cmd"
 		else
 			log_test "FAIL" "Required: $cmd" "Not found"
+		fi
+	done
+	
+	for cmd in "${required_virtualization[@]}"; do
+		if check_command_exists "$cmd"; then
+			log_test "PASS" "Required (virtualization): $cmd"
+		else
+			if [ "$QUICK_MODE" = true ]; then
+				log_test "WARN" "Required (virtualization): $cmd" "Not found (skipped in --quick)"
+			else
+				log_test "FAIL" "Required (virtualization): $cmd" "Not found"
+			fi
 		fi
 	done
 	
