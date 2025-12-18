@@ -15,6 +15,7 @@ jobs:
         with:
           persist-credentials: true
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
       - name: Verify required checks passed
         uses: actions/github-script@v6
@@ -122,11 +123,24 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet; then
-            git add -A
-            git commit -m "chore: format shell scripts with shfmt [ci skip]" || true
-            git push
-            echo "Formatted files pushed to branch"
-          else
+          if git diff --quiet; then
             echo "No formatting changes"
+            exit 0
           fi
+
+          git add -A
+          git commit -m "chore: format shell scripts with shfmt [ci skip]" || true
+
+          # Determine target ref for push (supports PRs and pushes)
+          if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
+            target_ref="refs/heads/${GITHUB_HEAD_REF}"
+          elif [[ -n "${GITHUB_REF_NAME:-}" ]]; then
+            target_ref="refs/heads/${GITHUB_REF_NAME}"
+          else
+            echo "::error::Unable to determine branch name for push"
+            exit 1
+          fi
+
+          echo "Pushing formatting changes to ${target_ref}"
+          git push origin HEAD:"${target_ref}"
+          echo "Formatted files pushed to branch"
