@@ -31,7 +31,7 @@ fi
 
 show_version() {
   echo "DCVM - Datacenter Virtual Machine Manager"
-  echo "Version: 0.7.1"
+  echo "Version: 0.7.2"
   echo "https://github.com/metharda/dcvm"
 }
 
