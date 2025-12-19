@@ -902,7 +902,7 @@ install_dcvm_command() {
 }
 
 main() {
-  echo "DCVM installer is starting..." >&2
+  print_info "DCVM installer is starting..." >&2
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
   echo "$(date) - Installation started" >>"$LOG_FILE" 2>/dev/null || true
@@ -963,7 +963,6 @@ dcvm_init() {
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 
-      echo ""
       echo "Network IP Configuration (default: 10.10.10.0/24)"
       echo "This determines the IP range for your VMs."
       read -p "Network subnet (e.g., 10.10.10, 192.168.100) [default: 10.10.10]: " USER_SUBNET || USER_SUBNET=""
@@ -1018,8 +1017,8 @@ dcvm_init() {
       ;;
     esac
   done
-
-  echo "Executing DCVM installer..." >&2
+  echo ""
+  print_info "Executing DCVM installer..." >&2
   main "$@"
 }
 
