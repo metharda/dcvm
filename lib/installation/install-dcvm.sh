@@ -221,7 +221,18 @@ install_by_fetch() {
   while IFS= read -r file_path; do
     [[ -z "$file_path" ]] && continue
 
-    if [[ "$file_path" == bin/* ]]; then
+    if [[ "$file_path" == "dcvm" ]]; then
+      local dest="$install_bin/dcvm"
+      if fetch_file "$file_path" "$dest"; then
+        chmod +x "$dest" 2>/dev/null || true
+        print_status_log "SUCCESS" "Fetched dcvm"
+        ((fetched_count++))
+      else
+        print_status_log "ERROR" "Failed to fetch $file_path"
+        ok=false
+      fi
+
+    elif [[ "$file_path" == bin/* ]]; then
       local dest="$install_bin/$(basename "$file_path")"
       if fetch_file "$file_path" "$dest"; then
         chmod +x "$dest" 2>/dev/null || true
@@ -231,6 +242,7 @@ install_by_fetch() {
         print_status_log "ERROR" "Failed to fetch $file_path"
         ok=false
       fi
+
     elif [[ "$file_path" == lib/* ]]; then
       local rel_no_lib="${file_path#lib/}"
       local dest="$install_lib/$rel_no_lib"
@@ -890,7 +902,7 @@ install_dcvm_command() {
 }
 
 main() {
-  echo "DCVM installer is starting..." >&2
+  print_status_log "INFO" "DCVM installer is starting..." >&2
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
   echo "$(date) - Installation started" >>"$LOG_FILE" 2>/dev/null || true
@@ -951,7 +963,6 @@ dcvm_init() {
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 
-      echo ""
       echo "Network IP Configuration (default: 10.10.10.0/24)"
       echo "This determines the IP range for your VMs."
       read -p "Network subnet (e.g., 10.10.10, 192.168.100) [default: 10.10.10]: " USER_SUBNET || USER_SUBNET=""
@@ -1006,8 +1017,8 @@ dcvm_init() {
       ;;
     esac
   done
-
-  echo "Executing DCVM installer..." >&2
+  echo ""
+  print_status_log "INFO" "Executing DCVM installer..." >&2
   main "$@"
 }
 
