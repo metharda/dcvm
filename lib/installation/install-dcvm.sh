@@ -221,7 +221,18 @@ install_by_fetch() {
   while IFS= read -r file_path; do
     [[ -z "$file_path" ]] && continue
 
-    if [[ "$file_path" == bin/* ]]; then
+    if [[ "$file_path" == "dcvm" ]]; then
+      local dest="$install_bin/dcvm"
+      if fetch_file "$file_path" "$dest"; then
+        chmod +x "$dest" 2>/dev/null || true
+        print_status_log "SUCCESS" "Fetched dcvm"
+        ((fetched_count++))
+      else
+        print_status_log "ERROR" "Failed to fetch $file_path"
+        ok=false
+      fi
+
+    elif [[ "$file_path" == bin/* ]]; then
       local dest="$install_bin/$(basename "$file_path")"
       if fetch_file "$file_path" "$dest"; then
         chmod +x "$dest" 2>/dev/null || true
@@ -231,6 +242,7 @@ install_by_fetch() {
         print_status_log "ERROR" "Failed to fetch $file_path"
         ok=false
       fi
+
     elif [[ "$file_path" == lib/* ]]; then
       local rel_no_lib="${file_path#lib/}"
       local dest="$install_lib/$rel_no_lib"
