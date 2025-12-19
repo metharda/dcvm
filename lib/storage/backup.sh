@@ -126,14 +126,26 @@ download_cloud_image() {
   ubuntu-22.04-server-cloudimg-amd64.img)
     url="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
     ;;
+  ubuntu-22.04-server-cloudimg-arm64.img)
+    url="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img"
+    ;;
   ubuntu-20.04-server-cloudimg-amd64.img)
     url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+    ;;
+  ubuntu-20.04-server-cloudimg-arm64.img)
+    url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64.img"
     ;;
   debian-12-generic-amd64.qcow2)
     url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
     ;;
+  debian-12-generic-arm64.qcow2)
+    url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2"
+    ;;
   debian-11-generic-amd64.qcow2)
     url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+    ;;
+  debian-11-generic-arm64.qcow2)
+    url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-arm64.qcow2"
     ;;
   Arch-Linux-x86_64-cloudimg.qcow2)
     url="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"

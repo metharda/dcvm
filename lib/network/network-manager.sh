@@ -182,8 +182,75 @@ Examples:
 EOF
 }
 
+cmd_show_macos() {
+  print_header "Network Information (macOS)"
+  echo "Network Mode: QEMU user-mode networking"
+  echo ""
+  
+  local network_conf="$DATACENTER_BASE/config/network.conf"
+  if [[ -f "$network_conf" ]]; then
+    echo "Network Configuration:"
+    cat "$network_conf" | sed 's/^/  /'
+  fi
+  
+  echo ""
+  echo "Registered VMs and Port Mappings:"
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  if [[ -d "$vm_registry" ]]; then
+    printf "  %-20s %-10s %-10s %-10s\n" "VM_NAME" "STATUS" "SSH_PORT" "HTTP_PORT"
+    echo "  --------------------------------------------------"
+    for vm_conf in "$vm_registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      source "$vm_conf"
+      local vm_name
+      vm_name=$(basename "$vm_conf" .conf)
+      local status="stopped"
+      local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+      if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        status="running"
+      fi
+      printf "  %-20s %-10s %-10s %-10s\n" "$vm_name" "$status" "${SSH_PORT:-N/A}" "${HTTP_PORT:-N/A}"
+    done
+  else
+    echo "  (No VMs registered)"
+  fi
+  
+  echo ""
+  echo "IP Forwarding: $(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo 'unknown')"
+}
+
 main() {
   load_dcvm_config
+  
+  # macOS doesn't require root for most operations
+  if is_macos; then
+    local subcmd="${1:-show}"
+    shift || true
+    case "$subcmd" in
+    show | info) cmd_show_macos "$@" ;;
+    status) cmd_show_macos "$@" ;;
+    ip-forwarding | ipfwd) 
+      local action="${1:-show}"
+      case "$action" in
+        show) echo "IP forwarding: $(sysctl -n net.inet.ip.forwarding 2>/dev/null)" ;;
+        on) sudo sysctl -w net.inet.ip.forwarding=1 ;;
+        off) sudo sysctl -w net.inet.ip.forwarding=0 ;;
+      esac
+      ;;
+    help | -h | --help) cmd_help ;;
+    ports)
+      exec "$SCRIPT_DIR/port-forward.sh" "$@"
+      ;;
+    *)
+      print_error "Command '$subcmd' is not available on macOS"
+      echo "Available macOS commands: show, status, ip-forwarding, ports, help"
+      exit 1
+      ;;
+    esac
+    return
+  fi
+  
   require_root
   check_dependencies virsh iptables
 

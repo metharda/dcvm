@@ -8,12 +8,28 @@ https://mirror.rackspace.com/debian-cdimage/cloud/bookworm/latest/debian-12-gene
 https://mirror.leaseweb.net/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 "
 
+MIRROR_debian_12_arm64="
+https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+https://cdimage.debian.org/cdimage/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+https://mirrors.kernel.org/debian-cdimage/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+https://mirror.rackspace.com/debian-cdimage/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+https://mirror.leaseweb.net/debian-cdimage/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+"
+
 MIRROR_debian_11="
 https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 https://cdimage.debian.org/cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 https://mirrors.kernel.org/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 https://mirror.rackspace.com/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 https://mirror.leaseweb.net/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
+"
+
+MIRROR_debian_11_arm64="
+https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-arm64.qcow2
+https://cdimage.debian.org/cdimage/cloud/bullseye/latest/debian-11-generic-arm64.qcow2
+https://mirrors.kernel.org/debian-cdimage/cloud/bullseye/latest/debian-11-generic-arm64.qcow2
+https://mirror.rackspace.com/debian-cdimage/cloud/bullseye/latest/debian-11-generic-arm64.qcow2
+https://mirror.leaseweb.net/debian-cdimage/cloud/bullseye/latest/debian-11-generic-arm64.qcow2
 "
 
 MIRROR_ubuntu_2204="
@@ -26,12 +42,29 @@ https://mirror.hetzner.de/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.0
 https://mirror.sjc01.us.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 "
+
+MIRROR_ubuntu_2204_arm64="
+https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirror.rackspace.com/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirror.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirror.hetzner.de/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirror.sjc01.us.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64.img
+"
 MIRROR_ubuntu_2004="
 https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://releases.ubuntu.com/focal/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirror.hetzner.de/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
+"
+
+MIRROR_ubuntu_2004_arm64="
+https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64.img
+https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64.img
+https://mirror.hetzner.de/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64.img
+https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-arm64.img
 "
 
 MIRROR_arch="
@@ -50,15 +83,19 @@ https://mirror.frankfurt.linode.com/archlinux/images/latest/Arch-Linux-x86_64-cl
 https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
-SUPPORTED_IMAGES="debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2"
+SUPPORTED_IMAGES="debian-12-generic-amd64.qcow2 debian-12-generic-arm64.qcow2 debian-11-generic-amd64.qcow2 debian-11-generic-arm64.qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-arm64.img ubuntu-20.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-arm64.img Arch-Linux-x86_64-cloudimg.qcow2"
 
 get_mirror_varname() {
   local filename="$1"
   case "$filename" in
   debian-12-generic-amd64.qcow2) echo "MIRROR_debian_12" ;;
+  debian-12-generic-arm64.qcow2) echo "MIRROR_debian_12_arm64" ;;
   debian-11-generic-amd64.qcow2) echo "MIRROR_debian_11" ;;
+  debian-11-generic-arm64.qcow2) echo "MIRROR_debian_11_arm64" ;;
   ubuntu-22.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2204" ;;
+  ubuntu-22.04-server-cloudimg-arm64.img) echo "MIRROR_ubuntu_2204_arm64" ;;
   ubuntu-20.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2004" ;;
+  ubuntu-20.04-server-cloudimg-arm64.img) echo "MIRROR_ubuntu_2004_arm64" ;;
   Arch-Linux-x86_64-cloudimg.qcow2) echo "MIRROR_arch" ;;
   *) echo "" ;;
   esac

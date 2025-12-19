@@ -30,10 +30,36 @@ ADDITIONAL_PACKAGES=""
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-22.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["ubuntu-22.04-server-cloudimg-arm64.img"]=""
 TEMPLATE_SHA256["debian-12-generic-amd64.qcow2"]=""
+TEMPLATE_SHA256["debian-12-generic-arm64.qcow2"]=""
 TEMPLATE_SHA256["debian-11-generic-amd64.qcow2"]=""
+TEMPLATE_SHA256["debian-11-generic-arm64.qcow2"]=""
 TEMPLATE_SHA256["ubuntu-20.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["ubuntu-20.04-server-cloudimg-arm64.img"]=""
 TEMPLATE_SHA256["Arch-Linux-x86_64-cloudimg.qcow2"]=""
+
+VM_MAC=""
+
+sha256_hex() {
+  local input="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf "%s" "$input" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf "%s" "$input" | sha256sum | awk '{print $1}'
+  else
+    # Fallback: not cryptographically strong, but keeps deterministic output
+    printf "%s" "$input" | cksum | awk '{printf "%08x", $1}'
+  fi
+}
+
+generate_vm_mac() {
+  local name="$1"
+  local hex
+  hex=$(sha256_hex "$name")
+  # Locally administered, unicast MAC (02:..)
+  echo "02:${hex:0:2}:${hex:2:2}:${hex:4:2}:${hex:6:2}:${hex:8:2}"
+}
 
 show_usage() {
   cat <<EOF
@@ -175,9 +201,19 @@ check_dependencies() {
     missing_deps+=("genisoimage or mkisofs")
   fi
 
-  for cmd in virsh virt-install qemu-img openssl bc; do
-    command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
-  done
+  # Platform-specific dependencies
+  if is_macos; then
+    # macOS: only need qemu-img, openssl, bc (no virsh/virt-install)
+    for cmd in qemu-img openssl bc; do
+      command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
+    done
+  else
+    # Linux: need full libvirt stack
+    for cmd in virsh virt-install qemu-img openssl bc; do
+      command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
+    done
+  fi
+  
   if [ ${#missing_deps[@]} -gt 0 ]; then
     print_error "Missing required dependencies: ${missing_deps[*]}"
     echo "Please install them first and try again."
@@ -187,6 +223,10 @@ check_dependencies() {
 
 select_os() {
   [ "$FORCE_MODE" = true ] && [ -z "$VM_OS_CHOICE" ] && VM_OS_CHOICE="$DEFAULT_OS"
+
+  local template_arch
+  template_arch="$(get_template_arch)"
+
   if [ "$FORCE_MODE" != true ]; then
     while true; do
       cat <<-EOF
@@ -205,30 +245,37 @@ select_os() {
   case "$VM_OS_CHOICE" in
   1)
     VM_OS="debian12"
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-${template_arch}.qcow2"
     OS_VARIANT="debian12"
-    OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+    OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-${template_arch}.qcow2"
     ;;
   2)
     VM_OS="debian11"
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-${template_arch}.qcow2"
     OS_VARIANT="debian11"
-    OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+    OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-${template_arch}.qcow2"
     ;;
   3)
     VM_OS="ubuntu22.04"
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-${template_arch}.img"
     OS_VARIANT="ubuntu22.04"
-    OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-${template_arch}.img"
     ;;
   4)
     VM_OS="ubuntu20.04"
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-${template_arch}.img"
     OS_VARIANT="ubuntu20.04"
-    OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+    OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-${template_arch}.img"
     ;;
   5)
     VM_OS="archlinux"
+
+    if [[ "$template_arch" != "amd64" ]]; then
+      print_error "Arch Linux cloud image is currently only available for x86_64 (amd64)."
+      print_error "On Apple Silicon, please select Debian/Ubuntu (arm64 templates)."
+      exit 1
+    fi
+
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
     OS_VARIANT="archlinux"
     OS_URL="https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg"
@@ -995,12 +1042,22 @@ METADATA_EOF
 generate_cloud_init_network() {
   local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"
 
+  # On macOS we run QEMU user-mode networking. Interface names differ across images,
+  # so match by MAC for reliable DHCP/static config.
+  local mac_match=""
+  if is_macos && [ -n "${VM_MAC:-}" ]; then
+    mac_match="$VM_MAC"
+  fi
+
   if [ -n "$FLAG_STATIC_IP" ]; then
-    if [ "$VM_OS" = "archlinux" ]; then
+    if [ -n "$mac_match" ]; then
       cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  enp1s0:
+  eth0:
+    match:
+      macaddress: $mac_match
+    set-name: eth0
     dhcp4: false
     addresses:
       - ${FLAG_STATIC_IP}/24
@@ -1012,7 +1069,10 @@ NETWORK_EOF
       cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  enp1s0:
+  eth0:
+    match:
+      name: "en*"
+    set-name: eth0
     dhcp4: false
     addresses:
       - ${FLAG_STATIC_IP}/24
@@ -1026,20 +1086,39 @@ NETWORK_EOF
       cat >"$network_config" <<'NETWORK_EOF'
 version: 2
 ethernets:
-  enp1s0:
+  eth0:
+    match:
+      name: "en*"
+    set-name: eth0
     dhcp4: true
     dhcp-identifier: mac
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
     else
-      cat >"$network_config" <<'NETWORK_EOF'
+      if is_macos && [ -n "$mac_match" ]; then
+        cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  enp1s0:
+  eth0:
+    match:
+      macaddress: $mac_match
+    set-name: eth0
     dhcp4: true
     dhcp-identifier: mac
 NETWORK_EOF
+      else
+        cat >"$network_config" <<'NETWORK_EOF'
+version: 2
+ethernets:
+  eth0:
+    match:
+      name: "en*"
+    set-name: eth0
+    dhcp4: true
+    dhcp-identifier: mac
+NETWORK_EOF
+      fi
     fi
   fi
 }
@@ -1069,6 +1148,11 @@ create_vm_disk() {
 }
 
 install_vm() {
+  if is_macos; then
+    install_vm_macos
+    return $?
+  fi
+  
   [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
   virt-install \
     --name "$VM_NAME" \
@@ -1091,7 +1175,196 @@ install_vm() {
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || { [ "$FORCE_MODE" = true ] && print_warning "Failed to set VM autostart" || print_warning "Failed to set VM autostart (VM created successfully)"; }
 }
 
+install_vm_macos() {
+  [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
+  
+  # Determine architecture and QEMU binary
+  local arch
+  arch=$(uname -m)
+  local qemu_binary
+  local accel
+  local machine_type
+  
+  if [[ "$arch" == "arm64" ]]; then
+    qemu_binary="qemu-system-aarch64"
+    accel="hvf"
+    machine_type="virt"
+  else
+    qemu_binary="qemu-system-x86_64"
+    # Check if HVF is supported
+    if sysctl -n kern.hv_support 2>/dev/null | grep -q "1"; then
+      accel="hvf"
+    else
+      accel="tcg"
+      print_warning "HVF not available - using TCG (slower)"
+    fi
+    machine_type="q35"
+  fi
+  
+  # Check if qemu binary exists
+  if ! command -v "$qemu_binary" >/dev/null 2>&1; then
+    print_error "QEMU not found: $qemu_binary"
+    print_info "Install with: brew install qemu"
+    exit 1
+  fi
+  
+  # Create VM config directory
+  mkdir -p "$DATACENTER_BASE/config/vms" 2>/dev/null
+  mkdir -p "$DATACENTER_BASE/run" 2>/dev/null
+  mkdir -p "$DATACENTER_BASE/logs" 2>/dev/null
+  
+  # Allocate ports for this VM
+  local ssh_port
+  local http_port
+  ssh_port=$(allocate_vm_port "ssh")
+  http_port=$(allocate_vm_port "http")
+
+  # Stable MAC address for reliable cloud-init network matching
+  if [ -z "${VM_MAC:-}" ]; then
+    VM_MAC=$(generate_vm_mac "$VM_NAME")
+  fi
+  
+  # Build QEMU command
+  local vm_dir="$DATACENTER_BASE/vms/$VM_NAME"
+  local disk_path="$vm_dir/${VM_NAME}-disk.qcow2"
+  local iso_path="$vm_dir/cloud-init.iso"
+  local pid_file="$DATACENTER_BASE/run/${VM_NAME}.pid"
+  local log_file="$DATACENTER_BASE/logs/${VM_NAME}.log"
+  local monitor_socket="$DATACENTER_BASE/run/${VM_NAME}.monitor"
+  
+  # Build QEMU command array
+  local qemu_cmd=(
+    "$qemu_binary"
+    -name "$VM_NAME"
+    -machine "$machine_type,accel=$accel"
+    -cpu host
+    -m "$VM_MEMORY"
+    -smp "$VM_CPUS"
+    -drive "file=$disk_path,format=qcow2,if=virtio"
+    -drive "file=$iso_path,format=raw,if=virtio,media=cdrom"
+    -netdev "user,id=net0,hostfwd=tcp::${ssh_port}-:22,hostfwd=tcp::${http_port}-:80"
+    -device "virtio-net-pci,netdev=net0,mac=${VM_MAC}"
+    -display none
+    -daemonize
+    -pidfile "$pid_file"
+    -monitor "unix:$monitor_socket,server,nowait"
+  )
+  
+  # Add serial console for debugging
+  qemu_cmd+=(-serial "file:$log_file")
+  
+  # For ARM64, we need UEFI firmware
+  if [[ "$arch" == "arm64" ]]; then
+    local efi_code="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+    local efi_vars="$vm_dir/efi-vars.fd"
+    
+    if [[ -f "$efi_code" ]]; then
+      # Create EFI vars file if it doesn't exist
+      if [[ ! -f "$efi_vars" ]]; then
+        cp "/opt/homebrew/share/qemu/edk2-arm-vars.fd" "$efi_vars" 2>/dev/null || \
+        dd if=/dev/zero of="$efi_vars" bs=1M count=64 2>/dev/null
+      fi
+      qemu_cmd+=(-drive "if=pflash,format=raw,file=$efi_code,readonly=on")
+      qemu_cmd+=(-drive "if=pflash,format=raw,file=$efi_vars")
+    else
+      print_warning "EFI firmware not found at $efi_code - VM may not boot correctly"
+    fi
+  fi
+  
+  # Run QEMU
+  print_info "Starting VM with QEMU..."
+  if "${qemu_cmd[@]}" 2>>"$log_file"; then
+    sleep 2
+    
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      print_success "VM started successfully"
+      
+      # Save VM configuration
+      save_vm_config_macos "$ssh_port" "$http_port"
+    else
+      print_error "VM process not running"
+      [[ -f "$log_file" ]] && print_info "Check log: $log_file"
+      exit 1
+    fi
+  else
+    print_error "Failed to start VM"
+    [[ -f "$log_file" ]] && print_info "Check log: $log_file"
+    exit 1
+  fi
+}
+
+allocate_vm_port() {
+  local port_type="$1"
+  local base_port
+  local port_file="$DATACENTER_BASE/config/ports-${port_type}.txt"
+  
+  case "$port_type" in
+    ssh)  base_port=2222 ;;
+    http) base_port=8080 ;;
+    *)    base_port=9000 ;;
+  esac
+  
+  mkdir -p "$(dirname "$port_file")" 2>/dev/null
+  
+  # Find next available port
+  local port=$base_port
+  while [[ $port -lt $((base_port + 100)) ]]; do
+    # Check if port is in use by another VM or system
+    if ! lsof -i ":$port" >/dev/null 2>&1; then
+      if ! grep -q "^$port$" "$port_file" 2>/dev/null; then
+        echo "$port" >> "$port_file"
+        echo "$port"
+        return 0
+      fi
+    fi
+    port=$((port + 1))
+  done
+  
+  print_error "No available ports in range $base_port-$((base_port + 100))"
+  exit 1
+}
+
+save_vm_config_macos() {
+  local ssh_port="$1"
+  local http_port="$2"
+  
+  local vm_conf="$DATACENTER_BASE/config/vms/${VM_NAME}.conf"
+  
+  cat > "$vm_conf" <<EOF
+# DCVM VM Configuration (macOS)
+VM_NAME="$VM_NAME"
+VM_OS="$VM_OS"
+VM_USERNAME="$VM_USERNAME"
+VM_MEMORY="$VM_MEMORY"
+VM_CPUS="$VM_CPUS"
+VM_DISK_SIZE="$VM_DISK_SIZE"
+SSH_PORT="$ssh_port"
+HTTP_PORT="$http_port"
+PID_FILE="$DATACENTER_BASE/run/${VM_NAME}.pid"
+MONITOR_SOCKET="$DATACENTER_BASE/run/${VM_NAME}.monitor"
+LOG_FILE="$DATACENTER_BASE/logs/${VM_NAME}.log"
+DISK_PATH="$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2"
+CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+EOF
+
+  # Update port mappings file
+  local map_file="$DATACENTER_BASE/port-mappings.txt"
+  if [[ ! -f "$map_file" ]] || ! grep -q "^# VM_NAME" "$map_file" 2>/dev/null; then
+    echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" > "$map_file"
+  fi
+  # Remove old entry if exists
+  grep -v "^$VM_NAME " "$map_file" > "${map_file}.tmp" 2>/dev/null || true
+  mv "${map_file}.tmp" "$map_file" 2>/dev/null || true
+  # Add new entry (IP is localhost for user-mode networking)
+  echo "$VM_NAME 127.0.0.1 $ssh_port $http_port" >> "$map_file"
+}
+
 show_post_creation_info() {
+  if is_macos; then
+    show_post_creation_info_macos
+    return
+  fi
+  
   cat <<EOF
 ==================================================
  VM $VM_NAME created successfully!
@@ -1115,17 +1388,69 @@ Wait 2-3 minutes for cloud-init to complete setup
 EOF
 }
 
+show_post_creation_info_macos() {
+  local vm_conf="$DATACENTER_BASE/config/vms/${VM_NAME}.conf"
+  local ssh_port=""
+  local http_port=""
+  
+  if [[ -f "$vm_conf" ]]; then
+    source "$vm_conf"
+    ssh_port="${SSH_PORT:-2222}"
+    http_port="${HTTP_PORT:-8080}"
+  fi
+  
+  cat <<EOF
+==================================================
+ VM $VM_NAME created successfully! (macOS)
+==================================================
+
+Connection Methods:
+   SSH: ssh -p $ssh_port $VM_USERNAME@localhost
+   SCP: scp -P $ssh_port file $VM_USERNAME@localhost:/path/
+   SFTP: sftp -P $ssh_port $VM_USERNAME@localhost
+   HTTP: http://localhost:$http_port
+
+Quick Commands:
+   Check status: dcvm status
+   List VMs: dcvm list
+   Stop VM: dcvm stop $VM_NAME
+   Start VM: dcvm start $VM_NAME
+   Delete VM: dcvm delete $VM_NAME
+
+Wait 2-3 minutes for cloud-init to complete setup
+   Check log: tail -f $DATACENTER_BASE/logs/${VM_NAME}.log
+
+Port Mappings:
+   SSH:  localhost:$ssh_port -> VM:22
+   HTTP: localhost:$http_port -> VM:80
+EOF
+}
+
 main() {
   load_dcvm_config
 
-  [ -f /etc/dcvm-install.conf ] && source /etc/dcvm-install.conf || {
-    print_error "/etc/dcvm-install.conf is not found!"
+  # Load config from platform-appropriate location
+  local config_file
+  if is_macos; then
+    config_file="$HOME/.config/dcvm/dcvm.conf"
+  else
+    config_file="/etc/dcvm-install.conf"
+  fi
+  
+  [ -f "$config_file" ] && source "$config_file" || {
+    print_error "$config_file is not found!"
+    print_info "Please run the installer first: ./lib/installation/install-dcvm.sh"
     exit 1
   }
 
-  DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
-  NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
-  BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+  # Set defaults based on platform
+  if is_macos; then
+    DATACENTER_BASE="${DATACENTER_BASE:-$HOME/.dcvm}"
+  else
+    DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+    NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
+    BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
+  fi
 
   if [ $# -lt 1 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     show_usage
@@ -1205,6 +1530,11 @@ EOF
     show_vm_summary
     confirm_vm_creation
     prepare_vm_directory
+
+    if is_macos; then
+      VM_MAC=$(generate_vm_mac "$VM_NAME")
+    fi
+
     generate_cloud_init_userdata
     generate_cloud_init_metadata
     generate_cloud_init_network

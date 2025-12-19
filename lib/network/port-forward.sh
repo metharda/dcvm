@@ -262,11 +262,11 @@ DCVM Port Forwarding
 Usage: dcvm network ports <command>
 
 Commands:
-  setup        Discover VMs and create iptables port forwarding + save mapping
+  setup        Discover VMs and create port forwarding + save mapping
   show         Show saved port mappings table
-  rules        Show active iptables NAT rules for forwarding
-  apply        Apply saved mappings file to iptables rules
-  clear        Remove existing iptables rules for forwarding
+  rules        Show active port forwarding rules
+  apply        Apply saved mappings file to forwarding rules
+  clear        Remove existing forwarding rules
   test         Check connectivity for SSH/HTTP against localhost ports
   help         Show this help
 
@@ -276,11 +276,22 @@ Examples:
   dcvm network ports apply
   dcvm network ports clear
   dcvm network ports test
+$(if is_macos; then echo "
+Note (macOS):
+  Port forwarding on macOS is handled via QEMU hostfwd options.
+  The 'setup' command shows current mappings from VM configurations.
+  Use 'dcvm stop <vm>' and 'dcvm start <vm>' to apply changes."; fi)
 EOF
 }
 
 main() {
   load_dcvm_config
+  
+  if is_macos; then
+    main_macos "$@"
+    return $?
+  fi
+  
   require_root
   check_dependencies iptables virsh
 
@@ -319,6 +330,170 @@ main() {
   esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
-fi
+main_macos() {
+  local subcmd="${1:-help}"
+  
+  case "$subcmd" in
+  setup)
+    cmd_setup_macos
+    ;;
+  show)
+    cmd_show_macos
+    ;;
+  rules)
+    cmd_rules_macos
+    ;;
+  apply)
+    print_info "On macOS, port forwarding is configured per-VM via QEMU hostfwd"
+    print_info "To change port mappings, edit the VM config and restart the VM"
+    ;;
+  clear)
+    print_info "On macOS, port forwarding is tied to QEMU processes"
+    print_info "Stop the VM to release its ports: dcvm stop <vm_name>"
+    ;;
+  test)
+    cmd_test_macos
+    ;;
+  help | --help | -h) cmd_help ;;
+  *)
+    print_error "Unknown command: $subcmd"
+    echo "Use: dcvm network ports help"
+    exit 1
+    ;;
+  esac
+}
+
+cmd_setup_macos() {
+  print_info "=== DCVM Port Forwarding Status (macOS) ==="
+  echo ""
+  
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  local map_file="$DATACENTER_BASE/port-mappings.txt"
+  
+  if [[ ! -d "$vm_registry" ]] || [[ -z "$(ls -A "$vm_registry" 2>/dev/null)" ]]; then
+    print_warning "No VMs configured"
+    print_info "Create a VM first: dcvm create my-vm"
+    return 0
+  fi
+  
+  echo "Current VM Port Mappings:"
+  printf "%-20s %-10s %-15s %-15s\n" "VM_NAME" "STATUS" "SSH" "HTTP"
+  echo "----------------------------------------------------------------"
+  
+  # Rebuild port-mappings.txt from VM configs
+  echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" > "$map_file"
+  
+  for vm_conf in "$vm_registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    source "$vm_conf"
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    
+    local status="stopped"
+    local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      status="running"
+    fi
+    
+    printf "%-20s %-10s localhost:%-4s localhost:%-4s\n" "$vm_name" "$status" "${SSH_PORT:-N/A}" "${HTTP_PORT:-N/A}"
+    echo "$vm_name 127.0.0.1 ${SSH_PORT:-2222} ${HTTP_PORT:-8080}" >> "$map_file"
+  done
+  
+  echo ""
+  print_success "Port mappings saved to $map_file"
+  echo ""
+  echo "Access running VMs:"
+  for vm_conf in "$vm_registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    source "$vm_conf"
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      echo "  $vm_name:"
+      echo "    SSH:  ssh -p ${SSH_PORT:-2222} ${VM_USERNAME:-admin}@localhost"
+      echo "    HTTP: http://localhost:${HTTP_PORT:-8080}"
+    fi
+  done
+}
+
+cmd_show_macos() {
+  local map_file="$DATACENTER_BASE/port-mappings.txt"
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  
+  echo "Port Mappings (macOS - QEMU hostfwd):"
+  printf "%-20s %-15s %-15s\n" "VM_NAME" "SSH" "HTTP"
+  echo "----------------------------------------------------"
+  
+  for vm_conf in "$vm_registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    source "$vm_conf"
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    printf "%-20s localhost:%-4s localhost:%-4s\n" "$vm_name" "${SSH_PORT:-N/A}" "${HTTP_PORT:-N/A}"
+  done
+}
+
+cmd_rules_macos() {
+  echo "Active QEMU processes with port forwarding:"
+  echo ""
+  
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  for vm_conf in "$vm_registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    source "$vm_conf"
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+    
+    if [[ -f "$pid_file" ]]; then
+      local pid
+      pid=$(cat "$pid_file")
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "$vm_name (PID: $pid):"
+        echo "  SSH:  tcp::${SSH_PORT:-N/A} -> VM:22"
+        echo "  HTTP: tcp::${HTTP_PORT:-N/A} -> VM:80"
+      fi
+    fi
+  done
+  
+  echo ""
+  echo "Note: On macOS, port forwarding is done via QEMU -netdev hostfwd option"
+}
+
+cmd_test_macos() {
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  
+  echo "Connectivity test (macOS):"
+  printf "%-20s %-10s %-10s\n" "VM_NAME" "SSH" "HTTP"
+  echo "----------------------------------------"
+  
+  for vm_conf in "$vm_registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    source "$vm_conf"
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    
+    local ssh_status="✗"
+    local http_status="✗"
+    
+    if check_port_connectivity "127.0.0.1" "${SSH_PORT:-2222}"; then
+      ssh_status="✓"
+    fi
+    if check_port_connectivity "127.0.0.1" "${HTTP_PORT:-8080}"; then
+      http_status="✓"
+    fi
+    
+    printf "%-20s %-10s %-10s\n" "$vm_name" "$ssh_status" "$http_status"
+  done
+  
+  echo ""
+  echo "Legend: ✓ = port responding, ✗ = not responding"
+}
+
+main "$@"

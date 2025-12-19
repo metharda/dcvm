@@ -7,9 +7,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DEFAULT_DATACENTER_BASE="/srv/datacenter"
-CONFIG_FILE="/etc/dcvm-install.conf"
-LOG_FILE="/var/log/datacenter-startup.log"
+# Platform detection
+is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+is_linux() { [[ "$(uname -s)" == "Linux" ]]; }
+
+# Platform-specific defaults
+if is_macos; then
+  DEFAULT_DATACENTER_BASE="$HOME/.dcvm"
+  CONFIG_FILE="$HOME/.config/dcvm/dcvm.conf"
+  LOG_FILE="$HOME/.dcvm/logs/dcvm-install.log"
+else
+  DEFAULT_DATACENTER_BASE="/srv/datacenter"
+  CONFIG_FILE="/etc/dcvm-install.conf"
+  LOG_FILE="/var/log/datacenter-startup.log"
+fi
 NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 NETWORK_ONLY=0
@@ -80,12 +91,21 @@ fetch_file() {
   local dest_path="$2"
   local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG}/${DCVM_REPO_BRANCH}"
 
-  mkdir -p "$(dirname "$dest_path")" 2>/dev/null || true
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+  # Use sudo on macOS for /usr/local paths
+  if is_macos && [[ "$dest_path" == /usr/local/* ]]; then
+    sudo mkdir -p "$(dirname "$dest_path")" 2>/dev/null || true
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$base_url/$rel_path" 2>>"$LOG_FILE" | sudo tee "$dest_path" >/dev/null
+    else
+      wget -q -O- "$base_url/$rel_path" 2>>"$LOG_FILE" | sudo tee "$dest_path" >/dev/null
+    fi
   else
-    wget -q -O "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+    mkdir -p "$(dirname "$dest_path")" 2>/dev/null || true
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL -o "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+    else
+      wget -q -O "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
+    fi
   fi
 }
 
@@ -158,25 +178,35 @@ except:
 install_by_fetch() {
   local install_bin="$1"
   local install_lib="$2"
+  
+  # Use sudo on macOS for /usr/local paths
+  local COPY_CMD="cp"
+  local CHMOD_CMD="chmod"
+  local FIND_CMD="find"
+  if is_macos; then
+    COPY_CMD="sudo cp"
+    CHMOD_CMD="sudo chmod"
+    FIND_CMD="sudo find"
+  fi
 
   if ensure_source_dir; then
     print_status_log "INFO" "Using local repository at: $SOURCE_DIR"
 
     if [[ -f "$SOURCE_DIR/dcvm" ]]; then
-      if ! cp "$SOURCE_DIR/dcvm" "$install_bin/dcvm"; then
+      if ! $COPY_CMD "$SOURCE_DIR/dcvm" "$install_bin/dcvm"; then
         print_status_log "ERROR" "Failed to copy dcvm from local repository"
         return 1
       fi
-      chmod +x "$install_bin/dcvm"
+      $CHMOD_CMD +x "$install_bin/dcvm"
       print_status_log "SUCCESS" "Copied dcvm from local repository"
     fi
 
     if [[ -d "$SOURCE_DIR/lib" ]]; then
-      if ! cp -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
+      if ! $COPY_CMD -r "$SOURCE_DIR/lib/"* "$install_lib/"; then
         print_status_log "ERROR" "Failed to copy libraries from local repository"
         return 1
       fi
-      find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
+      $FIND_CMD "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
       print_status_log "SUCCESS" "Copied all libraries from local repository"
     fi
 
@@ -195,13 +225,13 @@ install_by_fetch() {
     if clone_repo_source; then
       print_status_log "INFO" "Repository cloned successfully, using local files"
       if [[ -f "$SOURCE_DIR/dcvm" ]]; then
-        cp "$SOURCE_DIR/dcvm" "$install_bin/dcvm" && chmod +x "$install_bin/dcvm"
+        $COPY_CMD "$SOURCE_DIR/dcvm" "$install_bin/dcvm" && $CHMOD_CMD +x "$install_bin/dcvm"
         print_status_log "SUCCESS" "Copied dcvm from cloned repository"
       fi
 
       if [[ -d "$SOURCE_DIR/lib" ]]; then
-        cp -r "$SOURCE_DIR/lib/"* "$install_lib/"
-        find "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
+        $COPY_CMD -r "$SOURCE_DIR/lib/"* "$install_lib/"
+        $FIND_CMD "$install_lib" -type f -name "*.sh" -exec chmod +x {} \;
         print_status_log "SUCCESS" "Copied all libraries from cloned repository"
       fi
       return 0
@@ -314,6 +344,11 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
+  if is_macos; then
+    install_macos_packages
+    return $?
+  fi
+
   local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish)
   local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish)
 
@@ -342,16 +377,107 @@ install_required_packages() {
   fi
 }
 
-check_root() {
-  if [[ $EUID -ne 0 ]]; then
-    print_status "ERROR" "This script must be run as root"
+install_macos_packages() {
+  print_status "INFO" "Installing macOS dependencies via Homebrew..."
+  
+  # Check for Homebrew
+  if ! command -v brew >/dev/null 2>&1; then
+    print_status "ERROR" "Homebrew is not installed."
+    print_status "INFO" "Install it with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
     exit 1
+  fi
+  
+  # Core packages for macOS
+  local brew_packages=(
+    qemu           # VM hypervisor
+    coreutils      # GNU timeout, nproc equivalents
+    gnu-sed        # GNU sed for compatibility
+    grep           # GNU grep with -P support
+    cdrtools       # mkisofs for cloud-init ISO
+    wget           # Download tool
+    curl           # Download tool
+  )
+  
+  # Optional packages
+  local optional_packages=(
+    libvirt        # Optional: for virsh compatibility layer
+  )
+  
+  print_status "INFO" "Installing core packages: ${brew_packages[*]}"
+  for pkg in "${brew_packages[@]}"; do
+    if brew list "$pkg" &>/dev/null; then
+      print_status "INFO" "$pkg is already installed"
+    else
+      print_status "INFO" "Installing $pkg..."
+      if brew install "$pkg" 2>>"$LOG_FILE"; then
+        print_status "SUCCESS" "$pkg installed"
+      else
+        print_status "WARNING" "Failed to install $pkg - some features may not work"
+      fi
+    fi
+  done
+  
+  # Ask about optional libvirt
+  if [[ -t 0 && -t 1 ]]; then
+    echo ""
+    if prompt_yes_no "Install libvirt for virsh compatibility? (optional) [y/N]: " "N"; then
+      for pkg in "${optional_packages[@]}"; do
+        if ! brew list "$pkg" &>/dev/null; then
+          brew install "$pkg" 2>>"$LOG_FILE" || print_status "WARNING" "Failed to install $pkg"
+        fi
+      done
+    fi
+  fi
+  
+  # Setup PATH for GNU tools
+  print_status "INFO" "Configuring GNU tool paths..."
+  local gnubin_paths=(
+    "$(brew --prefix)/opt/coreutils/libexec/gnubin"
+    "$(brew --prefix)/opt/gnu-sed/libexec/gnubin"
+    "$(brew --prefix)/opt/grep/libexec/gnubin"
+  )
+  
+  local shell_rc=""
+  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == *"zsh"* ]]; then
+    shell_rc="$HOME/.zshrc"
   else
-    print_status "INFO" "Running as root user."
+    shell_rc="$HOME/.bashrc"
+  fi
+  
+  for gnupath in "${gnubin_paths[@]}"; do
+    if [[ -d "$gnupath" ]] && ! grep -q "$gnupath" "$shell_rc" 2>/dev/null; then
+      echo "export PATH=\"$gnupath:\$PATH\"" >> "$shell_rc"
+    fi
+  done
+  
+  print_status "SUCCESS" "macOS packages installed"
+  print_status "INFO" "Note: Restart your terminal or run 'source $shell_rc' to use GNU tools"
+}
+
+check_root() {
+  if is_macos; then
+    # macOS: don't require root, but warn about sudo needs
+    if [[ $EUID -ne 0 ]]; then
+      print_status "INFO" "Running as non-root user (this is fine for macOS)"
+      print_status "INFO" "Some operations may prompt for sudo password"
+    fi
+  else
+    # Linux: require root
+    if [[ $EUID -ne 0 ]]; then
+      print_status "ERROR" "This script must be run as root"
+      exit 1
+    else
+      print_status "INFO" "Running as root user."
+    fi
   fi
 }
 
 check_kvm_support() {
+  if is_macos; then
+    check_macos_virt_support
+    return $?
+  fi
+  
   print_status "INFO" "Checking KVM support..."
 
   if grep -E -q '(vmx|svm)' /proc/cpuinfo; then
@@ -367,7 +493,37 @@ check_kvm_support() {
   fi
 }
 
+check_macos_virt_support() {
+  print_status "INFO" "Checking macOS virtualization support..."
+  
+  local arch
+  arch=$(uname -m)
+  
+  if [[ "$arch" == "arm64" ]]; then
+    # Apple Silicon - always supports virtualization
+    print_status "SUCCESS" "Apple Silicon detected - Hypervisor.framework (HVF) supported"
+    print_status "INFO" "Will use: qemu-system-aarch64 with HVF acceleration"
+  else
+    # Intel Mac - check for HVF support
+    if sysctl -n kern.hv_support 2>/dev/null | grep -q "1"; then
+      print_status "SUCCESS" "Intel Mac with Hypervisor.framework (HVF) support"
+      print_status "INFO" "Will use: qemu-system-x86_64 with HVF acceleration"
+    else
+      print_status "WARNING" "HVF not available - VMs will run without hardware acceleration (slow)"
+      print_status "INFO" "This may be due to:"
+      print_status "INFO" "  - Running in a VM already"
+      print_status "INFO" "  - Older Mac without VT-x support"
+      print_status "INFO" "Will use: qemu-system-x86_64 with TCG (software emulation)"
+    fi
+  fi
+}
+
 start_libvirtd() {
+  if is_macos; then
+    start_libvirtd_macos
+    return $?
+  fi
+  
   print_status "INFO" "Checking libvirtd service..."
 
   if systemctl is-active --quiet libvirtd; then
@@ -383,7 +539,29 @@ start_libvirtd() {
   fi
 }
 
+start_libvirtd_macos() {
+  # On macOS, libvirt is optional - we can run QEMU directly
+  if command -v virsh >/dev/null 2>&1; then
+    print_status "INFO" "Checking libvirt on macOS..."
+    if brew services list 2>/dev/null | grep -q "libvirt.*started"; then
+      print_status "INFO" "libvirt is already running"
+    else
+      print_status "INFO" "Starting libvirt via Homebrew..."
+      brew services start libvirt 2>/dev/null || print_status "WARNING" "Could not start libvirt service"
+      sleep 2
+    fi
+  else
+    print_status "INFO" "libvirt not installed - DCVM will use QEMU directly"
+    print_status "INFO" "This is the recommended mode for macOS"
+  fi
+}
+
 start_datacenter_network() {
+  if is_macos; then
+    print_status "INFO" "macOS uses QEMU user-mode networking - no network to start"
+    return 0
+  fi
+  
   print_status "INFO" "Checking datacenter network..."
 
   virsh net-list --all | grep -q "$NETWORK_NAME" || {
@@ -423,6 +601,11 @@ start_nfs_server() {
     chmod 755 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not set permissions on NFS export path"
   fi
 
+  if is_macos; then
+    start_nfs_server_macos
+    return $?
+  fi
+
   if ! systemctl list-unit-files 2>/dev/null | grep -q -E 'nfs-kernel-server|nfs-server'; then
     print_status_log "WARNING" "NFS server is not installed"
     print_status_log "INFO" "Install with: apt install nfs-kernel-server (Debian/Ubuntu) or pacman -S nfs-utils (Arch)"
@@ -453,6 +636,47 @@ start_nfs_server() {
     print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from 10.10.10.1"
   else
     print_status_log "WARNING" "NFS server could not be started - you can set it up manually later"
+  fi
+}
+
+start_nfs_server_macos() {
+  print_status_log "INFO" "Setting up NFS on macOS..."
+  
+  # macOS has built-in NFS server (nfsd)
+  local exports_file="/etc/exports"
+  local subnet="${NETWORK_SUBNET:-10.10.10}"
+  
+  # Check if already exported
+  if grep -q "$NFS_EXPORT_PATH" "$exports_file" 2>/dev/null; then
+    print_status_log "INFO" "NFS export already configured"
+  else
+    # Add export entry
+    # macOS uses different syntax than Linux
+    local export_line="$NFS_EXPORT_PATH -alldirs -maproot=root:wheel -network ${subnet}.0 -mask 255.255.255.0"
+    
+    print_status_log "INFO" "Adding NFS export to $exports_file..."
+    echo "$export_line" | sudo tee -a "$exports_file" >/dev/null 2>&1 || {
+      print_status_log "WARNING" "Could not update $exports_file"
+      print_status_log "INFO" "You may need to manually add: $export_line"
+      return 0
+    }
+  fi
+  
+  # Start/restart nfsd
+  print_status_log "INFO" "Starting macOS NFS server..."
+  sudo nfsd restart 2>/dev/null || sudo nfsd start 2>/dev/null || {
+    print_status_log "WARNING" "Could not start NFS server"
+    return 0
+  }
+  
+  sleep 2
+  
+  if pgrep -x nfsd >/dev/null 2>&1; then
+    print_status_log "SUCCESS" "NFS server is running"
+    print_status_log "SUCCESS" "NFS exports configured at: $NFS_EXPORT_PATH"
+    print_status_log "INFO" "VMs can mount from host IP (check with 'ifconfig')"
+  else
+    print_status_log "WARNING" "NFS server may not be running correctly"
   fi
 }
 
@@ -510,7 +734,14 @@ source_mirror_manager() {
     print_status_log "ERROR" "mirror-manager loaded but get_mirrors() is missing"
     return 1
   fi
-  if ! get_mirrors "debian-12-generic-amd64.qcow2" >/dev/null 2>&1; then
+
+  local arch
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    *) arch="amd64" ;;
+  esac
+
+  if ! get_mirrors "debian-12-generic-${arch}.qcow2" >/dev/null 2>&1; then
     print_status_log "ERROR" "mirror-manager loaded but MIRRORS are not accessible (get_mirrors failed)"
     return 1
   fi
@@ -520,18 +751,34 @@ source_mirror_manager() {
 
 declare -A IMAGE_LABELS
 IMAGE_LABELS["debian-12-generic-amd64.qcow2"]="Debian 12"
+IMAGE_LABELS["debian-12-generic-arm64.qcow2"]="Debian 12"
 IMAGE_LABELS["debian-11-generic-amd64.qcow2"]="Debian 11"
+IMAGE_LABELS["debian-11-generic-arm64.qcow2"]="Debian 11"
 IMAGE_LABELS["ubuntu-22.04-server-cloudimg-amd64.img"]="Ubuntu 22.04"
+IMAGE_LABELS["ubuntu-22.04-server-cloudimg-arm64.img"]="Ubuntu 22.04"
 IMAGE_LABELS["ubuntu-20.04-server-cloudimg-amd64.img"]="Ubuntu 20.04"
+IMAGE_LABELS["ubuntu-20.04-server-cloudimg-arm64.img"]="Ubuntu 20.04"
 IMAGE_LABELS["Arch-Linux-x86_64-cloudimg.qcow2"]="Arch Linux"
 
-IMAGE_ORDER=(
-  "debian-11-generic-amd64.qcow2"
-  "debian-12-generic-amd64.qcow2"
-  "ubuntu-20.04-server-cloudimg-amd64.img"
-  "ubuntu-22.04-server-cloudimg-amd64.img"
-  "Arch-Linux-x86_64-cloudimg.qcow2"
-)
+case "$(uname -m)" in
+  arm64|aarch64)
+    IMAGE_ORDER=(
+      "debian-11-generic-arm64.qcow2"
+      "debian-12-generic-arm64.qcow2"
+      "ubuntu-20.04-server-cloudimg-arm64.img"
+      "ubuntu-22.04-server-cloudimg-arm64.img"
+    )
+    ;;
+  *)
+    IMAGE_ORDER=(
+      "debian-11-generic-amd64.qcow2"
+      "debian-12-generic-amd64.qcow2"
+      "ubuntu-20.04-server-cloudimg-amd64.img"
+      "ubuntu-22.04-server-cloudimg-amd64.img"
+      "Arch-Linux-x86_64-cloudimg.qcow2"
+    )
+    ;;
+esac
 
 check_cloud_images() {
   print_status_log "INFO" "Checking for cloud images..."
@@ -662,16 +909,74 @@ EOF
 }
 
 create_datacenter_network() {
+  if is_macos; then
+    create_macos_network_config
+    return $?
+  fi
   create_network "$NETWORK_NAME" "$BRIDGE_NAME"
+}
+
+create_macos_network_config() {
+  print_status_log "INFO" "Setting up macOS networking configuration..."
+  
+  # On macOS, we don't create a libvirt network - we use QEMU user-mode networking
+  # with port forwarding (hostfwd). Store the network config for reference.
+  
+  local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local network_conf="$DATACENTER_BASE/config/network.conf"
+  
+  mkdir -p "$(dirname "$network_conf")" 2>/dev/null
+  
+  cat > "$network_conf" <<EOF
+# DCVM macOS Network Configuration
+# VMs use QEMU user-mode networking with the following settings:
+NETWORK_MODE="user"
+SUBNET="${subnet}"
+GATEWAY="${subnet}.2"
+DNS="${subnet}.3"
+DHCP_START="${subnet}.15"
+DHCP_END="${subnet}.200"
+# Port forwarding is managed per-VM via QEMU hostfwd options
+# SSH ports start at 2222, HTTP at 8080
+EOF
+
+  print_status_log "SUCCESS" "macOS network configuration saved"
+  print_status_log "INFO" "Network mode: QEMU user-mode networking"
+  print_status_log "INFO" "Each VM gets port forwarding for SSH and HTTP"
+  print_status_log "INFO" "Guest IP will be ${subnet}.15 (QEMU user-mode default)"
 }
 
 show_vm_status() {
   print_status_log "INFO" "Current VM status:"
   echo
-  if virsh list --all --title 2>/dev/null | sed 's/^/    /'; then
-    :
+  
+  if is_macos; then
+    # On macOS, list VMs from our registry
+    local vm_registry="$DATACENTER_BASE/config/vms"
+    if [[ -d "$vm_registry" ]]; then
+      echo "    Registered VMs:"
+      for vm_conf in "$vm_registry"/*.conf; do
+        [[ -e "$vm_conf" ]] || continue
+        if [[ -f "$vm_conf" ]]; then
+          local vm_name
+          vm_name=$(basename "$vm_conf" .conf)
+          local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+          if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+            echo "    $vm_name: running"
+          else
+            echo "    $vm_name: stopped"
+          fi
+        fi
+      done
+    else
+      echo "    (No VMs registered yet)"
+    fi
   else
-    echo "    (Could not retrieve VM list)"
+    if virsh list --all --title 2>/dev/null | sed 's/^/    /'; then
+      :
+    else
+      echo "    (Could not retrieve VM list)"
+    fi
   fi
   echo
 }
@@ -679,20 +984,48 @@ show_vm_status() {
 show_network_info() {
   print_status_log "INFO" "Network connectivity information:"
 
-  if command -v brctl >/dev/null 2>&1; then
-    echo "    Bridge information:"
-    brctl show "$BRIDGE_NAME" 2>/dev/null | sed 's/^/        /' || echo "        Bridge $BRIDGE_NAME not configured yet"
+  if is_macos; then
+    echo "    macOS networking mode: QEMU user-mode networking"
+    echo "    Port forwarding: Handled via QEMU hostfwd"
+    local ip_forward
+    ip_forward=$(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo "0")
+    echo "    IP forwarding: $([ "$ip_forward" = "1" ] && echo "enabled" || echo "disabled")"
+  else
+    if command -v brctl >/dev/null 2>&1; then
+      echo "    Bridge information:"
+      brctl show "$BRIDGE_NAME" 2>/dev/null | sed 's/^/        /' || echo "        Bridge $BRIDGE_NAME not configured yet"
+    fi
+
+    local ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
+    echo "    IP forwarding: $([ "$ip_forward" = "1" ] && echo "enabled" || echo "disabled")"
+
+    local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || echo "0")
+    echo "    NAT rules active: $nat_count"
   fi
-
-  local ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
-  echo "    IP forwarding: $([ "$ip_forward" = "1" ] && echo "enabled" || echo "disabled")"
-
-  local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || echo "0")
-  echo "    NAT rules active: $nat_count"
 }
 
 enable_ip_forwarding() {
   print_status_log "INFO" "Checking IP forwarding..."
+  
+  if is_macos; then
+    local current_forward
+    current_forward=$(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo "0")
+    
+    if [[ "$current_forward" != "1" ]]; then
+      print_status_log "INFO" "Enabling IP forwarding on macOS..."
+      sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null 2>&1 || {
+        print_status_log "WARNING" "Could not enable IP forwarding"
+        return 0
+      }
+      print_status_log "SUCCESS" "IP forwarding enabled"
+      print_status_log "INFO" "Note: This setting won't persist after reboot"
+      print_status_log "INFO" "To persist, add to /etc/sysctl.conf: net.inet.ip.forwarding=1"
+    else
+      print_status_log "INFO" "IP forwarding already enabled"
+    fi
+    return 0
+  fi
+  
   local current_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
 
   if [[ "$current_forward" != "1" ]]; then
@@ -713,6 +1046,18 @@ enable_ip_forwarding() {
 }
 
 start_existing_vms() {
+  if is_macos; then
+    # On macOS, VMs are managed via QEMU processes, not virsh
+    print_status_log "INFO" "Checking for existing DCVM VMs..."
+    local vm_pids_file="$DATACENTER_BASE/config/vm-pids.txt"
+    if [[ -f "$vm_pids_file" ]]; then
+      print_status_log "INFO" "Found VM registry. Use 'dcvm start <vm_name>' to start VMs."
+    else
+      print_status_log "INFO" "No existing VMs found"
+    fi
+    return 0
+  fi
+  
   print_status_log "INFO" "Checking for existing VMs to start..."
 
   local vms_started=0
@@ -751,8 +1096,16 @@ show_datacenter_summary() {
   print_status_log "INFO" "=== DCVM INSTALLATION COMPLETE ==="
   echo
   echo "Installation directory: $DATACENTER_BASE"
-  echo "Network: $NETWORK_NAME (10.10.10.1/24)"
-  echo "Bridge: $BRIDGE_NAME"
+  
+  if is_macos; then
+    echo "Platform: macOS ($(uname -m))"
+    echo "Virtualization: QEMU with HVF acceleration"
+    echo "Networking: QEMU user-mode (hostfwd)"
+  else
+    echo "Network: $NETWORK_NAME (${NETWORK_SUBNET:-10.10.10}.0/24)"
+    echo "Bridge: $BRIDGE_NAME"
+  fi
+  
   echo "NFS Share: $NFS_EXPORT_PATH"
   echo "Log file: $LOG_FILE"
   echo
@@ -833,6 +1186,11 @@ install_completion() {
 setup_service() {
   print_status_log "INFO" "Setting up datacenter storage service..."
 
+  if is_macos; then
+    setup_service_macos
+    return $?
+  fi
+
   if ! command -v systemctl >/dev/null 2>&1; then
     print_status_log "WARNING" "systemd not available - skipping service setup"
     return 0
@@ -879,13 +1237,66 @@ EOF
   print_status_log "SUCCESS" "Datacenter storage service configured"
 }
 
+setup_service_macos() {
+  # On macOS, we use launchd instead of systemd
+  local plist_dir="$HOME/Library/LaunchAgents"
+  local plist_file="$plist_dir/com.dcvm.storage-cleanup.plist"
+  
+  mkdir -p "$plist_dir" 2>/dev/null
+  
+  cat > "$plist_file" 2>/dev/null <<EOF || {
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dcvm.storage-cleanup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/dcvm</string>
+        <string>storage-cleanup</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>${DATACENTER_BASE}/logs/storage-cleanup.log</string>
+    <key>StandardErrorPath</key>
+    <string>${DATACENTER_BASE}/logs/storage-cleanup-error.log</string>
+</dict>
+</plist>
+EOF
+    print_status_log "WARNING" "Could not create launchd plist"
+    return 0
+  }
+  
+  # Load the service
+  launchctl unload "$plist_file" 2>/dev/null || true
+  launchctl load "$plist_file" 2>/dev/null || {
+    print_status_log "WARNING" "Could not load launchd service"
+    return 0
+  }
+  
+  print_status_log "SUCCESS" "Datacenter storage service configured (launchd)"
+  print_status_log "INFO" "Storage cleanup will run hourly"
+}
+
 install_dcvm_command() {
   print_status_log "INFO" "Installing DCVM command and libraries..."
 
   local install_bin="/usr/local/bin"
   local install_lib="/usr/local/lib/dcvm"
 
-  mkdir -p "$install_bin" "$install_lib"
+  # On macOS, we may need sudo for /usr/local paths
+  if is_macos; then
+    sudo mkdir -p "$install_bin" "$install_lib" 2>/dev/null || {
+      print_status_log "ERROR" "Failed to create directories (try running with sudo)"
+      return 1
+    }
+  else
+    mkdir -p "$install_bin" "$install_lib"
+  fi
 
   if ! install_by_fetch "$install_bin" "$install_lib"; then
     print_status_log "ERROR" "Failed to install DCVM files"
@@ -943,10 +1354,22 @@ main() {
 }
 
 dcvm_init() {
+  # Ensure config directory exists on macOS
+  if is_macos; then
+    mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  fi
+  
   if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Welcome to DCVM Installer!"
     echo "Repository: ${DCVM_REPO_SLUG}"
     echo "Branch: ${DCVM_REPO_BRANCH}"
+    
+    if is_macos; then
+      echo ""
+      echo "Detected platform: macOS ($(uname -m))"
+      echo "DCVM will use QEMU with Hypervisor.framework (HVF) acceleration"
+    fi
     echo ""
 
     if [[ -t 0 && -t 1 ]]; then
@@ -955,13 +1378,15 @@ dcvm_init() {
       USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
       DATACENTER_BASE="$USER_DIR"
 
-      echo "Please enter the network name for the datacenter."
-      read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
-      NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
+      if ! is_macos; then
+        echo "Please enter the network name for the datacenter."
+        read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
+        NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
 
-      echo "Please enter the bridge name for the datacenter."
-      read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
-      BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+        echo "Please enter the bridge name for the datacenter."
+        read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
+        BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+      fi
 
       echo "Network IP Configuration (default: 10.10.10.0/24)"
       echo "This determines the IP range for your VMs."
@@ -987,20 +1412,36 @@ dcvm_init() {
       NETWORK_SUBNET="10.10.10"
     fi
 
-    echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
-    echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
-    echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
-    echo "NETWORK_SUBNET=\"$NETWORK_SUBNET\"" >>"$CONFIG_FILE"
+    # Write config file
+    mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
+    {
+      echo "DATACENTER_BASE=\"$DATACENTER_BASE\""
+      echo "NETWORK_NAME=\"$NETWORK_NAME\""
+      echo "BRIDGE_NAME=\"$BRIDGE_NAME\""
+      echo "NETWORK_SUBNET=\"$NETWORK_SUBNET\""
+      if is_macos; then
+        echo "PLATFORM=\"macos\""
+        echo "QEMU_ACCEL=\"hvf\""
+      else
+        echo "PLATFORM=\"linux\""
+        echo "QEMU_ACCEL=\"kvm\""
+      fi
+    } > "$CONFIG_FILE"
+    
     echo "Installation directory set to: $DATACENTER_BASE"
-    echo "Network name set to: $NETWORK_NAME"
-    echo "Bridge name set to: $BRIDGE_NAME"
+    if ! is_macos; then
+      echo "Network name set to: $NETWORK_NAME"
+      echo "Bridge name set to: $BRIDGE_NAME"
+    fi
     echo "Network subnet set to: $NETWORK_SUBNET.0/24"
   else
     source "$CONFIG_FILE"
     echo "Using existing configuration:"
     echo "  Installation directory: $DATACENTER_BASE"
-    echo "  Network name: $NETWORK_NAME"
-    echo "  Bridge name: $BRIDGE_NAME"
+    if ! is_macos; then
+      echo "  Network name: $NETWORK_NAME"
+      echo "  Bridge name: $BRIDGE_NAME"
+    fi
   fi
 
   NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
