@@ -902,7 +902,7 @@ install_dcvm_command() {
 }
 
 main() {
-  print_info "DCVM installer is starting..." >&2
+  print_status_log "INFO" "DCVM installer is starting..." >&2
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
   echo "$(date) - Installation started" >>"$LOG_FILE" 2>/dev/null || true
@@ -1018,7 +1018,7 @@ dcvm_init() {
     esac
   done
   echo ""
-  print_info "Executing DCVM installer..." >&2
+  print_status_log "INFO" "Executing DCVM installer..." >&2
   main "$@"
 }
 
