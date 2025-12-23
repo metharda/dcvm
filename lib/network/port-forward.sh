@@ -10,12 +10,31 @@ if ! command -v detect_host_ip &>/dev/null; then
   detect_host_ip() {
     local host_ip=""
     local subnet="${NETWORK_SUBNET:-10.10.10}"
-    for interface in eth0 ens3 ens18 enp0s3 wlan0; do
-      host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-      [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
-    done
-    [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
-    [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
+    
+    if is_macos; then
+      # macOS: use route to find primary interface
+      local iface
+      iface=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2}')
+      if [[ -n "$iface" ]]; then
+        host_ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet / && !/127.0.0.1/ {print $2}' | head -1)
+      fi
+      # Fallback: try common interfaces
+      if [[ -z "$host_ip" ]]; then
+        for iface in en0 en1 en2; do
+          host_ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+          [[ -n "$host_ip" && ! "$host_ip" =~ ^127\. ]] && break
+        done
+      fi
+    else
+      # Linux: use ip command
+      for interface in eth0 ens3 ens18 enp0s3 wlan0; do
+        host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
+        [[ -n "$host_ip" && ! "$host_ip" =~ ^127\. && ! "$host_ip" =~ ^${subnet}\. ]] && break
+      done
+      [[ -z "$host_ip" ]] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
+    fi
+    
+    [[ -z "$host_ip" ]] && host_ip="YOUR_HOST_IP"
     echo "$host_ip"
   }
 fi

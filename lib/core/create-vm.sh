@@ -84,7 +84,9 @@ Options:
 
 OS Options:
   1 = Debian 12      2 = Debian 11      3 = Ubuntu 22.04 (default)
-  4 = Ubuntu 20.04   5 = Arch Linux     /path/to/file.iso = Custom ISO
+  4 = Ubuntu 20.04   5 = Arch Linux (x86_64 only)   /path/to/file.iso = Custom ISO
+
+  Note: Arch Linux is only available for x86_64. ARM64 (Apple Silicon) users should use options 1-4.
 
 Modes:
   Interactive Mode (default)     		# Prompts for unspecified options
@@ -268,17 +270,22 @@ select_os() {
     OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-${template_arch}.img"
     ;;
   5)
-    VM_OS="archlinux"
-
+    # Arch Linux only has official x86_64 cloud images
     if [[ "$template_arch" != "amd64" ]]; then
-      print_error "Arch Linux cloud image is currently only available for x86_64 (amd64)."
-      print_error "On Apple Silicon, please select Debian/Ubuntu (arm64 templates)."
+      print_error "Arch Linux cloud images are only available for x86_64 architecture."
+      print_error "Your system is ARM64 (Apple Silicon). Arch Linux ARM does not provide cloud-init images."
+      print_info "Alternative options for ARM64:"
+      print_info "  1 = Debian 12 (recommended)"
+      print_info "  2 = Debian 11"
+      print_info "  3 = Ubuntu 22.04"
+      print_info "  4 = Ubuntu 20.04"
       exit 1
     fi
-
-    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
+    
+    VM_OS="archlinux"
     OS_VARIANT="archlinux"
-    OS_URL="https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
+    OS_URL="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
     ;;
   *)
 
@@ -908,6 +915,9 @@ generate_cloud_init_userdata() {
 hostname: $VM_NAME
 users:
   - name: $VM_USERNAME
+    gecos: VM User
+    primary_group: users
+    groups: [sudo]
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash
     lock_passwd: false
@@ -1016,9 +1026,9 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
 DOCKER_EOF
   fi)
   - echo "VM $VM_NAME setup completed successfully" >> /var/log/cloud-init-final.log
-  - echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log
-  - echo "SSH/SCP/SFTP ready for connections" >> /var/log/cloud-init-final.log
-  - wall "VM $VM_NAME is ready! Login as $VM_USERNAME"
+  - echo "User $VM_USERNAME configured" >> /var/log/cloud-init-final.log
+  - echo "SSH and SCP and SFTP ready for connections" >> /var/log/cloud-init-final.log
+  - wall "VM $VM_NAME is ready"
 
 final_message: |
   VM $VM_NAME setup completed!
@@ -1042,10 +1052,24 @@ METADATA_EOF
 generate_cloud_init_network() {
   local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"
 
-  # On macOS we run QEMU user-mode networking. Interface names differ across images,
-  # so match by MAC for reliable DHCP/static config.
+  # On macOS with QEMU user-mode networking, we use DHCP and match by driver
+  # because QEMU doesn't use a fixed MAC address by default
+  if is_macos; then
+    # macOS QEMU user-mode networking always uses DHCP from QEMU's built-in DHCP server
+    cat >"$network_config" <<'NETWORK_EOF'
+version: 2
+ethernets:
+  id0:
+    match:
+      driver: virtio_net
+    dhcp4: true
+NETWORK_EOF
+    return
+  fi
+
+  # Linux with libvirt - use MAC matching for stable networking
   local mac_match=""
-  if is_macos && [ -n "${VM_MAC:-}" ]; then
+  if [ -n "${VM_MAC:-}" ]; then
     mac_match="$VM_MAC"
   fi
 

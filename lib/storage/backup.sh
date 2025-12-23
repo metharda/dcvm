@@ -14,13 +14,117 @@ load_dcvm_config
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
-LOG_FILE="/var/log/dcvm-backup.log"
+
+# Platform-specific log file location
+if is_macos; then
+  LOG_FILE="$DATACENTER_BASE/logs/dcvm-backup.log"
+  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+else
+  LOG_FILE="/var/log/dcvm-backup.log"
+fi
+
 DATE=$(date +%Y%m%d_%H%M%S)
 KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
 COMPRESSION_ENABLED=true
 
 log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
+
+# ============================================================================
+# macOS-Specific Backup Helper Functions
+# ============================================================================
+
+# Get VM disk path on macOS
+get_vm_disk_path_macos() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local vm_conf="$base/config/vms/${vm_name}.conf"
+  
+  if [[ -f "$vm_conf" ]]; then
+    local disk_path
+    disk_path=$(grep "^DISK_PATH=" "$vm_conf" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"')
+    if [[ -n "$disk_path" && -f "$disk_path" ]]; then
+      echo "$disk_path"
+      return 0
+    fi
+  fi
+  
+  # Fallback: try standard location
+  local default_disk="$base/vms/${vm_name}/${vm_name}-disk.qcow2"
+  if [[ -f "$default_disk" ]]; then
+    echo "$default_disk"
+    return 0
+  fi
+  
+  echo ""
+  return 1
+}
+
+# Start VM on macOS (for backup restart)
+start_single_vm_macos() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local vm_conf="$base/config/vms/${vm_name}.conf"
+  
+  [[ -f "$vm_conf" ]] || return 1
+  source "$vm_conf"
+  
+  local arch
+  arch=$(uname -m)
+  local qemu_binary
+  local accel
+  local machine_type
+  
+  if [[ "$arch" == "arm64" ]]; then
+    qemu_binary="qemu-system-aarch64"
+    accel="hvf"
+    machine_type="virt"
+  else
+    qemu_binary="qemu-system-x86_64"
+    if sysctl -n kern.hv_support 2>/dev/null | grep -q "1"; then
+      accel="hvf"
+    else
+      accel="tcg"
+    fi
+    machine_type="q35"
+  fi
+  
+  local vm_dir="$base/vms/$vm_name"
+  local pid_file="$base/run/${vm_name}.pid"
+  local log_file="$base/logs/${vm_name}.log"
+  local monitor_socket="$base/run/${vm_name}.monitor"
+  
+  # Build QEMU command
+  local qemu_cmd=(
+    "$qemu_binary"
+    -name "$vm_name"
+    -machine "$machine_type,accel=$accel"
+    -cpu host
+    -m "${VM_MEMORY:-2048}"
+    -smp "${VM_CPUS:-2}"
+    -drive "file=${DISK_PATH},format=qcow2,if=virtio"
+    -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${HTTP_PORT}-:80"
+    -device "virtio-net-pci,netdev=net0"
+    -display none
+    -daemonize
+    -pidfile "$pid_file"
+    -monitor "unix:$monitor_socket,server,nowait"
+    -serial "file:$log_file"
+  )
+  
+  # For ARM64, add UEFI firmware
+  if [[ "$arch" == "arm64" ]]; then
+    local efi_code="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+    local efi_vars="$vm_dir/efi-vars.fd"
+    if [[ -f "$efi_code" ]] && [[ -f "$efi_vars" ]]; then
+      qemu_cmd+=(-drive "if=pflash,format=raw,file=$efi_code,readonly=on")
+      qemu_cmd+=(-drive "if=pflash,format=raw,file=$efi_vars")
+    fi
+  fi
+  
+  "${qemu_cmd[@]}" 2>>"$log_file"
+}
+
 get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
 list_backup_timestamps_desc() { collect_backup_timestamps "$1" "" "desc"; }
 list_day_backup_timestamps_asc() { collect_backup_timestamps "$1" "$2" "asc"; }
@@ -883,7 +987,14 @@ backup_vm() {
     return 1
   fi
 
-  local vm_disk_path=$(get_vm_disk_path "$vm_name")
+  # Platform-specific disk path resolution
+  local vm_disk_path
+  if is_macos; then
+    vm_disk_path=$(get_vm_disk_path_macos "$vm_name")
+  else
+    vm_disk_path=$(get_vm_disk_path "$vm_name")
+  fi
+  
   if [ -z "$vm_disk_path" ]; then
     print_error "Could not find disk path for VM '$vm_name'"
     log "ERROR" "Could not find disk path for VM '$vm_name'"
@@ -893,29 +1004,47 @@ backup_vm() {
   print_info "VM disk path: $vm_disk_path"
   print_info "Disk size: $(get_file_size "$vm_disk_path")"
 
-  local vm_state=$(get_vm_state "$vm_name")
+  # Platform-specific state check and shutdown
+  local vm_state
+  if is_macos; then
+    vm_state=$(get_vm_status_macos "$vm_name")
+  else
+    vm_state=$(get_vm_state "$vm_name")
+  fi
   print_info "VM current state: $vm_state"
 
   if [ "$vm_state" = "running" ]; then
     was_running=true
     print_info "Shutting down VM for consistent backup..."
 
-    if virsh shutdown "$vm_name" >/dev/null 2>&1; then
-      print_info "Shutdown command sent, waiting up to ${SHUTDOWN_TIMEOUT}s..."
-
-      if wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
+    if is_macos; then
+      # macOS: use QEMU monitor for shutdown
+      if shutdown_vm_macos "$vm_name" "$SHUTDOWN_TIMEOUT"; then
         print_success "VM shut down gracefully"
         log "INFO" "VM $vm_name shut down gracefully"
       else
-        print_warning "Graceful shutdown timeout, forcing shutdown..."
-        virsh destroy "$vm_name" >/dev/null 2>&1
-        sleep 5
+        print_warning "Shutdown timeout, forcing stop..."
         log "WARNING" "Forced shutdown of VM $vm_name"
       fi
     else
-      print_error "Failed to send shutdown command"
-      log "ERROR" "Failed to send shutdown command to VM $vm_name"
-      return 1
+      # Linux: use virsh
+      if virsh shutdown "$vm_name" >/dev/null 2>&1; then
+        print_info "Shutdown command sent, waiting up to ${SHUTDOWN_TIMEOUT}s..."
+
+        if wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
+          print_success "VM shut down gracefully"
+          log "INFO" "VM $vm_name shut down gracefully"
+        else
+          print_warning "Graceful shutdown timeout, forcing shutdown..."
+          virsh destroy "$vm_name" >/dev/null 2>&1
+          sleep 5
+          log "WARNING" "Forced shutdown of VM $vm_name"
+        fi
+      else
+        print_error "Failed to send shutdown command"
+        log "ERROR" "Failed to send shutdown command to VM $vm_name"
+        return 1
+      fi
     fi
   fi
 
@@ -948,28 +1077,56 @@ backup_vm() {
 
     if [ "$was_running" = true ]; then
       print_info "Restarting VM..."
-      virsh start "$vm_name" >/dev/null 2>&1
+      if is_macos; then
+        start_single_vm_macos "$vm_name" >/dev/null 2>&1
+      else
+        virsh start "$vm_name" >/dev/null 2>&1
+      fi
     fi
     return 1
   fi
 
   print_info "Backing up VM configuration..."
-  if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
-    print_success "Configuration backup completed"
-    log "INFO" "Configuration backup completed for $vm_name"
+  if is_macos; then
+    # macOS: backup VM config file
+    local vm_conf="$DATACENTER_BASE/config/vms/${vm_name}.conf"
+    if [[ -f "$vm_conf" ]]; then
+      cp "$vm_conf" "$config_backup"
+      print_success "Configuration backup completed"
+      log "INFO" "Configuration backup completed for $vm_name"
+    else
+      print_warning "VM config file not found, creating minimal config backup"
+      echo "# VM: $vm_name backup config" > "$config_backup"
+    fi
   else
-    print_error "Failed to backup VM configuration"
-    log "ERROR" "Failed to backup VM configuration for $vm_name"
+    # Linux: use virsh dumpxml
+    if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
+      print_success "Configuration backup completed"
+      log "INFO" "Configuration backup completed for $vm_name"
+    else
+      print_error "Failed to backup VM configuration"
+      log "ERROR" "Failed to backup VM configuration for $vm_name"
+    fi
   fi
 
   if [ "$was_running" = true ]; then
     print_info "Restarting VM..."
-    if virsh start "$vm_name" >/dev/null 2>&1; then
-      print_success "VM restarted successfully"
-      log "INFO" "VM $vm_name restarted successfully"
+    if is_macos; then
+      if start_single_vm_macos "$vm_name" >/dev/null 2>&1; then
+        print_success "VM restarted successfully"
+        log "INFO" "VM $vm_name restarted successfully"
+      else
+        print_error "Failed to restart VM"
+        log "ERROR" "Failed to restart VM $vm_name"
+      fi
     else
-      print_error "Failed to restart VM"
-      log "ERROR" "Failed to restart VM $vm_name"
+      if virsh start "$vm_name" >/dev/null 2>&1; then
+        print_success "VM restarted successfully"
+        log "INFO" "VM $vm_name restarted successfully"
+      else
+        print_error "Failed to restart VM"
+        log "ERROR" "Failed to restart VM $vm_name"
+      fi
     fi
   fi
 

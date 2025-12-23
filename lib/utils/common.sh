@@ -231,6 +231,244 @@ get_virt_type_desc() {
   fi
 }
 
+# ============================================================================
+# macOS-Specific VM Management Functions
+# ============================================================================
+
+# Check if a process is running on macOS
+process_is_running() {
+  local pid="$1"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Get QEMU process PID for a VM on macOS
+get_qemu_pid_macos() {
+  local vm_name="$1"
+  local pid_file="${DATACENTER_BASE:-$HOME/.dcvm}/run/${vm_name}.pid"
+  
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  
+  # Fallback: search by process name
+  pgrep -f "qemu.*-name.*$vm_name" 2>/dev/null | head -1
+}
+
+# Send command to QEMU monitor socket
+send_qemu_command() {
+  local socket="$1"
+  local command="$2"
+  
+  if [[ -S "$socket" ]]; then
+    echo "$command" | nc -U "$socket" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+# Gracefully shutdown VM on macOS
+shutdown_vm_macos() {
+  local vm_name="$1"
+  local timeout="${2:-60}"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local monitor_socket="$base/run/${vm_name}.monitor"
+  local pid_file="$base/run/${vm_name}.pid"
+  
+  # Try graceful shutdown via monitor
+  if [[ -S "$monitor_socket" ]]; then
+    send_qemu_command "$monitor_socket" "system_powerdown"
+    
+    # Wait for graceful shutdown
+    local count=0
+    while [[ $count -lt $timeout ]]; do
+      if [[ ! -f "$pid_file" ]] || ! process_is_running "$(cat "$pid_file" 2>/dev/null)"; then
+        rm -f "$pid_file" "$monitor_socket" 2>/dev/null
+        return 0
+      fi
+      sleep 2
+      count=$((count + 2))
+    done
+  fi
+  
+  # Force kill if still running
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      kill "$pid" 2>/dev/null
+      sleep 2
+      process_is_running "$pid" && kill -9 "$pid" 2>/dev/null
+    fi
+    rm -f "$pid_file" "$monitor_socket" 2>/dev/null
+  fi
+  
+  return 0
+}
+
+# Get VM status on macOS
+get_vm_status_macos() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local pid_file="$base/run/${vm_name}.pid"
+  
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      echo "running"
+      return 0
+    fi
+  fi
+  
+  # Check if VM is registered
+  if [[ -f "$base/config/vms/${vm_name}.conf" ]]; then
+    echo "stopped"
+  else
+    echo "not-found"
+  fi
+}
+
+# List all VMs on macOS
+list_vms_macos_all() {
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local registry="$base/config/vms"
+  
+  [[ ! -d "$registry" ]] && return
+  
+  for vm_conf in "$registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    local status
+    status=$(get_vm_status_macos "$vm_name")
+    echo "$vm_name $status"
+  done
+}
+
+# Get VM configuration value on macOS
+get_vm_config_value_macos() {
+  local vm_name="$1"
+  local key="$2"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local vm_conf="$base/config/vms/${vm_name}.conf"
+  
+  if [[ -f "$vm_conf" ]]; then
+    grep "^${key}=" "$vm_conf" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"'
+  fi
+}
+
+# ============================================================================
+# Cross-Platform Firewall/NAT Functions
+# ============================================================================
+
+# Setup port forwarding (platform-aware)
+setup_port_forward() {
+  local host_port="$1"
+  local dest_ip="$2"
+  local dest_port="$3"
+  local protocol="${4:-tcp}"
+  
+  if is_macos; then
+    # macOS uses pfctl for packet filtering
+    # For QEMU user-mode networking, forwarding is done via hostfwd
+    # This function is mainly for documentation/compatibility
+    print_info "macOS: Port forwarding is configured via QEMU hostfwd option"
+    print_info "  hostfwd=${protocol}::${host_port}-:${dest_port}"
+    return 0
+  else
+    # Linux uses iptables
+    iptables -t nat -I PREROUTING -p "$protocol" --dport "$host_port" \
+      -j DNAT --to-destination "${dest_ip}:${dest_port}" 2>/dev/null || return 1
+    iptables -I FORWARD -p "$protocol" -d "$dest_ip" --dport "$dest_port" \
+      -j ACCEPT 2>/dev/null || return 1
+  fi
+}
+
+# Remove port forwarding rule
+remove_port_forward() {
+  local host_port="$1"
+  local dest_ip="$2"
+  local dest_port="$3"
+  local protocol="${4:-tcp}"
+  
+  if is_macos; then
+    # macOS: port forwarding is tied to QEMU process
+    print_info "macOS: Stop the VM to release port $host_port"
+    return 0
+  else
+    iptables -t nat -D PREROUTING -p "$protocol" --dport "$host_port" \
+      -j DNAT --to-destination "${dest_ip}:${dest_port}" 2>/dev/null
+    iptables -D FORWARD -p "$protocol" -d "$dest_ip" --dport "$dest_port" \
+      -j ACCEPT 2>/dev/null
+  fi
+}
+
+# Check if port is available
+check_port_available() {
+  local port="$1"
+  if is_macos; then
+    ! lsof -i ":$port" >/dev/null 2>&1
+  else
+    ! ss -tuln 2>/dev/null | grep -q ":$port " && \
+    ! netstat -tuln 2>/dev/null | grep -q ":$port "
+  fi
+}
+
+# Get list of listening ports
+get_listening_ports() {
+  if is_macos; then
+    lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {print $9}' | cut -d: -f2 | sort -u
+  else
+    ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | rev | cut -d: -f1 | rev | sort -u
+  fi
+}
+
+# ============================================================================
+# Cross-Platform Disk/Storage Functions  
+# ============================================================================
+
+# Get disk usage in human-readable format
+get_disk_usage() {
+  local path="$1"
+  if is_macos; then
+    df -h "$path" 2>/dev/null | awk 'NR==2 {print $4}'
+  else
+    df -h "$path" 2>/dev/null | awk 'NR==2 {print $4}'
+  fi
+}
+
+# Get directory size
+get_dir_size() {
+  local path="$1"
+  if is_macos; then
+    du -sh "$path" 2>/dev/null | cut -f1
+  else
+    du -sh "$path" 2>/dev/null | cut -f1
+  fi
+}
+
+# Check if path is on SSD (useful for VM placement)
+is_path_on_ssd() {
+  local path="$1"
+  if is_macos; then
+    # macOS: check if APFS/SSD
+    diskutil info "$(df "$path" | tail -1 | awk '{print $1}')" 2>/dev/null | grep -qi "solid state\|ssd"
+  else
+    # Linux: check rotational flag
+    local device
+    device=$(df "$path" 2>/dev/null | tail -1 | awk '{print $1}' | sed 's/[0-9]*$//')
+    device=$(basename "$device")
+    [[ -f "/sys/block/$device/queue/rotational" ]] && \
+      [[ $(cat "/sys/block/$device/queue/rotational") -eq 0 ]]
+  fi
+}
+
 # Service management abstraction
 service_start() {
   local service="$1"

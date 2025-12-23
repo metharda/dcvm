@@ -203,10 +203,15 @@ is_vm_running_macos() {
   
   if [[ -f "$pid_file" ]]; then
     local pid
-    pid=$(cat "$pid_file")
-    if kill -0 "$pid" 2>/dev/null; then
-      return 0
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      # Also verify it's actually a QEMU process for this VM
+      if ps -p "$pid" -o command= 2>/dev/null | grep -q "qemu.*$vm_name"; then
+        return 0
+      fi
     fi
+    # Stale PID file - clean it up
+    rm -f "$pid_file" 2>/dev/null
   fi
   return 1
 }
@@ -243,6 +248,9 @@ start_single_vm_macos() {
   local log_file="$DATACENTER_BASE/logs/${vm_name}.log"
   local monitor_socket="$DATACENTER_BASE/run/${vm_name}.monitor"
   
+  # Cloud-init ISO path
+  local cloud_init_iso="$vm_dir/cloud-init.iso"
+  
   # Build QEMU command
   local qemu_cmd=(
     "$qemu_binary"
@@ -252,7 +260,7 @@ start_single_vm_macos() {
     -m "${VM_MEMORY:-2048}"
     -smp "${VM_CPUS:-2}"
     -drive "file=${DISK_PATH},format=qcow2,if=virtio"
-    -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${HTTP_PORT}-:80"
+    -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${HTTP_PORT:-8080}-:80"
     -device "virtio-net-pci,netdev=net0"
     -display none
     -daemonize
@@ -260,6 +268,11 @@ start_single_vm_macos() {
     -monitor "unix:$monitor_socket,server,nowait"
     -serial "file:$log_file"
   )
+  
+  # Add cloud-init ISO if it exists (needed for VM initialization)
+  if [[ -f "$cloud_init_iso" ]]; then
+    qemu_cmd+=(-drive "file=$cloud_init_iso,format=raw,if=virtio,media=cdrom,readonly=on")
+  fi
   
   # For ARM64, add UEFI firmware
   if [[ "$arch" == "arm64" ]]; then
@@ -418,8 +431,69 @@ stop_single_vm_macos() {
   return 0
 }
 
+restart_vms_macos() {
+  local target="$1"
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  
+  if [ "$target" = "all" ] || [ -z "$target" ]; then
+    echo "Restarting all datacenter VMs..."
+    local restarted=0
+    
+    for vm_conf in "$vm_registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      local vm_name
+      vm_name=$(basename "$vm_conf" .conf)
+      
+      echo "Restarting $vm_name..."
+      if is_vm_running_macos "$vm_name"; then
+        stop_single_vm_macos "$vm_name"
+        sleep 2
+      fi
+      
+      if start_single_vm_macos "$vm_name"; then
+        restarted=$((restarted + 1))
+      else
+        print_warning "Failed to restart $vm_name"
+      fi
+    done
+    
+    if [ $restarted -gt 0 ]; then
+      print_success "Restarted $restarted VM(s)"
+    else
+      print_info "No VMs to restart"
+    fi
+  else
+    local vm_conf="$vm_registry/${target}.conf"
+    if [[ ! -f "$vm_conf" ]]; then
+      print_error "VM '$target' does not exist"
+      echo ""
+      echo "Available VMs:"
+      list_vms_macos
+      return 1
+    fi
+    
+    echo "Restarting VM '$target'..."
+    if is_vm_running_macos "$target"; then
+      stop_single_vm_macos "$target"
+      sleep 2
+    fi
+    
+    if start_single_vm_macos "$target"; then
+      print_success "VM '$target' restarted successfully"
+    else
+      print_error "Failed to restart VM '$target'"
+    fi
+  fi
+}
+
 restart_vms() {
   local target="$1"
+
+  if is_macos; then
+    restart_vms_macos "$target"
+    return $?
+  fi
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
     echo "Restarting all datacenter VMs..."

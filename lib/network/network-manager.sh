@@ -184,16 +184,23 @@ EOF
 
 cmd_show_macos() {
   print_header "Network Information (macOS)"
-  echo "Network Mode: QEMU user-mode networking"
+  echo "Network Mode: QEMU user-mode networking (SLiRP)"
   echo ""
   
   local network_conf="$DATACENTER_BASE/config/network.conf"
   if [[ -f "$network_conf" ]]; then
     echo "Network Configuration:"
     cat "$network_conf" | sed 's/^/  /'
+    echo ""
   fi
   
+  echo "How QEMU User-Mode Networking Works:"
+  echo "  - Each VM has isolated virtual network (10.0.2.0/24 inside guest)"
+  echo "  - Guest gateway: 10.0.2.2 (also DNS forwarder)"
+  echo "  - Port forwarding via QEMU hostfwd option"
+  echo "  - No bridge or tap device needed (no root required)"
   echo ""
+  
   echo "Registered VMs and Port Mappings:"
   local vm_registry="$DATACENTER_BASE/config/vms"
   if [[ -d "$vm_registry" ]]; then
@@ -220,6 +227,63 @@ cmd_show_macos() {
   echo "IP Forwarding: $(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo 'unknown')"
 }
 
+cmd_status_macos() {
+  print_header "Network Status (macOS)"
+  
+  local vm_registry="$DATACENTER_BASE/config/vms"
+  local running_count=0
+  local total_count=0
+  
+  if [[ -d "$vm_registry" ]]; then
+    for vm_conf in "$vm_registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      total_count=$((total_count + 1))
+      local vm_name
+      vm_name=$(basename "$vm_conf" .conf)
+      local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+      if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        running_count=$((running_count + 1))
+      fi
+    done
+  fi
+  
+  echo "Network Mode: QEMU User-Mode (SLiRP)"
+  echo "VMs: $running_count running / $total_count total"
+  echo "IP Forwarding: $(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo 'N/A')"
+  echo ""
+  
+  if [[ $running_count -gt 0 ]]; then
+    echo "Active Port Forwarding:"
+    for vm_conf in "$vm_registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      source "$vm_conf"
+      local vm_name
+      vm_name=$(basename "$vm_conf" .conf)
+      local pid_file="$DATACENTER_BASE/run/${vm_name}.pid"
+      if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        echo "  $vm_name:"
+        echo "    localhost:${SSH_PORT:-N/A} → VM:22 (SSH)"
+        echo "    localhost:${HTTP_PORT:-N/A} → VM:80 (HTTP)"
+      fi
+    done
+  fi
+}
+
+cmd_config_macos() {
+  print_header "Effective Config (macOS)"
+  echo "DATACENTER_BASE: ${DATACENTER_BASE:-$HOME/.dcvm}"
+  echo "NETWORK_MODE:    QEMU User-Mode (SLiRP)"
+  echo "VM_REGISTRY:     ${DATACENTER_BASE:-$HOME/.dcvm}/config/vms"
+  echo "HOST_IP:         localhost (127.0.0.1)"
+  echo ""
+  echo "Guest Network (inside VM):"
+  echo "  Subnet:  10.0.2.0/24"
+  echo "  Gateway: 10.0.2.2"
+  echo "  DNS:     10.0.2.3"
+}
+
 main() {
   load_dcvm_config
   
@@ -229,7 +293,7 @@ main() {
     shift || true
     case "$subcmd" in
     show | info) cmd_show_macos "$@" ;;
-    status) cmd_show_macos "$@" ;;
+    status) cmd_status_macos "$@" ;;
     ip-forwarding | ipfwd) 
       local action="${1:-show}"
       case "$action" in
@@ -238,13 +302,22 @@ main() {
         off) sudo sysctl -w net.inet.ip.forwarding=0 ;;
       esac
       ;;
+    config) cmd_config_macos ;;
     help | -h | --help) cmd_help ;;
     ports)
       exec "$SCRIPT_DIR/port-forward.sh" "$@"
       ;;
+    bridge)
+      print_info "macOS doesn't use bridge networking"
+      print_info "QEMU user-mode networking provides NAT via SLiRP"
+      ;;
+    leases)
+      print_info "macOS QEMU doesn't use DHCP leases"
+      print_info "Guest network is handled internally by QEMU"
+      ;;
     *)
       print_error "Command '$subcmd' is not available on macOS"
-      echo "Available macOS commands: show, status, ip-forwarding, ports, help"
+      echo "Available macOS commands: show, status, ip-forwarding, config, ports, help"
       exit 1
       ;;
     esac
