@@ -6,6 +6,559 @@ readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m'
 
+# ============================================================================
+# OS Detection & Platform Abstraction Layer
+# ============================================================================
+
+# Detect the current operating system
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) echo "macos" ;;
+    Linux)  echo "linux" ;;
+    *)      echo "unknown" ;;
+  esac
+}
+
+# Check if running on macOS
+is_macos() {
+  [[ "$(uname -s)" == "Darwin" ]]
+}
+
+# Check if running on Linux
+is_linux() {
+  [[ "$(uname -s)" == "Linux" ]]
+}
+
+# Get the QEMU accelerator for the current platform
+get_qemu_accel() {
+  if is_macos; then
+    # Check for Apple Silicon vs Intel
+    if [[ "$(uname -m)" == "arm64" ]]; then
+      echo "hvf"
+    else
+      # Intel Mac - try HVF first, fall back to TCG
+      if sysctl -n kern.hv_support 2>/dev/null | grep -q "1"; then
+        echo "hvf"
+      else
+        echo "tcg"
+      fi
+    fi
+  else
+    # Linux - prefer KVM
+    if [[ -e /dev/kvm ]]; then
+      echo "kvm"
+    else
+      echo "tcg"
+    fi
+  fi
+}
+
+# Get the QEMU system binary for the current architecture
+get_qemu_binary() {
+  local arch="${1:-$(uname -m)}"
+  case "$arch" in
+    x86_64|amd64)   echo "qemu-system-x86_64" ;;
+    arm64|aarch64)  echo "qemu-system-aarch64" ;;
+    *)              echo "qemu-system-$arch" ;;
+  esac
+}
+
+# Map host architecture to cloud-image filename suffix.
+# Debian/Ubuntu cloud images typically use "amd64" or "arm64" in filenames.
+get_template_arch() {
+  case "$(uname -m)" in
+    arm64|aarch64) echo "arm64" ;;
+    x86_64|amd64)  echo "amd64" ;;
+    *)             echo "amd64" ;;
+  esac
+}
+
+# Cross-platform sed in-place edit (handles BSD vs GNU sed)
+sed_inplace() {
+  # Prefer feature-detection over OS detection:
+  # - GNU sed supports: sed -i 's/a/b/' file
+  # - BSD sed supports: sed -i '' 's/a/b/' file
+  if sed --version >/dev/null 2>&1; then
+    sed -i "$@"
+  else
+    sed -i '' "$@"
+  fi
+}
+
+# Cross-platform timeout command
+timeout_cmd() {
+  local duration="$1"
+  shift
+  if is_macos; then
+    # Use gtimeout from coreutils if available, otherwise perl fallback
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout "$duration" "$@"
+    else
+      perl -e "alarm $duration; exec @ARGV" -- "$@"
+    fi
+  else
+    timeout "$duration" "$@"
+  fi
+}
+
+# Cross-platform nproc (number of CPUs)
+get_nproc() {
+  if is_macos; then
+    sysctl -n hw.ncpu
+  else
+    nproc
+  fi
+}
+
+# Cross-platform memory info (returns total RAM in KB)
+get_total_memory_kb() {
+  if is_macos; then
+    # macOS: get memory in bytes, convert to KB
+    local mem_bytes
+    mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+    echo $((mem_bytes / 1024))
+  else
+    grep MemTotal /proc/meminfo | awk '{print $2}'
+  fi
+}
+
+# Cross-platform readlink -f (canonical path)
+readlink_f() {
+  if is_macos; then
+    # Use greadlink if available (from coreutils), otherwise Python fallback
+    if command -v greadlink >/dev/null 2>&1; then
+      greadlink -f "$1"
+    else
+      python3 -c "import os; print(os.path.realpath('$1'))" 2>/dev/null || echo "$1"
+    fi
+  else
+    readlink -f "$1"
+  fi
+}
+
+# Cross-platform stat for file size in bytes
+get_file_size() {
+  local file="$1"
+  if is_macos; then
+    stat -f%z "$file" 2>/dev/null
+  else
+    stat -c%s "$file" 2>/dev/null
+  fi
+}
+
+# Cross-platform IP forwarding check
+get_ip_forward_status() {
+  if is_macos; then
+    sysctl -n net.inet.ip.forwarding 2>/dev/null || echo "0"
+  else
+    cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0"
+  fi
+}
+
+# Cross-platform IP forwarding enable
+enable_ip_forward() {
+  if is_macos; then
+    sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null 2>&1
+  else
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+  fi
+}
+
+# Get host IP address (cross-platform)
+get_primary_ip() {
+  local subnet="${NETWORK_SUBNET:-10.10.10}"
+  if is_macos; then
+    # macOS: use route to find primary interface, then get its IP
+    local iface
+    iface=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2}')
+    if [[ -n "$iface" ]]; then
+      ifconfig "$iface" 2>/dev/null | awk '/inet / && !/127.0.0.1/ {print $2}' | head -1
+    else
+      # Fallback: try common interfaces
+      for iface in en0 en1 en2; do
+        local ip
+        ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+        [[ -n "$ip" && ! "$ip" =~ ^127\. && ! "$ip" =~ ^${subnet}\. ]] && echo "$ip" && return
+      done
+    fi
+  else
+    # Linux: use ip command
+    for interface in eth0 ens3 ens18 enp0s3 wlan0; do
+      local ip
+      ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
+      [[ -n "$ip" && ! "$ip" =~ ^127\. && ! "$ip" =~ ^${subnet}\. ]] && echo "$ip" && return
+    done
+    # Fallback
+    ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}'
+  fi
+}
+
+# Check if virtualization is supported
+check_virt_support() {
+  if is_macos; then
+    # macOS: check for Hypervisor.framework support
+    if [[ "$(uname -m)" == "arm64" ]]; then
+      # Apple Silicon always supports virtualization
+      return 0
+    else
+      # Intel Mac: check HVF support
+      if sysctl -n kern.hv_support 2>/dev/null | grep -q "1"; then
+        return 0
+      else
+        return 1
+      fi
+    fi
+  else
+    # Linux: check for KVM
+    if grep -E -q '(vmx|svm)' /proc/cpuinfo 2>/dev/null && [[ -e /dev/kvm ]]; then
+      return 0
+    else
+      return 1
+    fi
+  fi
+}
+
+# Get virtualization type description
+get_virt_type_desc() {
+  if is_macos; then
+    if [[ "$(uname -m)" == "arm64" ]]; then
+      echo "Apple Hypervisor (HVF) on Apple Silicon"
+    else
+      echo "Apple Hypervisor (HVF) on Intel"
+    fi
+  else
+    echo "KVM"
+  fi
+}
+
+# ============================================================================
+# macOS-Specific VM Management Functions
+# ============================================================================
+
+# Check if a process is running on macOS
+process_is_running() {
+  local pid="$1"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# Get QEMU process PID for a VM on macOS
+get_qemu_pid_macos() {
+  local vm_name="$1"
+  local pid_file="${DATACENTER_BASE:-$HOME/.dcvm}/run/${vm_name}.pid"
+  
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  
+  # Fallback: search by process name
+  pgrep -f "qemu.*-name.*$vm_name" 2>/dev/null | head -1
+}
+
+# Send command to QEMU monitor socket
+send_qemu_command() {
+  local socket="$1"
+  local command="$2"
+  
+  if [[ -S "$socket" ]]; then
+    echo "$command" | nc -U "$socket" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+# Gracefully shutdown VM on macOS
+shutdown_vm_macos() {
+  local vm_name="$1"
+  local timeout="${2:-60}"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local monitor_socket="$base/run/${vm_name}.monitor"
+  local pid_file="$base/run/${vm_name}.pid"
+  
+  # Try graceful shutdown via monitor
+  if [[ -S "$monitor_socket" ]]; then
+    send_qemu_command "$monitor_socket" "system_powerdown"
+    
+    # Wait for graceful shutdown
+    local count=0
+    while [[ $count -lt $timeout ]]; do
+      if [[ ! -f "$pid_file" ]] || ! process_is_running "$(cat "$pid_file" 2>/dev/null)"; then
+        rm -f "$pid_file" "$monitor_socket" 2>/dev/null
+        return 0
+      fi
+      sleep 2
+      count=$((count + 2))
+    done
+  fi
+  
+  # Force kill if still running
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      kill "$pid" 2>/dev/null
+      sleep 2
+      process_is_running "$pid" && kill -9 "$pid" 2>/dev/null
+    fi
+    rm -f "$pid_file" "$monitor_socket" 2>/dev/null
+  fi
+  
+  return 0
+}
+
+# Get VM status on macOS
+get_vm_status_macos() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local pid_file="$base/run/${vm_name}.pid"
+  
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && process_is_running "$pid"; then
+      echo "running"
+      return 0
+    fi
+  fi
+  
+  # Check if VM is registered
+  if [[ -f "$base/config/vms/${vm_name}.conf" ]]; then
+    echo "stopped"
+  else
+    echo "not-found"
+  fi
+}
+
+# List all VMs on macOS
+list_vms_macos_all() {
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local registry="$base/config/vms"
+  
+  [[ ! -d "$registry" ]] && return
+  
+  for vm_conf in "$registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    local status
+    status=$(get_vm_status_macos "$vm_name")
+    echo "$vm_name $status"
+  done
+}
+
+# Get VM configuration value on macOS
+get_vm_config_value_macos() {
+  local vm_name="$1"
+  local key="$2"
+  local base="${DATACENTER_BASE:-$HOME/.dcvm}"
+  local vm_conf="$base/config/vms/${vm_name}.conf"
+  
+  if [[ -f "$vm_conf" ]]; then
+    grep "^${key}=" "$vm_conf" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"'
+  fi
+}
+
+# ============================================================================
+# Cross-Platform Firewall/NAT Functions
+# ============================================================================
+
+# Setup port forwarding (platform-aware)
+setup_port_forward() {
+  local host_port="$1"
+  local dest_ip="$2"
+  local dest_port="$3"
+  local protocol="${4:-tcp}"
+  
+  if is_macos; then
+    # macOS uses pfctl for packet filtering
+    # For QEMU user-mode networking, forwarding is done via hostfwd
+    # This function is mainly for documentation/compatibility
+    print_info "macOS: Port forwarding is configured via QEMU hostfwd option"
+    print_info "  hostfwd=${protocol}::${host_port}-:${dest_port}"
+    return 0
+  else
+    # Linux uses iptables
+    iptables -t nat -I PREROUTING -p "$protocol" --dport "$host_port" \
+      -j DNAT --to-destination "${dest_ip}:${dest_port}" 2>/dev/null || return 1
+    iptables -I FORWARD -p "$protocol" -d "$dest_ip" --dport "$dest_port" \
+      -j ACCEPT 2>/dev/null || return 1
+  fi
+}
+
+# Remove port forwarding rule
+remove_port_forward() {
+  local host_port="$1"
+  local dest_ip="$2"
+  local dest_port="$3"
+  local protocol="${4:-tcp}"
+  
+  if is_macos; then
+    # macOS: port forwarding is tied to QEMU process
+    print_info "macOS: Stop the VM to release port $host_port"
+    return 0
+  else
+    iptables -t nat -D PREROUTING -p "$protocol" --dport "$host_port" \
+      -j DNAT --to-destination "${dest_ip}:${dest_port}" 2>/dev/null
+    iptables -D FORWARD -p "$protocol" -d "$dest_ip" --dport "$dest_port" \
+      -j ACCEPT 2>/dev/null
+  fi
+}
+
+# Check if port is available
+check_port_available() {
+  local port="$1"
+  if is_macos; then
+    ! lsof -i ":$port" >/dev/null 2>&1
+  else
+    ! ss -tuln 2>/dev/null | grep -q ":$port " && \
+    ! netstat -tuln 2>/dev/null | grep -q ":$port "
+  fi
+}
+
+# Get list of listening ports
+get_listening_ports() {
+  if is_macos; then
+    lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {print $9}' | cut -d: -f2 | sort -u
+  else
+    ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | rev | cut -d: -f1 | rev | sort -u
+  fi
+}
+
+# ============================================================================
+# Cross-Platform Disk/Storage Functions  
+# ============================================================================
+
+# Get disk usage in human-readable format
+get_disk_usage() {
+  local path="$1"
+  if is_macos; then
+    df -h "$path" 2>/dev/null | awk 'NR==2 {print $4}'
+  else
+    df -h "$path" 2>/dev/null | awk 'NR==2 {print $4}'
+  fi
+}
+
+# Get directory size
+get_dir_size() {
+  local path="$1"
+  if is_macos; then
+    du -sh "$path" 2>/dev/null | cut -f1
+  else
+    du -sh "$path" 2>/dev/null | cut -f1
+  fi
+}
+
+# Check if path is on SSD (useful for VM placement)
+is_path_on_ssd() {
+  local path="$1"
+  if is_macos; then
+    # macOS: check if APFS/SSD
+    diskutil info "$(df "$path" | tail -1 | awk '{print $1}')" 2>/dev/null | grep -qi "solid state\|ssd"
+  else
+    # Linux: check rotational flag
+    local device
+    device=$(df "$path" 2>/dev/null | tail -1 | awk '{print $1}' | sed 's/[0-9]*$//')
+    device=$(basename "$device")
+    [[ -f "/sys/block/$device/queue/rotational" ]] && \
+      [[ $(cat "/sys/block/$device/queue/rotational") -eq 0 ]]
+  fi
+}
+
+# Service management abstraction
+service_start() {
+  local service="$1"
+  if is_macos; then
+    # macOS uses launchctl
+    case "$service" in
+      libvirtd) 
+        brew services start libvirt 2>/dev/null || true
+        ;;
+      nfs*)
+        sudo nfsd start 2>/dev/null || true
+        ;;
+      *)
+        brew services start "$service" 2>/dev/null || true
+        ;;
+    esac
+  else
+    systemctl start "$service" 2>/dev/null
+  fi
+}
+
+service_stop() {
+  local service="$1"
+  if is_macos; then
+    case "$service" in
+      libvirtd)
+        brew services stop libvirt 2>/dev/null || true
+        ;;
+      nfs*)
+        sudo nfsd stop 2>/dev/null || true
+        ;;
+      *)
+        brew services stop "$service" 2>/dev/null || true
+        ;;
+    esac
+  else
+    systemctl stop "$service" 2>/dev/null
+  fi
+}
+
+service_is_active() {
+  local service="$1"
+  if is_macos; then
+    case "$service" in
+      libvirtd)
+        pgrep -x libvirtd >/dev/null 2>&1
+        ;;
+      nfs*)
+        pgrep -x nfsd >/dev/null 2>&1
+        ;;
+      *)
+        brew services list 2>/dev/null | grep -q "^$service.*started"
+        ;;
+    esac
+  else
+    systemctl is-active --quiet "$service" 2>/dev/null
+  fi
+}
+
+# Get default datacenter base path for the platform
+get_default_datacenter_base() {
+  if is_macos; then
+    echo "$HOME/.dcvm"
+  else
+    echo "/srv/datacenter"
+  fi
+}
+
+# Get default config file path
+get_default_config_path() {
+  if is_macos; then
+    echo "$HOME/.config/dcvm/dcvm.conf"
+  else
+    echo "/etc/dcvm-install.conf"
+  fi
+}
+
+# Export platform detection functions
+export -f detect_os is_macos is_linux
+export -f get_qemu_accel get_qemu_binary get_template_arch
+export -f sed_inplace timeout_cmd get_nproc get_total_memory_kb readlink_f get_file_size
+export -f get_ip_forward_status enable_ip_forward get_primary_ip
+export -f check_virt_support get_virt_type_desc
+export -f service_start service_stop service_is_active
+export -f get_default_datacenter_base get_default_config_path
+
+# ============================================================================
+# End of Platform Abstraction Layer
+# ============================================================================
+
 print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
@@ -30,7 +583,7 @@ log_to_file() {
 }
 
 load_dcvm_config() {
-  local config_file="${1:-/etc/dcvm-install.conf}"
+  local config_file="${1:-$(get_default_config_path)}"
 
   if [ ! -f "$config_file" ]; then
     print_error "Configuration file not found: $config_file"
@@ -40,7 +593,7 @@ load_dcvm_config() {
 
   source "$config_file"
 
-  DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+  DATACENTER_BASE="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
   NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
   BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
   NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
@@ -270,18 +823,38 @@ confirm_action() {
 
 get_system_info() {
   echo "System Information:"
-  echo "  OS: $(lsb_release -d 2>/dev/null | cut -f2 || echo 'Unknown')"
+  if is_macos; then
+    echo "  OS: macOS $(sw_vers -productVersion 2>/dev/null || echo 'Unknown')"
+  else
+    echo "  OS: $(lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Unknown')"
+  fi
   echo "  Kernel: $(uname -r)"
-  echo "  CPUs: $(nproc)"
-  echo "  Memory: $(free -h | awk '/^Mem:/ {print $2}')"
-  echo "  Disk: $(df -h / | awk 'NR==2 {print $4 " available"}')"
+  echo "  CPUs: $(get_nproc)"
+  local mem_kb
+  mem_kb=$(get_total_memory_kb)
+  local mem_gb=$((mem_kb / 1024 / 1024))
+  echo "  Memory: ${mem_gb}G"
+  if is_macos; then
+    echo "  Disk: $(df -h / | awk 'NR==2 {print $4 " available"}')"
+  else
+    echo "  Disk: $(df -h / | awk 'NR==2 {print $4 " available"}')"
+  fi
+  echo "  Virtualization: $(get_virt_type_desc)"
 }
 
 get_host_info() {
-  HOST_MEMORY_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-  HOST_MEMORY_MB=$((HOST_MEMORY_KB / 1024))
-  HOST_CPUS=$(nproc)
-  HOST_CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+  local host_mem_kb
+  host_mem_kb=$(get_total_memory_kb)
+  HOST_MEMORY_KB=$host_mem_kb
+  HOST_MEMORY_MB=$((host_mem_kb / 1024))
+  HOST_CPUS=$(get_nproc)
+  
+  if is_macos; then
+    HOST_CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
+  else
+    HOST_CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+  fi
+  
   MAX_VM_MEMORY=$((HOST_MEMORY_MB * 75 / 100))
   MAX_VM_CPUS=$((HOST_CPUS - 1))
   if [ $MAX_VM_CPUS -lt 1 ]; then
@@ -292,7 +865,7 @@ get_host_info() {
 check_port_connectivity() {
   local ip="$1"
   local port="$2"
-  timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null
+  timeout_cmd 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null
 }
 
 is_vm_in_network() {
@@ -312,6 +885,11 @@ read_port_mappings() {
 
 check_vm_exists() {
   local vm_name="$1"
+  if is_macos; then
+    local base="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
+    [[ -f "$base/config/vms/${vm_name}.conf" ]] || [[ -d "$base/vms/${vm_name}" ]]
+    return $?
+  fi
   virsh list --all 2>/dev/null | grep -q " $vm_name "
 }
 
@@ -336,7 +914,7 @@ list_datacenter_vms() {
 }
 
 get_host_ip() {
-  local config_file="${1:-/etc/dcvm-install.conf}"
+  local config_file="${1:-$(get_default_config_path)}"
   if [ -f "$config_file" ]; then
     grep "^DATACENTER_IP=" "$config_file" | cut -d'=' -f2 | tr -d '"'
   else
@@ -430,7 +1008,9 @@ reload_dnsmasq() {
 
 interactive_prompt_memory_common() {
   local var_name="${1:-VM_MEMORY}"
-  local host_mem=$(free -m | awk '/^Mem:/ {print $2}')
+  local host_mem_kb
+  host_mem_kb=$(get_total_memory_kb)
+  local host_mem=$((host_mem_kb / 1024))
   local max_mem=$((host_mem * 75 / 100))
   local result=""
 
@@ -457,7 +1037,8 @@ interactive_prompt_memory_common() {
 
 interactive_prompt_cpus_common() {
   local var_name="${1:-VM_CPUS}"
-  local host_cpus=$(nproc)
+  local host_cpus
+  host_cpus=$(get_nproc)
   local max_cpus=$((host_cpus > 1 ? host_cpus - 1 : 1))
   local result=""
 
@@ -517,12 +1098,7 @@ interactive_prompt_disk_common() {
 
 detect_host_ip() {
   local host_ip=""
-  local subnet="${NETWORK_SUBNET:-10.10.10}"
-  for interface in eth0 ens3 ens18 enp0s3 wlan0; do
-    host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-    [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
-  done
-  [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
+  host_ip=$(get_primary_ip)
   [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
   echo "$host_ip"
 }

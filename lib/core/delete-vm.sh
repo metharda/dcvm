@@ -3,6 +3,131 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
+list_vms_macos_simple() {
+  local base="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
+  local registry="$base/config/vms"
+  if [[ ! -d "$registry" ]]; then
+    return 0
+  fi
+  for vm_conf in "$registry"/*.conf; do
+    [[ -e "$vm_conf" ]] || continue
+    [[ -f "$vm_conf" ]] || continue
+    local vm_name
+    vm_name=$(basename "$vm_conf" .conf)
+    local state="stopped"
+    local pid_file="$base/run/${vm_name}.pid"
+    if [[ -f "$pid_file" ]]; then
+      local pid
+      pid=$(cat "$pid_file" 2>/dev/null || true)
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        state="running"
+      fi
+    fi
+    printf "  %-15s: %s\n" "$vm_name" "$state"
+  done
+}
+
+stop_vm_macos_by_pidfile() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
+  local pid_file="$base/run/${vm_name}.pid"
+
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid=$(cat "$pid_file" 2>/dev/null || true)
+  [[ -n "$pid" ]] || return 0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pid_file" 2>/dev/null || true
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  local waited=0
+  while [[ $waited -lt 10 ]]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$pid_file" 2>/dev/null || true
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$pid_file" 2>/dev/null || true
+  return 0
+}
+
+delete_single_vm_macos() {
+  local VM_NAME="$1"
+  local base="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
+  local vm_conf="$base/config/vms/${VM_NAME}.conf"
+  local vm_dir="$base/vms/${VM_NAME}"
+  local run_dir="$base/run"
+  local log_file="$base/logs/${VM_NAME}.log"
+  local vm_registry="$base/config/vms"
+
+  print_info "Starting deletion of VM: $VM_NAME"
+
+  if [[ ! -f "$vm_conf" && ! -d "$vm_dir" ]]; then
+    print_error "VM $VM_NAME does not exist"
+    return 1
+  fi
+
+  print_info "Stopping VM $VM_NAME (macOS/QEMU)"
+  stop_vm_macos_by_pidfile "$VM_NAME"
+
+  rm -f "$run_dir/${VM_NAME}.monitor" 2>/dev/null || true
+  rm -f "$run_dir/${VM_NAME}.pid" 2>/dev/null || true
+
+  local port_file
+  port_file=$(get_port_mappings_file)
+  local vm_ip=""
+  local ssh_port=""
+  local http_port=""
+  if [[ -f "$port_file" ]]; then
+    local mapping
+    mapping=$(grep -E "^${VM_NAME}[[:space:]]" "$port_file" 2>/dev/null | head -1 || true)
+    if [[ -n "$mapping" ]]; then
+      vm_ip=$(echo "$mapping" | awk '{print $2}')
+      ssh_port=$(echo "$mapping" | awk '{print $3}')
+      http_port=$(echo "$mapping" | awk '{print $4}')
+    fi
+    sed_inplace "/^${VM_NAME}[[:space:]]/d" "$port_file" || true
+  fi
+
+  # Best-effort cleanup for legacy port/IP tracking files (not used by core logic,
+  # but can confuse status checks or external scripts).
+  if [[ -n "$ssh_port" && -f "$base/config/ports-ssh.txt" ]]; then
+    sed_inplace "/^${ssh_port}$/d" "$base/config/ports-ssh.txt" || true
+  fi
+  if [[ -n "$http_port" && -f "$base/config/ports-http.txt" ]]; then
+    sed_inplace "/^${http_port}$/d" "$base/config/ports-http.txt" || true
+  fi
+  if [[ -n "$vm_ip" && -f "$base/config/ports-ip.txt" ]]; then
+    sed_inplace "/^${vm_ip}$/d" "$base/config/ports-ip.txt" || true
+  fi
+
+  rm -rf "$vm_dir" 2>/dev/null || true
+  rm -f "$vm_conf" 2>/dev/null || true
+  rm -f "$base/config/network/${VM_NAME}.conf" 2>/dev/null || true
+  rm -f "$log_file" 2>/dev/null || true
+
+  # If this was the last VM, reset the port-mappings file to avoid stale output in `dcvm status`.
+  if [[ -n "$port_file" ]]; then
+    if [[ ! -d "$vm_registry" ]] || ! compgen -G "$vm_registry/*.conf" >/dev/null; then
+      echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" > "$port_file" 2>/dev/null || true
+      # Optional: clear legacy lists when no VMs remain.
+      : > "$base/config/ports-ssh.txt" 2>/dev/null || true
+      : > "$base/config/ports-http.txt" 2>/dev/null || true
+      : > "$base/config/ports-ip.txt" 2>/dev/null || true
+    fi
+  fi
+
+  print_success "VM $VM_NAME deleted successfully!"
+  return 0
+}
+
 cleanup_port_forwarding_for_vm() {
   local vm_ip="$1"
   local ssh_port="$2"
@@ -87,6 +212,11 @@ cleanup_dhcp_lease() {
 delete_single_vm() {
   local VM_NAME="$1"
 
+  if is_macos; then
+    delete_single_vm_macos "$VM_NAME"
+    return $?
+  fi
+
   print_info "Starting deletion of VM: $VM_NAME"
 
   if ! check_vm_exists "$VM_NAME"; then
@@ -129,7 +259,7 @@ delete_single_vm() {
     fi
   fi
 
-  [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file" && print_info "Removed from port mappings"
+  [ -f "$port_file" ] && sed_inplace "/^$VM_NAME /d" "$port_file" && print_info "Removed from port mappings"
 
   virsh autostart "$VM_NAME" --disable 2>/dev/null || true
 
@@ -148,8 +278,8 @@ delete_single_vm() {
   fi
 
   if [ -f ~/.ssh/config ]; then
-    sed -i "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
-    sed -i "/^Host $VM_NAME$/,/^$/{d;}" ~/.ssh/config
+    sed_inplace "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
+    sed_inplace "/^Host $VM_NAME$/,/^$/{d;}" ~/.ssh/config
     print_info "Removed SSH config entry"
   fi
 
@@ -191,6 +321,47 @@ delete_single_vm() {
 }
 
 delete_all_vms() {
+  if is_macos; then
+    print_warning "======================================="
+    print_warning "        DANGER: DELETE ALL VMs"
+    print_warning "======================================="
+    echo ""
+
+    local base="${DATACENTER_BASE:-$(get_default_datacenter_base)}"
+    local registry="$base/config/vms"
+
+    if [[ ! -d "$registry" ]] || ! compgen -G "$registry/*.conf" >/dev/null; then
+      print_info "No datacenter VMs found to delete"
+      return 0
+    fi
+
+    echo "The following VMs will be PERMANENTLY DELETED:"
+    for vm_conf in "$registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      printf "  %-20s\n" "$(basename "$vm_conf" .conf)"
+    done
+    echo ""
+
+    echo -n "Are you absolutely sure you want to delete ALL VMs? (type 'yes' to continue): "
+    read -r confirm1
+    [[ "$confirm1" != "yes" ]] && print_info "Operation cancelled" && return 0
+
+    echo ""
+    print_info "Starting mass deletion"
+
+    local failed=0
+    for vm_conf in "$registry"/*.conf; do
+      [[ -e "$vm_conf" ]] || continue
+      [[ -f "$vm_conf" ]] || continue
+      local vm
+      vm="$(basename "$vm_conf" .conf)"
+      delete_single_vm_macos "$vm" || failed=1
+    done
+
+    return $failed
+  fi
+
   print_warning "======================================="
   print_warning "        DANGER: DELETE ALL VMs"
   print_warning "======================================="
@@ -294,21 +465,30 @@ main() {
   load_dcvm_config
   [ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
 
+  local rc=0
+
   case "$1" in
   --all | -a)
-    delete_all_vms
+    delete_all_vms || rc=$?
     ;;
   *)
-    delete_single_vm "$1"
+    delete_single_vm "$1" || rc=$?
     ;;
   esac
 
   echo ""
   print_info "Remaining datacenter VMs:"
-  list_datacenter_vms || print_info "No datacenter VMs remaining"
+  if is_macos; then
+    list_vms_macos_simple || true
+  else
+    list_datacenter_vms || print_info "No datacenter VMs remaining"
+  fi
   echo ""
+
+  return $rc
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
+  exit $?
 fi

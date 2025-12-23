@@ -2,6 +2,19 @@
 
 Complete guide for using DCVM to manage virtual machines.
 
+## Platform Notes
+
+DCVM works on both Linux and macOS with some differences:
+
+| Feature | Linux | macOS |
+|---------|-------|-------|
+| Virtualization | KVM/QEMU with libvirt | QEMU with HVF |
+| Networking | Bridge + NAT | User-mode networking |
+| VM Access | Direct IP or port forward | localhost:port |
+| Root Required | Yes (most operations) | No |
+| Config Location | `/etc/dcvm-install.conf` | `~/.config/dcvm/dcvm.conf` |
+| Data Location | `/srv/datacenter` | `~/.dcvm` |
+
 ## Command Structure
 
 ```bash
@@ -151,6 +164,8 @@ dcvm status
 dcvm start myvm
 ```
 
+**macOS Note**: On macOS, starting a VM launches QEMU directly with HVF acceleration. The VM runs in the background and you can access it via the assigned ports.
+
 ### Stopping a VM
 
 ```bash
@@ -170,6 +185,11 @@ dcvm console myvm
 ```
 
 **Tip**: Press `Ctrl+]` to exit the console.
+
+**macOS Alternative**: Connect via SSH using the assigned port:
+```bash
+ssh -p 2222 admin@localhost
+```
 
 ### Deleting a VM
 
@@ -203,6 +223,28 @@ Automatically sets up port forwarding for:
 - SSH access (port 2222+)
 - HTTP access (port 8080+)
 
+**macOS**: Port forwarding is configured during VM creation via QEMU's `hostfwd` option. The `ports setup` command on macOS shows current mappings from VM configs.
+
+### Accessing VMs
+
+**Linux:**
+```bash
+# Direct access via VM IP
+ssh admin@10.10.10.10
+
+# Or via port forward
+ssh -p 2222 admin@<host-ip>
+```
+
+**macOS:**
+```bash
+# Always via localhost port
+ssh -p 2222 admin@localhost
+
+# HTTP access
+curl http://localhost:8080
+```
+
 ### Clean DHCP Leases
 
 ```bash
@@ -210,6 +252,8 @@ dcvm network dhcp cleanup
 ```
 
 Removes stale DHCP lease entries.
+
+**Note**: This command is Linux-only. macOS uses QEMU user-mode networking without DHCP leases.
 
 ## Storage and Backup
 

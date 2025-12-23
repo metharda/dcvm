@@ -2,14 +2,33 @@
 
 **DCVM** is a comprehensive bash script collection that allows you to easily manage your KVM/QEMU-based virtual datacenter environment. It's a powerful tool that automates virtual machine creation, management, backup, and monitoring operations.
 
+## Platform Support
+
+| Platform | Status | Virtualization | Notes |
+|----------|--------|----------------|-------|
+| Linux (Ubuntu/Debian) | ✅ Full | KVM/QEMU + libvirt | All features supported |
+| Linux (Arch) | ✅ Full | KVM/QEMU + libvirt | All features supported |
+| macOS (Intel) | ✅ Supported | QEMU + HVF | User-mode networking |
+| macOS (Apple Silicon) | ✅ Supported | QEMU + HVF | ARM64 VMs |
+
 ## Quick Installation
+
+### Linux
 
 You can setup dcvm quickly with `curl` or `wget` commands: (you should be in root user)
 
 | Method   | Command                                                                                                         |
 | :------- | :-------------------------------------------------------------------------------------------------------------- |
-| **curl** | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"` |
-| **wget** | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`  |
+| **curl** | `sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"` |
+| **wget** | `sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`  |
+
+### macOS
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
+```
+
+> **Note**: On macOS, `sudo` is not required. DCVM uses Homebrew and stores data in `~/.dcvm`.
 
 ### Custom Branch or Fork Installation
 
@@ -62,16 +81,23 @@ You can install from a different branch or fork using environment variables:
 
 ### Hardware
 
-- **CPU**: VT-x/AMD-V capable processor
+- **CPU**: VT-x/AMD-V capable processor (Linux), Intel HVF or Apple Silicon (macOS)
 - **RAM**: Minimum 4GB (8GB+ recommended)
 - **Disk**: 50GB+ free space
 - **Network**: Internet connection
 
-### Software
+### Linux Requirements
 
 - **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
+
+### macOS Requirements
+
+- **Operating System**: macOS 11.0+ (Big Sur or later)
+- **Package Manager**: Homebrew
+- **Virtualization**: HVF (Hypervisor.framework) - built into macOS
+- **Root Access**: Not required
 
 ## Installation
 

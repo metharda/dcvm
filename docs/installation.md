@@ -7,29 +7,45 @@ This guide will walk you through installing DCVM (Datacenter Virtual Machine Man
 ### Hardware Requirements
 
 - **CPU**: VT-x/AMD-V capable processor (hardware virtualization support)
+  - **macOS**: Intel Mac with Hypervisor.framework support, or Apple Silicon (M1/M2/M3)
 - **RAM**: Minimum 4GB (8GB+ recommended)
 - **Disk**: 50GB+ free space
 - **Network**: Internet connection for downloading VM templates
 
 ### Software Requirements
 
+#### Linux
 - **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
 - **Privileges**: Root access required
 - **Virtualization**: KVM/QEMU support
 
+#### macOS
+- **Operating System**: macOS 11.0+ (Big Sur or later)
+- **Package Manager**: Homebrew required
+- **Privileges**: Root not required for most operations
+- **Virtualization**: QEMU with HVF (Hypervisor.framework) acceleration
+
 ## Quick Installation
 
-### Using curl
+### Linux (Using curl)
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
-### Using wget
+### Linux (Using wget)
 
 ```bash
 sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
+
+### macOS (Using curl)
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
+```
+
+> **Note**: On macOS, `sudo` is not required. The installer will use Homebrew and configure paths in your home directory.
 
 Optional: you can override the download source via environment variables if needed:
 
@@ -39,7 +55,9 @@ Optional: you can override the download source via environment variables if need
 
 ## Manual Installation
 
-### 1. Check Virtualization Support
+### Linux Manual Installation
+
+#### 1. Check Virtualization Support
 
 Verify that your CPU supports virtualization:
 
@@ -50,20 +68,20 @@ egrep -c '(vmx|svm)' /proc/cpuinfo
 
 If the output is greater than 0, your CPU supports virtualization.
 
-### 2. Clone the Repository
+#### 2. Clone the Repository
 
 ```bash
 git clone https://github.com/metharda/dcvm.git
 cd dcvm
 ```
 
-### 3. Run the Installer
+#### 3. Run the Installer
 
 ```bash
 sudo bash lib/installation/install-dcvm.sh
 ```
 
-### 4. Follow the Installation Wizard
+#### 4. Follow the Installation Wizard
 
 The installer will prompt you for:
 
@@ -71,7 +89,49 @@ The installer will prompt you for:
 - Network name (default: `datacenter-net`)
 - Bridge name (default: `virbr-dc`)
 
+### macOS Manual Installation
+
+#### 1. Install Homebrew (if not already installed)
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+#### 2. Check Virtualization Support
+
+```bash
+# Intel Mac: Check for HVF support
+sysctl -n kern.hv_support
+# Output should be 1
+
+# Apple Silicon: Check architecture
+uname -m
+# Output should be arm64
+```
+
+#### 3. Clone the Repository
+
+```bash
+git clone https://github.com/metharda/dcvm.git
+cd dcvm
+```
+
+#### 4. Run the Installer
+
+```bash
+bash lib/installation/install-dcvm.sh
+```
+
+#### 5. Follow the Installation Wizard
+
+The installer will:
+- Install required Homebrew packages (qemu, coreutils, gnu-sed, grep, cdrtools)
+- Configure paths in your home directory (`~/.dcvm`)
+- Set up shell completion
+
 ## Installation Process
+
+### Linux Installation Steps
 
 The installer will:
 
@@ -83,6 +143,18 @@ The installer will:
 6. ✅ Configure NFS for shared storage
 7. ✅ Set up systemd services
 8. ✅ Install the `dcvm` command
+
+### macOS Installation Steps
+
+The installer will:
+
+1. ✅ Check HVF virtualization support
+2. ✅ Install Homebrew packages (qemu, coreutils, etc.)
+3. ✅ Create directory structure in `~/.dcvm`
+4. ✅ Configure QEMU with HVF acceleration
+5. ✅ Set up launchd services (optional)
+6. ✅ Install the `dcvm` command
+7. ✅ Configure shell completion
 
 ## Post-Installation
 
@@ -162,17 +234,22 @@ virsh net-list --all
 
 ### Missing Dependencies
 
-Manually install dependencies:
-
+#### Linux (Ubuntu/Debian)
 ```bash
-# Ubuntu/Debian
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients \
     bridge-utils virt-manager nfs-kernel-server
+```
 
-# Arch Linux
+#### Linux (Arch Linux)
+```bash
 sudo pacman -S qemu-full libvirt virt-install virt-viewer \
     bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode
+```
+
+#### macOS
+```bash
+brew install qemu coreutils gnu-sed grep cdrtools
 ```
 
 ## Uninstallation

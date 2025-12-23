@@ -16,13 +16,25 @@ print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="/etc/dcvm-install.conf"
+
+# Platform detection
+is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+# Config file location varies by platform
+if is_macos; then
+  CONFIG_FILE="$HOME/.config/dcvm/dcvm.conf"
+else
+  CONFIG_FILE="/etc/dcvm-install.conf"
+fi
+
 if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
   LIB_DIR="${DCVM_LIB_DIR:-/usr/local/lib/dcvm}"
 else
   LIB_DIR="$SCRIPT_DIR/lib"
 fi
+
+# Check if installed properly when running from /usr/local/bin
 if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
   echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
   echo "Visit: https://github.com/metharda/dcvm"
