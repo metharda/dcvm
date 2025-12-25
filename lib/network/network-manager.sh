@@ -204,11 +204,11 @@ cmd_vnc() {
         return 1
       fi
     fi
-    
+
     local tmp_xml
     tmp_xml="$(mktemp /tmp/remove-graphics-XXXXXX.xml)"
-    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' > "$tmp_xml"
-    
+    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
+
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
       print_success "VNC disabled for '$vm_name'"
@@ -254,10 +254,10 @@ cmd_vnc() {
         return 1
       fi
     fi
-    
+
     local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
-    
+
     local tmp_xml
     tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" >"$tmp_xml"
