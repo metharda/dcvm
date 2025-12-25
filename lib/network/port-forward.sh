@@ -174,7 +174,7 @@ cmd_setup() {
     else
       print_warning "Skipping $vm (no valid IP found or not reachable)"
     fi
-  done 3<<< "$VM_LIST"
+  done 3<<<"$VM_LIST"
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_mappings_tmp_to_file
   if command_exists iptables-save; then

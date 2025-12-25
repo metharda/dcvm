@@ -155,22 +155,22 @@ cmd_config() {
 cmd_vnc() {
   local action="${1:-}"
   local vm_name="${2:-}"
-  
+
   if [ -z "$action" ]; then
     print_error "Action required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
     exit 1
   fi
-  
+
   if [ -z "$vm_name" ]; then
     print_error "VM name required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
     exit 1
   fi
-  
+
   if ! check_vm_exists "$vm_name"; then
     print_error "VM '$vm_name' does not exist"
     return 1
   fi
-  
+
   case "$action" in
   disable)
     local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
@@ -178,7 +178,7 @@ cmd_vnc() {
       print_info "VNC is already disabled on '$vm_name'"
       return 0
     fi
-    
+
     local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to disable VNC."
@@ -199,10 +199,10 @@ cmd_vnc() {
         return 1
       fi
     fi
-    
+
     local tmp_xml="/tmp/remove-graphics-$$.xml"
-    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' > "$tmp_xml"
-    
+    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
+
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
       print_success "VNC disabled for '$vm_name'"
@@ -214,7 +214,7 @@ cmd_vnc() {
       return 1
     fi
     ;;
-    
+
   enable)
     local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
     if [ "$current_graphics" -gt 0 ]; then
@@ -222,7 +222,7 @@ cmd_vnc() {
       virsh vncdisplay "$vm_name" 2>/dev/null || true
       return 0
     fi
-    
+
     local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to enable VNC."
@@ -243,14 +243,14 @@ cmd_vnc() {
         return 1
       fi
     fi
-    
+
     local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>"
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
-    
+
     local tmp_xml="/tmp/add-graphics-$$.xml"
-    virsh dumpxml "$vm_name" > "$tmp_xml"
+    virsh dumpxml "$vm_name" >"$tmp_xml"
     sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
-    
+
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
       print_success "VNC enabled for '$vm_name'"
@@ -262,7 +262,7 @@ cmd_vnc() {
       return 1
     fi
     ;;
-    
+
   status)
     local graphics_info=$(virsh dumpxml "$vm_name" 2>/dev/null | grep "<graphics")
     if [ -n "$graphics_info" ]; then
@@ -281,7 +281,7 @@ cmd_vnc() {
       echo "  Access via: virsh console $vm_name"
     fi
     ;;
-    
+
   *)
     print_error "Unknown action: $action"
     echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"

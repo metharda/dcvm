@@ -31,7 +31,6 @@ cleanup_port_forwarding_for_vm() {
   command_exists iptables-save && iptables-save >/etc/iptables/rules.v4 2>/dev/null
 }
 
-
 cleanup_dhcp_lease() {
   local mac_address="$1"
   local vm_name="$2"
@@ -71,10 +70,10 @@ cleanup_dhcp_lease() {
       local tmp_status="/tmp/dhcp_status_$$.json"
       local original_count=0
       local new_count=0
-      
+
       original_count=$(jq 'length' "$status_file" 2>/dev/null || echo 0)
       local jq_filter="."
-      
+
       if [ -n "$mac_address" ]; then
         jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\")]"
       fi
@@ -85,8 +84,8 @@ cleanup_dhcp_lease() {
           jq_filter="$jq_filter | [.[] | select(.hostname != \"$vm_name\")]"
         fi
       fi
-      
-      if jq "$jq_filter" "$status_file" > "$tmp_status" 2>/dev/null; then
+
+      if jq "$jq_filter" "$status_file" >"$tmp_status" 2>/dev/null; then
         new_count=$(jq 'length' "$tmp_status" 2>/dev/null || echo 0)
         if [ "$new_count" -lt "$original_count" ]; then
           mv "$tmp_status" "$status_file"
@@ -99,11 +98,11 @@ cleanup_dhcp_lease() {
       else
         rm -f "$tmp_status"
         print_warning "Failed to parse status file with jq, resetting"
-        echo "[]" > "$status_file"
+        echo "[]" >"$status_file"
       fi
     else
       print_warning "jq not available, resetting status file"
-      echo "[]" > "$status_file"
+      echo "[]" >"$status_file"
     fi
   fi
 

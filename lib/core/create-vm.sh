@@ -187,8 +187,8 @@ check_dependencies() {
 
 select_os() {
   [ "$FORCE_MODE" = true ] && [ -z "$VM_OS_CHOICE" ] && VM_OS_CHOICE="$DEFAULT_OS"
-  if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == *.ISO ]] || \
-     { [ -n "$VM_OS_CHOICE" ] && [ -f "$VM_OS_CHOICE" ]; }; then
+  if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == *.ISO ]] ||
+    { [ -n "$VM_OS_CHOICE" ] && [ -f "$VM_OS_CHOICE" ]; }; then
     print_info "Detected ISO file - switching to custom ISO installation mode..."
     local force_flag=""
     [ "$FORCE_MODE" = true ] && force_flag="-f"
@@ -200,7 +200,7 @@ select_os() {
       $force_flag
     exit $?
   fi
-  
+
   if [ "$FORCE_MODE" != true ]; then
     while true; do
       cat <<-EOF

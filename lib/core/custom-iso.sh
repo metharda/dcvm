@@ -321,19 +321,19 @@ validate_iso_size() {
 check_iso_accessibility() {
   local iso_dir=$(dirname "$INSTALL_ISO")
   local iso_realpath=$(realpath "$INSTALL_ISO" 2>/dev/null || echo "$INSTALL_ISO")
-  
+
   if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]]; then
     print_warning "ISO is in a restricted directory that libvirt may not access"
     print_info "Path: $iso_realpath"
     echo ""
-    
+
     if [ "$COPY_ISO" != "true" ]; then
       print_info "The ISO will be copied to the VM directory to avoid permission issues"
       COPY_ISO="true"
       copy_iso_if_needed
     fi
   fi
-  
+
   if [ ! -r "$INSTALL_ISO" ]; then
     print_error "ISO file is not readable: $INSTALL_ISO"
     exit 1
