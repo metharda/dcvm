@@ -31,7 +31,7 @@ fi
 
 show_version() {
   echo "DCVM - Datacenter Virtual Machine Manager"
-  echo "Version: 0.7.2"
+  echo "Version: 0.8.0"
   echo "https://github.com/metharda/dcvm"
 }
 
@@ -57,6 +57,7 @@ COMMANDS:
         network                   Show network information
         network ports <cmd>       Port forwarding mgmt (setup, show, rules, apply, clear, test)
         network dhcp <cmd>        DHCP mgmt (show, clear-all, clear-vm, clear-mac, cleanup, renew)
+        network vnc <action> <vm> VNC management (enable, disable, status)
 
   Storage & Backup:
     backup <subcommand>       Backup management (create, restore, list, delete, export, import)

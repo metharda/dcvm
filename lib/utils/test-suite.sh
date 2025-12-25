@@ -388,6 +388,16 @@ test_network_commands() {
   if require_root_for_test "dcvm network dhcp show"; then
     run_test "dcvm network dhcp show" "$dcvm_cmd network dhcp show" || true
   fi
+
+  # VNC management tests
+  if require_root_for_test "dcvm network vnc"; then
+    local test_vm=$(virsh list --all --name | head -1)
+    if [ -n "$test_vm" ]; then
+      run_test "dcvm network vnc status" "$dcvm_cmd network vnc status $test_vm" || true
+    else
+      log_test "SKIP" "dcvm network vnc status" "No VMs available for testing"
+    fi
+  fi
 }
 
 test_storage_commands() {

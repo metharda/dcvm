@@ -211,6 +211,28 @@ dcvm network dhcp cleanup
 
 Removes stale DHCP lease entries.
 
+### VNC Management
+
+Manage VNC graphics for VMs (useful for custom ISO installations):
+
+```bash
+# Check VNC status
+dcvm network vnc status myvm
+
+# Disable VNC (frees up port for other VMs)
+dcvm network vnc disable myvm
+
+# Enable VNC
+dcvm network vnc enable myvm
+```
+
+**When to disable VNC:**
+- After completing OS installation from ISO
+- When you only need SSH/console access
+- To conserve VNC ports for other VMs
+
+**Note:** Disabling/enabling VNC requires the VM to be stopped. The command will offer to stop it automatically.
+
 ## Storage and Backup
 
 ### Backup a VM

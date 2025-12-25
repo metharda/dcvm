@@ -41,6 +41,7 @@ You can install from a different branch or fork using environment variables:
 - **Isolated Network**: Private datacenter-net network (10.10.10.0/24)
 - **Automatic DHCP**: Dynamic IP assignment
 - **Port Forwarding**: Automatic port forwarding for SSH and HTTP access
+- **VNC Management**: Enable/disable VNC graphics for remote access
 - **Connection Testing**: VM accessibility verification
 
 ### Storage & Backup
@@ -156,6 +157,9 @@ dcvm console myvm                    # Connect to console
 # Network
 dcvm network                         # Show network info
 dcvm network ports setup             # Setup port forwarding
+dcvm network vnc status myvm         # Check VNC status
+dcvm network vnc disable myvm        # Disable VNC (free port)
+dcvm network vnc enable myvm         # Enable VNC
 
 # Storage & Backup
 dcvm backup myvm                     # Backup VM
