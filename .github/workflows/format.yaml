@@ -1,22 +1,25 @@
-name: Format Check (shfmt)
+name: Format Shell Scripts (shfmt)
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-  push:
-    branches: [main]
+  pull_request_review:
+    types: [submitted]
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  format-check:
-    name: Check shell script formatting
+  format:
+    name: Format with shfmt (runs on approval)
+    if: github.event_name == 'workflow_dispatch' || github.event.review.state == 'approved'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (write enabled)
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
       - name: Install shfmt
         run: |
@@ -35,33 +38,51 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check formatting (shfmt -d)
+      - name: Run shfmt and commit if changes
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           files="${{ steps.find_files.outputs.files }}"
           if [[ -z "$files" ]]; then
-            echo "No shell files to check"
+            echo "No shell files to format"
             exit 0
           fi
-          
-          has_errors=false
-          while IFS= read -r file; do
+          echo "$files" | while IFS= read -r file; do
             [[ -z "$file" ]] && continue
             if [[ -f "$file" ]]; then
-              echo "Checking $file..."
-              if ! shfmt -d -i 2 "$file"; then
-                has_errors=true
-              fi
+              echo "Formatting $file"
+              shfmt -w -i 2 "$file"
             fi
-          done <<< "$files"
-          
-          if [[ "$has_errors" == "true" ]]; then
-            echo ""
-            echo "::error::Formatting issues found. Please run 'shfmt -w -i 2' on the files above."
-            echo ""
-            echo "Quick fix:"
-            echo "  shfmt -w -i 2 dcvm lib/**/*.sh"
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No formatting changes"
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "chore: format shell scripts with shfmt" || true
+
+          # Determine target ref for push
+          if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
+            target_ref="refs/heads/${GITHUB_HEAD_REF}"
+          elif [[ -n "${GITHUB_REF_NAME:-}" ]]; then
+            target_ref="refs/heads/${GITHUB_REF_NAME}"
+          else
+            echo "::error::Unable to determine branch name for push"
             exit 1
           fi
-          
-          echo "All files are properly formatted!"
+
+          # Skip push on forks where token lacks permission
+          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
+            echo "::warning::Cannot push formatting changes from fork ($HEAD_REPO). Please run shfmt locally."
+            exit 0
+          fi
+
+          echo "Pushing formatting changes to ${target_ref}"
+          git push origin HEAD:"${target_ref}"
+          echo "Formatted files pushed to branch"
