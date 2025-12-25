@@ -1,95 +1,22 @@
-name: Format Shell Scripts (shfmt)
+name: Format Check (shfmt)
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+  push:
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  format:
-    name: Format with shfmt (runs only when other checks passed)
+  format-check:
+    name: Check shell script formatting
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (write enabled)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-
-      - name: Verify required checks passed
-        uses: actions/github-script@v6
-        id: verify_checks
-        with:
-          script: |
-            const head = context.payload.pull_request?.head?.sha || process.env.GITHUB_SHA
-            if (!head) core.setFailed('No head sha available')
-            const owner = context.repo.owner
-            const repo = context.repo.repo
-            // expected check run base names; matrix runs may append details (e.g., OS)
-            const expected = [
-              'Bash lint (bash -n + shellcheck)',
-              'Quick test-suite (matrix)',
-              'Quick test-suite in container',
-              'Check `dcvm` version was bumped'
-            ]
-            const pollIntervalMs = 15000
-            const timeoutMs = 10 * 60 * 1000 // 10 minutes max wait
-            const started = Date.now()
-
-            while (true) {
-              const resp = await github.rest.checks.listForRef({ owner, repo, ref: head })
-              const runs = resp.data.check_runs || []
-
-              let allPassed = true
-              const pending = []
-              const missing = []
-              const failed = []
-
-              for (const name of expected) {
-                const matching = runs.filter(r => r.name.startsWith(name))
-                if (matching.length === 0) {
-                  missing.push(name)
-                  allPassed = false
-                  continue
-                }
-                const statusList = matching.map(r => ({
-                  name: r.name,
-                  status: r.status === 'completed' ? r.conclusion : r.status
-                }))
-
-                const notSuccess = statusList.filter(r => r.status !== 'success')
-                if (notSuccess.length === 0) continue
-
-                const hasFailure = notSuccess.some(r =>
-                  ['failure', 'cancelled', 'timed_out', 'action_required', 'stale'].includes(r.status)
-                )
-                if (hasFailure) {
-                  failed.push(...notSuccess.map(r => `${r.name}=${r.status}`))
-                  allPassed = false
-                } else {
-                  pending.push(...notSuccess.map(r => `${r.name}=${r.status}`))
-                  allPassed = false
-                }
-              }
-
-              if (failed.length > 0) {
-                core.setFailed(`Required check not successful: ${failed.join(', ')}`)
-                return
-              }
-              if (allPassed) return
-
-              const elapsed = Date.now() - started
-              if (elapsed > timeoutMs) {
-                core.setFailed(`Timed out waiting for required checks. Missing: ${missing.join(', ') || 'none'}, Pending: ${pending.join(', ') || 'none'}`)
-                return
-              }
-              core.info(`Waiting for checks... missing=[${missing.join(', ')}] pending=[${pending.join(', ')}]`)
-              await new Promise(res => setTimeout(res, pollIntervalMs))
-            }
 
       - name: Install shfmt
         run: |
@@ -108,51 +35,33 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Run shfmt and commit if changes
-        env:
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
-          REPO: ${{ github.repository }}
+      - name: Check formatting (shfmt -d)
         run: |
           set -euo pipefail
           files="${{ steps.find_files.outputs.files }}"
           if [[ -z "$files" ]]; then
-            echo "No shell files to format"
+            echo "No shell files to check"
             exit 0
           fi
-          echo "$files" | while IFS= read -r file; do
+          
+          has_errors=false
+          while IFS= read -r file; do
             [[ -z "$file" ]] && continue
             if [[ -f "$file" ]]; then
-              echo "Formatting $file"
-              shfmt -w -i 2 "$file"
+              echo "Checking $file..."
+              if ! shfmt -d -i 2 "$file"; then
+                has_errors=true
+              fi
             fi
-          done
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then
-            echo "No formatting changes"
-            exit 0
-          fi
-
-          git add -A
-          git commit -m "chore: format shell scripts with shfmt" || true
-
-          # Determine target ref for push (supports PRs and pushes)
-          if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
-            target_ref="refs/heads/${GITHUB_HEAD_REF}"
-          elif [[ -n "${GITHUB_REF_NAME:-}" ]]; then
-            target_ref="refs/heads/${GITHUB_REF_NAME}"
-          else
-            echo "::error::Unable to determine branch name for push"
+          done <<< "$files"
+          
+          if [[ "$has_errors" == "true" ]]; then
+            echo ""
+            echo "::error::Formatting issues found. Please run 'shfmt -w -i 2' on the files above."
+            echo ""
+            echo "Quick fix:"
+            echo "  shfmt -w -i 2 dcvm lib/**/*.sh"
             exit 1
           fi
-
-          # Skip push on forks where token lacks permission
-          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
-            echo "::warning::Cannot push formatting changes from fork ($HEAD_REPO). Please run shfmt locally."
-            exit 0
-          fi
-
-          echo "Pushing formatting changes to ${target_ref}"
-          git push origin HEAD:"${target_ref}"
-          echo "Formatted files pushed to branch"
+          
+          echo "All files are properly formatted!"
