@@ -377,6 +377,32 @@ dcvm delete --all
 systemctl restart libvirtd
 ./install-dcvm.sh
 ```
+## Development
+
+### Code Formatting
+
+This project uses `shfmt` for shell script formatting. CI will fail if code is not formatted.
+
+**Option 1: Pre-commit hook (recommended)**
+```bash
+# Install pre-commit
+pip install pre-commit
+
+# Enable hooks
+pre-commit install
+```
+
+**Option 2: Manual git hook**
+```bash
+cp scripts/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+**Option 3: Manual formatting**
+```bash
+shfmt -w -i 2 dcvm lib/**/*.sh
+```
+
 ## License
 This project is licensed under the Apache License, Version 2.0.
 See the `LICENSE` file for details.

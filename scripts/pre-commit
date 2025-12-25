@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# DCVM Pre-commit Hook - Auto-formats shell scripts with shfmt
+# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+# Check if shfmt is available
+if ! command -v shfmt &>/dev/null; then
+  echo "Warning: shfmt not installed, skipping format check"
+  echo "Install with: apt install shfmt"
+  exit 0
+fi
+
+# Get staged shell files
+staged_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(\.sh$|^dcvm$)' || true)
+
+if [[ -z "$staged_files" ]]; then
+  exit 0
+fi
+
+echo "Formatting staged shell scripts..."
+
+# Format each file
+for file in $staged_files; do
+  if [[ -f "$file" ]]; then
+    shfmt -i 2 -w "$file"
+    git add "$file"
+  fi
+done
+
+echo "Done!"
