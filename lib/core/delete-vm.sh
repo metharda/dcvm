@@ -67,22 +67,20 @@ cleanup_dhcp_lease() {
 
   if [ -f "$status_file" ]; then
     if command_exists jq; then
-      local tmp_status="/tmp/dhcp_status_$$.json"
+      local tmp_status
+      tmp_status="$(mktemp /tmp/dhcp_status_XXXXXX.json)"
       local original_count=0
       local new_count=0
 
       original_count=$(jq 'length' "$status_file" 2>/dev/null || echo 0)
       local jq_filter="."
 
-      if [ -n "$mac_address" ]; then
+      if [ -n "$mac_address" ] && [ -n "$vm_name" ]; then
+        jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\" and .hostname != \"$vm_name\")]"
+      elif [ -n "$mac_address" ]; then
         jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\")]"
-      fi
-      if [ -n "$vm_name" ]; then
-        if [ "$jq_filter" = "." ]; then
-          jq_filter="[.[] | select(.hostname != \"$vm_name\")]"
-        else
-          jq_filter="$jq_filter | [.[] | select(.hostname != \"$vm_name\")]"
-        fi
+      elif [ -n "$vm_name" ]; then
+        jq_filter="[.[] | select(.hostname != \"$vm_name\")]"
       fi
 
       if jq "$jq_filter" "$status_file" >"$tmp_status" 2>/dev/null; then

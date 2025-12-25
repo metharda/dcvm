@@ -319,9 +319,9 @@ validate_iso_size() {
 }
 
 check_iso_accessibility() {
-  local iso_dir=$(dirname "$INSTALL_ISO")
-  local iso_realpath=$(realpath "$INSTALL_ISO" 2>/dev/null || echo "$INSTALL_ISO")
-
+  local check_path="${ISO_PATH:-$INSTALL_ISO}"
+  local iso_realpath
+  iso_realpath=$(realpath "$check_path" 2>/dev/null || echo "$check_path")
   if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]]; then
     print_warning "ISO is in a restricted directory that libvirt may not access"
     print_info "Path: $iso_realpath"
@@ -363,7 +363,8 @@ build_virt_install_opts() {
   if [ "$GRAPHICS" = "none" ]; then
     VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
   else
-    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=0.0.0.0")
+    # VNC listens on 127.0.0.1 for security - use SSH tunnel for remote access
+    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
   fi
   [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
 }

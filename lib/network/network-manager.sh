@@ -182,27 +182,33 @@ cmd_vnc() {
     local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to disable VNC."
-      read -p "Stop VM now? (y/N): " confirm
-      if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        print_info "Stopping VM..."
-        virsh shutdown "$vm_name" >/dev/null 2>&1 || true
-        local count=0
-        while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
-          sleep 2
-          count=$((count + 1))
-        done
-        if virsh list | grep -q " $vm_name .*running"; then
-          virsh destroy "$vm_name" >/dev/null 2>&1 || true
+      if [ -t 0 ]; then
+        read -r -p "Stop VM now? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          print_info "Stopping VM..."
+          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
+          local count=0
+          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
+            sleep 2
+            count=$((count + 1))
+          done
+          if virsh list | grep -q " $vm_name .*running"; then
+            virsh destroy "$vm_name" >/dev/null 2>&1 || true
+          fi
+        else
+          print_info "Cancelled. Stop VM first, then run this command again."
+          return 1
         fi
       else
-        print_info "Cancelled. Stop VM first, then run this command again."
+        print_error "Non-interactive session. Please stop VM '$vm_name' first."
         return 1
       fi
     fi
-
-    local tmp_xml="/tmp/remove-graphics-$$.xml"
-    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
-
+    
+    local tmp_xml
+    tmp_xml="$(mktemp /tmp/remove-graphics-XXXXXX.xml)"
+    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' > "$tmp_xml"
+    
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
       print_success "VNC disabled for '$vm_name'"
@@ -226,28 +232,34 @@ cmd_vnc() {
     local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to enable VNC."
-      read -p "Stop VM now? (y/N): " confirm
-      if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        print_info "Stopping VM..."
-        virsh shutdown "$vm_name" >/dev/null 2>&1 || true
-        local count=0
-        while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
-          sleep 2
-          count=$((count + 1))
-        done
-        if virsh list | grep -q " $vm_name .*running"; then
-          virsh destroy "$vm_name" >/dev/null 2>&1 || true
+      if [ -t 0 ]; then
+        read -r -p "Stop VM now? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          print_info "Stopping VM..."
+          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
+          local count=0
+          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
+            sleep 2
+            count=$((count + 1))
+          done
+          if virsh list | grep -q " $vm_name .*running"; then
+            virsh destroy "$vm_name" >/dev/null 2>&1 || true
+          fi
+        else
+          print_info "Cancelled. Stop VM first, then run this command again."
+          return 1
         fi
       else
-        print_info "Cancelled. Stop VM first, then run this command again."
+        print_error "Non-interactive session. Please stop VM '$vm_name' first."
         return 1
       fi
     fi
-
-    local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>"
+    
+    local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
-
-    local tmp_xml="/tmp/add-graphics-$$.xml"
+    
+    local tmp_xml
+    tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" >"$tmp_xml"
     sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
 
