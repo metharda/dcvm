@@ -25,6 +25,7 @@ Thumbs.db
 *.lock
 
 # Virtual Machine files
+iso/
 *.qcow2
 *.raw
 *.img

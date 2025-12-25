@@ -152,6 +152,156 @@ cmd_config() {
   echo "HOST_IP:         $(get_host_ip)"
 }
 
+cmd_vnc() {
+  local action="${1:-}"
+  local vm_name="${2:-}"
+
+  if [ -z "$action" ]; then
+    print_error "Action required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+    exit 1
+  fi
+
+  if [ -z "$vm_name" ]; then
+    print_error "VM name required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+    exit 1
+  fi
+
+  if ! check_vm_exists "$vm_name"; then
+    print_error "VM '$vm_name' does not exist"
+    return 1
+  fi
+
+  case "$action" in
+  disable)
+    local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
+    if [ "$current_graphics" -eq 0 ]; then
+      print_info "VNC is already disabled on '$vm_name'"
+      return 0
+    fi
+
+    local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
+    if [ "$is_running" -gt 0 ]; then
+      print_warning "VM '$vm_name' is running. It needs to be stopped to disable VNC."
+      if [ -t 0 ]; then
+        read -r -p "Stop VM now? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          print_info "Stopping VM..."
+          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
+          local count=0
+          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
+            sleep 2
+            count=$((count + 1))
+          done
+          if virsh list | grep -q " $vm_name .*running"; then
+            virsh destroy "$vm_name" >/dev/null 2>&1 || true
+          fi
+        else
+          print_info "Cancelled. Stop VM first, then run this command again."
+          return 1
+        fi
+      else
+        print_error "Non-interactive session. Please stop VM '$vm_name' first."
+        return 1
+      fi
+    fi
+
+    local tmp_xml
+    tmp_xml="$(mktemp /tmp/remove-graphics-XXXXXX.xml)"
+    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
+
+    if virsh define "$tmp_xml" >/dev/null 2>&1; then
+      rm -f "$tmp_xml"
+      print_success "VNC disabled for '$vm_name'"
+      print_info "VNC port is now free. Start VM with: dcvm start $vm_name"
+      print_info "Access VM via: virsh console $vm_name"
+    else
+      rm -f "$tmp_xml"
+      print_error "Failed to disable VNC"
+      return 1
+    fi
+    ;;
+
+  enable)
+    local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
+    if [ "$current_graphics" -gt 0 ]; then
+      print_info "VNC is already enabled on '$vm_name'"
+      virsh vncdisplay "$vm_name" 2>/dev/null || true
+      return 0
+    fi
+
+    local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
+    if [ "$is_running" -gt 0 ]; then
+      print_warning "VM '$vm_name' is running. It needs to be stopped to enable VNC."
+      if [ -t 0 ]; then
+        read -r -p "Stop VM now? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+          print_info "Stopping VM..."
+          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
+          local count=0
+          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
+            sleep 2
+            count=$((count + 1))
+          done
+          if virsh list | grep -q " $vm_name .*running"; then
+            virsh destroy "$vm_name" >/dev/null 2>&1 || true
+          fi
+        else
+          print_info "Cancelled. Stop VM first, then run this command again."
+          return 1
+        fi
+      else
+        print_error "Non-interactive session. Please stop VM '$vm_name' first."
+        return 1
+      fi
+    fi
+
+    local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
+    local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
+
+    local tmp_xml
+    tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
+    virsh dumpxml "$vm_name" >"$tmp_xml"
+    sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
+
+    if virsh define "$tmp_xml" >/dev/null 2>&1; then
+      rm -f "$tmp_xml"
+      print_success "VNC enabled for '$vm_name'"
+      print_info "Start VM with: dcvm start $vm_name"
+      print_info "Then access VNC with: virsh vncdisplay $vm_name"
+    else
+      rm -f "$tmp_xml"
+      print_error "Failed to enable VNC"
+      return 1
+    fi
+    ;;
+
+  status)
+    local graphics_info=$(virsh dumpxml "$vm_name" 2>/dev/null | grep "<graphics")
+    if [ -n "$graphics_info" ]; then
+      print_success "VNC is ENABLED on '$vm_name'"
+      local vnc_display=$(virsh vncdisplay "$vm_name" 2>/dev/null || true)
+      if [ -n "$vnc_display" ]; then
+        echo "  VNC Display: $vnc_display"
+        local vnc_port=$((5900 + ${vnc_display#:}))
+        echo "  VNC Port: $vnc_port"
+        echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
+      else
+        echo "  (VM is not running, VNC port will be assigned on start)"
+      fi
+    else
+      print_info "VNC is DISABLED on '$vm_name'"
+      echo "  Access via: virsh console $vm_name"
+    fi
+    ;;
+
+  *)
+    print_error "Unknown action: $action"
+    echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+    return 1
+    ;;
+  esac
+}
+
 cmd_help() {
   cat <<EOF
 DCVM Network Manager
@@ -167,8 +317,9 @@ Subcommands:
   ip-forwarding [on|off|show]
                        Get or toggle net.ipv4.ip_forward
   config               Show effective DCVM network config
-  ports <cmd>          Manage port forwarding (delegates)
-  dhcp <cmd>           Manage DHCP leases (delegates)
+  ports <cmd>          Manage port forwarding (setup, show, rules, apply, clear, test)
+  dhcp <cmd>           Manage DHCP leases (show, clear-all, clear-vm, cleanup)
+  vnc <action> <vm>    VNC management (enable, disable, status)
   help                 Show this help
 
 Examples:
@@ -179,6 +330,8 @@ Examples:
   dcvm network ip-forwarding on
   dcvm network ports setup
   dcvm network dhcp cleanup
+  dcvm network vnc status myvm
+  dcvm network vnc disable myvm
 EOF
 }
 
@@ -203,6 +356,9 @@ main() {
   ports | dhcp)
     set +e
     if [ "$subcmd" = "ports" ]; then exec "$SCRIPT_DIR/port-forward.sh" "$@"; else exec "$SCRIPT_DIR/dhcp.sh" "$@"; fi
+    ;;
+  vnc)
+    cmd_vnc "$@"
     ;;
   *)
     print_error "Unknown network subcommand: $subcmd"

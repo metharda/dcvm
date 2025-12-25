@@ -44,7 +44,7 @@ get_vm_ip_advanced() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
 
-  print_info "Looking for IP address of $vm_name"
+  print_info "Looking for IP address of $vm_name" >&2
   while [ -z "$ip" ] && [ $attempts -lt 15 ]; do
     ip=$(get_vm_ip "$vm_name" 1)
     if [ "$ip" = "N/A" ] || [ -z "$ip" ]; then
@@ -56,7 +56,7 @@ get_vm_ip_advanced() {
     fi
     if [ -z "$ip" ] || [ "$ip" = "N/A" ]; then
       if [ $attempts -eq 10 ]; then
-        print_info "Attempting network scan as last resort"
+        print_info "Attempting network scan as last resort" >&2
         for i in {100..254}; do
           local test_ip="${subnet}.$i"
           if check_ping "$test_ip"; then
@@ -72,14 +72,14 @@ get_vm_ip_advanced() {
     fi
     if [ -n "$ip" ] && [ "$ip" != "N/A" ] && [[ $ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
       if check_ping "$ip"; then
-        print_success "$vm_name IP found and reachable: $ip"
+        print_success "$vm_name IP found and reachable: $ip" >&2
         break
       else
-        print_warning "$vm_name IP found but not reachable: $ip (attempt $((attempts + 1)))"
+        print_warning "$vm_name IP found but not reachable: $ip (attempt $((attempts + 1)))" >&2
         ip=""
       fi
     else
-      [ $attempts -eq 0 ] && print_info "Attempt $((attempts + 1)): Waiting for $vm_name to get valid IP address"
+      [ $attempts -eq 0 ] && print_info "Attempt $((attempts + 1)): Waiting for $vm_name to get valid IP address" >&2
     fi
     [ -z "$ip" ] || [ "$ip" = "N/A" ] && sleep 3
     attempts=$((attempts + 1))
@@ -137,7 +137,11 @@ cmd_setup() {
   fi
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
   print_info "Discovering VMs on $NETWORK_NAME"
-  VM_LIST=$(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$" | while read vm; do [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"; done)
+  VM_LIST=""
+  while read -r vm; do
+    [ -n "$vm" ] && is_vm_in_network "$vm" && VM_LIST="${VM_LIST}${vm}"$'\n'
+  done < <(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$")
+  VM_LIST=$(echo "$VM_LIST" | grep -v "^$")
   if [ -z "$VM_LIST" ]; then
     print_warning "No VMs found using $NETWORK_NAME"
     print_info "Create a VM first: dcvm create my-vm"
@@ -156,7 +160,7 @@ cmd_setup() {
   print_info "Configuring port forwarding for discovered VMs"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
-  echo "$VM_LIST" | while read vm; do
+  while read -r vm <&3; do
     [ -z "$vm" ] && continue
     if ! virsh list | grep -q "$vm.*running"; then
       print_warning "Skipping $vm (not running - start it first)"
@@ -170,7 +174,7 @@ cmd_setup() {
     else
       print_warning "Skipping $vm (no valid IP found or not reachable)"
     fi
-  done
+  done 3<<<"$VM_LIST"
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_mappings_tmp_to_file
   if command_exists iptables-save; then
@@ -184,7 +188,7 @@ cmd_setup() {
   if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
     echo "VM Access Information:"
     read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "\n$vm ($ip):" && echo "  SSH:  ssh -p $ssh_port admin@$HOST_IP" && echo "  HTTP: http://$HOST_IP:$http_port"
+      [ -n "$vm" ] && echo "" && echo "$vm ($ip):" && echo "  SSH:  ssh -p $ssh_port admin@$HOST_IP" && echo "  HTTP: http://$HOST_IP:$http_port"
     done
     echo ""
   else
@@ -211,7 +215,7 @@ cmd_show() {
 
 cmd_rules() {
   echo "Active port forwarding rules (iptables):"
-  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
+  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(22[2-9][0-9]|80[8-9][0-9]|81[0-7][0-9])")
   [ -n "$nat_rules" ] && echo "$nat_rules" || echo "No datacenter port forwarding rules found"
 }
 

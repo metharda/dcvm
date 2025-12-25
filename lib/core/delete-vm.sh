@@ -47,7 +47,7 @@ cleanup_dhcp_lease() {
     local before
     before=$(wc -l <"$lease_file")
     local escaped_mac
-    escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
+    escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\\^$.*\/[]/\\&/g')
     sed -i "/${escaped_mac}/Id" "$lease_file"
     local after
     after=$(wc -l <"$lease_file")
@@ -58,7 +58,7 @@ cleanup_dhcp_lease() {
     local before
     before=$(wc -l <"$lease_file")
     local escaped_name
-    escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
+    escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\\^$.*\/[]/\\&/g')
     sed -i "/${escaped_name}/Id" "$lease_file"
     local after
     after=$(wc -l <"$lease_file")
@@ -66,15 +66,41 @@ cleanup_dhcp_lease() {
   fi
 
   if [ -f "$status_file" ]; then
-    if [ -n "$mac_address" ]; then
-      local escaped_mac
-      escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\^$.*\/[]/\\&/g')
-      sed -i "/${escaped_mac}/Id" "$status_file"
-    fi
-    if [ -n "$vm_name" ]; then
-      local escaped_name
-      escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\^$.*\/[]/\\&/g')
-      sed -i "/${escaped_name}/Id" "$status_file"
+    if command_exists jq; then
+      local tmp_status
+      tmp_status="$(mktemp /tmp/dhcp_status_XXXXXX.json)"
+      local original_count=0
+      local new_count=0
+
+      original_count=$(jq 'length' "$status_file" 2>/dev/null || echo 0)
+      local jq_filter="."
+
+      if [ -n "$mac_address" ] && [ -n "$vm_name" ]; then
+        jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\" and .hostname != \"$vm_name\")]"
+      elif [ -n "$mac_address" ]; then
+        jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\")]"
+      elif [ -n "$vm_name" ]; then
+        jq_filter="[.[] | select(.hostname != \"$vm_name\")]"
+      fi
+
+      if jq "$jq_filter" "$status_file" >"$tmp_status" 2>/dev/null; then
+        new_count=$(jq 'length' "$tmp_status" 2>/dev/null || echo 0)
+        if [ "$new_count" -lt "$original_count" ]; then
+          mv "$tmp_status" "$status_file"
+          chmod 644 "$status_file"
+          removed=$((removed + original_count - new_count))
+          print_info "Removed $((original_count - new_count)) entry from status file"
+        else
+          rm -f "$tmp_status"
+        fi
+      else
+        rm -f "$tmp_status"
+        print_warning "Failed to parse status file with jq, resetting"
+        echo "[]" >"$status_file"
+      fi
+    else
+      print_warning "jq not available, resetting status file"
+      echo "[]" >"$status_file"
     fi
   fi
 

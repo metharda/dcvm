@@ -74,6 +74,18 @@ osinfo-query os | grep -i <distro_name>
 dcvm create-iso myvm --iso /path/to/iso
 ```
 
+### VNC port already in use
+```bash
+# Check which VMs are using VNC
+virsh list --all | while read line; do
+  vm=$(echo "$line" | awk '{print $2}')
+  [ -n "$vm" ] && virsh vncdisplay "$vm" 2>/dev/null && echo "  → $vm"
+done
+
+# Disable VNC on VMs that don't need it
+dcvm network vnc disable <vm_name>
+```
+
 ## Update issues
 
 ### Self-update fails

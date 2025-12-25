@@ -318,6 +318,28 @@ validate_iso_size() {
   fi
 }
 
+check_iso_accessibility() {
+  local check_path="${ISO_PATH:-$INSTALL_ISO}"
+  local iso_realpath
+  iso_realpath=$(realpath "$check_path" 2>/dev/null || echo "$check_path")
+  if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]]; then
+    print_warning "ISO is in a restricted directory that libvirt may not access"
+    print_info "Path: $iso_realpath"
+    echo ""
+
+    if [ "$COPY_ISO" != "true" ]; then
+      print_info "The ISO will be copied to the VM directory to avoid permission issues"
+      COPY_ISO="true"
+      copy_iso_if_needed
+    fi
+  fi
+
+  if [ ! -r "$INSTALL_ISO" ]; then
+    print_error "ISO file is not readable: $INSTALL_ISO"
+    exit 1
+  fi
+}
+
 create_vm_disk() {
   print_info "Creating disk: $DISK_PATH ($DISK_SIZE)"
   qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE" >/dev/null 2>&1 || {
@@ -341,6 +363,7 @@ build_virt_install_opts() {
   if [ "$GRAPHICS" = "none" ]; then
     VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
   else
+    # VNC listens on 127.0.0.1 for security - use SSH tunnel for remote access
     VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
   fi
   [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
@@ -429,6 +452,7 @@ main() {
   prepare_vm_directory
   copy_iso_if_needed
   validate_iso_size
+  check_iso_accessibility
   create_vm_disk
   build_virt_install_opts
   run_virt_install
