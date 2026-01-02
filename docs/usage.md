@@ -18,8 +18,8 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 12, Debian 11, Ubuntu 22.04, Ubuntu 20.04, Arch Linux)
-- Username (default: admin)
+- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Kali Linux, Arch Linux)
+- Username (default: depends on OS, e.g. ubuntu)
 - Password
 - Root access settings
 - SSH key setup
@@ -43,18 +43,18 @@ dcvm create myvm \
   -m 4096 \
   -c 4 \
   -d 50G \
-  -o 3 \
+  -o 5 \
   --enable-root \
   -k nginx,mysql-server
 ```
 
 **Options:**
-- `-u, --username`: VM username (default: admin)
+- `-u, --username`: VM username (default: depends on OS, e.g., 'ubuntu', 'debian')
 - `-p, --password`: User password (required in force mode)
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
-- `-d, --disk`: Disk size (default: 20G)
-- `-o, --os`: OS choice (1=Debian12, 2=Debian11, 3=Ubuntu22.04, 4=Ubuntu20.04, 5=ArchLinux)
+- `-d, --disk`: Disk size (default: 30G)
+- `-o, --os`: OS choice (1=Debian13, 2=Debian12, 3=Debian11, 4=Ubuntu24.04, 5=Ubuntu22.04, 6=Ubuntu20.04, 7=ArchLinux, 8=KaliLinux)
 - `--ip`: Static IP address (e.g., 10.10.10.50) - uses DHCP if not specified
 
 Note about multiple VMs and `--ip`:
@@ -281,13 +281,13 @@ Removes:
 If SSH key was configured during VM creation:
 
 ```bash
-ssh admin@<vm-ip>
+ssh ubuntu@<vm-ip> # or debian@<vm-ip>, etc.
 ```
 
 ### Using Password
 
 ```bash
-ssh admin@<vm-ip>
+ssh ubuntu@<vm-ip>
 # Enter password when prompted
 ```
 
@@ -305,16 +305,16 @@ dcvm status myvm
 
 ```bash
 # Copy to VM
-scp file.txt admin@<vm-ip>:/home/admin/
+scp file.txt ubuntu@<vm-ip>:/home/ubuntu/
 
 # Copy from VM
-scp admin@<vm-ip>:/path/to/file.txt ./
+scp ubuntu@<vm-ip>:/path/to/file.txt ./
 ```
 
 ### Using SFTP
 
 ```bash
-sftp admin@<vm-ip>
+sftp ubuntu@<vm-ip>
 ```
 
 ### Using Shared NFS
@@ -342,7 +342,7 @@ dcvm create webserver -f -p pass123 -k nginx,php,mysql-server
 Connect to VM and use apt:
 
 ```bash
-ssh admin@<vm-ip>
+ssh ubuntu@<vm-ip>
 sudo apt update
 sudo apt install package-name
 ```

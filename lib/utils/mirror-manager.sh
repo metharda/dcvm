@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+MIRROR_debian_13="
+https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://cdimage.debian.org/cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://mirrors.kernel.org/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://mirror.rackspace.com/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://mirror.leaseweb.net/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+"
+
 MIRROR_debian_12="
 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 https://cdimage.debian.org/cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
@@ -16,6 +24,15 @@ https://mirror.rackspace.com/debian-cdimage/cloud/bullseye/latest/debian-11-gene
 https://mirror.leaseweb.net/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 "
 
+MIRROR_ubuntu_2404="
+https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirror.rackspace.com/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirror.leaseweb.net/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirror.hetzner.de/ubuntu/cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+"
+
 MIRROR_ubuntu_2204="
 https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://releases.ubuntu.com/jammy/ubuntu-22.04-server-cloudimg-amd64.img
@@ -26,6 +43,7 @@ https://mirror.hetzner.de/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.0
 https://mirror.sjc01.us.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 "
+
 MIRROR_ubuntu_2004="
 https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 https://releases.ubuntu.com/focal/ubuntu-20.04-server-cloudimg-amd64.img
@@ -50,16 +68,24 @@ https://mirror.frankfurt.linode.com/archlinux/images/latest/Arch-Linux-x86_64-cl
 https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
-SUPPORTED_IMAGES="debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2"
+
+MIRROR_kali="
+https://kali.download/cloud-images/current/kali-linux-2025.4-cloud-genericcloud-amd64.tar.xz
+https://cdimage.kali.org/cloud-images/current/kali-linux-2025.4-cloud-genericcloud-amd64.tar.xz
+"
+SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2"
 
 get_mirror_varname() {
   local filename="$1"
   case "$filename" in
+  debian-13-genericcloud-amd64.qcow2) echo "MIRROR_debian_13" ;;
   debian-12-generic-amd64.qcow2) echo "MIRROR_debian_12" ;;
   debian-11-generic-amd64.qcow2) echo "MIRROR_debian_11" ;;
+  ubuntu-24.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2404" ;;
   ubuntu-22.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2204" ;;
   ubuntu-20.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2004" ;;
   Arch-Linux-x86_64-cloudimg.qcow2) echo "MIRROR_arch" ;;
+  kali-linux-cloud-genericcloud-amd64.qcow2) echo "MIRROR_kali" ;;
   *) echo "" ;;
   esac
 }
@@ -216,7 +242,7 @@ test_mirror_speed() {
   local tmp_dir="$2"
   local idx="$3"
   local result
-  result=$(curl -sS -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
+  result=$(curl -sS -L -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
     --connect-timeout 3 --max-time 5 -r 0-1048575 "$url" 2>/dev/null) || return 1
   local http_code time_s speed_bps
   http_code=$(awk '{print $1}' <<<"$result")
@@ -312,6 +338,7 @@ select_best_mirror() {
   return 1
 }
 
+
 download_with_mirrors() {
   local filename="${1:-}"
   local target_path="${2:-}"
@@ -389,7 +416,19 @@ download_with_mirrors() {
         rc=3
       fi
       if [ "$rc" -eq 0 ]; then
-        mv "$tmp_file" "$target_path"
+        if is_kali_image "$filename"; then
+          if ! extract_kali_image "$tmp_file" "$target_path"; then
+            rm -f "$tmp_file" 2>/dev/null
+            echo "WARNING: Kali image extraction failed, trying next mirror" >&2
+            rc=4
+          else
+            rm -f "$tmp_file" 2>/dev/null
+          fi
+        else
+          mv "$tmp_file" "$target_path"
+        fi
+      fi
+      if [ "$rc" -eq 0 ]; then
         local avg_speed_mbs
         if [ "$elapsed_time" -gt 0 ]; then
           avg_speed_mbs=$(awk "BEGIN{printf \"%.2f\", $file_size/1048576/$elapsed_time}")
@@ -440,7 +479,16 @@ download_with_mirrors() {
             continue
           fi
         fi
-        mv "$tmp_file" "$target_path"
+        if is_kali_image "$filename"; then
+          if ! extract_kali_image "$tmp_file" "$target_path"; then
+            rm -f "$tmp_file" 2>/dev/null
+            echo "WARNING: Kali image extraction failed, trying next mirror" >&2
+            continue
+          fi
+          rm -f "$tmp_file" 2>/dev/null
+        else
+          mv "$tmp_file" "$target_path"
+        fi
         local avg_speed_mbs size_mb
         if [ "$elapsed_time" -gt 0 ]; then
           avg_speed_mbs=$(awk "BEGIN{printf \"%.2f\", $file_size/1048576/$elapsed_time}")
@@ -492,51 +540,339 @@ list_mirrors() {
   done <<<"$mirrors"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+is_kali_image() {
+  local filename="$1"
+  [[ "$filename" == "kali-linux-cloud-genericcloud-amd64.qcow2" ]]
+}
+
+extract_kali_image() {
+  local tarxz_path="$1"
+  local target_qcow2="$2"
+
+  echo "INFO: Extracting Kali Linux image from tar.xz archive..." >&2
+
+  if ! command -v tar >/dev/null 2>&1; then
+    echo "ERROR: 'tar' command required to extract Kali image" >&2
+    return 1
+  fi
+
+  if ! command -v xz >/dev/null 2>&1; then
+    echo "ERROR: 'xz' command required to extract Kali image. Install xz-utils." >&2
+    return 1
+  fi
+
+  if ! command -v qemu-img >/dev/null 2>&1; then
+    echo "ERROR: 'qemu-img' command required to convert Kali image" >&2
+    return 1
+  fi
+
+  local extract_dir
+  extract_dir=$(mktemp -d)
+
+  if ! tar -xJf "$tarxz_path" -C "$extract_dir" 2>&2; then
+    echo "ERROR: Failed to extract tar.xz archive" >&2
+    rm -rf "$extract_dir" 2>/dev/null
+    return 1
+  fi
+
+  local raw_file
+  raw_file=$(find "$extract_dir" -name "*.raw" -type f | head -1)
+  if [ -z "$raw_file" ]; then
+    raw_file=$(find "$extract_dir" -name "disk*" -type f | head -1)
+  fi
+
+  if [ -z "$raw_file" ]; then
+    echo "ERROR: No raw disk image found in tar.xz archive" >&2
+    echo "Archive contents:" >&2
+    find "$extract_dir" -type f >&2
+    rm -rf "$extract_dir" 2>/dev/null
+    return 1
+  fi
+
+  echo "INFO: Found raw image: $(basename "$raw_file")" >&2
+  local raw_size
+  raw_size=$(du -h "$raw_file" 2>/dev/null | cut -f1)
+  echo "INFO: Raw image size: $raw_size (this will be compressed)" >&2
+  echo "INFO: Converting raw image to qcow2 format (this may take a few minutes)..." >&2
+  if ! qemu-img convert -f raw -O qcow2 -c -p "$raw_file" "$target_qcow2" 2>&2; then
+    echo "ERROR: Failed to convert raw image to qcow2" >&2
+    rm -rf "$extract_dir" 2>/dev/null
+    rm -f "$target_qcow2" 2>/dev/null
+    return 1
+  fi
+  rm -rf "$extract_dir" 2>/dev/null
+
+  local final_size
+  final_size=$(du -h "$target_qcow2" 2>/dev/null | cut -f1)
+  echo "SUCCESS: Kali Linux image converted to qcow2 (${raw_size} -> ${final_size})" >&2
+  return 0
+}
+
+main() {
+  if [ -f /etc/dcvm-install.conf ]; then
+    source /etc/dcvm-install.conf
+  fi
+  DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
+  TEMPLATE_DIR="$DATACENTER_BASE/storage/templates"
+
   case "${1:-}" in
   list)
     list_mirrors "${2:-}"
     ;;
   check)
-    if [ -z "${2:-}" ]; then
-      echo "ERROR: filename required. Usage: $0 check <filename>"
+    local target="${2:-}"
+    if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
+      echo "Checking mirrors for all templates..."
+      echo ""
+      for img in $SUPPORTED_IMAGES; do
+        echo "=== $img ==="
+        check_mirrors "$img"
+        echo ""
+      done
+    elif [ -z "$target" ]; then
+      echo "ERROR: filename required. Usage: dcvm template check <filename>"
+      echo "       dcvm template check -a, --all  (check all templates)"
       echo ""
       list_mirrors ""
       exit 1
+    else
+      check_mirrors "$target"
     fi
-    check_mirrors "$2"
     ;;
   best)
-    if [ -z "${2:-}" ]; then
-      echo "ERROR: filename required. Usage: $0 best <filename>"
+    local target="${2:-}"
+    if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
+      echo "Finding best mirrors for all templates..."
+      echo ""
+      printf "%-50s %s\n" "Template" "Best Mirror"
+      printf "%-50s %s\n" "--------" "-----------"
+      for img in $SUPPORTED_IMAGES; do
+        local best=$(select_best_mirror "$img" 2>/dev/null)
+        if [ -n "$best" ]; then
+          printf "%-50s %s\n" "$img" "$best"
+        else
+          printf "%-50s %s\n" "$img" "(no working mirror)"
+        fi
+      done
+    elif [ -z "$target" ]; then
+      echo "ERROR: filename required. Usage: dcvm template best <filename>"
+      echo "       dcvm template best -a, --all  (find best for all)"
       echo ""
       list_mirrors ""
       exit 1
+    else
+      select_best_mirror "$target"
     fi
-    select_best_mirror "$2"
     ;;
   download)
-    if [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
-      echo "ERROR: filename and target required. Usage: $0 download <filename> <target> [min_size]"
+    local target="${2:-}"
+    local force="${3:-}"
+    
+    if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
+      echo "Downloading all templates..."
       echo ""
-      list_mirrors ""
+      local success=0
+      local failed=0
+      for img in $SUPPORTED_IMAGES; do
+        local target_path="$TEMPLATE_DIR/$img"
+        if [ -f "$target_path" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
+          echo "✓ $img (already exists)"
+          ((success++))
+        else
+          echo "Downloading: $img"
+          if download_with_mirrors "$img" "$target_path" 100000000 >/dev/null 2>&1; then
+            echo "✓ $img downloaded"
+            ((success++))
+          else
+            echo "✗ $img FAILED"
+            ((failed++))
+          fi
+        fi
+      done
+      echo ""
+      echo "Summary: $success successful, $failed failed"
+      exit 0
+    fi
+    
+    if [ -z "$target" ]; then
+      echo "DCVM Template Download"
+      echo ""
+      echo "Usage: dcvm template download <filename> [--force]"
+      echo "       dcvm template download -a, --all [-f]  (download all)"
+      echo ""
+      echo "Options:"
+      echo "  --force, -f    Force redownload even if template exists"
+      echo ""
+      echo "Available templates:"
+      for img in $SUPPORTED_IMAGES; do
+        local tpath="$TEMPLATE_DIR/$img"
+        if [ -f "$tpath" ]; then
+          local size=$(du -h "$tpath" 2>/dev/null | cut -f1)
+          echo "  $img  [installed: $size]"
+        else
+          echo "  $img"
+        fi
+      done
+      exit 0
+    fi
+    
+    local target_path="$TEMPLATE_DIR/$target"
+    
+    if [ -f "$target_path" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
+      echo "Template already exists: $target_path"
+      echo "Use --force to redownload: dcvm template download $target --force"
+      exit 0
+    fi
+    
+    if [ -f "$target_path" ] && { [ "$force" = "--force" ] || [ "$force" = "-f" ]; }; then
+      echo "Removing existing template for redownload..."
+      rm -f "$target_path"
+    fi
+    
+    mkdir -p "$TEMPLATE_DIR"
+    echo "Downloading template: $target"
+    echo "Target: $target_path"
+    echo ""
+    
+    if download_with_mirrors "$target" "$target_path" 100000000; then
+      echo ""
+      echo "SUCCESS: Template downloaded successfully"
+      ls -lh "$target_path"
+    else
+      echo ""
+      echo "FAILED: Could not download template"
       exit 1
     fi
-    download_with_mirrors "$2" "$3" "${4:-}"
     ;;
-  *)
-    echo "Usage: $0 <command> [args]"
+  status)
+    echo "DCVM Template Status"
+    echo ""
+    echo "Template directory: $TEMPLATE_DIR"
+    echo ""
+    if [ -d "$TEMPLATE_DIR" ]; then
+      echo "Installed templates:"
+      local count=0
+      local corrupt=0
+      for img in $SUPPORTED_IMAGES; do
+        local target="$TEMPLATE_DIR/$img"
+        if [ -f "$target" ]; then
+          local size=$(du -h "$target" 2>/dev/null | cut -f1)
+          local vsize=$(qemu-img info "$target" 2>/dev/null | grep "virtual size" | awk -F': ' '{print $2}' | cut -d' ' -f1-2)
+          local integrity="OK"
+          if command -v qemu-img >/dev/null 2>&1; then
+            if ! qemu-img check "$target" >/dev/null 2>&1; then
+              integrity="CORRUPT"
+              ((corrupt++))
+            fi
+          fi
+          
+          if [ "$integrity" = "OK" ]; then
+            echo "  ✓ $img ($size, virtual: ${vsize:-unknown})"
+          else
+            echo "  ✗ $img ($size) - CORRUPT! Use: dcvm template download $img --force"
+          fi
+          ((count++))
+        fi
+      done
+      if [ $count -eq 0 ]; then
+        echo "  (none)"
+      fi
+      if [ $corrupt -gt 0 ]; then
+        echo ""
+        echo "WARNING: $corrupt template(s) are corrupted and should be redownloaded"
+      fi
+      echo ""
+      echo "Available for download:"
+      for img in $SUPPORTED_IMAGES; do
+        local target="$TEMPLATE_DIR/$img"
+        if [ ! -f "$target" ]; then
+          echo "  • $img"
+        fi
+      done
+    else
+      echo "Template directory does not exist yet."
+      echo "Templates will be downloaded on first VM creation."
+    fi
+    ;;
+  verify)
+    local target="${2:-}"
+    echo "DCVM Template Verification"
+    echo ""
+    if [ "$target" = "-a" ] || [ "$target" = "--all" ] || [ -z "$target" ]; then
+      echo "Verifying all installed templates..."
+      echo ""
+      local ok=0
+      local bad=0
+      for img in $SUPPORTED_IMAGES; do
+        local tpath="$TEMPLATE_DIR/$img"
+        if [ -f "$tpath" ]; then
+          printf "  Checking %-50s " "$img"
+          if qemu-img check "$tpath" >/dev/null 2>&1; then
+            echo "[OK]"
+            ((ok++))
+          else
+            echo "[CORRUPT]"
+            ((bad++))
+          fi
+        fi
+      done
+      echo ""
+      echo "Summary: $ok OK, $bad corrupted"
+      [ $bad -gt 0 ] && echo "Redownload corrupted templates with: dcvm template download <name> --force"
+    else
+      local tpath="$TEMPLATE_DIR/$target"
+      if [ ! -f "$tpath" ]; then
+        echo "Template not found: $target"
+        exit 1
+      fi
+      echo "Verifying: $target"
+      if qemu-img check "$tpath" 2>&1; then
+        echo ""
+        echo "Template is OK"
+      else
+        echo ""
+        echo "Template is CORRUPTED"
+        echo "Redownload with: dcvm template download $target --force"
+        exit 1
+      fi
+    fi
+    ;;
+  help | --help | -h | "")
+    echo "DCVM Template Management"
+    echo ""
+    echo "Usage: dcvm template <command> [args]"
     echo ""
     echo "Commands:"
-    echo "  list [filename]                         - List available images or mirrors for an image"
-    echo "  check <filename>                        - Check mirror availability for an image"
-    echo "  best <filename>                         - Find fastest mirror for an image"
-    echo "  download <filename> <target> [min_size] - Download image with mirror fallback"
+    echo "  list [filename]              List available images or mirrors for an image"
+    echo "  status                       Show installed templates with integrity check"
+    echo "  verify [filename|-a]         Verify template integrity"
+    echo "  download <filename> [-f]     Download or redownload a template"
+    echo "  download -a [--force]        Download all templates"
+    echo "  check <filename>             Check mirror availability for an image"
+    echo "  check -a, --all              Check mirrors for all images"
+    echo "  best <filename>              Find fastest mirror for an image"
+    echo "  best -a, --all               Find best mirrors for all images"
     echo ""
-    echo "Available images:"
+    echo "Available templates:"
     for img in $SUPPORTED_IMAGES; do
       echo "  $img"
     done
+    echo ""
+    echo "Examples:"
+    echo "  dcvm template status"
+    echo "  dcvm template verify -a"
+    echo "  dcvm template download debian-12-generic-amd64.qcow2"
+    echo "  dcvm template download -a --force"
+    echo "  dcvm template check -a"
+    ;;
+  *)
+    echo "Unknown command: ${1:-}"
+    echo "Use: dcvm template help"
+    exit 1
     ;;
   esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
 fi

@@ -4,14 +4,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 source "$SCRIPT_DIR/../utils/mirror-manager.sh"
 
-DEFAULT_USERNAME="admin"
+#DEFAULT_USERNAME is handled by default_username() function in common.sh
 DEFAULT_PASSWORD=""
 DEFAULT_MEMORY="2048"
 DEFAULT_CPUS="2"
-DEFAULT_DISK_SIZE="20G"
-DEFAULT_OS="3"
+DEFAULT_DISK_SIZE="30G"
+DEFAULT_OS="4"
 DEFAULT_ENABLE_ROOT="y"
 DEFAULT_ROOT_PASSWORD=""
+
+declare -A MIN_DISK_SIZE_GB
+MIN_DISK_SIZE_GB["debian13"]=10
+MIN_DISK_SIZE_GB["debian12"]=10
+MIN_DISK_SIZE_GB["debian11"]=10
+MIN_DISK_SIZE_GB["ubuntu24.04"]=10
+MIN_DISK_SIZE_GB["ubuntu22.04"]=10
+MIN_DISK_SIZE_GB["ubuntu20.04"]=10
+MIN_DISK_SIZE_GB["archlinux"]=10
+MIN_DISK_SIZE_GB["kali"]=30 # Kali template is 25 GiB, so minimum must be larger
 
 FORCE_MODE=false
 
@@ -29,11 +39,14 @@ FLAG_STATIC_IP=""
 ADDITIONAL_PACKAGES=""
 
 declare -A TEMPLATE_SHA256
+TEMPLATE_SHA256["ubuntu-24.04-server-cloudimg-amd64.img"]=""
 TEMPLATE_SHA256["ubuntu-22.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["ubuntu-20.04-server-cloudimg-amd64.img"]=""
+TEMPLATE_SHA256["debian-13-genericcloud-amd64.qcow2"]=""
 TEMPLATE_SHA256["debian-12-generic-amd64.qcow2"]=""
 TEMPLATE_SHA256["debian-11-generic-amd64.qcow2"]=""
-TEMPLATE_SHA256["ubuntu-20.04-server-cloudimg-amd64.img"]=""
 TEMPLATE_SHA256["Arch-Linux-x86_64-cloudimg.qcow2"]=""
+TEMPLATE_SHA256["kali-linux-cloud-genericcloud-amd64.qcow2"]=""
 
 show_usage() {
   cat <<EOF
@@ -41,14 +54,14 @@ VM Creation Script
 Usage: dcvm create <vm_name> [options]
 
 Options:
-  -u, --username <username>      		# Set VM username (default: admin)
+  -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu)
   -p, --password <password>     		# Set VM password (required in force mode)
   --enable-root                  		# Enable root login (uses same password as user)
-  -r, --root-password <password> 	    # Set root password (enables root access)
+  -r, --root-password <password> 		# Set root password (enables root access)
   -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)
   -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
-  -d, --disk <size>              		# Set disk size (default: 20G)
-  -o, --os <os_choice|iso_path>  		# Set OS: 1-5 or path to ISO file
+  -d, --disk <size>              		# Set disk size (default: 30G)
+  -o, --os <os_choice|iso_path>  		# Set OS: 1-8 or path to ISO file
   -k, --packages <packages>     		# Comma-separated package list
   --ip <address>                 		# Set static IP (e.g., 10.10.10.50) - DHCP if not specified
   --with-ssh-key                 		# Add SSH key for passwordless authentication
@@ -57,23 +70,24 @@ Options:
   -h, --help                     		# Show this help
 
 OS Options:
-  1 = Debian 12      2 = Debian 11      3 = Ubuntu 22.04 (default)
-  4 = Ubuntu 20.04   5 = Arch Linux     /path/to/file.iso = Custom ISO
+  1 = Debian 13      2 = Debian 12      3 = Debian 11
+  4 = Ubuntu 24.04   5 = Ubuntu 22.04   6 = Ubuntu 20.04
+  7 = Arch Linux     8 = Kali Linux     /path/to/file.iso = Custom ISO
 
 Modes:
   Interactive Mode (default)     		# Prompts for unspecified options
   Force Mode (-f)                		# Uses default values for unspecified options
 
 Interactive Mode Examples:
-  dcvm create datacenter-vm1             								# Prompts for all options
-  dcvm create web-server -p mypass        								# Prompts for username, memory, CPU, disk, root
+  dcvm create datacenter-vm1             								          # Prompts for all options
+  dcvm create web-server -p mypass        								        # Prompts for username, memory, CPU, disk, root
   dcvm create db-server -u dbadmin -m 4096 -k mysql-server  			# Prompts for password, CPU, disk, root
 
 Force Mode Examples (uses defaults for unspecified options):
-  dcvm create web-server -f -p mypass123                    			# Uses all defaults
-  dcvm create db-server -f -p secret -m 4096 -c 4 -k mysql-server,php   # Custom memory/CPU, default disk/OS
-  dcvm create test-vm -f -p mypass -o 1 --enable-root       			# Custom OS, root enabled
-  dcvm create admin-vm -f -p mypass -r rootpass123          			# Different root password
+  dcvm create web-server -f -p mypass123                    			      # Uses all defaults
+  dcvm create db-server -f -p secret -m 4096 -c 4 -k mysql-server,php		# Custom memory/CPU, default disk/OS
+  dcvm create test-vm -f -p mypass -o 1 --enable-root       			      # Custom OS, root enabled
+  dcvm create admin-vm -f -p mypass -r rootpass123          			      # Different root password
 
 ISO Installation Examples:
   dcvm create custom-vm -f -o /path/to/ubuntu.iso -m 4096   			# Install from ISO file
@@ -175,6 +189,10 @@ check_dependencies() {
     missing_deps+=("genisoimage or mkisofs")
   fi
 
+  if ! command -v virt-customize >/dev/null 2>&1; then
+    missing_deps+=("virt-customize (install libguestfs-tools)")
+  fi
+
   for cmd in virsh virt-install qemu-img openssl bc; do
     command -v "$cmd" >/dev/null 2>&1 || missing_deps+=("$cmd")
   done
@@ -182,6 +200,23 @@ check_dependencies() {
     print_error "Missing required dependencies: ${missing_deps[*]}"
     echo "Please install them first and try again."
     exit 1
+  fi
+
+  if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
+    print_error "Network '$NETWORK_NAME' does not exist"
+    echo "Please run 'dcvm install' to set up the datacenter network."
+    exit 1
+  fi
+
+  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+    print_warning "Network '$NETWORK_NAME' is not active. Starting it..."
+    if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+      print_success "Network '$NETWORK_NAME' started"
+    else
+      print_error "Failed to start network '$NETWORK_NAME'"
+      echo "Please run: virsh net-start $NETWORK_NAME"
+      exit 1
+    fi
   fi
 }
 
@@ -205,47 +240,60 @@ select_os() {
     while true; do
       cat <<-EOF
 			Supported OS options:
-			  1) Debian 12
-			  2) Debian 11
-			  3) Ubuntu 22.04
-			  4) Ubuntu 20.04
-			  5) Arch Linux
+			  1) Debian 13
+			  2) Debian 12
+			  3) Debian 11
+			  4) Ubuntu 24.04 (default)
+			  5) Ubuntu 22.04
+			  6) Ubuntu 20.04
+			  7) Arch Linux
+			  8) Kali Linux
 			EOF
-      read -p "Select the operating system for the VM [3]: " VM_OS_CHOICE
-      VM_OS_CHOICE=${VM_OS_CHOICE:-3}
+      read -p "Select the operating system for the VM [4]: " VM_OS_CHOICE
+      VM_OS_CHOICE=${VM_OS_CHOICE:-4}
       break
     done
   fi
   case "$VM_OS_CHOICE" in
   1)
+    VM_OS="debian13"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-13-genericcloud-amd64.qcow2"
+    OS_VARIANT="debian13"
+    ;;
+  2)
     VM_OS="debian12"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-12-generic-amd64.qcow2"
     OS_VARIANT="debian12"
-    OS_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
     ;;
-  2)
+  3)
     VM_OS="debian11"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
     OS_VARIANT="debian11"
-    OS_URL="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
     ;;
-  3)
+  4)
+    VM_OS="ubuntu24.04"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-24.04-server-cloudimg-amd64.img"
+    OS_VARIANT="ubuntu24.04"
+    ;;
+  5)
     VM_OS="ubuntu22.04"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-22.04-server-cloudimg-amd64.img"
     OS_VARIANT="ubuntu22.04"
-    OS_URL="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
     ;;
-  4)
+  6)
     VM_OS="ubuntu20.04"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/ubuntu-20.04-server-cloudimg-amd64.img"
     OS_VARIANT="ubuntu20.04"
-    OS_URL="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
     ;;
-  5)
+  7)
     VM_OS="archlinux"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Arch-Linux-x86_64-cloudimg.qcow2"
     OS_VARIANT="archlinux"
-    OS_URL="https://gitlab.archlinux.org/archlinux/arch-boxes/-/jobs/artifacts/master/raw/output/Arch-Linux-x86_64-cloudimg.qcow2?job=build:cloudimg"
+    ;;
+  8)
+    VM_OS="kali"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/kali-linux-cloud-genericcloud-amd64.qcow2"
+    OS_VARIANT="debian12"
     ;;
   *)
 
@@ -260,10 +308,10 @@ select_os() {
       exit $?
     fi
     if [ "$FORCE_MODE" = true ]; then
-      print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1-5 or path to ISO file."
+      print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1-8 or path to ISO file."
       exit 1
     else
-      echo "Invalid selection! Please enter 1-5 or full path to an ISO file."
+      echo "Invalid selection! Please enter 1-8 or full path to an ISO file."
       echo ""
       select_os
       return
@@ -304,7 +352,7 @@ setup_user_account() {
     fi
     [ "$FORCE_MODE" = true ] && print_success "Username: $VM_USERNAME" || print_success "Username set to: $VM_USERNAME"
   elif [ "$FORCE_MODE" = true ]; then
-    VM_USERNAME="$DEFAULT_USERNAME"
+    VM_USERNAME=$(default_username "$VM_OS")
     print_success "Username: $VM_USERNAME (default)"
   else
     interactive_prompt_username
@@ -462,8 +510,8 @@ NETCONF
 
 interactive_prompt_username() {
   while true; do
-    read -p "Enter username for VM (default: admin): " VM_USERNAME
-    VM_USERNAME=${VM_USERNAME:-admin}
+    read -p "Enter username for VM (default: $(default_username "$VM_OS")): " VM_USERNAME
+    VM_USERNAME=${VM_USERNAME:-$(default_username "$VM_OS")}
     if validate_username "$VM_USERNAME"; then
       print_success "Username set to: $VM_USERNAME"
       break
@@ -550,30 +598,14 @@ interactive_prompt_cpus() {
 }
 
 interactive_prompt_disk() {
+  local default_disk=$(get_default_disk_size)
+  local min_disk_gb="${MIN_DISK_SIZE_GB[$VM_OS]:-5}"
   while true; do
-    read -p "Disk size (default: 20G, format: 10G, 500M, 2T): " VM_DISK_SIZE
-    VM_DISK_SIZE=${VM_DISK_SIZE:-20G}
-    [[ ! "$VM_DISK_SIZE" =~ ^[0-9]+[GMT]$ ]] && {
-      print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
-      continue
-    }
-    size_num=$(echo "$VM_DISK_SIZE" | sed 's/[GMT]$//')
-    size_unit=$(echo "$VM_DISK_SIZE" | sed 's/^[0-9]*//')
-    case "$size_unit" in
-    "M") [ "$size_num" -lt 100 ] && {
-      print_error "Minimum disk size is 100M"
-      continue
-    } ;;
-    "G") [ "$size_num" -lt 1 ] || [ "$size_num" -gt 1000 ] && {
-      print_error "Disk size must be between 1G and 1000G"
-      continue
-    } ;;
-    "T") [ "$size_num" -gt 10 ] && {
-      print_error "Maximum disk size is 10T"
-      continue
-    } ;;
-    esac
-    break
+    read -p "Disk size (default: ${default_disk}, min for $VM_OS: ${min_disk_gb}G, format: 10G, 500M, 2T): " VM_DISK_SIZE
+    VM_DISK_SIZE=${VM_DISK_SIZE:-$default_disk}
+    if validate_disk_size "$VM_DISK_SIZE"; then
+      break
+    fi
   done
 }
 
@@ -697,12 +729,26 @@ NETINFO
 
 validate_disk_size() {
   local disk_size="$1"
+  local os_type="${2:-$VM_OS}"
   [[ ! "$disk_size" =~ ^[0-9]+[GMT]$ ]] && {
     print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
     return 1
   }
   local size_num=$(echo "$disk_size" | sed 's/[GMT]$//')
-  local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')
+  local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')  
+  local size_in_gb=0
+  case "$size_unit" in
+  "M") size_in_gb=0 ;;
+  "G") size_in_gb=$size_num ;;
+  "T") size_in_gb=$((size_num * 1024)) ;;
+  esac
+
+  local min_disk_gb="${MIN_DISK_SIZE_GB[$os_type]:-5}"
+  if [ "$size_in_gb" -lt "$min_disk_gb" ] && [ "$size_unit" != "M" ]; then
+    print_error "$os_type requires minimum ${min_disk_gb}G disk"
+    return 1
+  fi
+  
   case "$size_unit" in
   "M") [ "$size_num" -lt 100 ] && {
     print_error "Minimum disk size is 100M"
@@ -720,6 +766,18 @@ validate_disk_size() {
   return 0
 }
 
+get_default_disk_size() {
+  local os_type="${1:-$VM_OS}"
+  local min_disk_gb="${MIN_DISK_SIZE_GB[$os_type]:-5}"
+  local default_num=$(echo "$DEFAULT_DISK_SIZE" | sed 's/[GMT]$//')
+  
+  if [ "$default_num" -lt "$min_disk_gb" ]; then
+    echo "${min_disk_gb}G"
+  else
+    echo "$DEFAULT_DISK_SIZE"
+  fi
+}
+
 setup_vm_resources() {
   [ "$FORCE_MODE" = true ] && print_info "Resource configuration" || {
     echo ""
@@ -729,7 +787,7 @@ setup_vm_resources() {
   if [ "$FORCE_MODE" = true ]; then
     VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
     VM_CPUS="${FLAG_CPUS:-$DEFAULT_CPUS}"
-    VM_DISK_SIZE="${FLAG_DISK_SIZE:-$DEFAULT_DISK_SIZE}"
+    VM_DISK_SIZE="${FLAG_DISK_SIZE:-$(get_default_disk_size)}"
     [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]] && {
       print_error "Memory must be a number"
       exit 1
@@ -1007,14 +1065,14 @@ METADATA_EOF
 }
 
 generate_cloud_init_network() {
-  local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"
-
+  local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"  
   if [ -n "$FLAG_STATIC_IP" ]; then
-    if [ "$VM_OS" = "archlinux" ]; then
-      cat >"$network_config" <<NETWORK_EOF
+    cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  enp1s0:
+  id0:
+    match:
+      name: "e*"
     dhcp4: false
     addresses:
       - ${FLAG_STATIC_IP}/24
@@ -1022,39 +1080,18 @@ ethernets:
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
-    else
-      cat >"$network_config" <<NETWORK_EOF
-version: 2
-ethernets:
-  enp1s0:
-    dhcp4: false
-    addresses:
-      - ${FLAG_STATIC_IP}/24
-    gateway4: ${NETWORK_SUBNET}.1
-    nameservers:
-      addresses: [8.8.8.8, 8.8.4.4]
-NETWORK_EOF
-    fi
   else
-    if [ "$VM_OS" = "archlinux" ]; then
-      cat >"$network_config" <<'NETWORK_EOF'
+    cat >"$network_config" <<'NETWORK_EOF'
 version: 2
 ethernets:
-  enp1s0:
+  id0:
+    match:
+      name: "e*"
     dhcp4: true
     dhcp-identifier: mac
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
-    else
-      cat >"$network_config" <<'NETWORK_EOF'
-version: 2
-ethernets:
-  enp1s0:
-    dhcp4: true
-    dhcp-identifier: mac
-NETWORK_EOF
-    fi
   fi
 }
 
@@ -1076,15 +1113,25 @@ create_cloud_init_iso() {
 
 create_vm_disk() {
   [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
-  qemu-img create -f qcow2 -F qcow2 -b "$TEMPLATE_FILE" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" >/dev/null 2>&1 || {
+  local disk_error
+  disk_error=$(qemu-img create -f qcow2 -F qcow2 -b "$TEMPLATE_FILE" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
+  if [ $? -ne 0 ]; then
     print_error "Failed to create VM disk"
+    echo "  Error: $disk_error"
+    echo "  Template: $TEMPLATE_FILE"
+    [ ! -f "$TEMPLATE_FILE" ] && echo "  Template file does not exist!"
     exit 1
-  }
+  fi
 }
 
 install_vm() {
-  [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
-  virt-install \
+  [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."  
+  local virt_error
+  local GRAPHICS="none"
+  if [ "$VM_OS" = "kali" ] || [ "$VM_OS" = "debian13" ]; then # Debian13 and kali needs graphics to boot properly
+    GRAPHICS="vnc,listen=127.0.0.1"
+  fi
+  virt_error=$(virt-install \
     --name "$VM_NAME" \
     --virt-type kvm \
     --memory "$VM_MEMORY" \
@@ -1092,15 +1139,26 @@ install_vm() {
     --boot hd,menu=on \
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk" \
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom" \
-    --graphics none \
+    --graphics "$GRAPHICS" \
     --os-variant "$OS_VARIANT" \
     --network "network=$NETWORK_NAME" \
     --console pty,target_type=serial \
     --import \
-    --noautoconsole >/dev/null 2>&1 || {
+    --noautoconsole 2>&1)
+  
+  if [ $? -ne 0 ]; then
     print_error "Failed to create VM"
+    echo ""
+    echo "  virt-install error:"
+    echo "$virt_error" | sed 's/^/    /'
+    echo ""
+    echo "  Troubleshooting:"
+    echo "    - Check if network '$NETWORK_NAME' is active: virsh net-list"
+    echo "    - Check if OS variant '$OS_VARIANT' is valid: osinfo-query os | grep $OS_VARIANT"
+    echo "    - Check disk permissions and space"
+    rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
     exit 1
-  }
+  fi
 
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || { [ "$FORCE_MODE" = true ] && print_warning "Failed to set VM autostart" || print_warning "Failed to set VM autostart (VM created successfully)"; }
 }

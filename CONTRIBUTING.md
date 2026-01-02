@@ -147,10 +147,10 @@ cd dcvm
 ### Manual Testing
 ```bash
 # Test your changes
-sudo bash lib/core/your-script.sh
+bash lib/core/your-script.sh
 
 # Test through main CLI
-sudo ./dcvm your-command
+./dcvm your-command
 ```
 
 ### Future: Automated Tests

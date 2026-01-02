@@ -22,11 +22,13 @@ Usage: dcvm self-update [options]
 Options:
   --check        Check for updates without installing
   --force        Force update even if already up to date
+  --revert       Revert to a previous backup
   -h, --help     Show this help
 
 Examples:
   dcvm self-update           # Update to latest version
   dcvm self-update --check   # Check for available updates
+  dcvm self-update --revert  # Restore from backup
 EOF
 }
 
@@ -130,8 +132,8 @@ do_update() {
 
   local backup_dir="/tmp/dcvm-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$backup_dir"
-  [[ -f "$INSTALL_BIN/dcvm" ]] && cp "$INSTALL_BIN/dcvm" "$backup_dir/"
-  [[ -d "$INSTALL_LIB" ]] && cp -r "$INSTALL_LIB" "$backup_dir/"
+  [[ -f "$INSTALL_BIN/dcvm" ]] && cp "$INSTALL_BIN/dcvm" "$backup_dir/dcvm"
+  [[ -d "$INSTALL_LIB" ]] && cp -r "$INSTALL_LIB" "$backup_dir/lib"
   print_info "Backup created at $backup_dir"
 
   local files
@@ -141,7 +143,7 @@ do_update() {
     print_error "Could not discover repository files"
     print_info "Restoring backup..."
     [[ -f "$backup_dir/dcvm" ]] && cp "$backup_dir/dcvm" "$INSTALL_BIN/"
-    [[ -d "$backup_dir/dcvm" ]] && cp -r "$backup_dir/dcvm/"* "$INSTALL_LIB/"
+    [[ -d "$backup_dir/lib" ]] && cp -r "$backup_dir/lib/"* "$INSTALL_LIB/"
     exit 1
   fi
 
@@ -264,9 +266,79 @@ check_update() {
   fi
 }
 
+do_revert() {
+  local backups
+  backups=$(find /tmp -maxdepth 1 -type d -name 'dcvm-backup-*' 2>/dev/null | sort -r)
+  
+  if [[ -z "$backups" ]]; then
+    print_error "No backups found in /tmp"
+    print_info "Backups are created during updates and stored temporarily"
+    exit 1
+  fi
+  
+  print_info "Available backups:"
+  echo ""
+  local i=1
+  local backup_array=()
+  while IFS= read -r backup; do
+    [[ -z "$backup" ]] && continue
+    local timestamp=$(basename "$backup" | sed 's/dcvm-backup-//')
+    local formatted_date=$(date -d "${timestamp:0:8} ${timestamp:8:2}:${timestamp:10:2}:${timestamp:12:2}" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$timestamp")
+    echo "  [$i] $formatted_date"
+    backup_array+=("$backup")
+    ((i++))
+  done <<< "$backups"
+  echo ""
+  
+  if [[ ${#backup_array[@]} -eq 0 ]]; then
+    print_error "No valid backups found"
+    exit 1
+  fi
+  
+  read -r -p "Select backup to restore (1-${#backup_array[@]}) or 'q' to cancel: " choice
+  
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    print_info "Cancelled"
+    exit 0
+  fi
+  
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt ${#backup_array[@]} ]]; then
+    print_error "Invalid selection"
+    exit 1
+  fi
+  
+  local selected_backup="${backup_array[$((choice-1))]}"
+  print_info "Restoring from: $selected_backup"
+  
+  if [[ -f "$selected_backup/dcvm" ]]; then
+    cp "$selected_backup/dcvm" "$INSTALL_BIN/dcvm"
+    chmod +x "$INSTALL_BIN/dcvm"
+    print_success "Restored dcvm binary"
+  else
+    print_warning "No dcvm binary in backup"
+  fi
+  
+  if [[ -d "$selected_backup/lib" ]]; then
+    cp -r "$selected_backup/lib/"* "$INSTALL_LIB/"
+    print_success "Restored lib directory"
+  else
+    print_warning "No lib directory in backup"
+  fi
+  
+  local restored_version=$(get_current_version)
+  print_success "Reverted to v$restored_version"
+  
+  read -r -p "Delete used backup? (y/N): " del_choice
+  if [[ "$del_choice" =~ ^[Yy]$ ]]; then
+    rm -rf "$selected_backup"
+    print_info "Backup deleted"
+  fi
+}
+
 main() {
   local CHECK_ONLY=false
   local FORCE=false
+  local REVERT=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -276,6 +348,10 @@ main() {
       ;;
     --force)
       FORCE=true
+      shift
+      ;;
+    --revert)
+      REVERT=true
       shift
       ;;
     -h | --help)
@@ -290,7 +366,9 @@ main() {
     esac
   done
 
-  if [[ "$CHECK_ONLY" == "true" ]]; then
+  if [[ "$REVERT" == "true" ]]; then
+    do_revert
+  elif [[ "$CHECK_ONLY" == "true" ]]; then
     check_update
   else
     do_update "$FORCE"

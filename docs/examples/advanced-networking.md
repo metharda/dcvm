@@ -10,7 +10,7 @@ Edit `$DATACENTER_BASE/port-mappings.txt` and add entries like:
 ```
 Then apply:
 ```bash
-sudo dcvm network ports apply
+dcvm network ports apply
 ```
 
 ## Verify rules
@@ -25,5 +25,5 @@ dcvm network ports test
 
 ## Clear all mappings
 ```bash
-sudo dcvm network ports clear
+dcvm network ports clear
 ```

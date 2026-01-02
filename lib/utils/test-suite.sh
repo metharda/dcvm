@@ -2,7 +2,7 @@
 
 # DCVM Comprehensive Test Suite
 # This script tests all DCVM commands and validates functionality.
-# Run with: sudo ./test-suite.sh [options]
+# Run with: ./test-suite.sh [options]
 #
 # Options:
 #   --quick       Run quick tests only (no VM creation)
@@ -389,7 +389,6 @@ test_network_commands() {
     run_test "dcvm network dhcp show" "$dcvm_cmd network dhcp show" || true
   fi
 
-  # VNC management tests
   if require_root_for_test "dcvm network vnc"; then
     local test_vm=$(virsh list --all --name | head -1)
     if [ -n "$test_vm" ]; then
