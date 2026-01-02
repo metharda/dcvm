@@ -69,9 +69,10 @@ https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudi
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
 
+KALI_VERSION="2025.4" #update kali version when a new update.
 MIRROR_kali="
-https://kali.download/cloud-images/current/kali-linux-2025.4-cloud-genericcloud-amd64.tar.xz
-https://cdimage.kali.org/cloud-images/current/kali-linux-2025.4-cloud-genericcloud-amd64.tar.xz
+https://kali.download/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
+https://cdimage.kali.org/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
 "
 SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2"
 
@@ -242,7 +243,7 @@ test_mirror_speed() {
   local tmp_dir="$2"
   local idx="$3"
   local result
-  result=$(curl -sS -L -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
+  result=$(curl -sS -L --max-redirs 3 -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
     --connect-timeout 3 --max-time 5 -r 0-1048575 "$url" 2>/dev/null) || return 1
   local http_code time_s speed_bps
   http_code=$(awk '{print $1}' <<<"$result")
@@ -567,9 +568,13 @@ extract_kali_image() {
   fi
 
   local extract_dir
-  extract_dir=$(mktemp -d)
+  extract_dir=$(mktemp -d 2>/dev/null)
+  if [ -z "$extract_dir" ] || [ ! -d "$extract_dir" ]; then
+    echo "ERROR: Failed to create temporary directory for extraction" >&2
+    return 1
+  fi
 
-  if ! tar -xJf "$tarxz_path" -C "$extract_dir" 2>&2; then
+  if ! tar -xJf "$tarxz_path" -C "$extract_dir"; then
     echo "ERROR: Failed to extract tar.xz archive" >&2
     rm -rf "$extract_dir" 2>/dev/null
     return 1
@@ -594,7 +599,7 @@ extract_kali_image() {
   raw_size=$(du -h "$raw_file" 2>/dev/null | cut -f1)
   echo "INFO: Raw image size: $raw_size (this will be compressed)" >&2
   echo "INFO: Converting raw image to qcow2 format (this may take a few minutes)..." >&2
-  if ! qemu-img convert -f raw -O qcow2 -c -p "$raw_file" "$target_qcow2" 2>&2; then
+  if ! qemu-img convert -f raw -O qcow2 -c -p "$raw_file" "$target_qcow2"; then
     echo "ERROR: Failed to convert raw image to qcow2" >&2
     rm -rf "$extract_dir" 2>/dev/null
     rm -f "$target_qcow2" 2>/dev/null

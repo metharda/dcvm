@@ -9,9 +9,25 @@ DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
 DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
 INSTALL_BIN="/usr/local/bin"
 INSTALL_LIB="/usr/local/lib/dcvm"
+BACKUP_DIR="/var/lib/dcvm/backups"
 LOG_FILE="/var/log/dcvm-update.log"
 
 require_root
+
+create_backup_dir() {
+  if [[ ! -d "$BACKUP_DIR" ]]; then
+    mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_DIR"
+    chown root:root "$BACKUP_DIR"
+  fi
+}
+
+validate_backup() {
+  local backup_path="$1"
+  [[ "$backup_path" != "$BACKUP_DIR"/* ]] && return 1
+  [[ "$(stat -c '%u' "$backup_path" 2>/dev/null)" != "0" ]] && return 1
+  return 0
+}
 
 show_usage() {
   cat <<EOF
@@ -130,8 +146,10 @@ do_update() {
 
   print_info "Updating DCVM from v$current_version to v$remote_version..."
 
-  local backup_dir="/tmp/dcvm-backup-$(date +%Y%m%d%H%M%S)"
+  create_backup_dir
+  local backup_dir="$BACKUP_DIR/dcvm-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir"
   [[ -f "$INSTALL_BIN/dcvm" ]] && cp "$INSTALL_BIN/dcvm" "$backup_dir/dcvm"
   [[ -d "$INSTALL_LIB" ]] && cp -r "$INSTALL_LIB" "$backup_dir/lib"
   print_info "Backup created at $backup_dir"
@@ -267,12 +285,13 @@ check_update() {
 }
 
 do_revert() {
+  create_backup_dir
   local backups
-  backups=$(find /tmp -maxdepth 1 -type d -name 'dcvm-backup-*' 2>/dev/null | sort -r)
+  backups=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'dcvm-backup-*' 2>/dev/null | sort -r)
   
   if [[ -z "$backups" ]]; then
-    print_error "No backups found in /tmp"
-    print_info "Backups are created during updates and stored temporarily"
+    print_error "No backups found in $BACKUP_DIR"
+    print_info "Backups are created during updates and stored securely"
     exit 1
   fi
   
@@ -282,6 +301,10 @@ do_revert() {
   local backup_array=()
   while IFS= read -r backup; do
     [[ -z "$backup" ]] && continue
+    if ! validate_backup "$backup"; then
+      print_warning "Skipping untrusted backup: $backup"
+      continue
+    fi
     local timestamp=$(basename "$backup" | sed 's/dcvm-backup-//')
     local formatted_date=$(date -d "${timestamp:0:8} ${timestamp:8:2}:${timestamp:10:2}:${timestamp:12:2}" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$timestamp")
     echo "  [$i] $formatted_date"

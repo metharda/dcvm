@@ -23,6 +23,9 @@ MIN_DISK_SIZE_GB["ubuntu20.04"]=10
 MIN_DISK_SIZE_GB["archlinux"]=10
 MIN_DISK_SIZE_GB["kali"]=30 # Kali template is 25 GiB, so minimum must be larger
 
+OS_REQUIRES_VNC=("kali" "debian13")
+
+
 FORCE_MODE=false
 
 FLAG_USERNAME=""
@@ -332,6 +335,14 @@ select_os() {
       exit 1
     fi
   fi
+}
+
+os_requires_vnc() {
+  local os="$1"
+  for vnc_os in "${OS_REQUIRES_VNC[@]}"; do
+    [[ "$os" == "$vnc_os" ]] && return 0
+  done
+  return 1
 }
 
 setup_user_account() {
@@ -1128,7 +1139,7 @@ install_vm() {
   [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."  
   local virt_error
   local GRAPHICS="none"
-  if [ "$VM_OS" = "kali" ] || [ "$VM_OS" = "debian13" ]; then # Debian13 and kali needs graphics to boot properly
+  if os_requires_vnc "$VM_OS"; then
     GRAPHICS="vnc,listen=127.0.0.1"
   fi
   virt_error=$(virt-install \

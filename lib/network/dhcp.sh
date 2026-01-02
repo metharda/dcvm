@@ -44,10 +44,15 @@ clear_lease_by_mac() {
 }
 
 clear_all_leases() {
-  read -p "Clear ALL DHCP leases for $NETWORK_NAME? (y/N): " confirm
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    print_info "Cancelled"
-    return 0
+  if [ -t 0 ]; then
+    read -p "Clear ALL DHCP leases for $NETWORK_NAME? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      print_info "Cancelled"
+      return 0
+    fi
+  else
+    print_error "Cannot prompt for confirmation: stdin is not a terminal (non-interactive mode)"
+    return 1
   fi
 
   print_info "Clearing ALL DHCP leases for $NETWORK_NAME"
