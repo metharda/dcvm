@@ -156,6 +156,15 @@ parse_arguments() {
       ;;
     --graphics)
       FLAG_GRAPHICS="$2"
+      case "$FLAG_GRAPHICS" in
+        none|vnc|spice|vnc,*|spice,*)
+          ;;
+        *)
+          echo "Error: Invalid graphics mode '$FLAG_GRAPHICS'."
+          echo "Supported values: none, vnc, vnc,listen=..., spice, spice,listen=..."
+          exit 1
+          ;;
+      esac
       shift 2
       ;;
     -f | --force)

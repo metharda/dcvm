@@ -551,10 +551,10 @@ extract_kali_image() {
   local target_qcow2="$2"
   local extract_dir=""
   
-  cleanup_extract() {
+  cleanup_kali_extract() {
     [ -n "$extract_dir" ] && [ -d "$extract_dir" ] && rm -rf "$extract_dir" 2>/dev/null
   }
-  trap cleanup_extract EXIT
+  trap cleanup_kali_extract EXIT
 
   echo "INFO: Extracting Kali Linux image from tar.xz archive..." >&2
 
@@ -584,18 +584,27 @@ extract_kali_image() {
     return 1
   fi
 
-  local raw_file
-  raw_file=$(find "$extract_dir" -name "*.raw" -type f | head -1)
-  if [ -z "$raw_file" ]; then
-    raw_file=$(find "$extract_dir" -name "disk*" -type f | head -1)
+  local -a raw_candidates=()
+  mapfile -t raw_candidates < <(find "$extract_dir" -name "*.raw" -type f 2>/dev/null)
+  if [ "${#raw_candidates[@]}" -eq 0 ]; then
+    mapfile -t raw_candidates < <(find "$extract_dir" -name "disk*" -type f 2>/dev/null)
   fi
 
-  if [ -z "$raw_file" ]; then
+  if [ "${#raw_candidates[@]}" -eq 0 ]; then
     echo "ERROR: No raw disk image found in tar.xz archive" >&2
     echo "Archive contents:" >&2
     find "$extract_dir" -type f >&2
     return 1
   fi
+
+  if [ "${#raw_candidates[@]}" -gt 1 ]; then
+    echo "ERROR: Multiple raw disk images found in tar.xz archive; expected exactly one." >&2
+    echo "Candidate images:" >&2
+    printf '%s\n' "${raw_candidates[@]}" >&2
+    return 1
+  fi
+
+  local raw_file="${raw_candidates[0]}"
 
   echo "INFO: Found raw image: $(basename "$raw_file")" >&2
   local raw_size
@@ -609,7 +618,7 @@ extract_kali_image() {
   fi
 
   trap - EXIT
-  cleanup_extract
+  cleanup_kali_extract
 
   local final_size
   final_size=$(du -h "$target_qcow2" 2>/dev/null | cut -f1)

@@ -611,7 +611,7 @@ interactive_prompt_static_ip_common() {
 }
 
 default_username(){
-  os_choice="$1"
+  local os_choice="$1"
   os_choice=$(echo "$os_choice" | sed 's/[0-9.]*//g')
   local os_list=("ubuntu" "debian" "archlinux" "kali")
   if [[ " ${os_list[*]} " == *" $os_choice "* ]]; then

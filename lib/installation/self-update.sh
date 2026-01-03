@@ -33,8 +33,15 @@ validate_backup() {
     [[ -L "$backup_path" ]] && return 1
     resolved_path="$backup_path"
   fi
+
   [[ "$resolved_path" != "$BACKUP_DIR"/* ]] && return 1
+  [[ -e "$resolved_path" ]] || return 1
   [[ "$(stat -c '%u' "$resolved_path" 2>/dev/null)" != "0" ]] && return 1
+  
+  local mode world_perms
+  mode="$(stat -c '%a' "$resolved_path" 2>/dev/null)" || return 1
+  world_perms="${mode: -1}"
+  [[ "$world_perms" != "0" ]] && return 1
   return 0
 }
 

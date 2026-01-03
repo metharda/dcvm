@@ -117,7 +117,7 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
 | `rules` | Show active `iptables` rules |
 | `apply` | Apply rules from mappings file |
 | `clear` | Remove all forwarding rules |
-| `test` | functionality check (Ping/SSH/HTTP) |
+| `test` | Test connectivity (Ping/SSH/HTTP) |
 
 ## Quick commands
 

@@ -95,14 +95,12 @@ clear_vm_lease() {
     local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
     local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
     local found=false
-    local safe_name
-    safe_name=$(printf '%s\n' "$vm_name" | sed 's/[[\.*^$()+?{|]/\\&/g')
-    if [ -f "$lease_file" ] && grep -qi "$vm_name" "$lease_file"; then
-      sed -i "/$safe_name/Id" "$lease_file"
+    if [ -f "$lease_file" ] && grep -qFi "$vm_name" "$lease_file"; then
+      grep -vFi "$vm_name" "$lease_file" > "$lease_file.tmp" && mv "$lease_file.tmp" "$lease_file"
       found=true
     fi
-    if [ -f "$status_file" ] && grep -qi "$vm_name" "$status_file"; then
-      sed -i "/$safe_name/Id" "$status_file"
+    if [ -f "$status_file" ] && grep -qFi "$vm_name" "$status_file"; then
+      grep -vFi "$vm_name" "$status_file" > "$status_file.tmp" && mv "$status_file.tmp" "$status_file"
       found=true
     fi
     if [ "$found" = true ]; then
@@ -119,6 +117,7 @@ clear_stale_leases() {
   print_info "Cleaning up stale/expired leases and orphaned VM leases"
   local current_time=$(date +%s)
   local temp_file=$(mktemp)
+  trap 'rm -f "$temp_file" 2>/dev/null' RETURN
   local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
   local removed_count=0
   local -a macs_to_remove=()

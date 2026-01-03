@@ -688,6 +688,23 @@ test_vm_listing() {
   fi
 }
 
+test_mirror_manager_functions() {
+  echo ""
+  log_test "INFO" "═══ MIRROR-MANAGER FUNCTION TESTS ═══"
+
+  source "$SCRIPT_DIR/mirror-manager.sh" 2>/dev/null || {
+    log_test "SKIP" "mirror-manager tests" "Could not source mirror-manager.sh"
+    return
+  }
+
+  run_test "is_kali_image (kali qcow2)" "is_kali_image 'kali-linux-cloud-genericcloud-amd64.qcow2'"
+  run_test_expect_fail "is_kali_image (ubuntu img)" "is_kali_image 'ubuntu-24.04-server-cloudimg-amd64.img'"
+  run_test_expect_fail "is_kali_image (debian qcow2)" "is_kali_image 'debian-12-generic-amd64.qcow2'"
+  run_test_expect_fail "is_kali_image (empty)" "is_kali_image ''"
+  run_test_expect_fail "extract_kali_image (nonexistent file)" "extract_kali_image '/nonexistent/file.tar.xz' '/tmp/test.qcow2' 2>/dev/null"
+  run_test_expect_fail "extract_kali_image (empty args)" "extract_kali_image '' '' 2>/dev/null"
+}
+
 test_template_commands() {
   echo ""
   log_test "INFO" "═══ TEMPLATE COMMAND TESTS ═══"
@@ -973,6 +990,7 @@ main() {
       test_vm_listing
       test_network_commands
       test_storage_commands
+      test_mirror_manager_functions
       test_template_commands
       test_self_update
       test_fix_lock
