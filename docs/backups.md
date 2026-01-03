@@ -6,7 +6,7 @@ This guide covers VM backup and restore operations in DCVM.
 
 Create a backup for a VM:
 ```bash
-sudo dcvm backup create <vm>
+dcvm backup create <vm>
 ```
 
 List backups:
@@ -16,24 +16,42 @@ dcvm backup list [<vm>]
 
 Delete a backup:
 ```bash
-sudo dcvm backup delete <vm> <timestamp>
+# Interactive delete menu for a VM
+dcvm backup delete <vm_name>
+
+# Delete specific backup (vm-date-time)
+dcvm backup delete <vm_name>-<YYYYMMDD>_<HHMMSS>
 ```
 
 Export a backup archive:
 ```bash
-sudo dcvm backup export <vm> <timestamp> --output /path/to/file.tar.gz
+# Export to default directory ($DATACENTER_BASE/backups/exports)
+dcvm backup export <vm> <timestamp>
+
+# Export to specific directory
+dcvm backup export <vm> <timestamp> /path/to/export/dir
+```
+
+Import a backup archive:
+```bash
+# Import and restore (optional: rename VM)
+dcvm backup import /path/to/archive.tar.gz [new_vm_name]
 ```
 
 ## Restore
 
 Restore the latest backup:
 ```bash
-sudo dcvm backup restore <vm>
+# Standard command
+dcvm backup restore <vm>
+
+# Shortcut
+dcvm restore <vm>
 ```
 
 Restore a specific timestamp:
 ```bash
-sudo dcvm backup restore <vm> <timestamp>
+dcvm backup restore <vm> <timestamp>
 ```
 
 ## Where backups are stored

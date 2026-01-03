@@ -363,8 +363,7 @@ build_virt_install_opts() {
   if [ "$GRAPHICS" = "none" ]; then
     VIRT_INSTALL_OPTS+=(--graphics none --console pty,target_type=serial)
   else
-    # VNC listens on 127.0.0.1 for security - use SSH tunnel for remote access
-    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1")
+    VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1") # VNC listens on 127.0.0.1 for security - use SSH tunnel for remote access
   fi
   [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
 }

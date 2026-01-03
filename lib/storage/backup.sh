@@ -110,6 +110,11 @@ download_cloud_image() {
   local filename="$1"
   local target_path="$2"
 
+  mkdir -p "$(dirname "$target_path")" || {
+    print_error "Cannot create directory for backing image"
+    return 1
+  }
+
   if type download_with_mirrors &>/dev/null; then
     print_info "Downloading cloud image $filename using mirror-manager..."
     if download_with_mirrors "$filename" "$target_path" 100000000; then
@@ -117,44 +122,20 @@ download_cloud_image() {
       return 0
     else
       print_error "Failed to download backing image: $filename"
+      print_info "Hint: Check internet connection or run 'dcvm mirror check $filename' to verify mirrors"
       return 1
     fi
   fi
 
-  local url=""
-  case "$filename" in
-  ubuntu-22.04-server-cloudimg-amd64.img)
-    url="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
-    ;;
-  ubuntu-20.04-server-cloudimg-amd64.img)
-    url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
-    ;;
-  debian-12-generic-amd64.qcow2)
-    url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-    ;;
-  debian-11-generic-amd64.qcow2)
-    url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
-    ;;
-  Arch-Linux-x86_64-cloudimg.qcow2)
-    url="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
-    ;;
-  esac
-  if [ -z "$url" ]; then
-    print_warning "Unknown backing image '$filename'. Please place it at: $target_path"
-    return 1
-  fi
-  mkdir -p "$(dirname "$target_path")" || {
-    print_error "Cannot create directory for backing image"
-    return 1
-  }
-  print_info "Downloading cloud image $filename ..."
-  if wget -q -O "$target_path" "$url"; then
-    print_success "Downloaded backing image: $filename"
-    return 0
-  else
-    print_error "Failed to download backing image from $url"
-    return 1
-  fi
+  print_error "Mirror-manager not available for downloading $filename"
+  print_info "Please ensure mirror-manager.sh is properly installed:"
+  print_info "  Expected locations:"
+  print_info "    - $SCRIPT_DIR/../utils/mirror-manager.sh"
+  print_info "    - /usr/local/lib/dcvm/utils/mirror-manager.sh"
+  print_info ""
+  print_info "Alternatively, manually download and place the image at:"
+  print_info "  $target_path"
+  return 1
 }
 
 ensure_backing_image() {

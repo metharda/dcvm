@@ -314,28 +314,39 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish)
-  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish)
+  local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools)
+  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools)
 
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
-    if [[ "$ID" == "debian" || "$ID" == "ubuntu" ]]; then
+    local is_debian_based=false
+    local is_arch_based=false
+
+    [[ "$ID" == "debian" || "$ID" == "ubuntu" ]] && is_debian_based=true
+    [[ "$ID" == "arch" ]] && is_arch_based=true
+
+    if [[ "$is_debian_based" == false && "$is_arch_based" == false ]]; then
+      [[ " $ID_LIKE " == *" debian "* || " $ID_LIKE " == *" ubuntu "* ]] && is_debian_based=true
+      [[ " $ID_LIKE " == *" arch "* ]] && is_arch_based=true
+    fi
+
+    if [[ "$is_debian_based" == true ]]; then
       command -v apt >/dev/null 2>&1 || {
         print_status "ERROR" "apt not found. Cannot install packages."
         exit 1
       }
-      print_status "INFO" "Detected Debian/Ubuntu. Installing packages with apt..."
+      print_status "INFO" "Detected Debian-based distro ($ID). Installing packages with apt..."
       export DEBIAN_FRONTEND=noninteractive
       apt update -y && apt install -y "${debian_packages[@]}"
-    elif [[ "$ID" == "arch" ]]; then
+    elif [[ "$is_arch_based" == true ]]; then
       command -v pacman >/dev/null 2>&1 || {
         print_status "ERROR" "pacman not found. Cannot install packages."
         exit 1
       }
-      print_status "INFO" "Detected Arch Linux. Installing packages with pacman..."
+      print_status "INFO" "Detected Arch-based distro ($ID). Installing packages with pacman..."
       pacman -Sy --noconfirm "${arch_packages[@]}"
     else
-      print_status "WARNING" "Unsupported distro: $ID. Please install dependencies manually."
+      print_status "WARNING" "Unsupported distro: $ID (ID_LIKE: ${ID_LIKE:-none}). Please install dependencies manually."
     fi
   else
     print_status "WARNING" "/etc/os-release not found. Cannot detect distribution. Please install dependencies manually."
@@ -514,23 +525,28 @@ source_mirror_manager() {
     print_status_log "ERROR" "mirror-manager loaded but MIRRORS are not accessible (get_mirrors failed)"
     return 1
   fi
-
   return 0
 }
 
 declare -A IMAGE_LABELS
+IMAGE_LABELS["debian-13-genericcloud-amd64.qcow2"]="Debian 13"
 IMAGE_LABELS["debian-12-generic-amd64.qcow2"]="Debian 12"
 IMAGE_LABELS["debian-11-generic-amd64.qcow2"]="Debian 11"
+IMAGE_LABELS["ubuntu-24.04-server-cloudimg-amd64.img"]="Ubuntu 24.04"
 IMAGE_LABELS["ubuntu-22.04-server-cloudimg-amd64.img"]="Ubuntu 22.04"
 IMAGE_LABELS["ubuntu-20.04-server-cloudimg-amd64.img"]="Ubuntu 20.04"
 IMAGE_LABELS["Arch-Linux-x86_64-cloudimg.qcow2"]="Arch Linux"
+IMAGE_LABELS["kali-linux-cloud-genericcloud-amd64.qcow2"]="Kali Linux"
 
 IMAGE_ORDER=(
-  "debian-11-generic-amd64.qcow2"
+  "debian-13-genericcloud-amd64.qcow2"
   "debian-12-generic-amd64.qcow2"
-  "ubuntu-20.04-server-cloudimg-amd64.img"
+  "debian-11-generic-amd64.qcow2"
+  "ubuntu-24.04-server-cloudimg-amd64.img"
   "ubuntu-22.04-server-cloudimg-amd64.img"
+  "ubuntu-20.04-server-cloudimg-amd64.img"
   "Arch-Linux-x86_64-cloudimg.qcow2"
+  "kali-linux-cloud-genericcloud-amd64.qcow2"
 )
 
 check_cloud_images() {

@@ -13,7 +13,7 @@ dcvm create webserver \
   -m 2048 \
   -c 2 \
   -d 30G \
-  -o 3 \
+  -o 5 \
   -k nginx,php
 ```
 
@@ -24,7 +24,7 @@ dcvm create webserver \
 - Allocates 2GB RAM
 - Assigns 2 CPU cores
 - Creates 30GB disk
-- Uses Ubuntu 22.04 (option 3)
+- Uses Ubuntu 22.04 (option 5)
 - Installs nginx and PHP
 
 **After creation:**
@@ -32,8 +32,8 @@ dcvm create webserver \
 # Get IP address
 dcvm network | grep webserver
 
-# SSH into the VM
-ssh admin@<vm-ip>
+# SSH into the VM (default user for Ubuntu is 'ubuntu')
+ssh ubuntu@<vm-ip>
 
 # Test nginx
 curl http://<vm-ip>
@@ -51,7 +51,7 @@ dcvm create dbserver \
   -m 4096 \
   -c 4 \
   -d 100G \
-  -o 1 \
+  -o 2 \
   -k mysql-server \
   --enable-root
 ```
@@ -62,7 +62,7 @@ dcvm create dbserver \
 - 4GB RAM for database operations
 - 4 CPU cores
 - 100GB disk for data storage
-- Uses Debian 12 (option 1)
+- Uses Debian 12 (option 2)
 - Installs MySQL server
 - Enables root access
 
@@ -83,7 +83,7 @@ dcvm create dockerhost \
   -m 8192 \
   -c 4 \
   -d 200G \
-  -o 3 \
+  -o 5 \
   -k docker.io
 ```
 
@@ -92,12 +92,12 @@ dcvm create dockerhost \
 - 8GB RAM for containers
 - 4 CPU cores
 - 200GB disk for container images
-- Ubuntu 22.04
+- Ubuntu 22.04 (option 5)
 - Installs Docker
 
 **Use Docker:**
 ```bash
-ssh admin@<vm-ip>
+ssh ubuntu@<vm-ip>
 docker --version
 docker run hello-world
 ```
@@ -143,7 +143,7 @@ for i in {1..3}; do
     -m 2048 \
     -c 2 \
     -d 20G \
-    -o 3 \
+    -o 5 \
     -k nginx
 done
 ```
@@ -162,7 +162,7 @@ dcvm create testvm \
   -m 512 \
   -c 1 \
   -d 10G \
-  -o 3 \
+  -o 5 \
   --without-ssh-key
 ```
 
@@ -183,7 +183,7 @@ dcvm create powervm \
   -m 16384 \
   -c 8 \
   -d 500G \
-  -o 3 \
+  -o 5 \
   -k docker.io,build-essential \
   --enable-root
 ```
@@ -206,7 +206,7 @@ dcvm create prodserver \
   -m 8192 \
   -c 4 \
   -d 200G \
-  -o 3 \
+  -o 5 \
   --with-ssh-key
 ```
 
@@ -246,7 +246,7 @@ dcvm create $VM_NAME \
   -m 4096 \
   -c 2 \
   -d 50G \
-  -o 3 \
+  -o 5 \
   -k nginx,php,mysql-server \
   --enable-root
 EOF

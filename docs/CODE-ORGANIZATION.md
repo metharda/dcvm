@@ -153,39 +153,3 @@ export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
 ```
-
-## Scripts Updated
-
-✓ lib/core/create-vm.sh
-✓ lib/core/custom-iso.sh
-✓ lib/core/delete-vm.sh
-✓ lib/core/vm-manager.sh
-✓ lib/network/network-manager.sh
-✓ lib/network/port-forward.sh
-✓ lib/network/dhcp.sh
-✓ lib/storage/backup.sh
-✓ lib/storage/storage-manager.sh
-✓ lib/utils/fix-lock.sh
-✓ lib/utils/dcvm-completion.sh
-✓ lib/installation/self-update.sh
-✓ lib/installation/uninstall-dcvm.sh
-
-## Not Updated (By Design)
-
-- lib/installation/install-dcvm.sh - Has its own print_status for logging
-- dcvm - CLI wrapper, minimal functions needed
-
-## Testing Checklist
-
-- [ ] VM creation (interactive): `sudo dcvm create testvm`
-- [ ] VM creation (force): `sudo dcvm create testvm -f -p pass123`
-- [ ] VM creation (ISO): `sudo dcvm create-iso testvm --iso /path/to/iso`
-- [ ] VM deletion: `sudo dcvm delete testvm`
-- [ ] VM listing: `dcvm list`
-- [ ] Self-update: `sudo dcvm self-update --check`
-- [ ] VM status: `dcvm status testvm`
-- [ ] Network setup: `sudo dcvm network ports setup`
-- [ ] DHCP cleanup: `sudo dcvm network dhcp cleanup`
-- [ ] Backup: `sudo dcvm backup testvm`
-- [ ] Storage info: `dcvm storage`
-- [ ] Lock fixing: `sudo dcvm fix-lock testvm`
