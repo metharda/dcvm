@@ -282,9 +282,14 @@ cmd_vnc() {
       local vnc_display=$(virsh vncdisplay "$vm_name" 2>/dev/null || true)
       if [ -n "$vnc_display" ]; then
         echo "  VNC Display: $vnc_display"
-        local vnc_port=$((5900 + ${vnc_display##*:}))
-        echo "  VNC Port: $vnc_port"
-        echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
+        if [[ "$vnc_display" =~ :([0-9]+)$ ]]; then
+          local vnc_display_index="${BASH_REMATCH[1]}"
+          local vnc_port=$((5900 + vnc_display_index))
+          echo "  VNC Port: $vnc_port"
+          echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
+        else
+          echo "  (Unable to determine VNC port from display string)"
+        fi
       else
         echo "  (VM is not running, VNC port will be assigned on start)"
       fi

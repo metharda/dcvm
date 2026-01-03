@@ -24,8 +24,17 @@ create_backup_dir() {
 
 validate_backup() {
   local backup_path="$1"
-  [[ "$backup_path" != "$BACKUP_DIR"/* ]] && return 1
-  [[ "$(stat -c '%u' "$backup_path" 2>/dev/null)" != "0" ]] && return 1
+  local resolved_path
+  if command -v realpath >/dev/null 2>&1; then
+    resolved_path="$(realpath -e -- "$backup_path" 2>/dev/null)" || return 1
+  elif command -v readlink >/dev/null 2>&1; then
+    resolved_path="$(readlink -f -- "$backup_path" 2>/dev/null)" || return 1
+  else
+    [[ -L "$backup_path" ]] && return 1
+    resolved_path="$backup_path"
+  fi
+  [[ "$resolved_path" != "$BACKUP_DIR"/* ]] && return 1
+  [[ "$(stat -c '%u' "$resolved_path" 2>/dev/null)" != "0" ]] && return 1
   return 0
 }
 

@@ -549,6 +549,12 @@ is_kali_image() {
 extract_kali_image() {
   local tarxz_path="$1"
   local target_qcow2="$2"
+  local extract_dir=""
+  
+  cleanup_extract() {
+    [ -n "$extract_dir" ] && [ -d "$extract_dir" ] && rm -rf "$extract_dir" 2>/dev/null
+  }
+  trap cleanup_extract EXIT
 
   echo "INFO: Extracting Kali Linux image from tar.xz archive..." >&2
 
@@ -567,7 +573,6 @@ extract_kali_image() {
     return 1
   fi
 
-  local extract_dir
   extract_dir=$(mktemp -d 2>/dev/null)
   if [ -z "$extract_dir" ] || [ ! -d "$extract_dir" ]; then
     echo "ERROR: Failed to create temporary directory for extraction" >&2
@@ -576,7 +581,6 @@ extract_kali_image() {
 
   if ! tar -xJf "$tarxz_path" -C "$extract_dir"; then
     echo "ERROR: Failed to extract tar.xz archive" >&2
-    rm -rf "$extract_dir" 2>/dev/null
     return 1
   fi
 
@@ -590,7 +594,6 @@ extract_kali_image() {
     echo "ERROR: No raw disk image found in tar.xz archive" >&2
     echo "Archive contents:" >&2
     find "$extract_dir" -type f >&2
-    rm -rf "$extract_dir" 2>/dev/null
     return 1
   fi
 
@@ -601,11 +604,12 @@ extract_kali_image() {
   echo "INFO: Converting raw image to qcow2 format (this may take a few minutes)..." >&2
   if ! qemu-img convert -f raw -O qcow2 -c -p "$raw_file" "$target_qcow2"; then
     echo "ERROR: Failed to convert raw image to qcow2" >&2
-    rm -rf "$extract_dir" 2>/dev/null
     rm -f "$target_qcow2" 2>/dev/null
     return 1
   fi
-  rm -rf "$extract_dir" 2>/dev/null
+
+  trap - EXIT
+  cleanup_extract
 
   local final_size
   final_size=$(du -h "$target_qcow2" 2>/dev/null | cut -f1)
@@ -685,7 +689,7 @@ main() {
           ((success++))
         else
           echo "Downloading: $img"
-          if download_with_mirrors "$img" "$target_path" 100000000 >/dev/null 2>&1; then
+          if download_with_mirrors "$img" "$target_path" 100000000; then
             echo "✓ $img downloaded"
             ((success++))
           else

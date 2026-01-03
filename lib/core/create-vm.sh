@@ -39,6 +39,7 @@ FLAG_ROOT_PASSWORD=""
 FLAG_WITH_SSH_KEY=false
 FLAG_DISABLE_SSH_KEY=false
 FLAG_STATIC_IP=""
+FLAG_GRAPHICS=""
 ADDITIONAL_PACKAGES=""
 
 declare -A TEMPLATE_SHA256
@@ -69,6 +70,7 @@ Options:
   --ip <address>                 		# Set static IP (e.g., 10.10.10.50) - DHCP if not specified
   --with-ssh-key                 		# Add SSH key for passwordless authentication
   --without-ssh-key              		# Disable SSH key setup (password-only)
+  --graphics <mode>              		# Set graphics: vnc, vnc,listen=127.0.0.1, or none (default: auto)
   -f, --force                    		# Force mode - uses defaults for unspecified options (no prompts)
   -h, --help                     		# Show this help
 
@@ -151,6 +153,10 @@ parse_arguments() {
     --without-ssh-key)
       FLAG_DISABLE_SSH_KEY=true
       shift
+      ;;
+    --graphics)
+      FLAG_GRAPHICS="$2"
+      shift 2
       ;;
     -f | --force)
       FORCE_MODE=true
@@ -747,15 +753,16 @@ validate_disk_size() {
   }
   local size_num=$(echo "$disk_size" | sed 's/[GMT]$//')
   local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')  
-  local size_in_gb=0
+  local size_in_mb=0
   case "$size_unit" in
-  "M") size_in_gb=0 ;;
-  "G") size_in_gb=$size_num ;;
-  "T") size_in_gb=$((size_num * 1024)) ;;
+  "M") size_in_mb=$size_num ;;
+  "G") size_in_mb=$((size_num * 1024)) ;;
+  "T") size_in_mb=$((size_num * 1024 * 1024)) ;;
   esac
 
   local min_disk_gb="${MIN_DISK_SIZE_GB[$os_type]:-5}"
-  if [ "$size_in_gb" -lt "$min_disk_gb" ] && [ "$size_unit" != "M" ]; then
+  local min_disk_mb=$((min_disk_gb * 1024))
+  if [ "$size_in_mb" -lt "$min_disk_mb" ]; then
     print_error "$os_type requires minimum ${min_disk_gb}G disk"
     return 1
   fi
@@ -1139,7 +1146,9 @@ install_vm() {
   [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."  
   local virt_error
   local GRAPHICS="none"
-  if os_requires_vnc "$VM_OS"; then
+  if [ -n "${FLAG_GRAPHICS:-}" ]; then
+    GRAPHICS="$FLAG_GRAPHICS"
+  elif os_requires_vnc "$VM_OS"; then
     GRAPHICS="vnc,listen=127.0.0.1"
   fi
   virt_error=$(virt-install \

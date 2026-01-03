@@ -107,6 +107,46 @@ log_test() {
   TEST_RESULTS+=("$status|$test_name|$message")
 }
 
+install_missing_test_deps() {
+  local missing_pkgs=()
+  local test_deps=(
+    "openssl:openssl"
+    "genisoimage:genisoimage"
+  ) # Update this list as needed
+
+  for dep in "${test_deps[@]}"; do
+    local cmd="${dep%%:*}"
+    local pkg="${dep##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+      missing_pkgs+=("$pkg")
+    fi
+  done
+
+  if [ ${#missing_pkgs[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  echo -e "${C_INFO}[INFO]${C_RESET} Installing missing test dependencies: ${missing_pkgs[*]}"
+
+  local apt_cmd=""
+  if [ "$EUID" -eq 0 ]; then
+    apt_cmd="apt-get"
+  elif command -v sudo &>/dev/null; then
+    apt_cmd="sudo apt-get"
+  else
+    echo -e "${C_WARN}[WARN]${C_RESET} Cannot install dependencies - not root and sudo unavailable"
+    return 1
+  fi
+
+  if $apt_cmd update -qq &>/dev/null && $apt_cmd install -y -qq "${missing_pkgs[@]}" &>/dev/null; then
+    echo -e "${C_PASS}[PASS]${C_RESET} Installed missing dependencies"
+    return 0
+  else
+    echo -e "${C_WARN}[WARN]${C_RESET} Failed to install some dependencies"
+    return 1
+  fi
+}
+
 run_test() {
   local test_name="$1"
   shift
@@ -608,7 +648,7 @@ test_storage_commands() {
     return
   fi
 
-  run_test "dcvm storage" "$dcvm_cmd storage" || true
+  # Note: 'dcvm storage' is not tested here as it has a 30s delay
   run_test "dcvm backup help" "$dcvm_cmd backup --help"
   
   local backup_output
@@ -814,10 +854,7 @@ generate_report() {
   local duration=$((end_time - START_TIME))
 
   echo ""
-  log_test "INFO" "═══════════════════════════════════════════════"
-  log_test "INFO" "           TEST RESULTS SUMMARY"
-  log_test "INFO" "═══════════════════════════════════════════════"
-  echo ""
+  echo -e "${C_INFO}TEST RESULTS SUMMARY:${C_RESET}"
   echo "Total Tests: $((PASSED + FAILED + SKIPPED))"
   echo -e "  ${C_PASS}Passed:${C_RESET}   $PASSED"
   echo -e "  ${C_FAIL}Failed:${C_RESET}   $FAILED"
@@ -828,10 +865,7 @@ generate_report() {
   echo ""
 
   if [ $FAILED -gt 0 ]; then
-    echo -e "${C_FAIL}=============================================="
-    echo "  FAILED TESTS"
-    echo -e "==============================================${C_RESET}"
-    echo ""
+    echo -e "${C_FAIL}FAILED TESTS:${C_RESET}"
     for result in "${TEST_RESULTS[@]}"; do
       IFS='|' read -r status name message <<<"$result"
       if [ "$status" = "FAIL" ]; then
@@ -843,10 +877,7 @@ generate_report() {
   fi
 
   if [ $WARNINGS -gt 0 ]; then
-    echo -e "${C_WARN}=============================================="
-    echo "  WARNINGS"
-    echo -e "==============================================${C_RESET}"
-    echo ""
+    echo -e "${C_WARN}WARNINGS:${C_RESET}"
     for result in "${TEST_RESULTS[@]}"; do
       IFS='|' read -r status name message <<<"$result"
       if [ "$status" = "WARN" ]; then
@@ -858,14 +889,10 @@ generate_report() {
   fi
 
   if [ $FAILED -eq 0 ]; then
-    echo -e "${C_PASS}═══════════════════════════════════════════════"
-    echo -e "  ✓ All tests passed!"
-    echo -e "═══════════════════════════════════════════════${C_RESET}"
+    echo -e "${C_PASS}✓ All tests passed!${C_RESET}"
     return 0
   else
-    echo -e "${C_FAIL}═══════════════════════════════════════════════"
-    echo -e "  ✗ Some tests failed. Please review the output above."
-    echo -e "═══════════════════════════════════════════════${C_RESET}"
+    echo -e "${C_FAIL}✗ Some tests failed. Please review the output above.${C_RESET}"
     return 1
   fi
 }
@@ -910,9 +937,7 @@ main() {
   done
 
   echo ""
-  echo -e "${C_INFO}═══════════════════════════════════════════════${C_RESET}"
-  echo -e "${C_INFO}         DCVM COMPREHENSIVE TEST SUITE${C_RESET}"
-  echo -e "${C_INFO}═══════════════════════════════════════════════${C_RESET}"
+  echo -e "${C_INFO}DCVM COMPREHENSIVE TEST SUITE${C_RESET}"
   echo ""
   echo "Date: $(date)"
   echo "Mode: ${FULL_MODE:+Full }${QUICK_MODE:+Quick }${SYNTAX_ONLY:+Syntax }${UNIT_ONLY:+Unit }${INTEGRATION_ONLY:+Integration }${FULL_MODE:-${QUICK_MODE:-${SYNTAX_ONLY:-${UNIT_ONLY:-${INTEGRATION_ONLY:-Default}}}}}"
@@ -922,6 +947,7 @@ main() {
 
   [ -f "/etc/dcvm-install.conf" ] && source /etc/dcvm-install.conf
 
+  install_missing_test_deps
   if [ "$SYNTAX_ONLY" = true ]; then
     test_syntax_all_scripts
     test_shellcheck

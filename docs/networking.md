@@ -37,9 +37,32 @@ For custom ISO installations, static IP is noted during creation but must be con
 
 ## VNC Management
 
-DCVM allows you to toggle VNC graphics for VMs. usage is critical for saving resources (headless mode) or enabling remote desktop access.
+DCVM allows you to toggle VNC graphics for VMs. This is critical for saving resources (headless mode) or enabling remote desktop access.
 
-### Commands
+### VNC Security
+
+**VNC listens on `127.0.0.1` (localhost only) by default.** This means:
+- VNC is only accessible from the host machine
+- To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
+- This is a security feature to prevent unauthorized access
+
+### Graphics Mode During Creation
+
+You can set the graphics mode when creating a VM:
+
+```bash
+# Force VNC (listening on localhost)
+dcvm create myvm -f -p pass123 --graphics vnc,listen=127.0.0.1
+
+# Headless mode (no VNC, console only)
+dcvm create myvm -f -p pass123 --graphics none
+```
+
+By default, DCVM automatically selects the graphics mode:
+- **Kali Linux and Debian 13**: VNC enabled (required for graphical installers)
+- **Other cloud images**: Headless mode (console access via `virsh console`)
+
+### VNC Commands
 
 ```bash
 # Check VNC status (enabled/disabled and port)

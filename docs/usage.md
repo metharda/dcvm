@@ -72,6 +72,7 @@ Be careful to choose a base IP with enough free addresses in your subnet. If DCV
 - `-k, --packages`: Comma-separated package list
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
+- `--graphics`: Graphics mode - `vnc`, `vnc,listen=127.0.0.1`, or `none` (default: auto based on OS)
 - `-f, --force`: Force mode (no prompts)
 
 ### Creating a VM from Custom ISO

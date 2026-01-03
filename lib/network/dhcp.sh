@@ -73,6 +73,11 @@ clear_vm_lease() {
   local vm_name="$1"
   [ -z "$vm_name" ] && print_error "VM name required" && return 1
 
+  if [[ ! "$vm_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    print_error "Invalid VM name format"
+    return 1
+  fi
+
   print_info "Clearing leases for VM: $vm_name"
 
   local mac_address=$(get_vm_mac "$vm_name" 2>/dev/null)
@@ -90,12 +95,14 @@ clear_vm_lease() {
     local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
     local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
     local found=false
+    local safe_name
+    safe_name=$(printf '%s\n' "$vm_name" | sed 's/[[\.*^$()+?{|]/\\&/g')
     if [ -f "$lease_file" ] && grep -qi "$vm_name" "$lease_file"; then
-      sed -i "/$vm_name/Id" "$lease_file"
+      sed -i "/$safe_name/Id" "$lease_file"
       found=true
     fi
     if [ -f "$status_file" ] && grep -qi "$vm_name" "$status_file"; then
-      sed -i "/$vm_name/Id" "$status_file"
+      sed -i "/$safe_name/Id" "$status_file"
       found=true
     fi
     if [ "$found" = true ]; then
@@ -157,6 +164,8 @@ clear_stale_leases() {
       >"$lease_file"
     fi
     rm -f "$temp_file" 2>/dev/null
+  else
+    rm -f "$temp_file" 2>/dev/null
   fi
 
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
@@ -201,7 +210,10 @@ clear_lease() {
     esac
   done
 
-  if [ "$all_flag" = true ]; then
+  if [ "$all_flag" = true ] && [ "$stale_flag" = true ]; then
+    print_error "Cannot use both --all and --stale flags together"
+    return 1
+  elif [ "$all_flag" = true ]; then
     clear_all_leases
   elif [ "$stale_flag" = true ]; then
     clear_stale_leases
