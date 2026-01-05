@@ -69,7 +69,7 @@ https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudi
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
 
-KALI_VERSION="2025.4" #update kali version when a new update.
+KALI_VERSION="2025.4" # Update when there is a new Kali release
 MIRROR_kali="
 https://kali.download/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
 https://cdimage.kali.org/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
@@ -554,7 +554,14 @@ extract_kali_image() {
   cleanup_kali_extract() {
     [ -n "$extract_dir" ] && [ -d "$extract_dir" ] && rm -rf "$extract_dir" 2>/dev/null
   }
-  trap cleanup_kali_extract EXIT
+  # Preserve any existing EXIT trap by appending cleanup
+  local previous_exit_trap
+  previous_exit_trap=$(trap -p EXIT 2>/dev/null | sed -E "s/^trap -- '(.*)' EXIT$/\1/" || true)
+  if [ -n "$previous_exit_trap" ]; then
+    trap "$previous_exit_trap; cleanup_kali_extract" EXIT
+  else
+    trap cleanup_kali_extract EXIT
+  fi
 
   echo "INFO: Extracting Kali Linux image from tar.xz archive..." >&2
 

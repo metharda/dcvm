@@ -41,7 +41,9 @@ DCVM allows you to toggle VNC graphics for VMs. This is critical for saving reso
 
 ### VNC Security
 
-**VNC listens on `127.0.0.1` (localhost only) by default.** This means:
+**VNC graphics are only enabled by default for specific OS types (Kali and Debian 13).** Other operating systems use headless mode (`none`) by default.
+
+When VNC is enabled (either by default for those OS types or via `--graphics vnc,listen=127.0.0.1`), **VNC listens on `127.0.0.1` (localhost only)**. This means:
 - VNC is only accessible from the host machine
 - To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
 - This is a security feature to prevent unauthorized access

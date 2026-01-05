@@ -30,8 +30,12 @@ validate_backup() {
   elif command -v readlink >/dev/null 2>&1; then
     resolved_path="$(readlink -f -- "$backup_path" 2>/dev/null)" || return 1
   else
-    [[ -L "$backup_path" ]] && return 1
-    resolved_path="$backup_path"
+    if [[ -d "$backup_path" ]]; then
+      resolved_path="$(cd "$backup_path" 2>/dev/null && pwd -P)" || return 1
+    else
+      [[ -L "$backup_path" ]] && return 1
+      resolved_path="$backup_path"
+    fi
   fi
 
   [[ "$resolved_path" != "$BACKUP_DIR"/* ]] && return 1

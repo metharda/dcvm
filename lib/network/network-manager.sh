@@ -288,7 +288,7 @@ cmd_vnc() {
           echo "  VNC Port: $vnc_port"
           echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
         else
-          echo "  (Unable to determine VNC port from display string)"
+          echo "  (Unable to determine VNC port from display string: '$vnc_display')"
         fi
       else
         echo "  (VM is not running, VNC port will be assigned on start)"

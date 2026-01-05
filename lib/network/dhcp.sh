@@ -162,9 +162,8 @@ clear_stale_leases() {
     else
       >"$lease_file"
     fi
-    rm -f "$temp_file" 2>/dev/null
   else
-    rm -f "$temp_file" 2>/dev/null
+    :
   fi
 
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
