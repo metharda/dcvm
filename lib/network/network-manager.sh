@@ -282,9 +282,14 @@ cmd_vnc() {
       local vnc_display=$(virsh vncdisplay "$vm_name" 2>/dev/null || true)
       if [ -n "$vnc_display" ]; then
         echo "  VNC Display: $vnc_display"
-        local vnc_port=$((5900 + ${vnc_display#:}))
-        echo "  VNC Port: $vnc_port"
-        echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
+        if [[ "$vnc_display" =~ :([0-9]+)$ ]]; then
+          local vnc_display_index="${BASH_REMATCH[1]}"
+          local vnc_port=$((5900 + vnc_display_index))
+          echo "  VNC Port: $vnc_port"
+          echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
+        else
+          echo "  (Unable to determine VNC port from display string: '$vnc_display')"
+        fi
       else
         echo "  (VM is not running, VNC port will be assigned on start)"
       fi
@@ -317,9 +322,8 @@ Subcommands:
   ip-forwarding [on|off|show]
                        Get or toggle net.ipv4.ip_forward
   config               Show effective DCVM network config
-  ports <cmd>          Manage port forwarding (setup, show, rules, apply, clear, test)
-  dhcp <cmd>           Manage DHCP leases (show, clear-all, clear-vm, cleanup)
-  vnc <action> <vm>    VNC management (enable, disable, status)
+  ports <cmd>          Manage port forwarding (delegates)
+  dhcp <cmd>           Manage DHCP leases (delegates)
   help                 Show this help
 
 Examples:
@@ -330,8 +334,6 @@ Examples:
   dcvm network ip-forwarding on
   dcvm network ports setup
   dcvm network dhcp cleanup
-  dcvm network vnc status myvm
-  dcvm network vnc disable myvm
 EOF
 }
 

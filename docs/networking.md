@@ -35,36 +35,109 @@ dcvm create myvm -f -p password123 --ip 10.10.10.50
 ### Custom ISO VMs
 For custom ISO installations, static IP is noted during creation but must be configured manually inside the VM during OS installation.
 
+## VNC Management
+
+DCVM allows you to toggle VNC graphics for VMs. This is critical for saving resources (headless mode) or enabling remote desktop access.
+
+### VNC Security
+
+**VNC graphics are only enabled by default for specific OS types (Kali and Debian 13).** Other operating systems use headless mode (`none`) by default.
+
+When VNC is enabled (either by default for those OS types or via `--graphics vnc,listen=127.0.0.1`), **VNC listens on `127.0.0.1` (localhost only)**. This means:
+- VNC is only accessible from the host machine
+- To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
+- This is a security feature to prevent unauthorized access
+
+### Graphics Mode During Creation
+
+You can set the graphics mode when creating a VM:
+
+```bash
+# Force VNC (listening on localhost)
+dcvm create myvm -f -p pass123 --graphics vnc,listen=127.0.0.1
+
+# Headless mode (no VNC, console only)
+dcvm create myvm -f -p pass123 --graphics none
+```
+
+By default, DCVM automatically selects the graphics mode:
+- **Kali Linux and Debian 13**: VNC enabled (required for graphical installers)
+- **Other cloud images**: Headless mode (console access via `virsh console`)
+
+### VNC Commands
+
+```bash
+# Check VNC status (enabled/disabled and port)
+dcvm network vnc status <vm_name>
+
+# Enable VNC (requires VM restart)
+# Assigns a local listening port (127.0.0.1:590x)
+dcvm network vnc enable <vm_name>
+
+# Disable VNC (requires VM restart)
+# Converts VM to headless mode (console access only)
+dcvm network vnc disable <vm_name>
+```
+
+**Note:** Disabling VNC frees up system resources and potential attack surfaces. Use `dcvm console <vm_name>` for text-based access when VNC is disabled.
+
+## Port Forwarding
+
+DCVM provides a robust port forwarding system to expose VM services to the host network.
+
+### Workflow
+
+1.  **Setup/Refresh Rules:**
+    Automatically discovers running VMs and creates forwarding rules (typically starting at port 2221/8081).
+    ```bash
+    dcvm network ports setup
+    ```
+
+2.  **View Rules:**
+    ```bash
+    dcvm network ports show
+    ```
+
+3.  **Test Connectivity:**
+    Verifies that the forwarded ports are actually reachable.
+    ```bash
+    dcvm network ports test
+    ```
+
+4.  **Persistence:**
+    Rules are saved to `$DATACENTER_BASE/port-mappings.txt`. You can manually edit this file and re-apply:
+    ```bash
+    dcvm network ports apply
+    ```
+
+### Command Reference
+
+| Command | Description |
+| :--- | :--- |
+| `setup` | Auto-discover VMs and create new rules |
+| `show` | Display saved mapping table |
+| `rules` | Show active `iptables` rules |
+| `apply` | Apply rules from mappings file |
+| `clear` | Remove all forwarding rules |
+| `test` | Test connectivity (Ping/SSH/HTTP) |
+
 ## Quick commands
 
 - Show network summary:
 ```bash
-dcvm network
-# or
 dcvm network show
-```
-
-- Port forwarding management:
-```bash
-# Create/refresh typical forwards (SSH/HTTP per VM)
-sudo dcvm network ports setup
-# Show mappings and active rules
-dcvm network ports show
-# Re-apply rules from mappings file
-sudo dcvm network ports apply
-# Clear all forwarding rules
-sudo dcvm network ports clear
-# Connectivity tests
-dcvm network ports test
 ```
 
 - DHCP lease management:
 ```bash
 dcvm network dhcp show
-sudo dcvm network dhcp renew
-sudo dcvm network dhcp cleanup
-sudo dcvm network dhcp clear-vm <vm>
-sudo dcvm network dhcp clear-mac <mac>
+# Force renewal for all VMs
+dcvm network dhcp renew
+
+# Clear specific lease
+dcvm network dhcp clear <vm_name_or_mac>
+# Clear stale/orphaned leases
+dcvm network dhcp clear -s
 ```
 
 - Service helpers:
@@ -74,11 +147,6 @@ dcvm network bridge
 dcvm network ip-forwarding on|off|show
 ```
 
-## Port mapping persistence
-- Mappings are stored at: `$DATACENTER_BASE/port-mappings.txt`.
-- You can edit this file; `apply` recreates iptables rules from it.
-
 ## Tips
-- Keep SSH forwards unique per VM (e.g., 2222, 2223, ...).
-- After reboots, if rules are missing, run `dcvm network ports apply`.
-- For external exposure, ensure the host firewall allows forwarded ports.
+- **Security:** Ensure your host firewall (ufw/iptables) permits traffic on the forwarded ports if you want external access.
+- **Persistence:** Run `dcvm network ports apply` after a host reboot if rules are missing.

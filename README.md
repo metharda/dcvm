@@ -30,7 +30,7 @@ You can install from a different branch or fork using environment variables:
 
 ### Virtual Machine Management
 
-- **Automated VM Creation**: Debian 12, Ubuntu 20.04/22.04 and Arch Linux based VMs with cloud-init support
+- **Automated VM Creation**: Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Kali Linux and Arch Linux based VMs with cloud-init support
 - **Custom ISO Support**: Create VMs from any installer ISO (Windows, Arch, Fedora, etc.)
 - **User-Friendly Wizard**: Step-by-step VM configuration
 - **Resource Optimization**: Automatic sizing based on host system resources
@@ -70,7 +70,7 @@ You can install from a different branch or fork using environment variables:
 
 ### Software
 
-- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
+- **Operating System**: Ubuntu 20.04+, Debian 11+, Arch Linux
 - **Virtualization**: KVM/QEMU support
 - **Root Access**: sudo/root privileges
 
@@ -94,7 +94,7 @@ cd dcvm
 #### 2. Run Installation Script
 
 ```bash
-sudo bash install/install-dcvm.sh
+sudo bash lib/installation/install-dcvm.sh
 ```
 
 #### 3. Verify Installation
@@ -114,7 +114,7 @@ For detailed installation instructions, see [Installation Guide](docs/installati
 # Interactive mode (recommended for first time)
 dcvm create myvm
 
-# Or use force mode with defaults
+# Or use force mode with defaults (defaults to Ubuntu 24.04)
 dcvm create myvm -f -p mypassword123
 ```
 
@@ -131,8 +131,9 @@ dcvm status myvm
 # Find VM IP
 dcvm network
 
-# SSH into VM
-ssh admin@<vm-ip>
+# SSH into VM (default username depends on OS, e.g., 'ubuntu' for Ubuntu, 'debian' for Debian)
+# For Ubuntu 24.04 (default):
+ssh ubuntu@<vm-ip>
 ```
 
 ## Usage Guide
@@ -142,7 +143,7 @@ ssh admin@<vm-ip>
 ```bash
 # Create VMs
 dcvm create myvm                     # Interactive mode
-dcvm create webserver -f -p pass123  # Force mode with password
+dcvm create webserver -f -p pass123  # Force mode with password (Ubuntu 24.04)
 dcvm create myvm -o /path/to/iso     # Create from custom ISO
 dcvm create-iso myvm --iso /path/to/archlinux.iso  # Alternative ISO syntax
 

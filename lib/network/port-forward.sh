@@ -215,7 +215,7 @@ cmd_show() {
 
 cmd_rules() {
   echo "Active port forwarding rules (iptables):"
-  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(22[2-9][0-9]|80[8-9][0-9]|81[0-7][0-9])")
+  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
   [ -n "$nat_rules" ] && echo "$nat_rules" || echo "No datacenter port forwarding rules found"
 }
 

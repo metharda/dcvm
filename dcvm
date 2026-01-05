@@ -31,7 +31,7 @@ fi
 
 show_version() {
   echo "DCVM - Datacenter Virtual Machine Manager"
-  echo "Version: 0.8.0"
+  echo "Version: 0.9.0"
   echo "https://github.com/metharda/dcvm"
 }
 
@@ -43,44 +43,44 @@ Usage: dcvm <command> [options]
 
 COMMANDS:
   VM Management:
-    create <vm_name> [opts]    Create a new virtual machine
-        create-iso <vm> --iso <p>  Create a VM from a custom installer ISO
-    delete <vm_name>           Delete a virtual machine
-    list                       List all virtual machines
-    status [vm_name]          Show VM status
-    start <vm_name>           Start a virtual machine
-    stop <vm_name>            Stop a virtual machine
-    restart <vm_name>         Restart a virtual machine
-    console <vm_name>         Connect to VM console
+    create <vm_name> [opts]        Create a new virtual machine
+    delete <vm_name>               Delete a virtual machine
+    list                           List all virtual machines
+    status [vm_name]               Show VM status
+    start <vm_name>                Start a virtual machine
+    stop <vm_name>                 Stop a virtual machine
+    restart <vm_name>              Restart a virtual machine
+    console <vm_name>              Connect to VM console
 
   Network Management:
-        network                   Show network information
-        network ports <cmd>       Port forwarding mgmt (setup, show, rules, apply, clear, test)
-        network dhcp <cmd>        DHCP mgmt (show, clear-all, clear-vm, clear-mac, cleanup, renew)
-        network vnc <action> <vm> VNC management (enable, disable, status)
+    network                        Show network information
+    network ports <cmd>            Port forwarding mgmt (setup, show, rules, apply, clear, test)
+    network dhcp <cmd>             DHCP mgmt (show, clear-all, clear-vm, clear-mac, cleanup, renew)
+    network vnc <action> <vm>      VNC management (enable, disable, status)
 
   Storage & Backup:
-    backup <subcommand>       Backup management (create, restore, list, delete, export, import)
-    storage                  Show storage information
-    storage-cleanup          Clean up storage
+    backup <subcommand>            Backup management (create, restore, list, delete, export, import)
+    storage                        Show storage information
+    storage-cleanup                Clean up storage
+    template <cmd>                 Template management (list, download, check)
 
   System:
-    fix-lock                 Fix locked resources
-    self-update              Update DCVM to the latest version
-    uninstall                Uninstall DCVM completely
-    version                  Show version information
-    help                     Show this help message
+    self-update                    Update DCVM to the latest version
+    uninstall                      Uninstall DCVM completely
+    version                        Show version information
+    help                           Show this help message
+    fix-lock                       Fix locked resources
 
 OPTIONS:
-  -h, --help               Show help for specific command
-  -v, --version            Show version information
+    -h, --help                     Show help for specific command
+    -v, --version                  Show version information
 
 EXAMPLES:
-  dcvm create myvm -p password123 -m 2048 -c 2
-  dcvm list
-  dcvm network
-  dcvm backup create myvm
-  dcvm backup list
+    dcvm create myvm -p password123 -m 2048 -c 2
+    dcvm list
+    dcvm network
+    dcvm backup create myvm
+    dcvm backup list
 
 For more information, visit: https://github.com/metharda/dcvm
 EOF
@@ -117,6 +117,9 @@ route_command() {
     ;;
   storage | storage-cleanup)
     exec "$LIB_DIR/storage/storage-manager.sh" "$command" "$@"
+    ;;
+  template | mirror)
+    exec "$LIB_DIR/utils/mirror-manager.sh" "$@"
     ;;
   fix-lock)
     exec "$LIB_DIR/utils/fix-lock.sh" "$@"

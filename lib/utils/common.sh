@@ -610,6 +610,17 @@ interactive_prompt_static_ip_common() {
   printf -v "$var_name" '%s' "$result"
 }
 
+default_username(){
+  local os_choice="$1"
+  os_choice=$(echo "$os_choice" | sed 's/[0-9.].*$//')
+  local os_list=("ubuntu" "debian" "archlinux" "kali")
+  if [[ " ${os_list[*]} " == *" $os_choice "* ]]; then
+    echo "$os_choice"
+  else
+    echo "osadmin" # cannot use admin because its reserved in some OSes
+  fi
+}
+
 export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
@@ -623,4 +634,4 @@ export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_pin
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
-export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common
+export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username

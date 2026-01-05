@@ -13,7 +13,7 @@ This guide will walk you through installing DCVM (Datacenter Virtual Machine Man
 
 ### Software Requirements
 
-- **Operating System**: Ubuntu 20.04/22.04, Debian 11/12, Arch Linux
+- **Operating System**: Ubuntu 20.04+, Debian 11+, Arch Linux
 - **Privileges**: Root access required
 - **Virtualization**: KVM/QEMU support
 
@@ -22,13 +22,13 @@ This guide will walk you through installing DCVM (Datacenter Virtual Machine Man
 ### Using curl
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
 ### Using wget
 
 ```bash
-sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
+bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
 Optional: you can override the download source via environment variables if needed:
