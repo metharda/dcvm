@@ -610,7 +610,7 @@ interactive_prompt_static_ip_common() {
   printf -v "$var_name" '%s' "$result"
 }
 
-default_username(){
+default_username() {
   local os_choice="$1"
   os_choice=$(echo "$os_choice" | sed 's/[0-9.].*$//')
   local os_list=("ubuntu" "debian" "archlinux" "kali")

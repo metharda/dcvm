@@ -25,7 +25,6 @@ MIN_DISK_SIZE_GB["kali"]=30 # Kali template is 25 GiB, so minimum must be larger
 
 OS_REQUIRES_VNC=("kali" "debian13")
 
-
 FORCE_MODE=false
 
 FLAG_USERNAME=""
@@ -157,13 +156,12 @@ parse_arguments() {
     --graphics)
       FLAG_GRAPHICS="$2"
       case "$FLAG_GRAPHICS" in
-        none|vnc|spice|vnc,*|spice,*)
-          ;;
-        *)
-          echo "Error: Invalid graphics mode '$FLAG_GRAPHICS'."
-          echo "Supported values: none, vnc, vnc,listen=..., spice, spice,listen=..."
-          exit 1
-          ;;
+      none | vnc | spice | vnc,* | spice,*) ;;
+      *)
+        echo "Error: Invalid graphics mode '$FLAG_GRAPHICS'."
+        echo "Supported values: none, vnc, vnc,listen=..., spice, spice,listen=..."
+        exit 1
+        ;;
       esac
       shift 2
       ;;
@@ -761,7 +759,7 @@ validate_disk_size() {
     return 1
   }
   local size_num=$(echo "$disk_size" | sed 's/[GMT]$//')
-  local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')  
+  local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')
   local size_in_mb=0
   case "$size_unit" in
   "M") size_in_mb=$size_num ;;
@@ -775,7 +773,7 @@ validate_disk_size() {
     print_error "$os_type requires minimum ${min_disk_gb}G disk"
     return 1
   fi
-  
+
   case "$size_unit" in
   "M") [ "$size_num" -lt 100 ] && {
     print_error "Minimum disk size is 100M"
@@ -797,7 +795,7 @@ get_default_disk_size() {
   local os_type="${1:-$VM_OS}"
   local min_disk_gb="${MIN_DISK_SIZE_GB[$os_type]:-5}"
   local default_num=$(echo "$DEFAULT_DISK_SIZE" | sed 's/[GMT]$//')
-  
+
   if [ "$default_num" -lt "$min_disk_gb" ]; then
     echo "${min_disk_gb}G"
   else
@@ -1092,7 +1090,7 @@ METADATA_EOF
 }
 
 generate_cloud_init_network() {
-  local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"  
+  local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"
   if [ -n "$FLAG_STATIC_IP" ]; then
     cat >"$network_config" <<NETWORK_EOF
 version: 2
@@ -1152,7 +1150,7 @@ create_vm_disk() {
 }
 
 install_vm() {
-  [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."  
+  [ "$FORCE_MODE" = true ] && print_info "Installing VM (${VM_MEMORY}MB, ${VM_CPUS} CPUs)" || print_info "Installing VM with $VM_MEMORY MB RAM and $VM_CPUS CPUs..."
   local virt_error
   local GRAPHICS="none"
   if [ -n "${FLAG_GRAPHICS:-}" ]; then
@@ -1174,7 +1172,7 @@ install_vm() {
     --console pty,target_type=serial \
     --import \
     --noautoconsole 2>&1)
-  
+
   if [ $? -ne 0 ]; then
     print_error "Failed to create VM"
     echo ""

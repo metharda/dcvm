@@ -339,7 +339,6 @@ select_best_mirror() {
   return 1
 }
 
-
 download_with_mirrors() {
   local filename="${1:-}"
   local target_path="${2:-}"
@@ -550,7 +549,7 @@ extract_kali_image() {
   local tarxz_path="$1"
   local target_qcow2="$2"
   local extract_dir=""
-  
+
   cleanup_kali_extract() {
     [ -n "$extract_dir" ] && [ -d "$extract_dir" ] && rm -rf "$extract_dir" 2>/dev/null
   }
@@ -692,7 +691,7 @@ main() {
   download)
     local target="${2:-}"
     local force="${3:-}"
-    
+
     if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
       echo "Downloading all templates..."
       echo ""
@@ -718,7 +717,7 @@ main() {
       echo "Summary: $success successful, $failed failed"
       exit 0
     fi
-    
+
     if [ -z "$target" ]; then
       echo "DCVM Template Download"
       echo ""
@@ -740,25 +739,25 @@ main() {
       done
       exit 0
     fi
-    
+
     local target_path="$TEMPLATE_DIR/$target"
-    
+
     if [ -f "$target_path" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
       echo "Template already exists: $target_path"
       echo "Use --force to redownload: dcvm template download $target --force"
       exit 0
     fi
-    
+
     if [ -f "$target_path" ] && { [ "$force" = "--force" ] || [ "$force" = "-f" ]; }; then
       echo "Removing existing template for redownload..."
       rm -f "$target_path"
     fi
-    
+
     mkdir -p "$TEMPLATE_DIR"
     echo "Downloading template: $target"
     echo "Target: $target_path"
     echo ""
-    
+
     if download_with_mirrors "$target" "$target_path" 100000000; then
       echo ""
       echo "SUCCESS: Template downloaded successfully"
@@ -790,7 +789,7 @@ main() {
               ((corrupt++))
             fi
           fi
-          
+
           if [ "$integrity" = "OK" ]; then
             echo "  ✓ $img ($size, virtual: ${vsize:-unknown})"
           else

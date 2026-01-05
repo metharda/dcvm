@@ -96,11 +96,11 @@ clear_vm_lease() {
     local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
     local found=false
     if [ -f "$lease_file" ] && grep -qFi "$vm_name" "$lease_file"; then
-      grep -vFi "$vm_name" "$lease_file" > "$lease_file.tmp" && mv "$lease_file.tmp" "$lease_file"
+      grep -vFi "$vm_name" "$lease_file" >"$lease_file.tmp" && mv "$lease_file.tmp" "$lease_file"
       found=true
     fi
     if [ -f "$status_file" ] && grep -qFi "$vm_name" "$status_file"; then
-      grep -vFi "$vm_name" "$status_file" > "$status_file.tmp" && mv "$status_file.tmp" "$status_file"
+      grep -vFi "$vm_name" "$status_file" >"$status_file.tmp" && mv "$status_file.tmp" "$status_file"
       found=true
     fi
     if [ "$found" = true ]; then
@@ -326,4 +326,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
 fi
-

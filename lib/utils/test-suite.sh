@@ -385,7 +385,7 @@ test_dependencies() {
   )
 
   local required_iso=(
-    "mkisofs:genisoimage" 
+    "mkisofs:genisoimage"
   )
 
   local optional_commands=(
@@ -433,7 +433,7 @@ test_dependencies() {
   echo "  Required (ISO creation - at least one):"
   local has_iso=false
   for cmd_pair in "${required_iso[@]}"; do
-    IFS=':' read -ra cmds <<< "$cmd_pair"
+    IFS=':' read -ra cmds <<<"$cmd_pair"
     for cmd in "${cmds[@]}"; do
       if check_command_exists "$cmd"; then
         log_test "PASS" "ISO tool: $cmd"
@@ -650,7 +650,7 @@ test_storage_commands() {
 
   # Note: 'dcvm storage' is not tested here as it has a 30s delay
   run_test "dcvm backup help" "$dcvm_cmd backup --help"
-  
+
   local backup_output
   backup_output=$($dcvm_cmd backup list 2>&1)
   local backup_exit=$?
