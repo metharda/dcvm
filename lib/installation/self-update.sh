@@ -222,7 +222,7 @@ do_update() {
         fi
         mv -f "$tmp_dest" "$dest"
         chmod +x "$dest" 2>/dev/null || true
-        ((updated_count++))
+        ((++updated_count))
       else
         rm -f "$tmp_dest" 2>/dev/null || true
         ok=false
@@ -257,7 +257,7 @@ do_update() {
         fi
         mv -f "$tmp_dest" "$dest"
         [[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
-        ((updated_count++))
+        ((++updated_count))
       else
         rm -f "$tmp_dest" 2>/dev/null || true
         ok=false

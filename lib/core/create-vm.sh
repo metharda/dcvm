@@ -1094,7 +1094,20 @@ METADATA_EOF
 generate_cloud_init_network() {
   local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"  
   if [ -n "$FLAG_STATIC_IP" ]; then
-    cat >"$network_config" <<NETWORK_EOF
+    if [ "$VM_OS" = "archlinux" ]; then
+      cat >"$network_config" <<NETWORK_EOF
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: false
+    addresses:
+      - ${FLAG_STATIC_IP}/24
+    gateway4: ${NETWORK_SUBNET}.1
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+NETWORK_EOF
+    else
+      cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
   id0:
@@ -1107,8 +1120,20 @@ ethernets:
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
+    fi
   else
-    cat >"$network_config" <<'NETWORK_EOF'
+    if [ "$VM_OS" = "archlinux" ]; then
+      cat >"$network_config" <<'NETWORK_EOF'
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: true
+    dhcp-identifier: mac
+    nameservers:
+      addresses: [8.8.8.8, 8.8.4.4]
+NETWORK_EOF
+    else
+      cat >"$network_config" <<'NETWORK_EOF'
 version: 2
 ethernets:
   id0:
@@ -1119,6 +1144,7 @@ ethernets:
     nameservers:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
+    fi
   fi
 }
 
