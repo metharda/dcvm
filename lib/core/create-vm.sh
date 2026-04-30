@@ -547,8 +547,6 @@ NETCONF
 
 setup_tailscale() {
   TAILSCALE_AUTHKEY=""
-
-  # If --tailscale-authkey is provided, ensure tailscale is in the package list
   if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
     if [ -n "$ADDITIONAL_PACKAGES" ]; then
       ADDITIONAL_PACKAGES="${ADDITIONAL_PACKAGES},tailscale"
@@ -1019,6 +1017,7 @@ generate_cloud_init_userdata() {
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
       package=$(echo "$package" | xargs)
+      [[ "${package,,}" == "tailscale" ]] && continue
       PACKAGE_LIST="${PACKAGE_LIST}
   - ${package}"
     done
@@ -1141,9 +1140,25 @@ DOCKER_EOF
   fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
     cat <<'TAILSCALE_EOF'
-  - curl -fsSL https://tailscale.com/install.sh | sh
+  - |
+    # Wait for network connectivity before installing tailscale
+    for i in $(seq 1 30); do
+      if curl -fsSL --connect-timeout 5 https://tailscale.com/install.sh -o /tmp/tailscale-install.sh 2>/dev/null; then
+        break
+      fi
+      echo "Waiting for network... attempt $i/30"
+      sleep 2
+    done
+    if [ -f /tmp/tailscale-install.sh ]; then
+      sh /tmp/tailscale-install.sh
+      rm -f /tmp/tailscale-install.sh
+    else
+      echo "ERROR: Failed to download tailscale installer after 30 attempts"
+      exit 1
+    fi
   - systemctl enable tailscaled
   - systemctl start tailscaled
+  - sleep 5
 TAILSCALE_EOF
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       echo "  - tailscale up --authkey=$TAILSCALE_AUTHKEY"
