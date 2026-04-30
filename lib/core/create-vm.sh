@@ -1013,11 +1013,15 @@ generate_cloud_init_userdata() {
   }
 
   PACKAGE_LIST=""
+  TAILSCALE_REQUESTED=false
   if [ -n "$ADDITIONAL_PACKAGES" ]; then
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
       package=$(echo "$package" | xargs)
-      [[ "${package,,}" == "tailscale" ]] && continue
+      if [[ "${package,,}" == "tailscale" ]]; then
+        TAILSCALE_REQUESTED=true
+        continue
+      fi
       PACKAGE_LIST="${PACKAGE_LIST}
   - ${package}"
     done
@@ -1138,34 +1142,42 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
   - usermod -aG docker $VM_USERNAME
 DOCKER_EOF
   fi)
-$(if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
-    cat <<'TAILSCALE_EOF'
+$(if [ "$TAILSCALE_REQUESTED" = true ]; then
+    if [[ "$VM_OS" == "archlinux" ]]; then
+      cat <<'TAILSCALE_ARCH_EOF'
   - |
-    # Wait for network connectivity before installing tailscale
+    for i in $(seq 1 10); do
+      pacman -Sy --noconfirm tailscale && break
+      echo "Pacman failed, retrying in 10s..."
+      sleep 10
+    done
+TAILSCALE_ARCH_EOF
+    else
+      cat <<'TAILSCALE_APT_EOF'
+  - |
+    # Install tailscale using the official installer with retries for apt locks
     for i in $(seq 1 30); do
-      if curl -fsSL --connect-timeout 5 https://tailscale.com/install.sh -o /tmp/tailscale-install.sh 2>/dev/null; then
+      curl -fsSL --connect-timeout 10 https://tailscale.com/install.sh | sh
+      if command -v tailscale >/dev/null 2>&1; then
+        echo "Tailscale installed successfully."
         break
       fi
-      echo "Waiting for network... attempt $i/30"
-      sleep 2
+      echo "Tailscale installation failed (likely apt lock). Retrying in 15s... ($i/30)"
+      sleep 15
     done
-    if [ -f /tmp/tailscale-install.sh ]; then
-      sh /tmp/tailscale-install.sh
-      rm -f /tmp/tailscale-install.sh
-    else
-      echo "ERROR: Failed to download tailscale installer after 30 attempts"
-      exit 1
+TAILSCALE_APT_EOF
     fi
+    cat <<'TAILSCALE_EOF'
   - systemctl enable tailscaled
   - systemctl start tailscaled
-  - sleep 5
+  - sleep 3
 TAILSCALE_EOF
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       echo "  - tailscale up --authkey=$TAILSCALE_AUTHKEY"
     fi
   fi)
   - echo "VM $VM_NAME setup completed successfully" >> /var/log/cloud-init-final.log
-  - echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log
+  - 'echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log'
   - echo "SSH/SCP/SFTP ready for connections" >> /var/log/cloud-init-final.log
   - wall "VM $VM_NAME is ready! Login as $VM_USERNAME"
 
