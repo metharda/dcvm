@@ -122,6 +122,9 @@ validate_username() {
   if [ ${#username} -lt 3 ] || [ ${#username} -gt 32 ]; then
     return 1
   fi
+  if [[ "$username" =~ ^(root|admin|administrator|sysadmin|user|guest)$ ]]; then
+    return 1
+  fi
   return 0
 }
 

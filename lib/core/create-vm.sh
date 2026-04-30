@@ -41,6 +41,7 @@ FLAG_DISABLE_SSH_KEY=false
 FLAG_STATIC_IP=""
 FLAG_GRAPHICS=""
 ADDITIONAL_PACKAGES=""
+FLAG_TAILSCALE_AUTHKEY=""
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-24.04-server-cloudimg-amd64.img"]=""
@@ -66,7 +67,8 @@ Options:
   -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
   -d, --disk <size>              		# Set disk size (default: 30G)
   -o, --os <os_choice|iso_path>  		# Set OS: 1-8 or path to ISO file
-  -k, --packages <packages>     		# Comma-separated package list
+  -k, --packages <packages>     		# Comma-separated package list (includes 'tailscale' for VPN)
+  --tailscale-authkey <key>      		# Tailscale auth key for auto-connect (auto-installs tailscale)
   --ip <address>                 		# Set static IP (e.g., 10.10.10.50) - DHCP if not specified
   --with-ssh-key                 		# Add SSH key for passwordless authentication
   --without-ssh-key              		# Disable SSH key setup (password-only)
@@ -98,7 +100,12 @@ ISO Installation Examples:
   dcvm create custom-vm -f -o /path/to/ubuntu.iso -m 4096   			# Install from ISO file
   dcvm create win-vm -f -o /isos/windows.iso -d 100G -m 8192 			# Windows from ISO
 
-Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io
+Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale
+
+Tailscale VPN Examples:
+  dcvm create vpn-vm -k tailscale                                    # Interactive: prompts for auth key
+  dcvm create vpn-vm -f -p mypass -k tailscale                       # Force: install only (manual connect)
+  dcvm create vpn-vm -f -p mypass -k tailscale --tailscale-authkey tskey-auth-xxx  # Force: auto-connect
 EOF
 }
 
@@ -140,6 +147,10 @@ parse_arguments() {
       ;;
     -k | --packages)
       ADDITIONAL_PACKAGES="$2"
+      shift 2
+      ;;
+    --tailscale-authkey)
+      FLAG_TAILSCALE_AUTHKEY="$2"
       shift 2
       ;;
     --ip)
@@ -534,6 +545,63 @@ NETCONF
   fi
 }
 
+setup_tailscale() {
+  TAILSCALE_AUTHKEY=""
+
+  # If --tailscale-authkey is provided, ensure tailscale is in the package list
+  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    if [ -n "$ADDITIONAL_PACKAGES" ]; then
+      ADDITIONAL_PACKAGES="${ADDITIONAL_PACKAGES},tailscale"
+    else
+      ADDITIONAL_PACKAGES="tailscale"
+    fi
+  fi
+
+  if ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    return 0
+  fi
+
+  if [ "$FORCE_MODE" = true ]; then
+    print_info "Tailscale VPN configuration"
+    if [ -n "$FLAG_TAILSCALE_AUTHKEY" ]; then
+      TAILSCALE_AUTHKEY="$FLAG_TAILSCALE_AUTHKEY"
+      print_success "Tailscale will auto-connect with provided auth key"
+    else
+      print_success "Tailscale will be installed (manual connection required)"
+    fi
+  else
+    echo ""
+    print_info "Tailscale VPN installation detected!"
+    while true; do
+      read -p "Would you like to connect automatically with an auth key? (y/N): " use_authkey
+      use_authkey=${use_authkey:-n}
+      if [[ "$use_authkey" =~ ^[Yy]$ ]]; then
+        while true; do
+          read -p "Enter Tailscale auth key: " TAILSCALE_AUTHKEY
+          if [ -z "$TAILSCALE_AUTHKEY" ]; then
+            print_error "Auth key cannot be empty"
+            continue
+          fi
+          if [[ ! "$TAILSCALE_AUTHKEY" =~ ^tskey- ]]; then
+            print_warning "Auth key doesn't start with 'tskey-', are you sure?"
+            read -p "Continue anyway? (y/N): " confirm_key
+            [[ ! "$confirm_key" =~ ^[Yy]$ ]] && continue
+          fi
+          print_success "Tailscale will auto-connect with provided auth key"
+          break
+        done
+        break
+      elif [[ "$use_authkey" =~ ^[Nn]$ ]]; then
+        print_success "Tailscale will be installed (manual connection required)"
+        print_info "After VM boot, run: sudo tailscale up"
+        break
+      else
+        print_error "Please enter 'y' for yes or 'n' for no"
+      fi
+    done
+  fi
+}
+
 interactive_prompt_username() {
   while true; do
     read -p "Enter username for VM (default: $(default_username "$VM_OS")): " VM_USERNAME
@@ -894,6 +962,10 @@ show_vm_summary() {
     echo "Memory: ${VM_MEMORY}MB"
     echo "CPUs: $VM_CPUS"
     echo "Disk: $VM_DISK_SIZE"
+    if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+      echo "Tailscale VPN: Enabled"
+      [ -n "$TAILSCALE_AUTHKEY" ] && echo "Tailscale Auth: Auto-connect" || echo "Tailscale Auth: Manual"
+    fi
     echo ""
     echo ""
   fi
@@ -1066,6 +1138,16 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
   - systemctl start docker
   - usermod -aG docker $VM_USERNAME
 DOCKER_EOF
+  fi)
+$(if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    cat <<'TAILSCALE_EOF'
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - systemctl enable tailscaled
+  - systemctl start tailscaled
+TAILSCALE_EOF
+    if [ -n "$TAILSCALE_AUTHKEY" ]; then
+      echo "  - tailscale up --authkey=$TAILSCALE_AUTHKEY"
+    fi
   fi)
   - echo "VM $VM_NAME setup completed successfully" >> /var/log/cloud-init-final.log
   - echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log
@@ -1240,6 +1322,19 @@ Wait 2-3 minutes for cloud-init to complete setup
    Monitor: virsh console $VM_NAME
    Check logs: tail -f /var/log/cloud-init-output.log (inside VM)
 EOF
+
+  if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    echo ""
+    if [ -n "$TAILSCALE_AUTHKEY" ]; then
+      print_success "Tailscale VPN will auto-connect after cloud-init completes"
+      echo "   Check status: tailscale status (inside VM)"
+      echo "   Get Tailscale IP: tailscale ip (inside VM)"
+    else
+      print_info "Tailscale VPN installed - manual connection required"
+      echo "   Connect: sudo tailscale up (inside VM)"
+      echo "   With auth key: sudo tailscale up --authkey=tskey-auth-xxx (inside VM)"
+    fi
+  fi
 }
 
 main() {
@@ -1328,6 +1423,7 @@ EOF
     setup_root_access
     setup_ssh_key
     setup_static_ip
+    setup_tailscale
     setup_vm_resources
     show_vm_summary
     confirm_vm_creation

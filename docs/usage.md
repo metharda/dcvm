@@ -69,7 +69,8 @@ Note about multiple VMs and `--ip`:
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
 - `-r, --root-password`: Set root password
-- `-k, --packages`: Comma-separated package list
+- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN)
+- `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
 - `--graphics`: Graphics mode - `vnc`, `vnc,listen=127.0.0.1`, or `none` (default: auto based on OS)
@@ -376,6 +377,35 @@ dcvm create dockerhost \
   -m 8192 -c 4 -d 200G \
   -k docker.io
 ```
+
+### Create a VM with Tailscale VPN
+
+```bash
+# Interactive - will prompt for auth key
+dcvm create vpn-server -k tailscale
+
+# Force mode - install only (manual connect later)
+dcvm create vpn-server \
+  -f -p securepass \
+  -k tailscale
+
+# Force mode - auto-connect with auth key
+dcvm create vpn-server \
+  -f -p securepass \
+  -k tailscale,nginx \
+  --tailscale-authkey tskey-auth-xxxxx
+
+# Force mode - authkey alone (auto-installs tailscale)
+dcvm create vpn-server \
+  -f -p securepass \
+  --tailscale-authkey tskey-auth-xxxxx
+```
+
+After VM creation with Tailscale:
+- **Auto-connect**: VM will automatically join your Tailscale network
+- **Manual connect**: SSH into the VM and run `sudo tailscale up`
+- **Check status**: Run `tailscale status` inside the VM
+- **Get Tailscale IP**: Run `tailscale ip` inside the VM
 
 ## Tips and Best Practices
 
