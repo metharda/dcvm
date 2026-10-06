@@ -1111,7 +1111,7 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
     cat <<'NGINX_EOF'
   - systemctl enable nginx
   - systemctl start nginx
-  - echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html
+  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
   - chown www-data:www-data /var/www/html/index.html
 NGINX_EOF
   fi)
@@ -1119,7 +1119,7 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "apache2"; then
     cat <<'APACHE_EOF'
   - systemctl enable apache2
   - systemctl start apache2
-  - echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html
+  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
   - chown www-data:www-data /var/www/html/index.html
 APACHE_EOF
   fi)
