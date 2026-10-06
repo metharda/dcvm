@@ -36,6 +36,9 @@ installed version differs from main.
 - `docs/project-structure.md` tree regenerated from the tracked files
   (removed nonexistent `bin/`, `config/`, `templates/` and `tests/`); README
   port mapping corrected to start at 2221/8081, with `dcvm network ports show`.
+- Lint workflow runs with read-only `contents` permission and builds its file
+  list inside the lint step (`git ls-files -z`), so file names can't inject
+  shell.
 
 ### Removed
 
@@ -45,7 +48,9 @@ installed version differs from main.
 
 ### Fixed
 
-- Welcome page now shows the VM name and username instead of blanks.
+- nginx/apache2 welcome page (`/var/www/html/index.html`) now shows the VM
+  name and username instead of blanks; the heredoc was quoted, so the
+  variables were never expanded.
 - Cloud-init `runcmd` nginx/apache index commands are now single-quoted so
   the `User: ` in them no longer turns the item into a YAML mapping.
 - Test suite: the `--full` VM lifecycle test creates its VM with `-o 5`
