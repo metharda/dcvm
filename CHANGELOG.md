@@ -180,8 +180,8 @@ Later commits kept the same version string until 0.7.1.
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/PLACEHOLDER_0_9_2...HEAD
-[0.9.2]: https://github.com/metharda/dcvm/commit/PLACEHOLDER_0_9_2
+[Unreleased]: https://github.com/metharda/dcvm/compare/977581b8cbf6009f2a096eaf0a8fe36b28f71e12...HEAD
+[0.9.2]: https://github.com/metharda/dcvm/commit/977581b8cbf6009f2a096eaf0a8fe36b28f71e12
 [0.9.1]: https://github.com/metharda/dcvm/commit/a83dc88
 [0.9.0]: https://github.com/metharda/dcvm/commit/109eb9c
 [0.8.0]: https://github.com/metharda/dcvm/commit/d9336b1
