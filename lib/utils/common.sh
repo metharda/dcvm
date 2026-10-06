@@ -204,6 +204,45 @@ get_vm_disk_path() {
   echo "$disk_path"
 }
 
+# Login name recorded at create time in cloud-init user-data
+# ($DATACENTER_BASE/vms/<name>/cloud-init/user-data). Uses the users
+# list name, then VM_USERNAME=, and "admin" only when neither is recorded.
+get_vm_username() {
+  local vm_name="$1"
+  local base="${DATACENTER_BASE:-/srv/datacenter}"
+  local user_data="${base}/vms/${vm_name}/cloud-init/user-data"
+  local username=""
+
+  if [[ "$vm_name" =~ ^[a-zA-Z0-9_-]+$ ]] && [ -f "$user_data" ]; then
+    username=$(awk '
+      /^users:/ { in_users = 1; next }
+      in_users && /^[^[:space:]#]/ { in_users = 0 }
+      in_users && /^[[:space:]]*-[[:space:]]*name:[[:space:]]*/ {
+        sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "")
+        sub(/[[:space:]#].*$/, "")
+        gsub(/"/, "")
+        print
+        exit
+      }
+    ' "$user_data")
+    if [ -z "$username" ]; then
+      username=$(awk '
+        /^[[:space:]]*VM_USERNAME="/ {
+          sub(/^[[:space:]]*VM_USERNAME="/, "")
+          sub(/".*$/, "")
+          print
+          exit
+        }
+      ' "$user_data")
+    fi
+  fi
+
+  if [[ ! "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
+    username="admin"
+  fi
+  echo "$username"
+}
+
 read_password() {
   local prompt="$1"
   local var_name="$2"
@@ -628,7 +667,7 @@ export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path
+export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info

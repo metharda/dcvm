@@ -242,7 +242,7 @@ force_renew_all() {
         print_info "Forcing DHCP renewal on $vm"
         local ssh_port=$(read_port_mappings | grep "^$vm " | awk '{print $3}')
         if [ -n "$ssh_port" ]; then
-          timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" admin@$(get_host_ip) "sudo dhclient -r enp1s0; sudo dhclient enp1s0" 2>/dev/null &
+          timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" 2>/dev/null &
         fi
       fi
     done
