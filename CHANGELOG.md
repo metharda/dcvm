@@ -52,7 +52,7 @@ installed version differs from main.
   became Debian 11 after the 0.9.0 OS menu renumber. CI does not run this
   test; it needs `--full`, root and a downloaded template.
 
-## [0.9.1] - TBD
+## [0.9.1] - 2026-10-06
 
 Self-update delivers these when the installed version differs from main.
 0.9.1 is what ships Tailscale (and the related fixes) to 0.9.0 installs.
@@ -207,7 +207,7 @@ Later commits kept the same version string until 0.7.1.
 - IP validation checks the address is inside the configured subnet (#17).
 
 [Unreleased]: https://github.com/metharda/dcvm/compare/95a4b6a...HEAD
-[0.9.2]: https://github.com/metharda/dcvm/pull/TBD
+[0.9.2]: https://github.com/metharda/dcvm/pull/34
 [0.9.1]: https://github.com/metharda/dcvm/pull/32
 [0.9.0]: https://github.com/metharda/dcvm/commit/109eb9c
 [0.8.0]: https://github.com/metharda/dcvm/commit/d9336b1

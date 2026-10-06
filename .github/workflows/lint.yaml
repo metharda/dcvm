@@ -8,6 +8,9 @@ on:
       - '**/*.sh'
       - '.github/workflows/lint.yaml'
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Bash lint (bash -n + shellcheck)
@@ -22,35 +25,24 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y shellcheck
 
-      - name: Find shell files
-        id: find_files
-        run: |
-          set -euo pipefail
-          # include top-level `dcvm` and all tracked shell scripts
-          files=$(git ls-files -- "dcvm" "*.sh" || true)
-          {
-            echo "files<<EOF"
-            echo "$files"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Run bash -n and shellcheck
         run: |
           set -euo pipefail
-          files="${{ steps.find_files.outputs.files }}"
-          if [[ -z "$files" ]]; then
+          # Build the file list inside this step (not via a step output pasted
+          # into the script) so a crafted filename can't inject shell.
+          # Include top-level `dcvm` and all tracked shell scripts.
+          mapfile -d '' -t files < <(git ls-files -z -- "dcvm" "*.sh")
+          if [[ ${#files[@]} -eq 0 ]]; then
             echo "No shell files found to lint"
             exit 0
           fi
-          # xargs -I splits on newlines, so `tr '\n' ' '` collapsed every
-          # path into a single {} and the -f test never matched. Read one
-          # path per line so each shell file is actually linted.
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
+          # The old `tr '\n' ' ' | xargs -I{}` collapsed every path into a
+          # single {} and nothing was linted. Lint each file individually.
+          for f in "${files[@]}"; do
             if [[ -f "$f" ]]; then
               echo "-- Linting $f --"
               bash -n "$f"
               # Severity is error for now. Ratchet to -S warning after a warning cleanup.
               shellcheck -S error "$f"
             fi
-          done <<< "$files"
+          done
