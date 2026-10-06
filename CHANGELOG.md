@@ -45,6 +45,7 @@ installed version differs from main.
 
 ### Fixed
 
+- Welcome page now shows the VM name and username instead of blanks.
 - Cloud-init `runcmd` nginx/apache index commands are now single-quoted so
   the `User: ` in them no longer turns the item into a YAML mapping.
 - Test suite: the `--full` VM lifecycle test creates its VM with `-o 5`

@@ -41,8 +41,8 @@ jobs:
           for f in "${files[@]}"; do
             if [[ -f "$f" ]]; then
               echo "-- Linting $f --"
-              bash -n "$f"
+              bash -n -- "$f"
               # Severity is error for now. Ratchet to -S warning after a warning cleanup.
-              shellcheck -S error "$f"
+              shellcheck -S error -- "$f"
             fi
           done

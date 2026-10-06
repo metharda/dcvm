@@ -1108,7 +1108,7 @@ runcmd:
   - mkdir -p /home/$VM_USERNAME/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME /home/$VM_USERNAME
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
-    cat <<'NGINX_EOF'
+    cat <<NGINX_EOF
   - systemctl enable nginx
   - systemctl start nginx
   - 'echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
@@ -1116,7 +1116,7 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
 NGINX_EOF
   fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "apache2"; then
-    cat <<'APACHE_EOF'
+    cat <<APACHE_EOF
   - systemctl enable apache2
   - systemctl start apache2
   - 'echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
