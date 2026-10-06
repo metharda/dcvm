@@ -1386,19 +1386,15 @@ main() {
     exit 0
   fi
 
+  if ! validate_vm_name_list "$VM_NAME"; then
+    exit 1
+  fi
+
   IFS=',' read -ra VM_NAMES <<<"$VM_NAME"
   BASE_STATIC_IP="$FLAG_STATIC_IP"
 
   for vm in "${VM_NAMES[@]}"; do
-    vm=$(echo "$vm" | xargs)
-    [ -z "$vm" ] && continue
-    if ! validate_vm_name "$vm"; then
-      exit 1
-    fi
-  done
-
-  for vm in "${VM_NAMES[@]}"; do
-    vm=$(echo "$vm" | xargs)
+    vm=$(trim_whitespace "$vm")
     [ -z "$vm" ] && continue
     if virsh list --all 2>/dev/null | grep -q " $vm "; then
       print_error "VM $vm already exists"
@@ -1417,8 +1413,7 @@ main() {
   fi
 
   for i in "${!VM_NAMES[@]}"; do
-    VM_NAME="${VM_NAMES[$i]}"
-    VM_NAME=$(echo "$VM_NAME" | xargs)
+    VM_NAME=$(trim_whitespace "${VM_NAMES[$i]}")
     [ -z "$VM_NAME" ] && continue
     if ! validate_vm_name "$VM_NAME"; then
       exit 1

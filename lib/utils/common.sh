@@ -108,6 +108,37 @@ validate_vm_name() {
   return 0
 }
 
+# Trim leading/trailing whitespace without xargs (preserves quotes/backslashes).
+trim_whitespace() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Trim and validate each non-empty name in a comma-separated list.
+# Same gate create-vm uses before any disk/libvirt work.
+validate_vm_name_list() {
+  local raw="$1"
+  local -a names
+  local name
+  local saw_name=0
+  IFS=',' read -ra names <<<"$raw"
+  for name in "${names[@]}"; do
+    name=$(trim_whitespace "$name")
+    [ -z "$name" ] && continue
+    saw_name=1
+    if ! validate_vm_name "$name"; then
+      return 1
+    fi
+  done
+  if [ "$saw_name" -eq 0 ]; then
+    print_error "VM name cannot be empty"
+    return 1
+  fi
+  return 0
+}
+
 validate_username() {
   local username="$1"
   if [ -z "$username" ]; then
@@ -666,7 +697,7 @@ default_username() {
 export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
-export -f validate_vm_name validate_username validate_password
+export -f validate_vm_name validate_vm_name_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action

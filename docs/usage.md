@@ -12,6 +12,8 @@ dcvm <command> [options] [arguments]
 
 ### Creating a VM
 
+VM names must be 3-64 characters: letters, numbers, `_` and `-`.
+
 #### Interactive Mode (Default)
 ```bash
 dcvm create myvm
