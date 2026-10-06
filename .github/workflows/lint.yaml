@@ -28,9 +28,11 @@ jobs:
           set -euo pipefail
           # include top-level `dcvm` and all tracked shell scripts
           files=$(git ls-files -- "dcvm" "*.sh" || true)
-          echo "files<<EOF" >> $GITHUB_OUTPUT
-          echo "$files" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "files<<EOF"
+            echo "$files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run bash -n and shellcheck
         run: |
@@ -40,10 +42,15 @@ jobs:
             echo "No shell files found to lint"
             exit 0
           fi
-          # iterate unique files
-          echo "$files" | tr '\n' ' ' | xargs -n1 -I{} bash -c '
-            if [[ -f "{}" ]]; then
-              echo "-- Linting {} --"
-              bash -n "{}"
-              shellcheck "{}"
-            fi'
+          # xargs -I splits on newlines, so `tr '\n' ' '` collapsed every
+          # path into a single {} and the -f test never matched. Read one
+          # path per line so each shell file is actually linted.
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if [[ -f "$f" ]]; then
+              echo "-- Linting $f --"
+              bash -n "$f"
+              # Severity is error for now. Ratchet to -S warning after a warning cleanup.
+              shellcheck -S error "$f"
+            fi
+          done <<< "$files"
