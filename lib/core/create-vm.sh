@@ -1392,6 +1392,14 @@ main() {
   for vm in "${VM_NAMES[@]}"; do
     vm=$(echo "$vm" | xargs)
     [ -z "$vm" ] && continue
+    if ! validate_vm_name "$vm"; then
+      exit 1
+    fi
+  done
+
+  for vm in "${VM_NAMES[@]}"; do
+    vm=$(echo "$vm" | xargs)
+    [ -z "$vm" ] && continue
     if virsh list --all 2>/dev/null | grep -q " $vm "; then
       print_error "VM $vm already exists"
       echo "Use: dcvm delete $vm (to delete it first)"
@@ -1412,6 +1420,9 @@ main() {
     VM_NAME="${VM_NAMES[$i]}"
     VM_NAME=$(echo "$VM_NAME" | xargs)
     [ -z "$VM_NAME" ] && continue
+    if ! validate_vm_name "$VM_NAME"; then
+      exit 1
+    fi
     if [ -n "$BASE_STATIC_IP" ]; then
       if computed_ip=$(compute_incremental_ip "$BASE_STATIC_IP" "$i" "${#VM_NAMES[@]}"); then
         FLAG_STATIC_IP="$computed_ip"

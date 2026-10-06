@@ -577,6 +577,8 @@ test_common_functions() {
   run_test "print_success function" "print_success 'Test message' >/dev/null"
   run_test "print_warning function" "print_warning 'Test message' >/dev/null"
   run_test "print_error function" "print_error 'Test message' >/dev/null"
+  run_test "validate_vm_name (valid)" "validate_vm_name 'qa-vm_1'"
+  run_test_expect_fail "validate_vm_name (quote in name)" "validate_vm_name \"qa'vm\""
   run_test "validate_username (valid)" "validate_username 'testuser'"
   run_test "validate_username (with number)" "validate_username 'user123'"
   run_test "validate_username (with underscore)" "validate_username 'test_user'"

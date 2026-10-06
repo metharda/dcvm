@@ -48,6 +48,9 @@ installed version differs from main.
 
 ### Fixed
 
+- `dcvm create` now validates the VM name before use, so names with quotes
+  or other unsafe characters are rejected instead of producing broken
+  cloud-init.
 - nginx/apache2 welcome page (`/var/www/html/index.html`) now shows the VM
   name and username instead of blanks; the heredoc was quoted, so the
   variables were never expanded.
