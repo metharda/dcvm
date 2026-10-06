@@ -52,13 +52,16 @@ dcvm/
 ## Component Descriptions
 
 ### `dcvm` (repo root)
+
 The main command-line interface and single entry point for all DCVM operations.
 It routes commands to the appropriate scripts in `lib/`.
 
 ### `lib/`
+
 Core functionality organized by category:
 
 #### `lib/core/`
+
 Essential VM operations:
 - **create-vm.sh** - Creates new VMs with cloud-init support
 - **custom-iso.sh** - Creates VMs from custom installer ISOs (Windows, Arch, etc.)
@@ -66,17 +69,20 @@ Essential VM operations:
 - **vm-manager.sh** - Controls VM lifecycle (start, stop, restart, console, list)
 
 #### `lib/network/`
+
 Network-related utilities:
 - **network-manager.sh** - Network information, routing, and `dcvm network` subcommands
 - **port-forward.sh** - Configures and manages NAT port forwarding
 - **dhcp.sh** - Shows and cleans DHCP leases
 
 #### `lib/storage/`
+
 Storage and backup management:
 - **backup.sh** - Creates and restores VM backups
 - **storage-manager.sh** - Monitors disk usage and performs cleanup
 
 #### `lib/utils/`
+
 Shared utilities and helpers:
 - **common.sh** - Common functions (logging, validation, config loading)
 - **dcvm-completion.sh** - Shell completion script
@@ -84,13 +90,15 @@ Shared utilities and helpers:
 - **mirror-manager.sh** - Template/mirror download and speed tests
 - **test-suite.sh** - Repository test suite (`--quick`, `--full`, etc.)
 
-### `lib/installation/`
+#### `lib/installation/`
+
 Installation and removal scripts:
 - **install-dcvm.sh** - Installs DCVM, dependencies, and configuration
 - **self-update.sh** - Updates DCVM to the latest version from GitHub
 - **uninstall-dcvm.sh** - Removes DCVM completely. **Destructive:** deletes all DCVM VMs (including their storage) and removes `DATACENTER_BASE` (including all backups)
 
 ### `docs/`
+
 Project documentation:
 - **installation.md** - Installation instructions
 - **usage.md** - Usage guide with commands
@@ -99,6 +107,7 @@ Project documentation:
 - **examples/** - Practical examples and tutorials
 
 ### Runtime paths (not in the repo)
+
 Installed hosts keep config in `/etc/dcvm-install.conf`. Cloud images live under
 `$DATACENTER_BASE/storage/templates` (downloaded at install or first create).
 Automated checks live in `lib/utils/test-suite.sh` rather than a top-level

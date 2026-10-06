@@ -33,18 +33,24 @@ installed version differs from main.
   fixing the `xargs -I{}` collapse that previously meant lint checked nothing.
 - Six lib scripts reformatted with `shfmt -i 2` so local and CI formatting
   agree (these files ship via self-update).
-- Lifecycle tests in CI run on Ubuntu 22.04 (template/OS option aligned with
-  current `-o` numbering).
-
-### Fixed
-
-- Cloud-init `runcmd` nginx/apache index helpers: quote the `User: ` echo
-  commands so YAML parsing does not break on the colon-space sequence.
+- `docs/project-structure.md` tree regenerated from the tracked files
+  (removed nonexistent `bin/`, `config/`, `templates/` and `tests/`); README
+  port mapping corrected to start at 2221/8081, with `dcvm network ports show`.
 
 ### Removed
 
-- Approval-triggered format workflow that auto-committed `shfmt` results to
-  the PR merge ref.
+- Approval-triggered format workflow that auto-committed `shfmt` results as
+  `github-actions[bot]`. On approval it pushed to a `<pr>/merge` ref instead
+  of the PR branch.
+
+### Fixed
+
+- Cloud-init `runcmd` nginx/apache index commands are now single-quoted so
+  the `User: ` in them no longer turns the item into a YAML mapping.
+- Test suite: the `--full` VM lifecycle test creates its VM with `-o 5`
+  (Ubuntu 22.04, the image it originally targeted) instead of `-o 3`, which
+  became Debian 11 after the 0.9.0 OS menu renumber. CI does not run this
+  test; it needs `--full`, root and a downloaded template.
 
 ## [0.9.1] - TBD
 

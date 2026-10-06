@@ -190,18 +190,13 @@ For detailed usage, see [Usage Guide](docs/usage.md).
 ## Project Structure
 
 ```
-dcvm/
-├── bin/                          # Main executable
-│   └── dcvm                      # CLI entry point
-├── lib/                          # Core libraries
-│   ├── core/                     # VM management
-│   ├── installation/             # Installation scripts
-│   ├── network/                  # Network utilities
-│   ├── storage/                  # Backup & storage
-│   └── utils/                    # Common utilities
-├── templates/                    # VM templates
-└── docs/                         # Documentation
+dcvm/                     # CLI entry point (repo root)
+├── lib/                  # core, installation, network, storage, utils
+├── docs/                 # guides and architecture notes
+└── .github/workflows/    # CI
 ```
+
+See [docs/project-structure.md](docs/project-structure.md) for the full layout.
 
 ### Bulk Operations
 
@@ -213,8 +208,8 @@ dcvm restart                         # Restart all VMs
 
 # Network management
 dcvm network ports setup             # Port forwarding setup
-dcvm clear-leases show               # Show DHCP leases
-dcvm clear-leases clear-all          # Clear all leases
+dcvm network dhcp show               # Show DHCP leases
+dcvm network dhcp clear -a           # Clear all leases
 ```
 
 ### VM Creation Example
@@ -355,7 +350,7 @@ virsh net-destroy datacenter-net
 virsh net-start datacenter-net
 
 # DHCP cleanup
-dcvm clear-leases clear-all
+dcvm network dhcp clear -a
 ```
 
 #### VM Startup Issues

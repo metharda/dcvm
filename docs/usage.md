@@ -481,7 +481,7 @@ dcvm delete old-vm
 
 For advanced topics, see:
 - [Networking Guide](networking.md)
-- [Backup and Restore](backup-restore.md)
+- [Backup and Restore](backups.md)
 - [Troubleshooting](troubleshooting.md)
 - [Examples](examples/)
 
@@ -547,4 +547,4 @@ dcvm self-update --help
 
 - Explore [Examples](examples/)
 - Read [Networking Guide](networking.md)
-- Learn about [Backup Strategies](backup-restore.md)
+- Learn about [Backup Strategies](backups.md)

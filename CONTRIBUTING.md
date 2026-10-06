@@ -220,8 +220,7 @@ Notes:
   (not the top-level `dcvm` entry point). Missing `shellcheck` skips that
   section.
 - VM lifecycle tests (`--full`) skip silently when no templates are present
-  under `$DATACENTER_BASE/storage/templates`. The create call uses `-o 3`
-  (Debian 11 after the 0.9.0 OS menu renumber).
+  under `$DATACENTER_BASE/storage/templates`. The create call uses `-o 5` (Ubuntu 22.04).
 
 ### Requirement: Tests for New Features
 
@@ -265,17 +264,19 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    locally before pushing:
 
    ```bash
-   rc=0
-   while IFS= read -r -d '' f; do
-     bash -n "$f" || rc=1
-   done < <(git ls-files -z -- dcvm '*.sh')
-   git ls-files -z -- dcvm '*.sh' | xargs -0 shellcheck -S error || rc=1
-   exit "$rc"
+   (
+     rc=0
+     while IFS= read -r -d '' f; do
+       bash -n "$f" || rc=1
+     done < <(git ls-files -z -- dcvm '*.sh')
+     git ls-files -z -- dcvm '*.sh' | xargs -0 shellcheck -S error || rc=1
+     exit "$rc"
+   )
    ```
 
-3. **Formatting** (`format.yaml`). Format checks use `shfmt -i 2 -d` (indent
-   2, check-only diff; it does not rewrite files). Format locally with
-   `shfmt -i 2 -w` before pushing so the check stays green:
+3. **Formatting** (`format.yaml`, on PRs touching `dcvm` or `*.sh`). CI runs
+   `shfmt -i 2 -d` (check-only diff, read-only permissions, no bot commits).
+   Format locally with `shfmt -i 2 -w` before pushing so the check stays green:
 
    ```bash
    shfmt -i 2 -w dcvm $(git ls-files -- '*.sh')
