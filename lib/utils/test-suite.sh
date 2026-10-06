@@ -520,6 +520,55 @@ test_libvirt() {
   fi
 }
 
+test_get_vm_username_lookup() {
+  local tmp result
+  tmp=$(mktemp -d)
+
+  result=$(DATACENTER_BASE="$tmp" get_vm_username "web-1")
+  if [ "$result" = "admin" ]; then
+    log_test "PASS" "get_vm_username (none recorded)"
+  else
+    log_test "FAIL" "get_vm_username (none recorded)" "got '$result'"
+  fi
+
+  mkdir -p "$tmp/vms/web-1/cloud-init"
+  cat >"$tmp/vms/web-1/cloud-init/user-data" <<'EOF'
+#cloud-config
+hostname: web-1
+users:
+  - name: dbadmin
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+write_files:
+  - content: |
+      VM_USERNAME="dbadmin"
+final_message: |
+  Username: dbadmin
+EOF
+
+  result=$(DATACENTER_BASE="$tmp" get_vm_username "web-1")
+  if [ "$result" = "dbadmin" ]; then
+    log_test "PASS" "get_vm_username (recorded in user-data)"
+  else
+    log_test "FAIL" "get_vm_username (recorded in user-data)" "got '$result'"
+  fi
+
+  cat >"$tmp/vms/web-1/cloud-init/user-data" <<'EOF'
+#cloud-config
+write_files:
+  - content: |
+      VM_USERNAME="poweruser"
+EOF
+
+  result=$(DATACENTER_BASE="$tmp" get_vm_username "web-1")
+  if [ "$result" = "poweruser" ]; then
+    log_test "PASS" "get_vm_username (VM_USERNAME fallback)"
+  else
+    log_test "FAIL" "get_vm_username (VM_USERNAME fallback)" "got '$result'"
+  fi
+
+  rm -rf "$tmp"
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -567,6 +616,10 @@ test_common_functions() {
     run_test "default_username (archlinux)" "[ \"\$(default_username archlinux)\" = 'archlinux' ]"
     run_test "default_username (kali)" "[ \"\$(default_username kali)\" = 'kali' ]"
     run_test "default_username (unknown)" "[ \"\$(default_username unknown_os)\" = 'osadmin' ]"
+  fi
+
+  if type get_vm_username &>/dev/null; then
+    test_get_vm_username_lookup
   fi
 
   if type generate_password_hash &>/dev/null; then

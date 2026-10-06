@@ -74,7 +74,7 @@ show_enhanced_console() {
   if [ -f "$port_file" ]; then
     echo "SSH Access:"
     read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "  ssh $vm" && echo "    or: ssh -p $ssh_port admin@$(get_host_ip)"
+      [ -n "$vm" ] && echo "  ssh $vm" && echo "    or: ssh -p $ssh_port $(get_vm_username "$vm")@$(get_host_ip)"
     done
     echo ""
 

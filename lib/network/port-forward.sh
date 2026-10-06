@@ -188,7 +188,7 @@ cmd_setup() {
   if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
     echo "VM Access Information:"
     read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "" && echo "$vm ($ip):" && echo "  SSH:  ssh -p $ssh_port admin@$HOST_IP" && echo "  HTTP: http://$HOST_IP:$http_port"
+      [ -n "$vm" ] && echo "" && echo "$vm ($ip):" && echo "  SSH:  ssh -p $ssh_port $(get_vm_username "$vm")@$HOST_IP" && echo "  HTTP: http://$HOST_IP:$http_port"
     done
     echo ""
   else

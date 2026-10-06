@@ -10,7 +10,7 @@ LOG_FILE="/var/log/datacenter-storage.log"
 check_vm_storage() {
   local vm_name="$1"
   local ssh_port="$2"
-  local usage=$(ssh -o ConnectTimeout=5 admin@$(get_host_ip) -p "$ssh_port" "df / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null)
+  local usage=$(ssh -o ConnectTimeout=5 "$(get_vm_username "$vm_name")@$(get_host_ip)" -p "$ssh_port" "df / | awk 'NR==2 {print \$5}' | sed 's/%//'" 2>/dev/null)
 
   if [ -z "$usage" ]; then
     log_to_file "$LOG_FILE" "Failed to check disk usage for $vm_name"
@@ -29,7 +29,7 @@ cleanup_old_files() {
   local vm_name="$1"
   local ssh_port="$2"
 
-  ssh admin@$(get_host_ip) -p "$ssh_port" <<'EOSSH'
+  ssh "$(get_vm_username "$vm_name")@$(get_host_ip)" -p "$ssh_port" <<'EOSSH'
         mkdir -p /mnt/shared/archived-files/$(hostname)
         
         find /tmp -type f -mtime +30 -exec sh -c '
