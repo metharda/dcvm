@@ -96,7 +96,7 @@ Shared utilities and helpers:
 Installation and removal scripts:
 - **install-dcvm.sh** - Installs DCVM, dependencies, and configuration
 - **self-update.sh** - Updates DCVM to the latest version from GitHub
-- **uninstall-dcvm.sh** - Removes DCVM and optionally cleans up data
+- **uninstall-dcvm.sh** - Removes DCVM completely. **Destructive:** deletes all DCVM VMs (including their storage) and removes `DATACENTER_BASE` (including all backups)
 
 ### `config/`
 Configuration file templates and examples:
