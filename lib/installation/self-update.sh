@@ -41,7 +41,7 @@ validate_backup() {
   [[ "$resolved_path" != "$BACKUP_DIR"/* ]] && return 1
   [[ -e "$resolved_path" ]] || return 1
   [[ "$(stat -c '%u' "$resolved_path" 2>/dev/null)" != "0" ]] && return 1
-  
+
   local mode world_perms
   mode="$(stat -c '%a' "$resolved_path" 2>/dev/null)" || return 1
   world_perms="${mode: -1}"
@@ -308,13 +308,13 @@ do_revert() {
   create_backup_dir
   local backups
   backups=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'dcvm-backup-*' 2>/dev/null | sort -r)
-  
+
   if [[ -z "$backups" ]]; then
     print_error "No backups found in $BACKUP_DIR"
     print_info "Backups are created during updates and stored securely"
     exit 1
   fi
-  
+
   print_info "Available backups:"
   echo ""
   local i=1
@@ -330,29 +330,29 @@ do_revert() {
     echo "  [$i] $formatted_date"
     backup_array+=("$backup")
     ((i++))
-  done <<< "$backups"
+  done <<<"$backups"
   echo ""
-  
+
   if [[ ${#backup_array[@]} -eq 0 ]]; then
     print_error "No valid backups found"
     exit 1
   fi
-  
+
   read -r -p "Select backup to restore (1-${#backup_array[@]}) or 'q' to cancel: " choice
-  
+
   if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
     print_info "Cancelled"
     exit 0
   fi
-  
+
   if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -gt ${#backup_array[@]} ]]; then
     print_error "Invalid selection"
     exit 1
   fi
-  
-  local selected_backup="${backup_array[$((choice-1))]}"
+
+  local selected_backup="${backup_array[$((choice - 1))]}"
   print_info "Restoring from: $selected_backup"
-  
+
   if [[ -f "$selected_backup/dcvm" ]]; then
     cp "$selected_backup/dcvm" "$INSTALL_BIN/dcvm"
     chmod +x "$INSTALL_BIN/dcvm"
@@ -360,17 +360,17 @@ do_revert() {
   else
     print_warning "No dcvm binary in backup"
   fi
-  
+
   if [[ -d "$selected_backup/lib" ]]; then
     cp -r "$selected_backup/lib/"* "$INSTALL_LIB/"
     print_success "Restored lib directory"
   else
     print_warning "No lib directory in backup"
   fi
-  
+
   local restored_version=$(get_current_version)
   print_success "Reverted to v$restored_version"
-  
+
   read -r -p "Delete used backup? (y/N): " del_choice
   if [[ "$del_choice" =~ ^[Yy]$ ]]; then
     rm -rf "$selected_backup"
