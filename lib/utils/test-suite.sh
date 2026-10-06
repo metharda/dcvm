@@ -883,7 +883,10 @@ test_vm_lifecycle() {
 
   log_test "INFO" "Creating test VM: $TEST_VM_NAME"
 
-  if $dcvm_cmd create "$TEST_VM_NAME" -f -p "testpass123" -m 1024 -c 1 -d 10G -o 3 2>&1; then
+  # Ubuntu 22.04. select_os only accepts menu numbers 1-8 (no name).
+  # Index 3 was Ubuntu 22.04 until Debian 13 and Ubuntu 24.04 were inserted
+  # ahead of it; that image is option 5 now. Option 3 is Debian 11.
+  if $dcvm_cmd create "$TEST_VM_NAME" -f -p "testpass123" -m 1024 -c 1 -d 10G -o 5 2>&1; then
     log_test "PASS" "VM creation"
 
     sleep 5
