@@ -241,7 +241,7 @@ dcvm create web-server nginx,mysql-server
 
 - **SSH**: 2220+ ports (per VM)
 - **HTTP**: 8080+ ports (per VM)
-- **Access**: `ssh -p 2221 admin@host-ip`
+- **Access**: `ssh -p <ssh-port> <username>@<host-ip>` (username is the cloud-init `users:` name / `-u` / OS default; `admin` only when nothing is recorded)
 
 ## Directory Structure
 

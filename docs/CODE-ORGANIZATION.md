@@ -30,6 +30,7 @@
 - get_vm_ip() - Get VM IP with retries
 - get_vm_mac() - Get VM MAC address
 - get_vm_disk_path() - Get VM disk file path
+- get_vm_username() - Get VM login name from cloud-init user-data (falls back to admin)
 
 **Security & Authentication:**
 - read_password() - Securely read password from stdin
@@ -78,19 +79,19 @@
 
 **vm-manager.sh:**
 - Sources: common.sh
-- Uses: Print functions for status displays
+- Uses: Print functions for status displays, get_vm_username for SSH hints
 
 ### Network Scripts (lib/network/)
 
 **port-forward.sh:**
 - Sources: common.sh
-- Uses: load_dcvm_config, get_vm_ip (extended as get_vm_ip_advanced)
+- Uses: load_dcvm_config, get_vm_ip (extended as get_vm_ip_advanced), get_vm_username
 - Uses: All print functions
 - Special: Has enhanced IP detection with network scanning
 
 **dhcp.sh:**
 - Sources: common.sh
-- Uses: load_dcvm_config
+- Uses: load_dcvm_config, get_vm_username
 - Uses: Print functions for cleanup operations
 
 ### Storage Scripts (lib/storage/)
@@ -102,7 +103,7 @@
 
 **storage-manager.sh:**
 - Sources: common.sh
-- Uses: load_dcvm_config, log_message
+- Uses: load_dcvm_config, log_message, get_vm_username
 - Uses: Print functions for storage monitoring
 
 ### Utility Scripts (lib/utils/)
@@ -148,7 +149,7 @@ export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions
 export -f command_exists check_dependencies
 export -f validate_vm_name validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path
+export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
