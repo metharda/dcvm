@@ -12,13 +12,16 @@ from git history, so the commit or PR is listed for each release.
 
 ## [0.9.2] - 2026-10-06
 
-Documentation-only release.
+Docs, CI reliability, and related fixes. Ships via self-update when the
+installed version differs from main.
 
 ### Added
 
 - `CHANGELOG.md` covering 0.5.2 through 0.9.2, reconstructed from git history.
 - Contributor guidance in `CONTRIBUTING.md` for CI rules, the repository test
   suite, and testing a clone when DCVM is already installed.
+- Pull-request formatting check: `shfmt -i 2 -d` (check-only; no rewrite or
+  bot commit on the PR branch).
 
 ### Changed
 
@@ -26,6 +29,22 @@ Documentation-only release.
   host placeholders) instead of a hard-coded `admin@host-ip`.
 - `docs/CODE-ORGANIZATION.md` documents `get_vm_username` alongside the other
   VM getters and on the `export -f` line.
+- Lint CI now runs `shellcheck -S error` on each shell file (plus `bash -n`),
+  fixing the `xargs -I{}` collapse that previously meant lint checked nothing.
+- Six lib scripts reformatted with `shfmt -i 2` so local and CI formatting
+  agree (these files ship via self-update).
+- Lifecycle tests in CI run on Ubuntu 22.04 (template/OS option aligned with
+  current `-o` numbering).
+
+### Fixed
+
+- Cloud-init `runcmd` nginx/apache index helpers: quote the `User: ` echo
+  commands so YAML parsing does not break on the colon-space sequence.
+
+### Removed
+
+- Approval-triggered format workflow that auto-committed `shfmt` results to
+  the PR merge ref.
 
 ## [0.9.1] - TBD
 
