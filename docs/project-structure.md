@@ -6,66 +6,54 @@ This document describes the organization of the DCVM project.
 
 ```
 dcvm/
-├── bin/                          # Executable binaries
-│   └── dcvm                      # Main CLI entry point
-│
+├── dcvm                          # Main CLI entry point (repo root)
 ├── lib/                          # Core library functions
-│   ├── core/                    # Core VM operations
-│   │   ├── create-vm.sh         # VM creation with cloud-init
-│   │   ├── custom-iso.sh        # VM creation from custom ISO
-│   │   ├── delete-vm.sh         # VM deletion script
-│   │   └── vm-manager.sh        # VM management (start, stop, list, etc.)
-│   │
-│   ├── network/                 # Network management
-│   │   ├── network-manager.sh   # Network information and routing
-│   │   ├── port-forward.sh      # Port forwarding management
-│   │   └── dhcp.sh              # DHCP management
-│   │
-│   ├── storage/                 # Storage & backup
-│   │   ├── backup.sh            # Backup and restore operations
-│   │   └── storage-manager.sh   # Storage monitoring and cleanup
-│   │
-│   └── utils/                   # Utility functions
-│       ├── common.sh            # Shared functions (logging, validation, etc.)
-│       ├── dcvm-completion.sh   # Shell completion script
-│       └── fix-lock.sh          # Resource lock fixing
-│
-├── lib/installation/             # Installation related files
-│   ├── install-dcvm.sh          # Main installer
-│   ├── self-update.sh           # Self-update functionality
-│   └── uninstall-dcvm.sh        # Uninstaller
-│
-├── config/                       # Configuration templates and examples
-│   ├── dcvm.conf.example        # Main configuration example
-│   └── network.conf.example     # Network configuration example
-│
-├── templates/                    # (Deprecated placeholder)
-│   └── .gitkeep                 # Cloud images are stored at runtime under $DATACENTER_BASE/storage/templates
-│
+│   ├── core/                     # Core VM operations
+│   │   ├── create-vm.sh          # VM creation with cloud-init
+│   │   ├── custom-iso.sh         # VM creation from custom ISO
+│   │   ├── delete-vm.sh          # VM deletion script
+│   │   └── vm-manager.sh         # VM management (start, stop, list, etc.)
+│   ├── network/                  # Network management
+│   │   ├── network-manager.sh    # Network information and routing
+│   │   ├── port-forward.sh       # Port forwarding management
+│   │   └── dhcp.sh               # DHCP management
+│   ├── storage/                  # Storage & backup
+│   │   ├── backup.sh             # Backup and restore operations
+│   │   └── storage-manager.sh    # Storage monitoring and cleanup
+│   ├── installation/             # Install / update / uninstall
+│   │   ├── install-dcvm.sh       # Main installer
+│   │   ├── self-update.sh        # Self-update functionality
+│   │   └── uninstall-dcvm.sh     # Uninstaller
+│   └── utils/                    # Utility functions
+│       ├── common.sh             # Shared functions (logging, validation, etc.)
+│       ├── dcvm-completion.sh    # Shell completion script
+│       ├── fix-lock.sh           # Resource lock fixing
+│       ├── mirror-manager.sh     # Template/mirror management
+│       └── test-suite.sh         # Repository test suite
 ├── docs/                         # Documentation
-│   ├── installation.md          # Installation guide
-│   ├── usage.md                 # Usage guide
-│   └── examples/                # Usage examples
-│       └── basic-vm-creation.md # Basic VM creation examples
-│
-├── tests/                        # Test scripts
-│   ├── unit/                    # Unit tests (future)
-│   │   └── .gitkeep
-│   └── integration/             # Integration tests (future)
-│       └── .gitkeep
-│
-├── README.md                     # Main project documentation
-├── LICENSE                       # License file
-└── .gitignore                    # Git ignore rules
+│   ├── installation.md
+│   ├── usage.md
+│   ├── networking.md
+│   ├── backups.md
+│   ├── troubleshooting.md
+│   ├── project-structure.md
+│   ├── CODE-ORGANIZATION.md
+│   └── examples/
+│       ├── basic-vm-creation.md
+│       └── advanced-networking.md
+├── .github/workflows/            # CI (lint, format, test, version-bump)
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── README.md
+├── LICENSE
+└── .gitignore
 ```
 
 ## Component Descriptions
 
-### `bin/`
-Contains the main `dcvm` command-line interface. This is the single entry point for all DCVM operations.
-
-**Key file:**
-- `dcvm` - Routes commands to appropriate scripts in `lib/`
+### `dcvm` (repo root)
+The main command-line interface and single entry point for all DCVM operations.
+It routes commands to the appropriate scripts in `lib/`.
 
 ### `lib/`
 Core functionality organized by category:
@@ -79,6 +67,7 @@ Essential VM operations:
 
 #### `lib/network/`
 Network-related utilities:
+- **network-manager.sh** - Network information, routing, and `dcvm network` subcommands
 - **port-forward.sh** - Configures and manages NAT port forwarding
 - **dhcp.sh** - Shows and cleans DHCP leases
 
@@ -90,7 +79,10 @@ Storage and backup management:
 #### `lib/utils/`
 Shared utilities and helpers:
 - **common.sh** - Common functions (logging, validation, config loading)
+- **dcvm-completion.sh** - Shell completion script
 - **fix-lock.sh** - Fixes resource locks
+- **mirror-manager.sh** - Template/mirror download and speed tests
+- **test-suite.sh** - Repository test suite (`--quick`, `--full`, etc.)
 
 ### `lib/installation/`
 Installation and removal scripts:
@@ -98,26 +90,19 @@ Installation and removal scripts:
 - **self-update.sh** - Updates DCVM to the latest version from GitHub
 - **uninstall-dcvm.sh** - Removes DCVM completely. **Destructive:** deletes all DCVM VMs (including their storage) and removes `DATACENTER_BASE` (including all backups)
 
-### `config/`
-Configuration file templates and examples:
-- **dcvm.conf.example** - Main configuration template
-- **network.conf.example** - Network configuration template
-
-Users can copy these to `/etc/` and customize as needed.
-
-### `templates/`
-Deprecated in repository. Cloud images are downloaded to `$DATACENTER_BASE/storage/templates` during runtime by the installer or on first VM creation.
-
 ### `docs/`
-Comprehensive documentation:
-- **installation.md** - Detailed installation instructions
-- **usage.md** - Complete usage guide with all commands
+Project documentation:
+- **installation.md** - Installation instructions
+- **usage.md** - Usage guide with commands
+- **networking.md** / **backups.md** / **troubleshooting.md** - Topic guides
+- **project-structure.md** / **CODE-ORGANIZATION.md** - Architecture notes
 - **examples/** - Practical examples and tutorials
 
-### `tests/`
-Test suite (planned for future development):
-- **unit/** - Unit tests for individual functions
-- **integration/** - End-to-end integration tests
+### Runtime paths (not in the repo)
+Installed hosts keep config in `/etc/dcvm-install.conf`. Cloud images live under
+`$DATACENTER_BASE/storage/templates` (downloaded at install or first create).
+Automated checks live in `lib/utils/test-suite.sh` rather than a top-level
+`tests/` tree.
 
 ## File Naming Conventions
 

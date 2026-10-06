@@ -12,7 +12,7 @@ from git history, so the commit or PR is listed for each release.
 
 ## [0.9.2] - 2026-10-06
 
-Documentation-only release (this PR).
+Documentation-only release.
 
 ### Added
 
@@ -27,7 +27,7 @@ Documentation-only release (this PR).
 - `docs/CODE-ORGANIZATION.md` documents `get_vm_username` alongside the other
   VM getters and on the `export -f` line.
 
-## [0.9.1] - 2026-10-06
+## [0.9.1] - TBD
 
 Self-update delivers these when the installed version differs from main.
 0.9.1 is what ships Tailscale (and the related fixes) to 0.9.0 installs.
@@ -44,10 +44,6 @@ PR #32 (73624ac, a83dc88).
     Debian/Ubuntu/Kali guests use the official install script, retried to
     survive apt lock contention during first boot.
   - Documented in `docs/usage.md` ("Create a VM with Tailscale VPN").
-- `get_vm_username <vm>` reads the login name from the VM's cloud-init
-  user-data (users list name, then `VM_USERNAME=`), falling back to `admin`
-  only when nothing is recorded; used for SSH hints, DHCP renew, and storage
-  checks (a83dc88).
 
 ### Changed
 
@@ -66,8 +62,13 @@ PR #32 (73624ac, a83dc88).
 - `self-update`: use `((++updated_count))` instead of `((updated_count++))`
   so the first increment no longer returns a non-zero status under
   `set -e` (db5c65a).
-- Cloud-init `runcmd`: the `echo "User: ..."` line is now quoted so the
-  `: ` inside it no longer breaks YAML parsing of user-data (95a4b6a).
+- Cloud-init `runcmd`: the `echo "User: ..." >> /var/log/cloud-init-final.log`
+  line is now single-quoted so the `: ` inside it no longer breaks YAML
+  parsing of user-data (95a4b6a).
+- `get_vm_username <vm>` reads the login name from the VM's cloud-init
+  user-data (users list name, then `VM_USERNAME=`), falling back to `admin`
+  only when nothing is recorded; used for SSH hints, DHCP renew, and storage
+  checks (a83dc88).
 
 ## [0.9.0] - 2026-01-05
 
@@ -180,9 +181,9 @@ Later commits kept the same version string until 0.7.1.
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/977581b8cbf6009f2a096eaf0a8fe36b28f71e12...HEAD
-[0.9.2]: https://github.com/metharda/dcvm/commit/977581b8cbf6009f2a096eaf0a8fe36b28f71e12
-[0.9.1]: https://github.com/metharda/dcvm/commit/a83dc88
+[Unreleased]: https://github.com/metharda/dcvm/compare/95a4b6a...HEAD
+[0.9.2]: https://github.com/metharda/dcvm/pull/TBD
+[0.9.1]: https://github.com/metharda/dcvm/pull/32
 [0.9.0]: https://github.com/metharda/dcvm/commit/109eb9c
 [0.8.0]: https://github.com/metharda/dcvm/commit/d9336b1
 [0.7.2]: https://github.com/metharda/dcvm/commit/658ee60

@@ -131,8 +131,10 @@ dcvm status myvm
 # Find VM IP
 dcvm network
 
-# SSH into VM (default username depends on OS, e.g., 'ubuntu' for Ubuntu, 'debian' for Debian)
-# For Ubuntu 24.04 (default):
+# SSH username: -u <name> if you set one at create time, otherwise the OS
+# default (e.g. ubuntu, debian). create-iso VMs have no recorded user, so
+# SSH hints fall back to admin as a guess.
+# For Ubuntu 24.04 (default OS):
 ssh ubuntu@<vm-ip>
 ```
 
@@ -239,9 +241,10 @@ dcvm create web-server nginx,mysql-server
 
 ### Port Mapping
 
-- **SSH**: 2220+ ports (per VM)
-- **HTTP**: 8080+ ports (per VM)
-- **Access**: `ssh -p <ssh-port> <username>@<host-ip>` (username is the cloud-init `users:` name / `-u` / OS default; `admin` only when nothing is recorded)
+- **SSH**: starts at port 2221 (one host port per VM)
+- **HTTP**: starts at port 8081 (one host port per VM)
+- **See current mappings**: `dcvm network ports show`
+- **Access**: `ssh -p <ssh-port> <username>@<host-ip>` — username is `-u` if set at create time, otherwise the OS default; create-iso VMs fall back to `admin` as a guess
 
 ## Directory Structure
 

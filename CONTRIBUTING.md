@@ -171,14 +171,15 @@ environment variable you set survives `source` and overrides the default. To
 test your working copy on a machine with DCVM installed:
 
 ```bash
-DCVM_LIB_DIR=$PWD/lib ./dcvm your-command
-sudo DCVM_LIB_DIR=$PWD/lib ./dcvm your-command
+DCVM_LIB_DIR="$PWD/lib" ./dcvm your-command
+sudo DCVM_LIB_DIR="$PWD/lib" ./dcvm your-command
 ```
 
 You can also run a changed script directly, e.g. `bash lib/core/create-vm.sh ...`
 or `bash lib/network/network-manager.sh ...`. Note that most library scripts call
-`load_dcvm_config`, which exits if `/etc/dcvm-install.conf` is missing (except
-paths that only need `dcvm version` / `dcvm help` via the entry point).
+`load_dcvm_config`, which exits if `/etc/dcvm-install.conf` is missing. Commands
+that only need the entry point (such as `dcvm version` and `dcvm help`) do not
+load that config.
 
 ### Repository Test Suite
 
@@ -189,7 +190,7 @@ paths that only need `dcvm version` / `dcvm help` via the entry point).
 | `--quick` | Syntax checks, shellcheck, configuration, dependency and `common.sh` function tests. No VM creation, no root required. This is what CI runs. |
 | `--full` | Everything in the default run plus the VM lifecycle tests (create, start, stop, delete). Needs root and a working libvirt/QEMU host. |
 | `--syntax` | `bash -n` syntax checks and shellcheck only. |
-| `--unit` | `common.sh` function tests only (`validate_*`, `format_*`, `generate_*`). |
+| `--unit` | `common.sh` function tests only (`validate_*`, `format_*`, `generate_*`, `print_*`, `command_exists`, `default_username`, `get_vm_username`). |
 | `--integration` | libvirt, network, storage, VM listing and VM lifecycle tests. Requires root; the lifecycle tests are skipped unless `--full` is also given. |
 | `--verbose`, `-v` | Show detailed output. |
 | `--help`, `-h` | Show usage. |
@@ -264,14 +265,17 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    locally before pushing:
 
    ```bash
-   for f in $(git ls-files -- dcvm '*.sh'); do
-     bash -n "$f" && shellcheck -S error "$f"
-   done
+   rc=0
+   while IFS= read -r -d '' f; do
+     bash -n "$f" || rc=1
+   done < <(git ls-files -z -- dcvm '*.sh')
+   git ls-files -z -- dcvm '*.sh' | xargs -0 shellcheck -S error || rc=1
+   exit "$rc"
    ```
 
-3. **Formatting** (`format.yaml`). On pull requests, CI runs a check-only
-   `shfmt -d` diff (it does not rewrite files or push commits). Format
-   locally with `shfmt -i 2 -w` before pushing so the check stays green:
+3. **Formatting** (`format.yaml`). Format checks use `shfmt -i 2 -d` (indent
+   2, check-only diff; it does not rewrite files). Format locally with
+   `shfmt -i 2 -w` before pushing so the check stays green:
 
    ```bash
    shfmt -i 2 -w dcvm $(git ls-files -- '*.sh')
@@ -305,11 +309,10 @@ When you release, also add your changes to `CHANGELOG.md`.
 
 ### Before Submitting
 
-1. Test your changes thoroughly
-2. Bump the version in `dcvm` (see [CI Rules](#ci-rules))
-3. Run `shfmt -i 2` and `shellcheck` on changed scripts
-4. Update relevant documentation and `CHANGELOG.md`
-5. Check for conflicts with main branch
+1. Test your changes thoroughly and bump the version in `dcvm` (see [CI Rules](#ci-rules))
+2. Run `shfmt -i 2 -d` (or `-w`) and `shellcheck -S error` on changed scripts
+3. Update relevant documentation and `CHANGELOG.md`
+4. Check for conflicts with main branch
 
 ### PR Template
 
