@@ -259,18 +259,24 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    was opened.
 
 2. **Lint** (`lint.yaml`, on PRs touching `dcvm` or `*.sh`). CI runs
-   `shellcheck` on `dcvm` and every tracked `*.sh` file (plus `bash -n`).
-   Run the same checks locally before pushing:
+   `bash -n` and `shellcheck -S error` on `dcvm` and every tracked `*.sh`
+   file (errors fail the job; warnings are allowed). Run the same checks
+   locally before pushing:
 
    ```bash
-   for f in $(git ls-files -- dcvm '*.sh'); do bash -n "$f" && shellcheck "$f"; done
+   for f in $(git ls-files -- dcvm '*.sh'); do
+     bash -n "$f" && shellcheck -S error "$f"
+   done
    ```
 
-3. **Formatting** (`format.yaml`). Format shell scripts locally with
-   `shfmt -i 2 -w` before pushing:
+3. **Formatting** (`format.yaml`). On pull requests, CI runs a check-only
+   `shfmt -d` diff (it does not rewrite files or push commits). Format
+   locally with `shfmt -i 2 -w` before pushing so the check stays green:
 
    ```bash
    shfmt -i 2 -w dcvm $(git ls-files -- '*.sh')
+   # or verify without writing:
+   shfmt -i 2 -d dcvm $(git ls-files -- '*.sh')
    ```
 
 4. **Quick tests** (`test.yaml`, on PRs touching `dcvm` or `*.sh`). Runs
