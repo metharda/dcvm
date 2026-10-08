@@ -385,6 +385,18 @@ check_port_connectivity() {
   timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null
 }
 
+# Check a host-port forward: the DNAT rule dcvm adds must exist and the VM
+# must answer on the target port. Probing 127.0.0.1:<host_port> from the host
+# is not enough: locally generated packets skip PREROUTING, so that probe
+# fails even when forwarding works for other machines.
+check_port_forward() {
+  local host_port="$1"
+  local vm_ip="$2"
+  local vm_port="$3"
+  iptables -t nat -C PREROUTING -p tcp --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
+  check_port_connectivity "$vm_ip" "$vm_port"
+}
+
 is_vm_in_network() {
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
@@ -719,7 +731,7 @@ export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_us
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
-export -f check_port_connectivity is_vm_in_network get_port_mappings_file read_port_mappings
+export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path

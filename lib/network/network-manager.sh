@@ -68,8 +68,8 @@ cmd_show() {
       if [ -n "$vm" ]; then
         local ping_status ssh_status http_status
         ping_status=$(check_ping "$ip" && echo "✓" || echo "✗")
-        ssh_status=$(check_port_connectivity "127.0.0.1" "$ssh_port" && echo "✓" || echo "✗")
-        http_status=$(check_port_connectivity "127.0.0.1" "$http_port" && echo "✓" || echo "✗")
+        ssh_status=$(check_port_forward "$ssh_port" "$ip" 22 && echo "✓" || echo "✗")
+        http_status=$(check_port_forward "$http_port" "$ip" 80 && echo "✓" || echo "✗")
         printf "%-15s: %-4s  %-4s  %-4s\n" "$vm" "$ping_status" "$ssh_status" "$http_status"
       fi
     done
