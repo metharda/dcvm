@@ -677,6 +677,27 @@ EOF
     log_test "FAIL" "backup restore <new_name> (invalid name rejected)" "virsh was called"
   fi
 
+  rm -f "$t/defined.xml"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 01.01.2026-1 "" "" vm1-sel </dev/null >/dev/null 2>&1
+  )
+  if grep -q '<name>vm1-sel</name>' "$t/defined.xml" 2>/dev/null; then
+    log_test "PASS" "backup restore (dd.mm.yyyy-N selector)"
+  else
+    log_test "FAIL" "backup restore (dd.mm.yyyy-N selector)"
+  fi
+  if (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 02.01.2026 "" "" vm1-none </dev/null >/dev/null 2>&1
+  ); then
+    log_test "FAIL" "backup restore (unknown selector)" "Expected failure but got success"
+  else
+    log_test "PASS" "backup restore (unknown selector) (expected failure)"
+  fi
+
   rm -rf "$t"
 }
 

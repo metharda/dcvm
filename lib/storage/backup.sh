@@ -1045,6 +1045,16 @@ restore_vm() {
     log "INFO" "Starting restore for VM: $vm_name"
   fi
 
+  if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
+    local _resolved
+    _resolved=$(resolve_backup_selector "$source_name" "$backup_date")
+    if [ -z "$_resolved" ]; then
+      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS or dd.mm.yyyy[-N])"
+      return 1
+    fi
+    backup_date="$_resolved"
+  fi
+
   if [ -z "$backup_date" ]; then
     backup_date=$(get_latest_backup "$source_name")
     if [ -z "$backup_date" ]; then
@@ -1688,7 +1698,7 @@ Usage: dcvm backup <subcommand> [options]
 
 SUBCOMMANDS:
   create <vm_name>                                  Create a new backup of VM
-  restore <vm_name> [backup_date] [new_vm_name]     Restore VM from backup (optionally as a new VM)
+  restore <vm_name> [backup_date [new_vm_name]]     Restore VM from backup (optionally as a new VM)
   list [vm_name]                                    List all or specific VM backups
   delete <selector>                                 Delete backups (see selectors below)
   export <vm_name> [backup_date] [output_dir]       Export backup as portable package
