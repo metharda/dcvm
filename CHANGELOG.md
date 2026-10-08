@@ -10,6 +10,36 @@ from git history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-08
+
+Bug fixes for VM creation, backup restore/import, DHCP and port checks.
+
+### Changed
+
+- `dcvm backup restore <vm> [backup_date] [new_vm_name]` restores a backup as a
+  new VM, leaving the original VM as is (#28).
+- `dcvm network dhcp cleanup` runs the stale-lease cleanup (same as
+  `dhcp clear --stale`), matching the command shown in `dcvm network help`.
+- `docs/CODE-ORGANIZATION.md` lists `trim_whitespace` and
+  `validate_vm_name_list` and states the real `validate_vm_name` rule.
+- README project tree shows `dcvm` as the CLI entry point inside the
+  repository root.
+
+### Fixed
+
+- `dcvm create ''` (or options with no VM name) now exits non-zero with
+  "VM name required"; `dcvm create` with no arguments or `--help` still shows
+  usage.
+- `-k` packages are installed one by one, so one unavailable name no longer
+  stops every package (including the base packages) from installing;
+  invalid package names are rejected before anything is created (#30).
+- Backup import (and restore under a new name) sets the guest hostname to the
+  new VM name when `virt-customize` is available, and SSH key setup waits up
+  to 120s for the VM IP instead of continuing with "N/A" (#27).
+- Port connectivity checks (`network ports test`, `network show`, `dcvm ports`)
+  check the DNAT rule and the VM port instead of probing `127.0.0.1`, which
+  reported working forwards as failed (refs #31).
+
 ## [0.9.2] - 2026-10-06
 
 Docs, CI reliability, and related fixes. Ships via self-update when the
