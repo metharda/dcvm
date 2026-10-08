@@ -35,6 +35,12 @@
 - get_vm_disk_path() - Get VM disk file path
 - get_vm_username() - Get VM login name from cloud-init user-data (falls back to admin)
 
+**Networking:**
+- check_port_connectivity() - Check that a TCP port answers on a host
+- check_port_forward() - Check a port forward: the PREROUTING DNAT rule and the FORWARD accept rule that `setup_vm_forwarding` adds, then the VM port (exported)
+- is_vm_in_network() - Check that a VM has an interface on the DCVM network
+- get_port_mappings_file() / read_port_mappings() - Locate and read the port mappings file
+
 **Security & Authentication:**
 - read_password() - Securely read password from stdin
 - generate_password_hash() - Generate salted SHA-512 hash
@@ -149,11 +155,16 @@ All functions are exported and available to child processes:
 ```bash
 export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
-export -f load_dcvm_config require_root check_permissions
-export -f command_exists check_dependencies
+export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
+export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
+export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
+export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
+export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f validate_ip_in_subnet interactive_prompt_static_ip_common
+export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username
 ```

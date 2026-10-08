@@ -17,9 +17,14 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 ### Added
 
 - `dcvm backup restore <vm> [backup_date [new_vm_name]]` restores a backup as a
-  new VM, leaving the original VM as is; use `''` as the date for the latest
-  backup (#28). Restore also accepts the same day selectors as export and
-  delete (`dd.mm.yyyy[-N]`).
+  new VM, leaving the original VM as is; use `latest` (or `''`) as the date
+  for the latest backup (#28). Restore also accepts the same day selectors as
+  export and delete (`dd.mm.yyyy[-N]`).
+- A copy restored or imported under a new name gets a new machine-id and new
+  SSH host keys (regenerated on first boot) along with the new hostname when
+  `virt-customize` is available, and the source VM's NVRAM path is dropped
+  from its XML. If the source VM has a static IP, the copy is not started or
+  set to autostart, and a warning says it keeps that IP.
 
 ### Changed
 
@@ -36,12 +41,17 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 - `-k` packages are installed one by one, so one unavailable name no longer
   stops every package (including the base packages) from installing;
   invalid package names are rejected before anything is created (#30).
-- Backup import (and restore under a new name) sets the guest hostname to the
-  new VM name when `virt-customize` is available, and SSH key setup waits up
-  to 120s for the VM IP instead of continuing with "N/A" (#27).
+- Backup import (and restore under a new name) sets the guest hostname and
+  its `/etc/hosts` entries to the new VM name when `virt-customize` is
+  available. SSH key setup looks up the VM IP every 2s for up to 120s (the
+  last lookup can end a few seconds later) instead of continuing with "N/A"
+  (#27).
+- `dcvm backup import <package> <new_vm_name>` rejects an invalid new name
+  before anything is copied.
 - Port connectivity checks (`dcvm network ports test`, `dcvm network show`)
-  check the DNAT rule and the VM port instead of probing `127.0.0.1`, which
-  reported working forwards as failed (refs #31).
+  check the DNAT and FORWARD rules that `dcvm network ports setup` adds and
+  the VM port, instead of probing `127.0.0.1`, which reported working forwards
+  as failed (refs #31).
 - `root` is accepted as a VM username: cloud-init configures the existing root
   account (password, SSH key, `/root`, root SSH login) instead of creating a
   user, and `dcvm create` warns that root login is being configured (#29).

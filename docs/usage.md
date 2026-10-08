@@ -71,7 +71,7 @@ Note about multiple VMs and `--ip`:
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
 - `-r, --root-password`: Set root password
-- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Each package is installed separately; failures are logged in the guest to `/var/log/dcvm-packages.log`.
+- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Names must start with a letter or number and may contain letters, numbers, `@`, `.`, `_`, `+` and `-`. Each package is installed separately, so one unavailable name does not block the rest; failures are logged in the guest to `/var/log/dcvm-packages.log`.
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
@@ -254,6 +254,13 @@ dcvm restore myvm
 ```
 
 Restores VM from the latest backup.
+
+```bash
+dcvm backup restore myvm <backup_date> myvm-copy
+dcvm backup restore myvm latest myvm-copy
+```
+
+Restores a backup as a new VM named `myvm-copy` and leaves `myvm` as is. `backup_date` is `YYYYMMDD_HHMMSS`, `dd.mm.yyyy[-N]`, `latest` or `''`. See [backups.md](backups.md#restore) for what changes in the copy.
 
 ### View Storage Information
 
