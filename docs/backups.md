@@ -26,10 +26,10 @@ dcvm backup delete <vm_name>-<YYYYMMDD>_<HHMMSS>
 Export a backup archive:
 ```bash
 # Export to default directory ($DATACENTER_BASE/backups/exports)
-dcvm backup export <vm> <timestamp>
+dcvm backup export <vm> <backup_date>
 
 # Export to specific directory
-dcvm backup export <vm> <timestamp> /path/to/export/dir
+dcvm backup export <vm> <backup_date> /path/to/export/dir
 ```
 
 Import a backup archive:
@@ -49,15 +49,22 @@ dcvm backup restore <vm>
 dcvm restore <vm>
 ```
 
-Restore a specific timestamp:
+Restore a specific backup (`backup_date` is a raw `YYYYMMDD_HHMMSS` timestamp or the same day selector as export/delete, `dd.mm.yyyy[-N]`):
 ```bash
-dcvm backup restore <vm> <timestamp>
+dcvm backup restore <vm> <backup_date>
 ```
 
 Restore as a new VM (the original VM is left as is; the guest hostname is set to the new name when `virt-customize` is available):
 ```bash
-dcvm backup restore <vm> <timestamp> <new_vm_name>
+dcvm backup restore <vm> <backup_date> <new_vm_name>
 ```
+
+Latest backup under a new name (the date is positional, so pass an empty one):
+```bash
+dcvm backup restore <vm> '' <new_vm_name>
+```
+
+If `<new_vm_name>` already exists, restore asks you to type `yes` and then replaces that VM (its disk is deleted). The new VM gets new MAC addresses (and so its own DHCP IP; a VM created with a static IP keeps that address inside the guest). Port forwards are not copied, so run `dcvm network ports setup` afterwards.
 
 ## Where backups are stored
 - Default path: `$DATACENTER_BASE/backups`

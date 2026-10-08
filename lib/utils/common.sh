@@ -126,7 +126,7 @@ validate_package_list() {
     pkg=$(trim_whitespace "$pkg")
     [ -z "$pkg" ] && continue
     if [[ ! "$pkg" =~ ^[A-Za-z0-9][A-Za-z0-9@._+-]*$ ]]; then
-      print_error "Invalid package name: '$pkg' (allowed: letters, numbers, @ . _ + -)"
+      print_error "Invalid package name: '$pkg' (must start with a letter or number; allowed: letters, numbers, @ . _ + -)"
       return 1
     fi
   done

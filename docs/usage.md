@@ -71,7 +71,7 @@ Note about multiple VMs and `--ip`:
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
 - `-r, --root-password`: Set root password
-- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN)
+- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Each package is installed separately; failures are logged in the guest to `/var/log/dcvm-packages.log`.
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)

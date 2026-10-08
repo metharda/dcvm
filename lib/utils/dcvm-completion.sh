@@ -10,7 +10,7 @@ _dcvm_vm_list() {
   virsh list --all --name 2>/dev/null | grep -v '^$'
 }
 
-_dcvm_dhcp_subs() { echo "show clear-mac clear-vm clear-all cleanup renew files help"; }
+_dcvm_dhcp_subs() { echo "show clear cleanup renew files help"; }
 _dcvm_ports_subs() { echo "setup show rules apply clear test help"; }
 
 _dcvm_backup_subs() {

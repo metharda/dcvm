@@ -55,7 +55,7 @@ COMMANDS:
   Network Management:
     network                        Show network information
     network ports <cmd>            Port forwarding mgmt (setup, show, rules, apply, clear, test)
-    network dhcp <cmd>             DHCP mgmt (show, clear-all, clear-vm, clear-mac, cleanup, renew)
+    network dhcp <cmd>             DHCP mgmt (show, clear, cleanup, renew, files)
     network vnc <action> <vm>      VNC management (enable, disable, status)
 
   Storage & Backup:

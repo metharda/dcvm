@@ -14,12 +14,15 @@ from git history, so the commit or PR is listed for each release.
 
 Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 
+### Added
+
+- `dcvm backup restore <vm> [backup_date [new_vm_name]]` restores a backup as a
+  new VM, leaving the original VM as is; use `''` as the date for the latest
+  backup (#28). Restore also accepts the same day selectors as export and
+  delete (`dd.mm.yyyy[-N]`).
+
 ### Changed
 
-- `dcvm backup restore <vm> [backup_date] [new_vm_name]` restores a backup as a
-  new VM, leaving the original VM as is (#28).
-- `dcvm network dhcp cleanup` runs the stale-lease cleanup (same as
-  `dhcp clear --stale`), matching the command shown in `dcvm network help`.
 - `docs/CODE-ORGANIZATION.md` lists `trim_whitespace` and
   `validate_vm_name_list` and states the real `validate_vm_name` rule.
 - README project tree shows `dcvm` as the CLI entry point inside the
@@ -36,12 +39,15 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 - Backup import (and restore under a new name) sets the guest hostname to the
   new VM name when `virt-customize` is available, and SSH key setup waits up
   to 120s for the VM IP instead of continuing with "N/A" (#27).
-- Port connectivity checks (`network ports test`, `network show`, `dcvm ports`)
+- Port connectivity checks (`dcvm network ports test`, `dcvm network show`)
   check the DNAT rule and the VM port instead of probing `127.0.0.1`, which
   reported working forwards as failed (refs #31).
 - `root` is accepted as a VM username: cloud-init configures the existing root
   account (password, SSH key, `/root`, root SSH login) instead of creating a
   user, and `dcvm create` warns that root login is being configured (#29).
+- `dcvm network dhcp cleanup` runs the stale-lease cleanup (same as
+  `dhcp clear --stale`). After #26 it printed "Unknown command" even though
+  help advertised it.
 
 ## [0.9.2] - 2026-10-06
 
@@ -250,6 +256,7 @@ Later commits kept the same version string until 0.7.1.
 - IP validation checks the address is inside the configured subnet (#17).
 
 [Unreleased]: https://github.com/metharda/dcvm/compare/95a4b6a...HEAD
+[0.9.3]: https://github.com/metharda/dcvm/pull/35
 [0.9.2]: https://github.com/metharda/dcvm/pull/34
 [0.9.1]: https://github.com/metharda/dcvm/pull/32
 [0.9.0]: https://github.com/metharda/dcvm/commit/109eb9c

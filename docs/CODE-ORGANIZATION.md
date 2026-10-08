@@ -23,6 +23,7 @@
 - validate_vm_name_list() - Trim and validate each name in a comma-separated VM name list; fails on the first invalid or if no names (exported)
 - trim_whitespace() - Strip leading/trailing whitespace in pure bash, keeping quotes and backslashes intact (exported)
 - validate_username() - Validate username (3-32 chars, starts with a letter or underscore; rejects admin, administrator, sysadmin, user, guest; root is allowed)
+- validate_package_list() - Validate -k package names (letters, numbers, @ . _ + -; must start with a letter or number) (exported)
 - validate_password() - Validate password (4-128 chars)
 - validate_ip_in_subnet() - Validate IP address is within configured subnet
 
@@ -150,7 +151,7 @@ export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions
 export -f command_exists check_dependencies
-export -f validate_vm_name validate_vm_name_list trim_whitespace validate_username validate_password
+export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
