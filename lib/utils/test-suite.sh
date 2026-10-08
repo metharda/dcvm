@@ -578,6 +578,9 @@ test_dhcp_cleanup_dispatch() {
   local clear_stubs="clear_all_leases() { echo ALL_CALLED; }; clear_lease_by_mac() { echo MAC_CALLED \$1; }; clear_vm_lease() { echo VM_CALLED \$1; }; restart_network() { :; }"
   run_test_output_contains "dhcp.sh clear --all (vm-manager clear-leases)" "ALL_CALLED" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear --all)"
   run_test "no internal callers use removed dhcp subcommands" "! grep -nE 'dhcp\\.sh\\\" (clear-mac|clear-vm|clear-all)' '$SCRIPT_DIR/../core/delete-vm.sh' '$SCRIPT_DIR/../core/vm-manager.sh'"
+  run_test "completion has no removed dhcp subcommands" "! grep -nE 'clear-(mac|vm|all)' '$SCRIPT_DIR/dcvm-completion.sh'"
+  run_test_output_contains "completion: dhcp clear offers VM names and lease MACs" "vm1 52:54:00:ab:cd:ef" "(source '$SCRIPT_DIR/dcvm-completion.sh'; _dcvm_vm_list() { echo vm1; }; _dcvm_lease_macs() { echo 52:54:00:ab:cd:ef; }; COMP_WORDS=(dcvm network dhcp clear ''); COMP_CWORD=4; _dcvm_completion; echo \"\${COMPREPLY[*]}\")"
+  run_test_output_contains "completion: backup restore date offers latest" "latest" "(source '$SCRIPT_DIR/dcvm-completion.sh'; _dcvm_backup_dates_for_vm() { echo 20260101_120000; }; COMP_WORDS=(dcvm backup restore vm1 ''); COMP_CWORD=4; _dcvm_completion; echo \"\${COMPREPLY[*]}\")"
 }
 
 # Delete must clear only this VM's lease: no dhcp.sh clear, no restart_network

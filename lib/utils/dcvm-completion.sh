@@ -140,7 +140,7 @@ _dcvm_completion() {
           local vm_name="${COMP_WORDS[3]}"
           local _dates
           _dates=$(_dcvm_backup_dates_for_vm "$vm_name")
-          COMPREPLY=($(compgen -W "$_dates" -- "$cur"))
+          COMPREPLY=($(compgen -W "latest $_dates" -- "$cur"))
         else
           COMPREPLY=()
         fi
@@ -179,14 +179,9 @@ _dcvm_completion() {
         else
           local sub2="${COMP_WORDS[3]}"
           case "$sub2" in
-          clear-vm)
+          clear)
             if [[ ${COMP_CWORD} -eq 4 ]]; then
-              COMPREPLY=($(compgen -W "$(_dcvm_vm_list)" -- "$cur"))
-            fi
-            ;;
-          clear-mac)
-            if [[ ${COMP_CWORD} -eq 4 ]]; then
-              COMPREPLY=($(compgen -W "$(_dcvm_lease_macs)" -- "$cur"))
+              COMPREPLY=($(compgen -W "$(_dcvm_vm_list) $(_dcvm_lease_macs)" -- "$cur"))
             fi
             ;;
           esac
