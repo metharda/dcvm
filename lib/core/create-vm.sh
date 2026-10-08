@@ -1179,10 +1179,17 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "mysql-server"; then
   - systemctl enable mysql
   - systemctl start mysql
   - mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$VM_PASSWORD';"
+MYSQL_EOF
+    # Username root: the ALTER USER above already covers root@localhost.
+    if [ "$VM_USERNAME" != "root" ]; then
+      cat <<'MYSQL_USER_EOF'
   - mysql -e "CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$VM_PASSWORD';"
   - mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$VM_USERNAME'@'localhost' WITH GRANT OPTION;"
+MYSQL_USER_EOF
+    fi
+    cat <<'MYSQL_FLUSH_EOF'
   - mysql -e "FLUSH PRIVILEGES;"
-MYSQL_EOF
+MYSQL_FLUSH_EOF
   fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
     cat <<'DOCKER_EOF'

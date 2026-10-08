@@ -970,7 +970,7 @@ generate_test_userdata() {
     generate_password_hash() { echo '$6$test$hash'; }
     FORCE_MODE=true VM_NAME=usertest VM_USERNAME="$1" VM_PASSWORD=testpass123
     VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT="$2" ROOT_PASSWORD="" SSH_KEY="$3"
-    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="" VM_OS=debian12 TAILSCALE_AUTHKEY=""
+    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="${5:-}" VM_OS=debian12 TAILSCALE_AUTHKEY=""
     mkdir -p "$t/vms/usertest/cloud-init"
     generate_cloud_init_userdata >/dev/null 2>&1
   )
@@ -1029,6 +1029,27 @@ test_root_username_userdata() {
     log_test "PASS" "normal username user-data unchanged"
   else
     log_test "FAIL" "normal username user-data unchanged"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
+test_root_mysql_userdata() {
+  local t
+  t=$(mktemp -d)
+  generate_test_userdata root y "" "$t/root.yaml" mysql-server
+  generate_test_userdata tester n "" "$t/user.yaml" mysql-server
+  if grep -q "ALTER USER 'root'@'localhost'" "$t/root.yaml" 2>/dev/null &&
+    ! grep -qE 'CREATE USER|GRANT ' "$t/root.yaml"; then
+    log_test "PASS" "-k mysql-server with username root (no CREATE USER/GRANT)"
+  else
+    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(grep -n 'mysql -e' "$t/root.yaml" 2>/dev/null | tr '\n' ';')"
+  fi
+  if grep -q 'CREATE USER' "$t/user.yaml" 2>/dev/null && grep -q 'GRANT ALL PRIVILEGES' "$t/user.yaml" &&
+    grep -q 'FLUSH PRIVILEGES' "$t/user.yaml" && grep -q 'FLUSH PRIVILEGES' "$t/root.yaml"; then
+    log_test "PASS" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
+  else
+    log_test "FAIL" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
   fi
   rm -rf "$t"
 }
@@ -1146,6 +1167,7 @@ test_common_functions() {
   test_create_extra_packages_userdata
   test_root_username_userdata
   test_root_username_setup
+  test_root_mysql_userdata
 }
 
 test_cli_help() {
