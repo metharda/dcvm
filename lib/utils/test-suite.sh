@@ -852,6 +852,8 @@ test_error_handling() {
 
   if require_root_for_test "error handling with root"; then
     run_test_expect_fail "dcvm delete (no args)" "$dcvm_cmd delete"
+    run_test_expect_fail "dcvm create '' (empty name)" "$dcvm_cmd create ''"
+    run_test_output_contains "dcvm create '' (error message)" "VM name required" "$dcvm_cmd create ''"
     run_test_expect_fail "dcvm start (invalid VM)" "$dcvm_cmd start nonexistent_vm_xyz_123"
     run_test_expect_fail "dcvm stop (invalid VM)" "$dcvm_cmd stop nonexistent_vm_xyz_123"
   fi

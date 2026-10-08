@@ -1382,8 +1382,8 @@ main() {
   parse_arguments "$@"
 
   if [ -z "$VM_NAME" ]; then
-    show_usage
-    exit 0
+    print_error "VM name required. Usage: dcvm create <vm_name> [options]"
+    exit 1
   fi
 
   if ! validate_vm_name_list "$VM_NAME"; then
