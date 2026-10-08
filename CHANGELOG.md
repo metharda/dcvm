@@ -18,8 +18,9 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 
 - `dcvm backup restore <vm> [backup_date [new_vm_name]]` restores a backup as a
   new VM, leaving the original VM as is; use `latest` (or `''`) as the date
-  for the latest backup (#28). Restore also accepts the same day selectors as
-  export and delete (`dd.mm.yyyy[-N]`).
+  for the latest backup (#28). Restore also accepts the backup IDs that
+  `backup list` prints (`<vm>-dd.mm.yyyy[-N]`) and the bare day selector
+  (`dd.mm.yyyy[-N]`).
 - A copy restored or imported under a new name gets a new machine-id and new
   SSH host keys (regenerated on first boot) along with the new hostname when
   `virt-customize` is available, and the source VM's NVRAM path is dropped

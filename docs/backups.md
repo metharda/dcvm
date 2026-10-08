@@ -49,7 +49,7 @@ dcvm backup restore <vm>
 dcvm restore <vm>
 ```
 
-Restore a specific backup (`backup_date` is a raw `YYYYMMDD_HHMMSS` timestamp, the export day selector `dd.mm.yyyy[-N]` (without the `<vm>-` prefix shown by `backup list`), or `latest`):
+Restore a specific backup (`backup_date` is a raw `YYYYMMDD_HHMMSS` timestamp, the ID as `backup list` shows it (`<vm>-dd.mm.yyyy[-N]`), the bare day selector `dd.mm.yyyy[-N]`, or `latest`):
 ```bash
 dcvm backup restore <vm> <backup_date>
 ```

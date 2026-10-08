@@ -1066,12 +1066,14 @@ restore_vm() {
   fi
 
   [ "$backup_date" = "latest" ] && backup_date=""
+  # Accept the ID as `backup list` prints it (<vm>-dd.mm.yyyy[-N]): literal prefix.
+  [[ "$backup_date" == "$source_name-"* ]] && backup_date="${backup_date#"$source_name-"}"
 
   if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
     local _resolved
     _resolved=$(resolve_backup_selector "$source_name" "$backup_date")
     if [ -z "$_resolved" ]; then
-      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS, dd.mm.yyyy[-N] or latest)"
+      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS, [<vm>-]dd.mm.yyyy[-N] or latest)"
       return 1
     fi
     backup_date="$_resolved"
@@ -1766,7 +1768,8 @@ SUBCOMMANDS:
   troubleshoot <vm_name>                            Diagnose and fix VM startup issues
 
 RESTORE DATES:
-  backup_date is YYYYMMDD_HHMMSS, dd.mm.yyyy[-N], latest or '' (latest)
+  backup_date is YYYYMMDD_HHMMSS, dd.mm.yyyy[-N] or <vm>-dd.mm.yyyy[-N]
+  (as 'backup list' shows it), latest or '' (latest)
 
 DELETE SELECTORS:
   <vm_name>                      Interactive numbered selection
