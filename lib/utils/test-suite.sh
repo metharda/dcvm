@@ -577,9 +577,80 @@ test_dhcp_cleanup_dispatch() {
   run_test_expect_fail "dhcp.sh unknown subcommand" "(source '$dhcp_sh'; $stubs; main no-such-subcommand)"
   local clear_stubs="clear_all_leases() { echo ALL_CALLED; }; clear_lease_by_mac() { echo MAC_CALLED \$1; }; clear_vm_lease() { echo VM_CALLED \$1; }; restart_network() { :; }"
   run_test_output_contains "dhcp.sh clear --all (vm-manager clear-leases)" "ALL_CALLED" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear --all)"
-  run_test_output_contains "dhcp.sh clear <mac> (delete-vm)" "MAC_CALLED 52:54:00:ab:cd:ef" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear 52:54:00:ab:cd:ef)"
-  run_test_output_contains "dhcp.sh clear <vm> (delete-vm)" "VM_CALLED vm1" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear vm1)"
   run_test "no internal callers use removed dhcp subcommands" "! grep -nE 'dhcp\\.sh\\\" (clear-mac|clear-vm|clear-all)' '$SCRIPT_DIR/../core/delete-vm.sh' '$SCRIPT_DIR/../core/vm-manager.sh'"
+}
+
+# Delete must clear only this VM's lease: no dhcp.sh clear, no restart_network
+# and no virsh net-destroy/net-start (that would cut every other VM's network).
+# shellcheck disable=SC2034,SC2317 # stubs are called by delete_single_vm
+test_delete_vm_keeps_network() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    HOME="$t"
+    # shellcheck source=../core/delete-vm.sh
+    source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+    DATACENTER_BASE="$t" NETWORK_NAME=datacenter-net BRIDGE_NAME=virbr-dc
+    virsh() {
+      echo "virsh $*" >>"$t/calls"
+      case "$1" in
+      net-dhcp-leases) echo " 2026-10-08 12:00:00  52:54:00:ab:cd:ef  ipv4  10.10.10.60/24  dcvm-deltest  -" ;;
+      esac
+      return 0
+    }
+    # Log any dhcp.sh call and run its real main against the stubbed virsh
+    # (fake bridge, so no real lease file is touched): a net-destroy/net-start
+    # reached that way shows up in the call log too.
+    bash() {
+      echo "bash $*" >>"$t/calls"
+      case "$1" in
+      *dhcp.sh)
+        (
+          f="$1"
+          shift
+          source "$f"
+          load_dcvm_config() { :; }
+          require_root() { :; }
+          check_dependencies() { :; }
+          reload_dnsmasq() { :; }
+          BRIDGE_NAME=dcvm-test-no-such-bridge
+          main "$@"
+        ) >/dev/null 2>&1 </dev/null
+        ;;
+      esac
+      return 0
+    }
+    restart_network() { echo "restart_network" >>"$t/calls"; }
+    cleanup_dhcp_lease() { echo "cleanup_dhcp_lease $*" >>"$t/calls"; }
+    check_vm_exists() { return 0; }
+    get_vm_mac() { echo 52:54:00:ab:cd:ef; }
+    get_vm_disk_path() { :; }
+    get_vm_ip() { :; }
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    stop_vm_gracefully() { :; }
+    cleanup_port_forwarding_for_vm() { :; }
+    systemctl() { :; }
+    sleep() { :; }
+    delete_single_vm dcvm-deltest 2>&1
+  )
+  if grep -qx 'cleanup_dhcp_lease 52:54:00:ab:cd:ef dcvm-deltest' "$t/calls" 2>/dev/null &&
+    ! grep -qE '^bash .*dhcp\.sh|^restart_network' "$t/calls"; then
+    log_test "PASS" "delete VM (cleanup_dhcp_lease only; no dhcp.sh clear, no restart_network)"
+  else
+    log_test "FAIL" "delete VM (cleanup_dhcp_lease only; no dhcp.sh clear, no restart_network)" "$(grep -E 'dhcp|restart' "$t/calls" 2>/dev/null | tr '\n' ';')"
+  fi
+  if [ -s "$t/calls" ] && ! grep -qE '^virsh net-(destroy|start)( |$)' "$t/calls"; then
+    log_test "PASS" "delete VM (never calls virsh net-destroy or net-start)"
+  else
+    log_test "FAIL" "delete VM (never calls virsh net-destroy or net-start)" "$(grep -E '^virsh net-' "$t/calls" 2>/dev/null | tr '\n' ';')"
+  fi
+  if echo "$out" | grep -qF 'They expire on their own; to remove stale leases now: dcvm network dhcp cleanup (restarts datacenter-net if it removes any)' &&
+    ! echo "$out" | grep -q 'dhcp clear'; then
+    log_test "PASS" "delete VM (lingering lease prints the dhcp cleanup hint, not clear <vm>)"
+  else
+    log_test "FAIL" "delete VM (lingering lease prints the dhcp cleanup hint, not clear <vm>)" "$(echo "$out" | grep -i lease | tr '\n' ';')"
+  fi
+  rm -rf "$t"
 }
 
 # Source backup.sh without /etc/dcvm-install.conf: its top level calls
@@ -1068,6 +1139,7 @@ test_common_functions() {
   fi
 
   test_dhcp_cleanup_dispatch
+  test_delete_vm_keeps_network
   test_hosts_rename_sed_expr
   test_backup_restore_new_name
   test_backup_ssh_setup_ip_wait

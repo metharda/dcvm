@@ -150,9 +150,6 @@ delete_single_vm() {
   [ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
   if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
     cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"
-    if [ -n "$MAC_ADDRESS" ] && [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
-      bash "$SCRIPT_DIR/../network/dhcp.sh" clear "$MAC_ADDRESS" >/dev/null 2>&1 || true
-    fi
   fi
 
   [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file" && print_info "Removed from port mappings"
@@ -203,12 +200,7 @@ delete_single_vm() {
     print_success "✓ No DHCP leases found"
   else
     print_warning "✗ DHCP leases still exist"
-    if [ -f "$SCRIPT_DIR/../network/dhcp.sh" ]; then
-      bash "$SCRIPT_DIR/../network/dhcp.sh" clear "$VM_NAME"
-      sleep 1
-      dhcp_check=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
-      [ -z "$dhcp_check" ] && print_success "✓ DHCP leases cleared" || print_warning "⚠ DHCP leases may persist; try: dcvm network dhcp cleanup"
-    fi
+    print_info "They expire on their own; to remove stale leases now: dcvm network dhcp cleanup (restarts $NETWORK_NAME if it removes any)"
   fi
 
   [ -n "$VM_DISK_PATH" ] && { [ ! -f "$VM_DISK_PATH" ] && print_success "✓ Disk file removed" || print_warning "✗ Disk file still exists"; }
