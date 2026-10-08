@@ -385,15 +385,18 @@ check_port_connectivity() {
   timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null
 }
 
-# Check a host-port forward: the DNAT rule dcvm adds must exist and the VM
-# must answer on the target port. Probing 127.0.0.1:<host_port> from the host
-# is not enough: locally generated packets skip PREROUTING, so that probe
+# Check a host-port forward: the DNAT and FORWARD rules setup_vm_forwarding
+# adds must both exist, and the VM must answer on the target port. Probing
+# 127.0.0.1:<host_port> from the host is not enough: locally generated packets
+# skip PREROUTING, so that probe
 # fails even when forwarding works for other machines.
 check_port_forward() {
   local host_port="$1"
   local vm_ip="$2"
   local vm_port="$3"
+  # Same two rules setup_vm_forwarding inserts: the DNAT and the FORWARD accept.
   iptables -t nat -C PREROUTING -p tcp --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
+  iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -j ACCEPT 2>/dev/null || return 1
   check_port_connectivity "$vm_ip" "$vm_port"
 }
 
