@@ -190,7 +190,8 @@ For detailed usage, see [Usage Guide](docs/usage.md).
 ## Project Structure
 
 ```
-dcvm/                     # CLI entry point (repo root)
+dcvm/                     # repository root
+├── dcvm                  # CLI entry point
 ├── lib/                  # core, installation, network, storage, utils
 ├── docs/                 # guides and architecture notes
 └── .github/workflows/    # CI
