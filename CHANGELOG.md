@@ -287,6 +287,7 @@ Later commits kept the same version string until 0.7.1.
 - IP validation checks the address is inside the configured subnet (#17).
 
 [Unreleased]: https://github.com/metharda/dcvm/compare/74c12f6...HEAD
+[0.9.4]: https://github.com/metharda/dcvm/pull/39
 [0.9.3]: https://github.com/metharda/dcvm/pull/35
 [0.9.2]: https://github.com/metharda/dcvm/pull/34
 [0.9.1]: https://github.com/metharda/dcvm/pull/32
