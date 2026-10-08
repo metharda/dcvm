@@ -39,6 +39,9 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 - Port connectivity checks (`network ports test`, `network show`, `dcvm ports`)
   check the DNAT rule and the VM port instead of probing `127.0.0.1`, which
   reported working forwards as failed (refs #31).
+- `root` is accepted as a VM username: cloud-init configures the existing root
+  account (password, SSH key, `/root`, root SSH login) instead of creating a
+  user, and `dcvm create` warns that root login is being configured (#29).
 
 ## [0.9.2] - 2026-10-06
 

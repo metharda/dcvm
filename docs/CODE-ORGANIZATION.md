@@ -22,7 +22,7 @@
 - validate_vm_name() - Validate VM name format (3-64 chars: letters, numbers, _ and -)
 - validate_vm_name_list() - Trim and validate each name in a comma-separated VM name list; fails on the first invalid or if no names (exported)
 - trim_whitespace() - Strip leading/trailing whitespace in pure bash, keeping quotes and backslashes intact (exported)
-- validate_username() - Validate username (3-32 chars, starts with letter)
+- validate_username() - Validate username (3-32 chars, starts with a letter or underscore; rejects admin, administrator, sysadmin, user, guest; root is allowed)
 - validate_password() - Validate password (4-128 chars)
 - validate_ip_in_subnet() - Validate IP address is within configured subnet
 
