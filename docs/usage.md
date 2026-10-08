@@ -51,7 +51,7 @@ dcvm create myvm \
 ```
 
 **Options:**
-- `-u, --username`: VM username (default: depends on OS, e.g., 'ubuntu', 'debian'). 3-32 characters, starting with a letter or `_`; `admin`, `administrator`, `sysadmin`, `user` and `guest` are reserved. `root` configures root login (root access on, one password from `-p`, SSH key in `/root/.ssh`)
+- `-u, --username`: VM username (default: depends on OS, e.g., 'ubuntu', 'debian'). 3-32 characters, starting with a letter or `_`; `admin`, `administrator`, `sysadmin`, `user` and `guest` are reserved. `root` configures root login (root access on, one password from `-p`, SSH key in `/root/.ssh`; `-r` must be omitted or equal `-p`)
 - `-p, --password`: User password (required in force mode)
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)

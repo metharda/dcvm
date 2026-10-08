@@ -49,7 +49,7 @@ dcvm backup restore <vm>
 dcvm restore <vm>
 ```
 
-Restore a specific backup (`backup_date` is a raw `YYYYMMDD_HHMMSS` timestamp, the same day selector as export/delete, `dd.mm.yyyy[-N]`, or `latest`):
+Restore a specific backup (`backup_date` is a raw `YYYYMMDD_HHMMSS` timestamp, the export day selector `dd.mm.yyyy[-N]` (without the `<vm>-` prefix shown by `backup list`), or `latest`):
 ```bash
 dcvm backup restore <vm> <backup_date>
 ```
@@ -69,7 +69,7 @@ If `<new_vm_name>` already exists, restore asks you to type `yes` and then repla
 
 When `virt-customize` (libguestfs-tools) is installed, the copy's disk is changed offline before the VM is defined: the hostname and its `/etc/hosts` entries are set to the new name, `/etc/machine-id` is emptied so systemd generates a new one, and new SSH host keys are generated on first boot. Without `virt-customize`, restore warns and the copy keeps the source's hostname, machine-id and host keys.
 
-If the source VM has a static IP (`$DATACENTER_BASE/config/network/<vm>.conf`), that address is set inside the guest, so the copy keeps it: restore warns, and does not start the copy or set it to autostart. Change the IP inside the guest before starting it. The same applies to `dcvm backup import <package> <new_vm_name>`, which also skips the SSH key setup prompt in that case.
+If the source VM has a static IP recorded on this host (`$DATACENTER_BASE/config/network/<source_vm>.conf`, written by `dcvm create --ip`), that address is set inside the guest, so the copy keeps it: restore warns, and does not start the copy or set it to autostart. Change the IP inside the guest before starting it. The same applies to `dcvm backup import <package> <new_vm_name>` when that record exists on the importing host (for example, export and import on the same host); it also skips the SSH key setup prompt then. Export packages do not include the record, so a static-IP VM imported on another host is started normally and keeps its old IP.
 
 ## Where backups are stored
 - Default path: `$DATACENTER_BASE/backups`

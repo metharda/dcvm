@@ -23,8 +23,9 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 - A copy restored or imported under a new name gets a new machine-id and new
   SSH host keys (regenerated on first boot) along with the new hostname when
   `virt-customize` is available, and the source VM's NVRAM path is dropped
-  from its XML. If the source VM has a static IP, the copy is not started or
-  set to autostart, and a warning says it keeps that IP.
+  from its XML. If the source VM has a static IP recorded on this host, the
+  copy is not started or set to autostart, and a warning says it keeps that
+  IP.
 
 ### Changed
 
@@ -32,6 +33,11 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
   `validate_vm_name_list` and states the real `validate_vm_name` rule.
 - README project tree shows `dcvm` as the CLI entry point inside the
   repository root.
+- `root` is now accepted as a VM username (0.9.1 reserved it): cloud-init
+  configures the existing root account (password, SSH key, `/root`, root SSH
+  login) instead of creating a user, and `dcvm create` warns that root login
+  is being configured. With `-k mysql-server`, the MySQL `CREATE USER` and
+  `GRANT` steps are skipped for root (#29).
 
 ### Fixed
 
@@ -52,12 +58,16 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
   check the DNAT and FORWARD rules that `dcvm network ports setup` adds and
   the VM port, instead of probing `127.0.0.1`, which reported working forwards
   as failed (refs #31).
-- `root` is accepted as a VM username: cloud-init configures the existing root
-  account (password, SSH key, `/root`, root SSH login) instead of creating a
-  user, and `dcvm create` warns that root login is being configured (#29).
 - `dcvm network dhcp cleanup` runs the stale-lease cleanup (same as
   `dhcp clear --stale`). After #26 it printed "Unknown command" even though
   help advertised it.
+- Top-level `dcvm help`, shell completion and internal callers use the current
+  `dhcp` subcommands (`clear`, `clear --all`) instead of `clear-all`,
+  `clear-vm` and `clear-mac`, which #26 removed.
+- `dcvm delete` clears only the deleted VM's lease and never restarts the
+  network. If a lease is still listed afterwards, it prints "They expire on
+  their own; to remove stale leases now: dcvm network dhcp cleanup (restarts
+  <network> if it removes any)".
 
 ## [0.9.2] - 2026-10-06
 
