@@ -64,10 +64,11 @@ Bug fixes for VM creation, backup restore/import, DHCP and port checks.
 - Top-level `dcvm help`, shell completion and internal callers use the current
   `dhcp` subcommands (`clear`, `clear --all`) instead of `clear-all`,
   `clear-vm` and `clear-mac`, which #26 removed.
-- `dcvm delete` clears only the deleted VM's lease and never restarts the
-  network. If a lease is still listed afterwards, it prints "They expire on
-  their own; to remove stale leases now: dcvm network dhcp cleanup (restarts
-  <network> if it removes any)".
+- `dcvm delete` no longer restarts the network: it removes the VM's lease
+  entries from dnsmasq's lease and status files and reloads dnsmasq. If a
+  lease is still listed afterwards, it prints "They expire on their own; to
+  remove stale leases now: dcvm network dhcp cleanup (restarts <network> if
+  it removes any)".
 
 ## [0.9.2] - 2026-10-06
 
