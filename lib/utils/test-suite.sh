@@ -1121,6 +1121,8 @@ test_common_functions() {
   run_test_expect_fail "validate_package_list (shell chars)" "validate_package_list 'nginx;reboot'"
   run_test_expect_fail "validate_package_list (space inside)" "validate_package_list 'nginx,my pkg'"
   run_test_expect_fail "validate_package_list (leading dash)" "validate_package_list '-y'"
+  run_test_expect_fail "validate_package_list (newline)" "validate_package_list \$'curl\\nnginx'"
+  run_test_expect_fail "validate_package_list (carriage return)" "validate_package_list \$'curl\\rnginx'"
   run_test "validate_username (valid)" "validate_username 'testuser'"
   run_test "validate_username (with number)" "validate_username 'user123'"
   run_test "validate_username (with underscore)" "validate_username 'test_user'"

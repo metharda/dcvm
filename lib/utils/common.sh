@@ -121,6 +121,10 @@ trim_whitespace() {
 validate_package_list() {
   local list="$1" pkg
   local -a pkgs=()
+  if [[ "$list" == *$'\n'* || "$list" == *$'\r'* ]]; then
+    print_error "Invalid package list: newlines and carriage returns are not allowed (separate packages with commas)"
+    return 1
+  fi
   IFS=',' read -ra pkgs <<<"$list"
   for pkg in "${pkgs[@]}"; do
     pkg=$(trim_whitespace "$pkg")
