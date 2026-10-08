@@ -986,8 +986,42 @@ compress_backup() {
   fi
 }
 
+# Set the guest hostname inside an offline disk image (used when a backup is
+# restored or imported under a different VM name). $3 = old hostname, which is
+# replaced in /etc/hosts.
+set_guest_hostname() {
+  local disk_path="$1"
+  local new_name="$2"
+  local old_name="$3"
+
+  if ! validate_vm_name "$new_name" >/dev/null 2>&1; then
+    print_warning "Not setting guest hostname: invalid name '$new_name'"
+    return 1
+  fi
+  if ! command -v virt-customize >/dev/null 2>&1; then
+    print_warning "virt-customize not found (install libguestfs-tools); guest hostname is unchanged"
+    print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
+    return 1
+  fi
+
+  local -a args=(-q -a "$disk_path" --hostname "$new_name")
+  if [ -n "$old_name" ] && validate_vm_name "$old_name" >/dev/null 2>&1; then
+    args+=(--run-command "if [ -f /etc/hosts ]; then sed -i -E 's/([[:space:]])${old_name}([.[:space:]]|\$)/\1${new_name}\2/g' /etc/hosts; fi")
+  fi
+
+  print_info "Setting guest hostname to '$new_name'..."
+  if virt-customize "${args[@]}" >/dev/null 2>&1; then
+    print_success "Guest hostname set to '$new_name'"
+    return 0
+  fi
+  print_warning "Could not set guest hostname; inside the VM run: sudo hostnamectl set-hostname $new_name"
+  return 1
+}
+
 restore_vm() {
-  local vm_name="$1"
+  # $1 = VM whose backup is restored; $5 (optional) = name of the restored VM.
+  local source_name="$1"
+  local vm_name="${5:-$1}"
   local backup_date="$2"
   local opt_third="$3"
   local opt_fourth="$4"
@@ -999,14 +1033,23 @@ restore_vm() {
   local skip_auto_start=false
   local start_error=""
 
-  print_info "Starting restore for VM: $vm_name"
-  log "INFO" "Starting restore for VM: $vm_name"
+  if [ "$vm_name" != "$source_name" ] && ! validate_vm_name "$vm_name"; then
+    return 1
+  fi
+
+  if [ "$vm_name" != "$source_name" ]; then
+    print_info "Starting restore of '$source_name' backup as new VM: $vm_name"
+    log "INFO" "Starting restore of $source_name backup as VM: $vm_name"
+  else
+    print_info "Starting restore for VM: $vm_name"
+    log "INFO" "Starting restore for VM: $vm_name"
+  fi
 
   if [ -z "$backup_date" ]; then
-    backup_date=$(get_latest_backup "$vm_name")
+    backup_date=$(get_latest_backup "$source_name")
     if [ -z "$backup_date" ]; then
-      print_error "No backups found for VM: $vm_name"
-      log "ERROR" "No backups found for VM: $vm_name"
+      print_error "No backups found for VM: $source_name"
+      log "ERROR" "No backups found for VM: $source_name"
       return 1
     fi
     print_info "Using latest backup: $backup_date"
@@ -1014,13 +1057,13 @@ restore_vm() {
 
   local disk_backup=""
   local config_backup=""
-  disk_backup=$(get_backup_disk_path "$vm_name" "$backup_date")
-  config_backup=$(get_backup_config_path "$vm_name" "$backup_date")
+  disk_backup=$(get_backup_disk_path "$source_name" "$backup_date")
+  config_backup=$(get_backup_config_path "$source_name" "$backup_date")
   local is_compressed=false
   if [ -z "$disk_backup" ] || [ -z "$config_backup" ]; then
     print_error "Backup not found for date: $backup_date"
     print_info "Available backups:"
-    list_backups "$vm_name"
+    list_backups "$source_name"
     return 1
   fi
   [[ "$disk_backup" == *.gz ]] && is_compressed=true
@@ -1149,6 +1192,12 @@ restore_vm() {
   fi
 
   print_success "File permissions and ownership set"
+
+  local backup_vm_name
+  backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
+  if [ -n "$backup_vm_name" ] && [ "$backup_vm_name" != "$vm_name" ]; then
+    set_guest_hostname "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
+  fi
 
   print_info "Restoring VM configuration..."
 
@@ -1472,6 +1521,7 @@ ssh_setup_vm() {
   local ssh_wait_total=120
   local ssh_wait_interval=5
   local ssh_waited=0
+  local ip_wait_total=120
 
   if [ -z "$vm_name" ]; then
     print_error "VM name required for 'ssh-setup'"
@@ -1506,10 +1556,11 @@ ssh_setup_vm() {
   fi
 
   local vm_ip
-  vm_ip=$(get_vm_ip "$vm_name" 2>/dev/null)
-  if [ -z "$vm_ip" ]; then
+  print_info "Waiting for VM IP address (timeout ${ip_wait_total}s)..."
+  vm_ip=$(get_vm_ip "$vm_name" "$((ip_wait_total / 2))" 2>/dev/null)
+  if [ -z "$vm_ip" ] || [ "$vm_ip" = "N/A" ]; then
     print_error "Could not determine VM IP address"
-    print_info "Try waiting longer for VM to boot and get DHCP lease"
+    print_info "Try waiting longer for VM to boot and get DHCP lease, then run: dcvm backup ssh-setup $vm_name"
     return 1
   fi
 
@@ -1637,7 +1688,7 @@ Usage: dcvm backup <subcommand> [options]
 
 SUBCOMMANDS:
   create <vm_name>                                  Create a new backup of VM
-  restore <vm_name> [backup_date]                   Restore VM from backup
+  restore <vm_name> [backup_date] [new_vm_name]     Restore VM from backup (optionally as a new VM)
   list [vm_name]                                    List all or specific VM backups
   delete <selector>                                 Delete backups (see selectors below)
   export <vm_name> [backup_date] [output_dir]       Export backup as portable package
@@ -1665,6 +1716,7 @@ EXAMPLES:
   # Restore backups
   dcvm backup restore datacenter-vm1                     # Restore from latest
   dcvm backup restore datacenter-vm1 20250722_143052     # Restore from specific backup
+  dcvm backup restore datacenter-vm1 20250722_143052 vm1-copy  # Restore as a new VM named vm1-copy
 
   # List backups
   dcvm backup list                                       # List all backups
@@ -1743,7 +1795,7 @@ main() {
       print_error "VM name required for 'restore'"
       exit 1
     fi
-    restore_vm "$VM_NAME" "$BACKUP_DATE"
+    restore_vm "$VM_NAME" "$BACKUP_DATE" "" "" "$4"
     exit $?
     ;;
   "list")

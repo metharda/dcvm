@@ -577,6 +577,141 @@ test_dhcp_cleanup_dispatch() {
   run_test_expect_fail "dhcp.sh unknown subcommand" "(source '$dhcp_sh'; $stubs; main no-such-subcommand)"
 }
 
+# Source backup.sh without /etc/dcvm-install.conf: its top level calls
+# load_dcvm_config, so replace that right after each sourced file loads.
+load_backup_sh_for_test() {
+  local base="$1"
+  local backup_sh="$SCRIPT_DIR/../storage/backup.sh"
+  source() {
+    builtin source "$@" || return
+    load_dcvm_config() {
+      DATACENTER_BASE="$base"
+      NETWORK_NAME=datacenter-net
+      NETWORK_SUBNET=10.10.10
+      BRIDGE_NAME=virbr-dc
+    }
+  }
+  builtin source "$backup_sh" 2>/dev/null
+  unset -f source
+  LOG_FILE=/dev/null
+}
+
+# Stub virsh/qemu-img/virt-customize/sleep for backup.sh tests ($1 = state dir).
+stub_backup_tools() {
+  local t="$1"
+  virsh() {
+    echo "virsh $*" >>"$t/calls"
+    case "$1" in
+    list) cat "$t/list" 2>/dev/null ;;
+    define)
+      cp "$2" "$t/defined.xml"
+      printf ' -    %s    shut off\n' "$(sed -n 's|.*<name>\(.*\)</name>.*|\1|p' "$2" | head -1)" >>"$t/list"
+      ;;
+    domstate) echo running ;;
+    esac
+    return 0
+  }
+  qemu-img() { :; }
+  virt-customize() { echo "virt-customize $*" >>"$t/calls"; }
+  sleep() { :; }
+}
+
+test_backup_restore_new_name() {
+  local t ts=20260101_120000
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  cat >"$t/backups/vm1-$ts/vm1-config-$ts.xml" <<EOF
+<domain type='kvm'>
+  <name>vm1</name>
+  <devices>
+    <disk type='file' device='disk'>
+      <source file='$t/vms/vm1/vm1-disk.qcow2'/>
+    </disk>
+    <interface type='network'>
+      <mac address='52:54:00:11:22:33'/>
+    </interface>
+  </devices>
+</domain>
+EOF
+  echo original >"$t/vms/vm1/vm1-disk.qcow2"
+  printf ' 1    vm1    running\n' >"$t/list"
+
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 "$ts" "" "" vm1-copy </dev/null >"$t/out" 2>&1
+    echo "rc=$?" >>"$t/out"
+  )
+
+  if grep -q '^rc=0$' "$t/out" && grep -q '<name>vm1-copy</name>' "$t/defined.xml" 2>/dev/null &&
+    grep -q "$t/vms/vm1-copy/vm1-copy-disk.qcow2" "$t/defined.xml" &&
+    [ "$(cat "$t/vms/vm1-copy/vm1-copy-disk.qcow2" 2>/dev/null)" = "backup-disk" ]; then
+    log_test "PASS" "backup restore <vm> <date> <new_name> (defines new VM)"
+  else
+    log_test "FAIL" "backup restore <vm> <date> <new_name> (defines new VM)" "$(tail -1 "$t/out")"
+  fi
+
+  if [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = "original" ] && ! grep -qE 'virsh (shutdown|destroy|undefine) vm1$' "$t/calls"; then
+    log_test "PASS" "backup restore <new_name> (source VM untouched)"
+  else
+    log_test "FAIL" "backup restore <new_name> (source VM untouched)"
+  fi
+
+  if grep -q 'virt-customize .*--hostname vm1-copy' "$t/calls"; then
+    log_test "PASS" "backup restore <new_name> (sets guest hostname)"
+  else
+    log_test "FAIL" "backup restore <new_name> (sets guest hostname)"
+  fi
+
+  : >"$t/calls"
+  if (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 "$ts" "" "" "bad'name" </dev/null >/dev/null 2>&1
+  ); then
+    log_test "FAIL" "backup restore <new_name> (invalid name rejected)" "Expected failure but got success"
+  elif [ ! -s "$t/calls" ]; then
+    log_test "PASS" "backup restore <new_name> (invalid name rejected)"
+  else
+    log_test "FAIL" "backup restore <new_name> (invalid name rejected)" "virsh was called"
+  fi
+
+  rm -rf "$t"
+}
+
+test_backup_ssh_setup_ip_wait() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    load_backup_sh_for_test "$t"
+    HOME="$t"
+    sleep() { :; }
+    ssh-copy-id() { return 1; }
+    check_vm_exists() { return 0; }
+    get_vm_state() { echo running; }
+    get_vm_ip() {
+      echo "$2" >"$t/attempts"
+      echo "N/A"
+      return 1
+    }
+    ssh_setup_vm vm1-copy <<<"debian" 2>&1
+    echo "rc=$?"
+  )
+  if echo "$out" | grep -q '^rc=1$' && echo "$out" | grep -q 'Could not determine VM IP' &&
+    ! echo "$out" | grep -q 'Waiting for SSH on N/A'; then
+    log_test "PASS" "ssh_setup_vm (N/A is treated as no IP)"
+  else
+    log_test "FAIL" "ssh_setup_vm (N/A is treated as no IP)"
+  fi
+  if [ "$(cat "$t/attempts" 2>/dev/null)" -gt 1 ] 2>/dev/null; then
+    log_test "PASS" "ssh_setup_vm (polls get_vm_ip: $(cat "$t/attempts") attempts)"
+  else
+    log_test "FAIL" "ssh_setup_vm (polls get_vm_ip)" "attempts=$(cat "$t/attempts" 2>/dev/null)"
+  fi
+  rm -rf "$t"
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -643,6 +778,8 @@ test_common_functions() {
   fi
 
   test_dhcp_cleanup_dispatch
+  test_backup_restore_new_name
+  test_backup_ssh_setup_ip_wait
 }
 
 test_cli_help() {

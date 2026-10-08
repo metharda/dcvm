@@ -54,6 +54,11 @@ Restore a specific timestamp:
 dcvm backup restore <vm> <timestamp>
 ```
 
+Restore as a new VM (the original VM is left as is; the guest hostname is set to the new name when `virt-customize` is available):
+```bash
+dcvm backup restore <vm> <timestamp> <new_vm_name>
+```
+
 ## Where backups are stored
 - Default path: `$DATACENTER_BASE/backups`
 - File naming: `<vm>-<YYYYMMDD>_<HHMMSS>` and `<vm>-disk-<YYYYMMDD>_<HHMMSS>.qcow2(.gz)`
