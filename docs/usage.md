@@ -260,7 +260,7 @@ dcvm backup restore myvm <backup_date> myvm-copy
 dcvm backup restore myvm latest myvm-copy
 ```
 
-Restores a backup as a new VM named `myvm-copy` and leaves `myvm` as is. `backup_date` is `YYYYMMDD_HHMMSS`, `dd.mm.yyyy[-N]`, `latest` or `''`. See [backups.md](backups.md#restore) for what changes in the copy.
+Restores a backup as a new VM named `myvm-copy` and leaves `myvm` as is. `backup_date` is `YYYYMMDD_HHMMSS`, `dd.mm.yyyy[-N]`, the `<vm>-dd.mm.yyyy[-N]` ID from `backup list`, `latest` or `''`. See [backups.md](backups.md#restore) for what changes in the copy.
 
 ### View Storage Information
 

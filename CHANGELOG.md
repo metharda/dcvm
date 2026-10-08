@@ -10,6 +10,15 @@ from git history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-08
+
+Post-merge documentation follow-up to 0.9.3.
+
+### Changed
+
+- `docs/usage.md` lists the `<vm>-dd.mm.yyyy[-N]` backup ID from `backup list`
+  as a restore date.
+
 ## [0.9.3] - 2026-10-08
 
 Bug fixes for VM creation, backup restore/import, DHCP and port checks.
@@ -277,7 +286,7 @@ Later commits kept the same version string until 0.7.1.
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/95a4b6a...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/74c12f6...HEAD
 [0.9.3]: https://github.com/metharda/dcvm/pull/35
 [0.9.2]: https://github.com/metharda/dcvm/pull/34
 [0.9.1]: https://github.com/metharda/dcvm/pull/32
