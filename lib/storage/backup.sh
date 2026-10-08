@@ -761,6 +761,9 @@ import_backup() {
     print_error "Package path required for 'import'"
     return 1
   fi
+  if [ -n "$rename_to" ]; then
+    validate_vm_name "$rename_to" || return 1
+  fi
   pkg_path="${pkg_path/#\~/$HOME}"
 
   if [ ! -f "$pkg_path" ] && [ ! -d "$pkg_path" ]; then
@@ -986,35 +989,52 @@ compress_backup() {
   fi
 }
 
-# Set the guest hostname inside an offline disk image (used when a backup is
-# restored or imported under a different VM name). $3 = old hostname, which is
-# replaced in /etc/hosts.
-set_guest_hostname() {
+# Offline guest changes for a backup restored or imported under a different VM
+# name (see customize_restored_guest).
+hosts_rename_sed_expr() {
+  # sed -E expression that renames host name $1 to $2 in /etc/hosts. Callers
+  # apply it twice: one pass cannot rename adjacent matches ("vm1 vm1") that
+  # share a separator.
+  printf 's/([[:space:]])%s([.[:space:]]|$)/\\1%s\\2/g' "$1" "$2"
+}
+
+customize_restored_guest() {
+  # Offline changes on a disk restored under a new name, in one virt-customize
+  # run: hostname, /etc/hosts, a fresh machine-id and new SSH host keys.
   local disk_path="$1"
   local new_name="$2"
   local old_name="$3"
 
   if ! validate_vm_name "$new_name" >/dev/null 2>&1; then
-    print_warning "Not setting guest hostname: invalid name '$new_name'"
+    print_warning "Not customizing guest: invalid name '$new_name'"
     return 1
   fi
   if ! command -v virt-customize >/dev/null 2>&1; then
-    print_warning "virt-customize not found (install libguestfs-tools); guest hostname is unchanged"
+    print_warning "virt-customize not found (install libguestfs-tools); the copy keeps the hostname, machine-id and SSH host keys of '$old_name'"
     print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
+    print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
     return 1
   fi
 
   local -a args=(-q -a "$disk_path" --hostname "$new_name")
   if [ -n "$old_name" ] && validate_vm_name "$old_name" >/dev/null 2>&1; then
-    args+=(--run-command "if [ -f /etc/hosts ]; then sed -i -E 's/([[:space:]])${old_name}([.[:space:]]|\$)/\1${new_name}\2/g' /etc/hosts; fi")
+    local hosts_expr
+    hosts_expr=$(hosts_rename_sed_expr "$old_name" "$new_name")
+    args+=(--run-command "if [ -f /etc/hosts ]; then sed -i -E -e '$hosts_expr' -e '$hosts_expr' /etc/hosts; fi")
   fi
+  # An empty /etc/machine-id makes systemd generate a new one on the next boot
+  # (what virt-sysprep does). The D-Bus copy is removed unless it is a symlink.
+  args+=(--run-command 'truncate -s 0 /etc/machine-id; [ -L /var/lib/dbus/machine-id ] || rm -f /var/lib/dbus/machine-id')
+  # New SSH host keys are generated on the first boot, before sshd is reloaded.
+  args+=(--firstboot-command 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true')
 
-  print_info "Setting guest hostname to '$new_name'..."
+  print_info "Customizing guest: hostname '$new_name', new machine-id, new SSH host keys on first boot..."
   if virt-customize "${args[@]}" >/dev/null 2>&1; then
-    print_success "Guest hostname set to '$new_name'"
+    print_success "Guest hostname set to '$new_name'; machine-id and SSH host keys will be regenerated on first boot"
     return 0
   fi
-  print_warning "Could not set guest hostname; inside the VM run: sudo hostnamectl set-hostname $new_name"
+  print_warning "Could not customize guest; inside the VM run: sudo hostnamectl set-hostname $new_name"
+  print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
   return 1
 }
 
@@ -1045,11 +1065,13 @@ restore_vm() {
     log "INFO" "Starting restore for VM: $vm_name"
   fi
 
+  [ "$backup_date" = "latest" ] && backup_date=""
+
   if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
     local _resolved
     _resolved=$(resolve_backup_selector "$source_name" "$backup_date")
     if [ -z "$_resolved" ]; then
-      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS or dd.mm.yyyy[-N])"
+      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS, dd.mm.yyyy[-N] or latest)"
       return 1
     fi
     backup_date="$_resolved"
@@ -1203,10 +1225,17 @@ restore_vm() {
 
   print_success "File permissions and ownership set"
 
-  local backup_vm_name
+  local backup_vm_name renamed=false static_ip_copy=""
   backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
   if [ -n "$backup_vm_name" ] && [ "$backup_vm_name" != "$vm_name" ]; then
-    set_guest_hostname "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
+    renamed=true
+    local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
+    if [ -f "$source_net_conf" ]; then
+      static_ip_copy=$(grep '^IP=' "$source_net_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+      [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
+      print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
+      print_info "'$vm_name' will not be started or set to autostart"
+    fi
   fi
 
   print_info "Restoring VM configuration..."
@@ -1310,7 +1339,20 @@ restore_vm() {
     print_info "Randomized MAC addresses (sed fallback)"
   fi
 
+  if [ "$renamed" = true ]; then
+    # The NVRAM file belongs to the source VM; libvirt creates a new one.
+    if command -v xmlstarlet >/dev/null 2>&1; then
+      xmlstarlet ed -P -L -d "/domain/os/nvram" "$temp_config" 2>/dev/null || true
+    else
+      sed -i -e '/<nvram[^>]*\/>/d' -e '/<nvram[^>]*>.*<\/nvram>/d' "$temp_config" 2>/dev/null || true
+    fi
+  fi
+
   ensure_backing_image "$vm_disk_path" || true
+
+  if [ "$renamed" = true ]; then
+    customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
+  fi
 
   local define_output attempt=1 max_attempts=3
   while [ $attempt -le $max_attempts ]; do
@@ -1367,7 +1409,9 @@ restore_vm() {
 
   rm -f "$temp_config"
 
-  if virsh autostart "$vm_name" >/dev/null 2>&1; then
+  if [ -n "$static_ip_copy" ]; then
+    print_warning "Autostart not enabled: '$vm_name' keeps static IP $static_ip_copy from '$backup_vm_name'"
+  elif virsh autostart "$vm_name" >/dev/null 2>&1; then
     print_success "VM autostart enabled"
   else
     print_warning "Failed to enable VM autostart (VM may still work)"
@@ -1402,13 +1446,17 @@ restore_vm() {
     start_error="Disk referenced by other VM(s): $(echo "$conflicting_vms" | tr '\n' ' ')"
   fi
 
-  print_info "Attempting to start VM..."
   local start_attempts=0
   local max_attempts=2
 
-  if [ "$skip_auto_start" = true ]; then
+  if [ -n "$static_ip_copy" ] && [ "$skip_auto_start" = false ]; then
+    skip_auto_start=true
+    final_state="shut off (static IP $static_ip_copy copied from $backup_vm_name)"
+    print_warning "Not starting '$vm_name': change the static IP $static_ip_copy inside the guest first (it belongs to '$backup_vm_name')"
+  elif [ "$skip_auto_start" = true ]; then
     print_warning "Skipping auto-start due to conflicting VM references"
   else
+    print_info "Attempting to start VM..."
     while [ $start_attempts -lt $max_attempts ]; do
       local attempt=$((start_attempts + 1))
       print_info "Start attempt ${attempt}/$max_attempts"
@@ -1460,7 +1508,7 @@ restore_vm() {
         need_manual_help=true
         final_state="shut off (manual start needed)"
       fi
-    else
+    elif [ -z "$static_ip_copy" ] || [ -n "$conflicting_vms" ]; then
       need_manual_help=true
     fi
   fi
@@ -1489,7 +1537,9 @@ restore_vm() {
     print_info "Last error was: $start_error"
   fi
 
-  if [ "$from_import" = "true" ]; then
+  if [ "$from_import" = "true" ] && [ -n "$static_ip_copy" ]; then
+    print_info "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
+  elif [ "$from_import" = "true" ]; then
     read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh
     setup_ssh=${setup_ssh:-y}
     if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
@@ -1565,10 +1615,19 @@ ssh_setup_vm() {
     sleep 30
   fi
 
-  local vm_ip
-  print_info "Waiting for VM IP address (timeout ${ip_wait_total}s)..."
-  vm_ip=$(get_vm_ip "$vm_name" "$((ip_wait_total / 2))" 2>/dev/null)
-  if [ -z "$vm_ip" ] || [ "$vm_ip" = "N/A" ]; then
+  local vm_ip=""
+  local ip_deadline=$((SECONDS + ip_wait_total))
+  print_info "Waiting up to ${ip_wait_total}s for the VM IP address (checked every 2s)..."
+  while :; do
+    vm_ip=$(get_vm_ip "$vm_name" 1 2>/dev/null)
+    if [ -n "$vm_ip" ] && [ "$vm_ip" != "N/A" ]; then
+      break
+    fi
+    vm_ip=""
+    [ "$SECONDS" -ge "$ip_deadline" ] && break
+    sleep 2
+  done
+  if [ -z "$vm_ip" ]; then
     print_error "Could not determine VM IP address"
     print_info "Try waiting longer for VM to boot and get DHCP lease, then run: dcvm backup ssh-setup $vm_name"
     return 1
@@ -1706,6 +1765,9 @@ SUBCOMMANDS:
   ssh-setup <vm_name>                               Configure SSH keys on imported VM
   troubleshoot <vm_name>                            Diagnose and fix VM startup issues
 
+RESTORE DATES:
+  backup_date is YYYYMMDD_HHMMSS, dd.mm.yyyy[-N], latest or '' (latest)
+
 DELETE SELECTORS:
   <vm_name>                      Interactive numbered selection
   <vm_name-dd.mm.yyyy>          Latest backup of specific day
@@ -1727,6 +1789,7 @@ EXAMPLES:
   dcvm backup restore datacenter-vm1                     # Restore from latest
   dcvm backup restore datacenter-vm1 20250722_143052     # Restore from specific backup
   dcvm backup restore datacenter-vm1 20250722_143052 vm1-copy  # Restore as a new VM named vm1-copy
+  dcvm backup restore datacenter-vm1 latest vm1-copy     # Latest backup as a new VM
 
   # List backups
   dcvm backup list                                       # List all backups

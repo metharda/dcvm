@@ -587,8 +587,10 @@ test_dhcp_cleanup_dispatch() {
 load_backup_sh_for_test() {
   local base="$1"
   local backup_sh="$SCRIPT_DIR/../storage/backup.sh"
+  # shellcheck disable=SC2317 # stub: overrides builtin source while backup.sh loads
   source() {
     builtin source "$@" || return
+    # shellcheck disable=SC2317
     load_dcvm_config() {
       DATACENTER_BASE="$base"
       NETWORK_NAME=datacenter-net
@@ -596,14 +598,17 @@ load_backup_sh_for_test() {
       BRIDGE_NAME=virbr-dc
     }
   }
+  # shellcheck source=../storage/backup.sh
   builtin source "$backup_sh" 2>/dev/null
   unset -f source
+  # shellcheck disable=SC2034 # used by log() inside backup.sh
   LOG_FILE=/dev/null
 }
 
 # Stub virsh/qemu-img/virt-customize/sleep for backup.sh tests ($1 = state dir).
 stub_backup_tools() {
   local t="$1"
+  # shellcheck disable=SC2317 # stub: invoked via PATH/function override from restore_vm
   virsh() {
     echo "virsh $*" >>"$t/calls"
     case "$1" in
@@ -616,9 +621,39 @@ stub_backup_tools() {
     esac
     return 0
   }
+  # shellcheck disable=SC2317
   qemu-img() { :; }
+  # shellcheck disable=SC2317
   virt-customize() { echo "virt-customize $*" >>"$t/calls"; }
+  # shellcheck disable=SC2317
   sleep() { :; }
+}
+
+test_hosts_rename_sed_expr() {
+  local t out
+  t=$(mktemp -d)
+  printf '127.0.1.1\tvm1 vm1\n127.0.1.1 vm1 vm1.local\n' >"$t/hosts"
+  # Runs the exact expression backup.sh passes to virt-customize, locally.
+  out=$(
+    load_backup_sh_for_test "$t"
+    expr=$(hosts_rename_sed_expr vm1 vm1-copy)
+    echo "--once"
+    sed -E -e "$expr" "$t/hosts"
+    echo "--twice"
+    sed -E -e "$expr" -e "$expr" "$t/hosts"
+  )
+  if echo "$out" | sed -n '/^--once/,/^--twice/p' | grep -q $'^127.0.1.1\tvm1-copy vm1$'; then
+    log_test "PASS" "hosts_rename_sed_expr (one pass misses the adjacent duplicate)"
+  else
+    log_test "FAIL" "hosts_rename_sed_expr (one pass misses the adjacent duplicate)" "$out"
+  fi
+  if echo "$out" | sed -n '/^--twice/,$p' | grep -q $'^127.0.1.1\tvm1-copy vm1-copy$' &&
+    echo "$out" | sed -n '/^--twice/,$p' | grep -q '^127.0.1.1 vm1-copy vm1-copy.local$'; then
+    log_test "PASS" "hosts_rename_sed_expr (applied twice: 'vm1 vm1' and 'vm1 vm1.local')"
+  else
+    log_test "FAIL" "hosts_rename_sed_expr (applied twice)" "$out"
+  fi
+  rm -rf "$t"
 }
 
 test_backup_restore_new_name() {
@@ -629,6 +664,9 @@ test_backup_restore_new_name() {
   cat >"$t/backups/vm1-$ts/vm1-config-$ts.xml" <<EOF
 <domain type='kvm'>
   <name>vm1</name>
+  <os>
+    <nvram>/var/lib/libvirt/qemu/nvram/vm1_VARS.fd</nvram>
+  </os>
   <devices>
     <disk type='file' device='disk'>
       <source file='$t/vms/vm1/vm1-disk.qcow2'/>
@@ -663,10 +701,18 @@ EOF
     log_test "FAIL" "backup restore <new_name> (source VM untouched)"
   fi
 
-  if grep -q 'virt-customize .*--hostname vm1-copy' "$t/calls"; then
-    log_test "PASS" "backup restore <new_name> (sets guest hostname)"
+  if grep -q 'virt-customize .*--hostname vm1-copy' "$t/calls" &&
+    grep -q "truncate -s 0 /etc/machine-id" "$t/calls" &&
+    grep -q -- '--firstboot-command' "$t/calls"; then
+    log_test "PASS" "backup restore <new_name> (hostname + machine-id + SSH host keys)"
   else
-    log_test "FAIL" "backup restore <new_name> (sets guest hostname)"
+    log_test "FAIL" "backup restore <new_name> (hostname + machine-id + SSH host keys)" "$(grep virt-customize "$t/calls" | head -2)"
+  fi
+
+  if ! grep -qi '<nvram' "$t/defined.xml" 2>/dev/null; then
+    log_test "PASS" "backup restore <new_name> (nvram dropped from XML)"
+  else
+    log_test "FAIL" "backup restore <new_name> (nvram dropped from XML)"
   fi
 
   : >"$t/calls"
@@ -703,21 +749,102 @@ EOF
     log_test "PASS" "backup restore (unknown selector) (expected failure)"
   fi
 
+  rm -f "$t/defined.xml"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 latest "" "" vm1-latest </dev/null >/dev/null 2>&1
+  )
+  if grep -q '<name>vm1-latest</name>' "$t/defined.xml" 2>/dev/null; then
+    log_test "PASS" "backup restore (latest selector)"
+  else
+    log_test "FAIL" "backup restore (latest selector)"
+  fi
+
+  # Static-IP copy: warn and do not auto-start
+  mkdir -p "$t/config/network"
+  cat >"$t/config/network/vm1.conf" <<'NET'
+VM_NAME="vm1"
+IP="10.10.10.50"
+ASSIGNED_AT="2026-01-01T00:00:00Z"
+SOURCE="static"
+NET
+  rm -f "$t/defined.xml"
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 "$ts" "" "" vm1-static </dev/null >"$t/out-static" 2>&1
+    echo "rc=$?" >>"$t/out-static"
+  )
+  if grep -q '^rc=0$' "$t/out-static" &&
+    grep -qi 'keeps static IP 10.10.10.50 from vm1' "$t/out-static" &&
+    grep -qi "Not starting 'vm1-static'" "$t/out-static" &&
+    ! grep -qE 'virsh start vm1-static$' "$t/calls" &&
+    ! grep -qE 'virsh autostart vm1-static$' "$t/calls"; then
+    log_test "PASS" "backup restore <new_name> (static IP copy skips start/autostart)"
+  else
+    log_test "FAIL" "backup restore <new_name> (static IP copy skips start/autostart)" "$(tail -5 "$t/out-static")"
+  fi
+
+  # sed-path nvram drop (no xmlstarlet on PATH)
+  rm -f "$t/defined.xml"
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    # shellcheck disable=SC2317 # hide xmlstarlet to exercise the sed path
+    command() {
+      if [ "$1" = -v ] && [ "$2" = xmlstarlet ]; then return 1; fi
+      builtin command "$@"
+    }
+    restore_vm vm1 "$ts" "" "" vm1-sed </dev/null >/dev/null 2>&1
+  )
+  if [ -f "$t/defined.xml" ] && ! grep -qi '<nvram' "$t/defined.xml"; then
+    log_test "PASS" "backup restore <new_name> (nvram dropped via sed)"
+  else
+    log_test "FAIL" "backup restore <new_name> (nvram dropped via sed)"
+  fi
+
+  # import rename_to validation
+  mkdir -p "$t/pkg"
+  cp "$t/backups/vm1-$ts/vm1-disk-$ts.qcow2" "$t/backups/vm1-$ts/vm1-config-$ts.xml" "$t/pkg/"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  : >"$t/calls"
+  if (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    import_backup "$t/pkg.tar.gz" "../x" </dev/null >/dev/null 2>&1
+  ); then
+    log_test "FAIL" "backup import <pkg> <new_name> (invalid name rejected)" "Expected failure but got success"
+  elif [ ! -s "$t/calls" ] && [ ! -e "$t/x" ] && ! ls -d "$t"/backups/*x* >/dev/null 2>&1; then
+    log_test "PASS" "backup import <pkg> <new_name> (invalid name rejected before use)"
+  else
+    log_test "FAIL" "backup import <pkg> <new_name> (invalid name rejected before use)" "something was created or called"
+  fi
+
   rm -rf "$t"
 }
 
 test_backup_ssh_setup_ip_wait() {
   local t out
   t=$(mktemp -d)
+  echo 0 >"$t/n"
   out=$(
     load_backup_sh_for_test "$t"
     HOME="$t"
-    sleep() { :; }
+    # Advance the deadline so the poll exits quickly without a real 120s wait.
+    # shellcheck disable=SC2317
+    sleep() { SECONDS=$((SECONDS + ${1:-1} + 120)); }
+    # shellcheck disable=SC2317
     ssh-copy-id() { return 1; }
+    # shellcheck disable=SC2317
     check_vm_exists() { return 0; }
+    # shellcheck disable=SC2317
     get_vm_state() { echo running; }
+    # shellcheck disable=SC2317
     get_vm_ip() {
-      echo "$2" >"$t/attempts"
+      echo $(($(cat "$t/n") + 1)) >"$t/n"
       echo "N/A"
       return 1
     }
@@ -730,14 +857,15 @@ test_backup_ssh_setup_ip_wait() {
   else
     log_test "FAIL" "ssh_setup_vm (N/A is treated as no IP)"
   fi
-  if [ "$(cat "$t/attempts" 2>/dev/null)" -gt 1 ] 2>/dev/null; then
-    log_test "PASS" "ssh_setup_vm (polls get_vm_ip: $(cat "$t/attempts") attempts)"
+  if [ "$(cat "$t/n" 2>/dev/null)" -ge 1 ] 2>/dev/null; then
+    log_test "PASS" "ssh_setup_vm (polls get_vm_ip: $(cat "$t/n") lookups)"
   else
-    log_test "FAIL" "ssh_setup_vm (polls get_vm_ip)" "attempts=$(cat "$t/attempts" 2>/dev/null)"
+    log_test "FAIL" "ssh_setup_vm (polls get_vm_ip)" "n=$(cat "$t/n" 2>/dev/null)"
   fi
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 test_create_extra_packages_userdata() {
   local t ud
   t=$(mktemp -d)
@@ -937,6 +1065,7 @@ test_common_functions() {
   fi
 
   test_dhcp_cleanup_dispatch
+  test_hosts_rename_sed_expr
   test_backup_restore_new_name
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
