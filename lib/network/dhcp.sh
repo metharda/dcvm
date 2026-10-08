@@ -277,6 +277,7 @@ Commands:
   clear <vm-name|mac>          Clear lease for specific VM or MAC address
   clear -a, --all              Clear ALL DHCP leases (requires confirmation)
   clear -s, --stale            Clear stale/expired/orphaned leases
+  cleanup                      Same as 'clear --stale'
   renew                        Force DHCP renewal for all running VMs
   files                        Show DHCP lease file contents and locations
   help                         Show this help
@@ -305,6 +306,10 @@ main() {
   clear)
     shift
     clear_lease "$@"
+    ;;
+  cleanup)
+    shift
+    clear_stale_leases "$@"
     ;;
   renew)
     shift

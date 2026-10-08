@@ -569,6 +569,14 @@ EOF
   rm -rf "$tmp"
 }
 
+test_dhcp_cleanup_dispatch() {
+  local dhcp_sh="$SCRIPT_DIR/../network/dhcp.sh"
+  local stubs="load_dcvm_config() { :; }; require_root() { :; }; check_dependencies() { :; }; clear_stale_leases() { echo STALE_CALLED; }"
+  run_test_output_contains "dhcp.sh cleanup runs clear_stale_leases" "STALE_CALLED" "(source '$dhcp_sh'; $stubs; main cleanup)"
+  run_test_output_contains "dhcp.sh help lists cleanup" "cleanup" "(source '$dhcp_sh'; $stubs; main help)"
+  run_test_expect_fail "dhcp.sh unknown subcommand" "(source '$dhcp_sh'; $stubs; main no-such-subcommand)"
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -633,6 +641,8 @@ test_common_functions() {
   if type generate_password_hash &>/dev/null; then
     run_test "generate_password_hash" "[[ \$(generate_password_hash 'testpass') =~ ^\\\$6\\\$ ]]"
   fi
+
+  test_dhcp_cleanup_dispatch
 }
 
 test_cli_help() {
