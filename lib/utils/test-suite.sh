@@ -575,6 +575,11 @@ test_dhcp_cleanup_dispatch() {
   run_test_output_contains "dhcp.sh cleanup runs clear_stale_leases" "STALE_CALLED" "(source '$dhcp_sh'; $stubs; main cleanup)"
   run_test_output_contains "dhcp.sh help lists cleanup" "cleanup" "(source '$dhcp_sh'; $stubs; main help)"
   run_test_expect_fail "dhcp.sh unknown subcommand" "(source '$dhcp_sh'; $stubs; main no-such-subcommand)"
+  local clear_stubs="clear_all_leases() { echo ALL_CALLED; }; clear_lease_by_mac() { echo MAC_CALLED \$1; }; clear_vm_lease() { echo VM_CALLED \$1; }; restart_network() { :; }"
+  run_test_output_contains "dhcp.sh clear --all (vm-manager clear-leases)" "ALL_CALLED" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear --all)"
+  run_test_output_contains "dhcp.sh clear <mac> (delete-vm)" "MAC_CALLED 52:54:00:ab:cd:ef" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear 52:54:00:ab:cd:ef)"
+  run_test_output_contains "dhcp.sh clear <vm> (delete-vm)" "VM_CALLED vm1" "(source '$dhcp_sh'; $stubs; $clear_stubs; main clear vm1)"
+  run_test "no internal callers use removed dhcp subcommands" "! grep -nE 'dhcp\\.sh\\\" (clear-mac|clear-vm|clear-all)' '$SCRIPT_DIR/../core/delete-vm.sh' '$SCRIPT_DIR/../core/vm-manager.sh'"
 }
 
 # Source backup.sh without /etc/dcvm-install.conf: its top level calls

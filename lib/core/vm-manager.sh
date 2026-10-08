@@ -373,7 +373,7 @@ main() {
     done
     ;;
   "clear-leases")
-    "$SCRIPTS_PATH/../network/dhcp.sh" clear-all
+    "$SCRIPTS_PATH/../network/dhcp.sh" clear --all
     ;;
   "uninstall")
     require_confirmation "This will completely remove all Datacenter VM files, VMs, networks, and this script."
