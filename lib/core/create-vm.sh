@@ -58,7 +58,7 @@ VM Creation Script
 Usage: dcvm create <vm_name> [options]
 
 Options:
-  -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu)
+  -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu; 'root' logs in as root)
   -p, --password <password>     		# Set VM password (required in force mode)
   --enable-root                  		# Enable root login (uses same password as user)
   -r, --root-password <password> 		# Set root password (enables root access)
@@ -383,6 +383,7 @@ setup_user_account() {
       echo "  - 3-32 characters long"
       echo "  - Start with letter or underscore"
       echo "  - Only letters, numbers, underscore, hyphen allowed"
+      echo "  - Not a reserved name: admin, administrator, sysadmin, user, guest"
       exit 1
     fi
     [ "$FORCE_MODE" = true ] && print_success "Username: $VM_USERNAME" || print_success "Username set to: $VM_USERNAME"
@@ -391,6 +392,10 @@ setup_user_account() {
     print_success "Username: $VM_USERNAME (default)"
   else
     interactive_prompt_username
+  fi
+
+  if [ "$VM_USERNAME" = "root" ]; then
+    print_warning "Warning: configuring root login for VM $VM_NAME (username 'root')"
   fi
 
   [ "$FORCE_MODE" != true ] && echo ""
@@ -415,6 +420,20 @@ setup_user_account() {
 }
 
 setup_root_access() {
+  # Username root is the root account itself: root access is on and root has
+  # one password (the -p / prompted password).
+  if [ "$VM_USERNAME" = "root" ]; then
+    if [ -n "$FLAG_ROOT_PASSWORD" ] && [ "$FLAG_ROOT_PASSWORD" != "$VM_PASSWORD" ]; then
+      print_error "Username is root: use only -p for root's password (--root-password differs)"
+      exit 1
+    fi
+    ENABLE_ROOT="y"
+    ROOT_PASSWORD="$VM_PASSWORD"
+    print_success "Root access enabled (username is root)"
+    [ "$FORCE_MODE" != true ] && echo ""
+    return 0
+  fi
+
   if [ "$FORCE_MODE" = true ]; then
     print_info "Root access configuration"
     [ -n "$FLAG_ENABLE_ROOT" ] && ENABLE_ROOT="$FLAG_ENABLE_ROOT" || ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
@@ -611,7 +630,8 @@ interactive_prompt_username() {
 			  - 3-32 characters long
 			  - Start with letter or underscore
 			  - Only letters, numbers, underscore, hyphen allowed
-			  - Examples: admin, user1, my_user, test-vm
+			  - Not a reserved name: admin, administrator, sysadmin, user, guest
+			  - Examples: dbadmin, user1, my_user, test-vm, root
 			
 			EOF
     fi
@@ -1044,18 +1064,29 @@ PACKAGES_EOF
     EXTRA_PACKAGES_RUNCMD="${EXTRA_PACKAGES_RUNCMD/__DCVM_PACKAGES__/$EXTRA_PACKAGES}"
   fi
 
+  if [ "$VM_USERNAME" = "root" ]; then
+    ENABLE_ROOT="y"
+    ROOT_PASSWORD="$VM_PASSWORD"
+  fi
+
   ROOT_LOGIN_SETTING="no"
   [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && ROOT_LOGIN_SETTING="yes"
+
+  # Username root configures the existing root account: no sudo/shell (and
+  # no passwd, which cloud-init only applies when it creates the user); the
+  # password is set by chpasswd below, the key goes to /root/.ssh.
+  local vm_home="/home/$VM_USERNAME"
+  [ "$VM_USERNAME" = "root" ] && vm_home="/root"
 
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" <<USERDATA_EOF
 #cloud-config
 hostname: $VM_NAME
 users:
-  - name: $VM_USERNAME
+  - name: $VM_USERNAME$(if [ "$VM_USERNAME" != "root" ]; then echo "
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
-    shell: /bin/bash
-    lock_passwd: false
-    passwd: '$PASSWORD_HASH'$(if [ -n "$SSH_KEY" ]; then echo "
+    shell: /bin/bash"; fi)
+    lock_passwd: false$(if [ "$VM_USERNAME" != "root" ]; then echo "
+    passwd: '$PASSWORD_HASH'"; fi)$(if [ -n "$SSH_KEY" ]; then echo "
     ssh_authorized_keys:
       - $SSH_KEY"; fi)
 
@@ -1082,7 +1113,7 @@ packages:
 
 bootcmd:
   - echo '$VM_USERNAME:$VM_PASSWORD' | chpasswd
-$(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then echo "  - echo 'root:$ROOT_PASSWORD' | chpasswd"; fi)
+$(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ "$VM_USERNAME" != "root" ]; then echo "  - echo 'root:$ROOT_PASSWORD' | chpasswd"; fi)
 
 write_files:
   - content: |
@@ -1124,8 +1155,8 @@ runcmd:
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
   - echo "10.10.10.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
   - mount -a || true
-  - mkdir -p /home/$VM_USERNAME/{Documents,Downloads,Scripts}
-  - chown -R $VM_USERNAME:$VM_USERNAME /home/$VM_USERNAME
+  - mkdir -p $vm_home/{Documents,Downloads,Scripts}
+  - chown -R $VM_USERNAME:$VM_USERNAME $vm_home
 $(if [ -n "$EXTRA_PACKAGES_RUNCMD" ]; then echo "$EXTRA_PACKAGES_RUNCMD"; fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
     cat <<NGINX_EOF

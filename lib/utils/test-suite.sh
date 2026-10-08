@@ -734,6 +734,105 @@ test_create_extra_packages_userdata() {
   rm -rf "$t"
 }
 
+# Generate user-data with create-vm.sh's generator ($1 user, $2 ENABLE_ROOT,
+# $3 SSH key, $4 output file); the password hash is stubbed.
+generate_test_userdata() {
+  local t
+  t=$(mktemp -d)
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    generate_password_hash() { echo '$6$test$hash'; }
+    FORCE_MODE=true VM_NAME=usertest VM_USERNAME="$1" VM_PASSWORD=testpass123
+    VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT="$2" ROOT_PASSWORD="" SSH_KEY="$3"
+    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="" VM_OS=debian12 TAILSCALE_AUTHKEY=""
+    mkdir -p "$t/vms/usertest/cloud-init"
+    generate_cloud_init_userdata >/dev/null 2>&1
+  )
+  cp "$t/vms/usertest/cloud-init/user-data" "$4" 2>/dev/null
+  rm -rf "$t"
+}
+
+test_root_username_userdata() {
+  local t key='ssh-ed25519 AAAAC3NzaTEST dcvm-test'
+  t=$(mktemp -d)
+
+  generate_test_userdata root n "$key" "$t/root.yaml"
+  local users_block
+  users_block=$(sed -n '/^users:/,/^$/p' "$t/root.yaml")
+  if [ "$(echo "$users_block" | grep -c -- '- name:')" = "1" ] && echo "$users_block" | grep -q '^  - name: root$' &&
+    ! echo "$users_block" | grep -qE '^    (sudo|shell|passwd|groups):'; then
+    log_test "PASS" "username root (one root entry, no create/sudo fields)"
+  else
+    log_test "FAIL" "username root (one root entry, no create/sudo fields)"
+  fi
+  if echo "$users_block" | grep -q "^      - $key\$" && grep -q '^    root:testpass123$' "$t/root.yaml" &&
+    [ "$(grep -c "chpasswd\$" "$t/root.yaml")" = "1" ]; then
+    log_test "PASS" "username root (SSH key and password for root)"
+  else
+    log_test "FAIL" "username root (SSH key and password for root)"
+  fi
+  if grep -q '^disable_root: false$' "$t/root.yaml" && grep -q 'PermitRootLogin yes' "$t/root.yaml" &&
+    grep -q '^  - mkdir -p /root/{Documents,Downloads,Scripts}$' "$t/root.yaml" && ! grep -q '/home/' "$t/root.yaml"; then
+    log_test "PASS" "username root (disable_root false, /root paths)"
+  else
+    log_test "FAIL" "username root (disable_root false, /root paths)"
+  fi
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+    if python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$t/root.yaml" 2>/dev/null; then
+      log_test "PASS" "username root (user-data parses as YAML)"
+    else
+      log_test "FAIL" "username root (user-data parses as YAML)"
+    fi
+  else
+    log_test "SKIP" "username root (YAML parse)" "python3 yaml not available"
+  fi
+  mkdir -p "$t/vms/rootvm/cloud-init" && cp "$t/root.yaml" "$t/vms/rootvm/cloud-init/user-data"
+  if [ "$(DATACENTER_BASE="$t" get_vm_username rootvm)" = "root" ]; then
+    log_test "PASS" "get_vm_username (username root)"
+  else
+    log_test "FAIL" "get_vm_username (username root)"
+  fi
+
+  generate_test_userdata tester n "$key" "$t/user.yaml"
+  if grep -q '^  - name: tester$' "$t/user.yaml" && grep -q "^    sudo: \['ALL=(ALL) NOPASSWD:ALL'\]$" "$t/user.yaml" &&
+    grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -q "^    passwd: '\$6\$test\$hash'$" "$t/user.yaml" &&
+    grep -q "^      - $key\$" "$t/user.yaml" && grep -q '^disable_root: true$' "$t/user.yaml" &&
+    grep -q 'PermitRootLogin no' "$t/user.yaml" && grep -q '^  - chown -R tester:tester /home/tester$' "$t/user.yaml" &&
+    ! grep -qE "^    root:|echo 'root:" "$t/user.yaml"; then
+    log_test "PASS" "normal username user-data unchanged"
+  else
+    log_test "FAIL" "normal username user-data unchanged"
+  fi
+  rm -rf "$t"
+}
+
+test_root_username_setup() {
+  local out
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_NAME=rootvm FLAG_USERNAME=root FLAG_PASSWORD=testpass123
+    setup_user_account
+    setup_root_access
+    echo "ENABLE_ROOT=$ENABLE_ROOT ROOT_PASSWORD=$ROOT_PASSWORD"
+  )
+  if echo "$out" | grep -q "Warning: configuring root login for VM rootvm (username 'root')" &&
+    echo "$out" | grep -q '^ENABLE_ROOT=y ROOT_PASSWORD=testpass123$'; then
+    log_test "PASS" "create -u root (stdout warning, root enabled, one password)"
+  else
+    log_test "FAIL" "create -u root (stdout warning, root enabled, one password)"
+  fi
+  if (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_NAME=rootvm FLAG_USERNAME=root FLAG_PASSWORD=testpass123 FLAG_ROOT_PASSWORD=different123
+    setup_user_account
+    setup_root_access
+  ) >/dev/null 2>&1; then
+    log_test "FAIL" "create -u root with a different --root-password" "Expected failure but got success"
+  else
+    log_test "PASS" "create -u root with a different --root-password (expected failure)"
+  fi
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -764,6 +863,9 @@ test_common_functions() {
   run_test_expect_fail "validate_username (too short)" "validate_username 'ab'"
   run_test_expect_fail "validate_username (invalid chars)" "validate_username 'test@user'"
   run_test_expect_fail "validate_username (starts with number)" "validate_username '1user'"
+  run_test "validate_username (root)" "validate_username 'root'"
+  run_test_expect_fail "validate_username (reserved admin)" "validate_username 'admin'"
+  run_test_expect_fail "validate_username (reserved guest)" "validate_username 'guest'"
   run_test "validate_password (valid 8char)" "validate_password 'password123'"
   run_test "validate_password (valid long)" "validate_password 'verylongpassword123'"
   run_test "validate_password (valid min 4char)" "validate_password 'abcd'"
@@ -810,6 +912,8 @@ test_common_functions() {
   test_backup_restore_new_name
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
+  test_root_username_userdata
+  test_root_username_setup
 }
 
 test_cli_help() {
