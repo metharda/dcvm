@@ -890,6 +890,7 @@ test_create_extra_packages_userdata() {
 
 # Generate user-data with create-vm.sh's generator ($1 user, $2 ENABLE_ROOT,
 # $3 SSH key, $4 output file); the password hash is stubbed.
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 generate_test_userdata() {
   local t
   t=$(mktemp -d)
@@ -906,6 +907,7 @@ generate_test_userdata() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 test_root_username_userdata() {
   local t key='ssh-ed25519 AAAAC3NzaTEST dcvm-test'
   t=$(mktemp -d)
@@ -960,6 +962,7 @@ test_root_username_userdata() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 test_root_username_setup() {
   local out
   out=$(
