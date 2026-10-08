@@ -271,7 +271,7 @@ Commands:
   rules        Show active iptables NAT rules for forwarding
   apply        Apply saved mappings file to iptables rules
   clear        Remove existing iptables rules for forwarding
-  test         Check connectivity for SSH/HTTP against localhost ports
+  test         Check each forward: the DNAT and FORWARD rules, and that the VM port is open
   help         Show this help
 
 Examples:
