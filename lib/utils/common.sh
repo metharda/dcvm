@@ -116,6 +116,23 @@ trim_whitespace() {
   printf '%s' "$s"
 }
 
+# Validate a comma-separated package list (-k). Names end up in a shell
+# command inside the guest, so only package-name characters are allowed.
+validate_package_list() {
+  local list="$1" pkg
+  local -a pkgs=()
+  IFS=',' read -ra pkgs <<<"$list"
+  for pkg in "${pkgs[@]}"; do
+    pkg=$(trim_whitespace "$pkg")
+    [ -z "$pkg" ] && continue
+    if [[ ! "$pkg" =~ ^[A-Za-z0-9][A-Za-z0-9@._+-]*$ ]]; then
+      print_error "Invalid package name: '$pkg' (allowed: letters, numbers, @ . _ + -)"
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Trim and validate each non-empty name in a comma-separated list.
 # Same gate create-vm uses before any disk/libvirt work.
 validate_vm_name_list() {
@@ -697,7 +714,7 @@ default_username() {
 export -f print_info print_success print_warning print_error print_status
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
-export -f validate_vm_name validate_vm_name_list trim_whitespace validate_username validate_password
+export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action

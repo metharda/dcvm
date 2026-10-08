@@ -712,6 +712,28 @@ test_backup_ssh_setup_ip_wait() {
   rm -rf "$t"
 }
 
+test_create_extra_packages_userdata() {
+  local t ud
+  t=$(mktemp -d)
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    generate_password_hash() { echo '$6$test$hash'; }
+    FORCE_MODE=true VM_NAME=pkgtest VM_USERNAME=tester VM_PASSWORD=testpass123
+    VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT=n ROOT_PASSWORD="" SSH_KEY=""
+    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="nginx, msql" VM_OS=debian12 TAILSCALE_AUTHKEY=""
+    mkdir -p "$t/vms/pkgtest/cloud-init"
+    generate_cloud_init_userdata >/dev/null 2>&1
+  )
+  ud="$t/vms/pkgtest/cloud-init/user-data"
+  if [ -f "$ud" ] && grep -q '^    for pkg in nginx msql; do$' "$ud" &&
+    ! sed -n '/^packages:/,/^$/p' "$ud" | grep -qE '^  - (nginx|msql)$'; then
+    log_test "PASS" "create -k installs extra packages one by one"
+  else
+    log_test "FAIL" "create -k installs extra packages one by one"
+  fi
+  rm -rf "$t"
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -728,6 +750,10 @@ test_common_functions() {
   run_test_expect_fail "trim+validate_vm_name (backslash)" "n=\$(trim_whitespace 'qa\\vm'); validate_vm_name \"\$n\""
   run_test_expect_fail "validate_vm_name_list (quote in list)" "validate_vm_name_list \"good-vm,qa'vm\""
   run_test "validate_vm_name_list (valid trimmed)" "validate_vm_name_list ' qa-vm '"
+  run_test "validate_package_list (valid)" "validate_package_list 'nginx, python3-pip,g++,libc6.1'"
+  run_test_expect_fail "validate_package_list (shell chars)" "validate_package_list 'nginx;reboot'"
+  run_test_expect_fail "validate_package_list (space inside)" "validate_package_list 'nginx,my pkg'"
+  run_test_expect_fail "validate_package_list (leading dash)" "validate_package_list '-y'"
   run_test "validate_username (valid)" "validate_username 'testuser'"
   run_test "validate_username (with number)" "validate_username 'user123'"
   run_test "validate_username (with underscore)" "validate_username 'test_user'"
@@ -780,6 +806,7 @@ test_common_functions() {
   test_dhcp_cleanup_dispatch
   test_backup_restore_new_name
   test_backup_ssh_setup_ip_wait
+  test_create_extra_packages_userdata
 }
 
 test_cli_help() {

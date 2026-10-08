@@ -1010,19 +1010,38 @@ generate_cloud_init_userdata() {
     exit 1
   }
 
-  PACKAGE_LIST=""
+  # -k packages are installed one by one in runcmd, so one unavailable
+  # package does not abort the install of the others (cloud-init installs
+  # its packages list in a single apt-get/pacman call).
+  EXTRA_PACKAGES=""
   TAILSCALE_REQUESTED=false
   if [ -n "$ADDITIONAL_PACKAGES" ]; then
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
-      package=$(echo "$package" | xargs)
+      package=$(trim_whitespace "$package")
+      [ -z "$package" ] && continue
       if [[ "${package,,}" == "tailscale" ]]; then
         TAILSCALE_REQUESTED=true
         continue
       fi
-      PACKAGE_LIST="${PACKAGE_LIST}
-  - ${package}"
+      EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
     done
+  fi
+  EXTRA_PACKAGES_RUNCMD=""
+  if [ -n "$EXTRA_PACKAGES" ]; then
+    EXTRA_PACKAGES_RUNCMD=$(
+      cat <<'PACKAGES_EOF'
+  - |
+    for pkg in __DCVM_PACKAGES__; do
+      if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "$pkg"
+      else
+        pacman -S --noconfirm --needed "$pkg"
+      fi || echo "dcvm: failed to install package: $pkg" | tee -a /var/log/dcvm-packages.log
+    done
+PACKAGES_EOF
+    )
+    EXTRA_PACKAGES_RUNCMD="${EXTRA_PACKAGES_RUNCMD/__DCVM_PACKAGES__/$EXTRA_PACKAGES}"
   fi
 
   ROOT_LOGIN_SETTING="no"
@@ -1059,7 +1078,7 @@ packages:
   - nano
   - vim
   - tree
-  - unzip$(if [ -n "$PACKAGE_LIST" ]; then echo "$PACKAGE_LIST"; fi)
+  - unzip
 
 bootcmd:
   - echo '$VM_USERNAME:$VM_PASSWORD' | chpasswd
@@ -1107,6 +1126,7 @@ runcmd:
   - mount -a || true
   - mkdir -p /home/$VM_USERNAME/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME /home/$VM_USERNAME
+$(if [ -n "$EXTRA_PACKAGES_RUNCMD" ]; then echo "$EXTRA_PACKAGES_RUNCMD"; fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
     cat <<NGINX_EOF
   - systemctl enable nginx
@@ -1387,6 +1407,10 @@ main() {
   fi
 
   if ! validate_vm_name_list "$VM_NAME"; then
+    exit 1
+  fi
+
+  if [ -n "$ADDITIONAL_PACKAGES" ] && ! validate_package_list "$ADDITIONAL_PACKAGES"; then
     exit 1
   fi
 
