@@ -1057,7 +1057,6 @@ generate_cloud_init_userdata() {
   TAILSCALE_REQUESTED=false
   MYSQL_REQUESTED=false
   APACHE_REQUESTED=false
-  echo "$ADDITIONAL_PACKAGES" | grep -q "apache2" && APACHE_REQUESTED=true
   if [ -n "$ADDITIONAL_PACKAGES" ]; then
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
@@ -1073,6 +1072,7 @@ generate_cloud_init_userdata() {
           package=$mysql_package
         fi
       fi
+      [ "$package" = apache2 ] && APACHE_REQUESTED=true
       if [ "$VM_OS" = archlinux ] && [[ "$package" =~ ^apache2?$ ]]; then
         APACHE_REQUESTED=true
         package=apache

@@ -210,20 +210,21 @@ get_vm_ip() {
   local ip=""
   local count=0
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
 
   while [ -z "$ip" ] && [ $count -lt $attempts ]; do
-    ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+    ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     if [ -z "$ip" ]; then
-      ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+      ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     fi
     if [ -z "$ip" ]; then
       local network_name="${NETWORK_NAME:-datacenter-net}"
-      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     fi
     if [ -z "$ip" ]; then
       local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
       if [ -n "$mac" ]; then
-        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
       fi
     fi
     if [ -z "$ip" ] && [ $attempts -gt 1 ]; then
@@ -613,8 +614,9 @@ cleanup_dhcp_lease_unlocked() {
   if [ -s "$status_file" ]; then
     if ! command_exists jq; then
       print_warning "jq not available; the lease is still listed in $status_file (install jq)"
+    elif ! tmp=$(mktemp); then
+      print_error "Could not create a temp file; $status_file left unchanged"
     else
-      tmp=$(mktemp) || return 1
       # shellcheck disable=SC2016 # jq variables
       if jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 &&
         jq --arg mac "$mac" --arg host "$host" '[.[] | select(
@@ -741,6 +743,7 @@ interactive_prompt_disk_common() {
 detect_host_ip() {
   local host_ip=""
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
   for interface in eth0 ens3 ens18 enp0s3 wlan0; do
     host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
     [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
@@ -764,6 +767,7 @@ get_fix_lock_script_path() {
 validate_ip_in_subnet() {
   local ip="$1"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
 
   if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
     print_error "Invalid IP address format: $ip"
@@ -797,6 +801,7 @@ validate_ip_in_subnet() {
 interactive_prompt_static_ip_common() {
   local var_name="${1:-STATIC_IP}"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
   local result=""
 
   echo ""
@@ -856,5 +861,6 @@ export -f check_port_connectivity check_port_forward is_vm_in_network get_port_m
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
 export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username

@@ -9,15 +9,6 @@ show_current_leases() {
   echo ""
 }
 
-reload_dnsmasq() {
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
-  if [ -n "$dnsmasq_pid" ]; then
-    kill -HUP "$dnsmasq_pid" 2>/dev/null && print_success "DHCP service reloaded" || print_error "Failed to signal dnsmasq"
-  else
-    print_info "dnsmasq process not found for bridge ${BRIDGE_NAME}"
-  fi
-}
-
 restart_network() {
   print_info "Restarting network to refresh libvirt cache..."
   virsh net-destroy "$NETWORK_NAME" 2>/dev/null && sleep 1 && virsh net-start "$NETWORK_NAME" 2>/dev/null && print_success "Network restarted" || print_warning "Network restart failed"
@@ -56,7 +47,7 @@ clear_all_leases() {
   [ -f "$status_file" ] && >"$status_file" && echo "Cleared status file"
   [ -f "$pid_file" ] && rm -f "$pid_file"
 
-  reload_dnsmasq
+  reload_dnsmasq || true
   restart_network
 }
 

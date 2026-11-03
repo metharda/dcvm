@@ -1648,6 +1648,69 @@ test_cleanup_dhcp_lease_parallel() {
   rm -rf "$t"
 }
 
+# Lease cleanup review nits: one reload_dnsmasq, a reload even when the
+# status step cannot get a temp file, and helpers exported to child shells.
+# shellcheck disable=SC2016,SC1091 # stub code is eval'd later
+test_dhcp_cleanup_nits() {
+  local t out
+  t=$(mktemp -d)
+  if [ "$(
+    source "$SCRIPT_DIR/../network/dhcp.sh" >/dev/null 2>&1
+    declare -f reload_dnsmasq
+  )" = "$(declare -f reload_dnsmasq)" ]; then
+    log_test "PASS" "dhcp.sh uses common.sh's reload_dnsmasq (no duplicate)"
+  else
+    log_test "FAIL" "dhcp.sh uses common.sh's reload_dnsmasq (no duplicate)"
+  fi
+
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'mktemp() { [ -e "$t/m1" ] && return 1; : >"$t/m1"; command mktemp "$@"; }' 52:54:00:00:00:01 vm1)
+  if ! grep -q ' VM1 ' "$t/br.leases" && cmp -s "$t/br.status" "$t/status.orig" && grep -qx reload "$t/calls" 2>/dev/null; then
+    log_test "PASS" "cleanup_dhcp_lease reloads dnsmasq even when the status step's mktemp fails"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease reloads dnsmasq even when the status step's mktemp fails" "$(echo "$out" | tr '\n' ';')"
+  fi
+
+  if bash -c 'declare -F filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked' >/dev/null 2>&1; then
+    log_test "PASS" "filter_lease_lines and cleanup_dhcp_lease are exported to child shells"
+  else
+    log_test "FAIL" "filter_lease_lines and cleanup_dhcp_lease are exported to child shells"
+  fi
+  rm -rf "$t"
+}
+
+# get_vm_ip treats the subnet's dots literally.
+# shellcheck disable=SC2317,SC2030,SC2031 # stub; globals set for the call only
+test_get_vm_ip_subnet_dots() {
+  local got
+  got=$(
+    virsh() {
+      [ "$1" = domifaddr ] && printf ' vnet0  52:54:00:00:00:01  ipv4  10x10y10.5/24\n'
+      return 0
+    }
+    NETWORK_SUBNET=10.10.10 get_vm_ip vm1
+  )
+  if [ "$got" = "N/A" ]; then
+    log_test "PASS" "get_vm_ip: subnet 10.10.10 does not match 10x10y10.5"
+  else
+    log_test "FAIL" "get_vm_ip: subnet 10.10.10 does not match 10x10y10.5" "got '$got'"
+  fi
+}
+
+# -k apache2 sets up Apache; packages that only contain the name do not.
+test_apache_exact_match() {
+  local t
+  t=$(mktemp -d)
+  generate_test_userdata tester n "" "$t/u.yaml" apache2-utils pw1234 debian12
+  if grep -qx '    for pkg in apache2-utils; do' "$t/u.yaml" && ! grep -q 'systemctl enable apache2' "$t/u.yaml"; then
+    log_test "PASS" "-k apache2-utils installs as typed, no Apache setup"
+  else
+    log_test "FAIL" "-k apache2-utils installs as typed, no Apache setup"
+  fi
+  rm -rf "$t"
+}
+
 # Print the installer's package list for host family $1 (debian or arch).
 installer_packages() {
   local line
@@ -1815,6 +1878,9 @@ test_common_functions() {
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
   test_cleanup_dhcp_lease_parallel
+  test_dhcp_cleanup_nits
+  test_get_vm_ip_subnet_dots
+  test_apache_exact_match
   test_dhcp_release
   test_installer_packages
   test_delete_vm_exact_match
