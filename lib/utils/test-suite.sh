@@ -1600,6 +1600,25 @@ test_cleanup_dhcp_lease_failures() {
   rm -rf "$t"
 }
 
+# #37: two cleanups running at once on one lease file both take effect.
+test_cleanup_dhcp_lease_parallel() {
+  local t i lost=0
+  t=$(mktemp -d)
+  for i in $(seq 50); do
+    printf '1893456000 52:54:00:00:00:01 10.10.10.11 a *\n1893456000 52:54:00:00:00:02 10.10.10.12 b *\n' >"$t/br.leases"
+    run_cleanup_fixture "$t" "" 52:54:00:00:00:01 a >/dev/null &
+    run_cleanup_fixture "$t" "" 52:54:00:00:00:02 b >/dev/null &
+    wait
+    [ -s "$t/br.leases" ] && lost=$((lost + 1))
+  done
+  if [ "$lost" = 0 ]; then
+    log_test "PASS" "cleanup_dhcp_lease: 50 parallel pairs lose no update (lease file locked) (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: 50 parallel pairs lose no update (lease file locked) (#37)" "$lost of 50 left a lease"
+  fi
+  rm -rf "$t"
+}
+
 # Print the installer's package list for host family $1 (debian or arch).
 installer_packages() {
   local line
@@ -1766,6 +1785,7 @@ test_common_functions() {
   test_userdata_per_os
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
+  test_cleanup_dhcp_lease_parallel
   test_dhcp_release
   test_installer_packages
   test_delete_vm_exact_match

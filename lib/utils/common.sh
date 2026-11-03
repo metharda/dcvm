@@ -559,7 +559,23 @@ filter_lease_lines() {
 # network. Returns 1 when nothing matched.
 # Remove the lease of MAC $1 and/or hostname $2 from dnsmasq's lease and
 # status files and release it in dnsmasq. $3=noreload skips the SIGHUP.
+# Runs under a lock so parallel cleanups do not undo each other's edits.
 cleanup_dhcp_lease() {
+  local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
+  if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
+    cleanup_dhcp_lease_unlocked "$@"
+    return
+  fi
+  (
+    flock -w 30 9 || {
+      print_error "Timed out waiting for $lock"
+      exit 1
+    }
+    cleanup_dhcp_lease_unlocked "$@"
+  ) 9>>"$lock"
+}
+
+cleanup_dhcp_lease_unlocked() {
   local mac="${1,,}" host="${2,,}" reload="${3:-reload}"
   local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}"
   local lease_file="$dir/${BRIDGE_NAME}.leases" status_file="$dir/${BRIDGE_NAME}.status"
