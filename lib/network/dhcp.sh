@@ -268,7 +268,7 @@ show_lease_files() {
 
 dhcp_help() {
   cat <<EOF
-DCVM DHCP Management
+dcvm DHCP Management
 
 Usage: dcvm network dhcp <command> [options]
 

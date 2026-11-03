@@ -1,6 +1,14 @@
-# DCVM - Datacenter Virtual Machine Manager
+# dcvm
 
-**DCVM** is a comprehensive bash script collection that allows you to easily manage your KVM/QEMU-based virtual datacenter environment. It's a powerful tool that automates virtual machine creation, management, backup, and monitoring operations.
+[![Tests](https://github.com/metharda/dcvm/actions/workflows/test.yaml/badge.svg)](https://github.com/metharda/dcvm/actions/workflows/test.yaml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.9.5-informational.svg)](CHANGELOG.md)
+
+**Ready Linux VMs on one machine with one command: dcvm is a VM manager for students, homelabs, CTF and security practice, and anyone who wants a Linux box to try things on.**
+
+<!-- DEMO GIF: placeholder, add docs/assets/demo.gif later -->
+
+dcvm is a set of Bash scripts on top of KVM/QEMU and libvirt. `dcvm create myvm` builds a VM from a Debian, Ubuntu, Arch Linux or Kali Linux cloud image (or from an installer ISO), sets it up with cloud-init, and attaches it to a private NAT network with DHCP. Other `dcvm` commands start and stop VMs, forward host ports to them, and back them up, export and import them.
 
 ## Quick Installation
 
@@ -10,6 +18,18 @@ You can setup dcvm quickly with `curl` or `wget` commands: (you should be in roo
 | :------- | :-------------------------------------------------------------------------------------------------------------- |
 | **curl** | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"` |
 | **wget** | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`  |
+
+### Review before you run
+
+The one-liners above run the installer as root without showing it to you first. To read it before it runs, download it, review it, then run it:
+
+```bash
+curl -fsSL -o install-dcvm.sh https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh
+less install-dcvm.sh
+sudo bash install-dcvm.sh
+```
+
+The installer then downloads the rest of dcvm from the same repository and branch (`metharda/dcvm`, `main`, or `DCVM_REPO_SLUG` and `DCVM_REPO_BRANCH` below). To review everything before installing, use the [Manual Installation](#manual-installation) steps instead.
 
 ### Custom Branch or Fork Installation
 
@@ -38,7 +58,7 @@ You can install from a different branch or fork using environment variables:
 
 ### Network Management
 
-- **Isolated Network**: Private datacenter-net network (10.10.10.0/24)
+- **Isolated Network**: Private NAT network (`datacenter-net` by default, 10.10.10.0/24)
 - **Automatic DHCP**: Dynamic IP assignment
 - **Port Forwarding**: Automatic port forwarding for SSH and HTTP access
 - **VNC Management**: Enable/disable VNC graphics for remote access
@@ -58,6 +78,18 @@ You can install from a different branch or fork using environment variables:
 - **System Services**: systemd integration
 - **Log Management**: Detailed operation logs
 - **Security**: SSH key-based secure access
+
+## Why dcvm?
+
+| Tool | What it is for | Hosts | Worth knowing |
+| :--- | :------------- | :---- | :------------ |
+| **dcvm** | Ready Linux VMs from a built-in menu of 8 cloud images (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux), or any installer ISO | Linux with KVM and libvirt; the installer sets up dependencies on Debian/Ubuntu-based and Arch-based hosts | One CLI also covers a private NAT network, SSH/HTTP port forwarding from the host (`dcvm network ports setup`), backups with export/import between hosts, VNC on/off and an NFS share. Needs root. |
+| [Multipass](https://documentation.ubuntu.com/multipass/en/latest/) | Cloud-style Ubuntu VMs (plus other Linux images), customised with cloud-init | Linux, macOS, Windows | Cross-platform, has a GUI client, and has snapshots, clones and folder mounts built in |
+| [Vagrant](https://developer.hashicorp.com/vagrant/intro) + [vagrant-libvirt](https://vagrant-libvirt.github.io/vagrant-libvirt/) | Reproducible development environments described in a `Vagrantfile` | Vagrant runs on Linux, macOS and Windows; vagrant-libvirt needs libvirt and QEMU | The environment lives in a file you can commit and share, so a team gets the same VM with `vagrant up`; provisions with shell scripts, Chef or Puppet |
+| [virt-install](https://github.com/virt-manager/virt-manager/blob/main/man/virt-install.rst) | libvirt's command-line tool for provisioning KVM, Xen or container guests | Linux with libvirt | Exposes libvirt's install methods (ISO, network install tree, PXE, existing disk, unattended installs, cloud-init) and fine-grained device options; you choose and combine them yourself |
+| [quickemu](https://github.com/quickemu-project/quickemu) | Quickly creating and running optimised Windows, macOS and Linux VMs with QEMU; `quickget` downloads the OS image | Linux, macOS | Supports far more guest systems (including macOS and Windows), runs VMs without elevated permissions, and has SPICE, file sharing and USB pass-through |
+
+dcvm is a convenience layer for one Linux host: it handles the image, network, user and SSH key setup and port forwards for you, and its VMs are ordinary libvirt domains created with `virt-install`, so `virsh` still works on them. Choose another tool if you need a macOS host (Multipass, quickemu, Vagrant) or a Windows host (Multipass, Vagrant), macOS or tuned Windows guests (quickemu), an environment defined in a file that others can recreate (Vagrant), snapshots instead of full backups (Multipass), or full control over every libvirt option (virt-install).
 
 ## Requirements
 

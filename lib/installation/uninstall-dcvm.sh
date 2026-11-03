@@ -17,15 +17,15 @@ main() {
     NETWORK_SUBNET="10.10.10"
   fi
 
-  require_confirmation "This will completely remove DCVM and all datacenter VMs"
+  require_confirmation "This will completely remove dcvm and all dcvm VMs"
 
-  print_info "Stopping and removing datacenter storage service"
+  print_info "Stopping and removing dcvm storage service"
   systemctl stop datacenter-storage.timer 2>/dev/null || true
   systemctl disable datacenter-storage.timer 2>/dev/null || true
   rm -f /etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer
   systemctl daemon-reload
 
-  print_info "Removing datacenter VMs (connected to $NETWORK_NAME)"
+  print_info "Removing dcvm VMs (connected to $NETWORK_NAME)"
   local deleted_count=0
   local vm_name
   for vm_name in $(virsh list --all --name 2>/dev/null); do
@@ -37,7 +37,7 @@ main() {
       ((deleted_count++)) || true
     fi
   done
-  print_success "Removed $deleted_count datacenter VM(s)"
+  print_success "Removed $deleted_count dcvm VM(s)"
 
   print_info "Cleaning up DHCP leases"
   local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
@@ -59,7 +59,7 @@ main() {
   done
   command -v iptables-save >/dev/null 2>&1 && iptables-save >/etc/iptables/rules.v4 2>/dev/null || true
 
-  print_info "Removing datacenter network"
+  print_info "Removing dcvm network"
   if virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     virsh net-destroy "$NETWORK_NAME" 2>/dev/null || true
     virsh net-undefine "$NETWORK_NAME" 2>/dev/null || true
@@ -68,10 +68,10 @@ main() {
     print_info "Network $NETWORK_NAME not found"
   fi
 
-  print_info "Removing all datacenter directories"
+  print_info "Removing all dcvm directories"
   [ -d "$DATACENTER_BASE" ] && rm -rf "$DATACENTER_BASE" && print_success "Removed $DATACENTER_BASE" || print_info "$DATACENTER_BASE not found"
 
-  print_info "Removing DCVM command and libraries"
+  print_info "Removing dcvm command and libraries"
   [ -f "/usr/local/bin/dcvm" ] && rm -f "/usr/local/bin/dcvm" && print_success "Removed /usr/local/bin/dcvm" || print_info "/usr/local/bin/dcvm not found"
   [ -d "/usr/local/lib/dcvm" ] && rm -rf "/usr/local/lib/dcvm" && print_success "Removed /usr/local/lib/dcvm" || print_info "/usr/local/lib/dcvm not found"
 
@@ -81,12 +81,12 @@ main() {
   print_info "Removing log file"
   [ -f "/var/log/datacenter-startup.log" ] && rm -f "/var/log/datacenter-startup.log" && print_success "Removed /var/log/datacenter-startup.log" || print_info "/var/log/datacenter-startup.log not found"
 
-  print_info "Checking for old DCVM aliases in shell configurations"
+  print_info "Checking for old dcvm aliases in shell configurations"
   local config_file
   for config_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
     if [[ -f "$config_file" ]]; then
       if grep -q "alias dcvm" "$config_file" 2>/dev/null; then
-        print_info "Removing DCVM aliases from $config_file"
+        print_info "Removing dcvm aliases from $config_file"
         sed -i.bak '/alias dcvm/d' "$config_file" && print_success "Removed aliases from $config_file" || print_warning "Could not remove aliases from $config_file"
       fi
 
@@ -106,7 +106,7 @@ main() {
     rmdir "/usr/local/share/dcvm" 2>/dev/null || true
   fi
 
-  print_success "DCVM uninstallation completed successfully"
+  print_success "dcvm uninstallation completed successfully"
   print_info "To reinstall, run: sudo bash lib/installation/install-dcvm.sh"
 
   if [[ -n ${BASH_VERSION-} ]]; then

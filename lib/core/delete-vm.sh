@@ -220,7 +220,7 @@ delete_all_vms() {
   done)
 
   if [ -z "$datacenter_vms" ]; then
-    print_info "No datacenter VMs found to delete"
+    print_info "No dcvm VMs found to delete"
     return 0
   fi
 
@@ -231,7 +231,7 @@ delete_all_vms() {
   echo ""
 
   print_warning "This action will:"
-  echo "  - Stop and delete ALL datacenter VMs"
+  echo "  - Stop and delete ALL dcvm VMs"
   echo "  - Remove ALL VM disk files"
   echo "  - Clear ALL DHCP leases"
   echo "  - Remove ALL port forwarding rules"
@@ -305,7 +305,7 @@ delete_all_vms() {
     [ -n "$vm" ] && [ "$vm" != "Name" ] && is_vm_in_network "$vm" && echo "$vm"
   done)
 
-  [ -z "$remaining" ] && print_success "✓ All datacenter VMs successfully removed" || { print_warning "✗ Some VMs may still exist:" && echo "$remaining"; }
+  [ -z "$remaining" ] && print_success "✓ All dcvm VMs successfully removed" || { print_warning "✗ Some VMs may still exist:" && echo "$remaining"; }
 }
 
 main() {
@@ -322,8 +322,8 @@ main() {
   esac
 
   echo ""
-  print_info "Remaining datacenter VMs:"
-  list_datacenter_vms || print_info "No datacenter VMs remaining"
+  print_info "Remaining dcvm VMs:"
+  list_datacenter_vms || print_info "No dcvm VMs remaining"
   echo ""
 }
 

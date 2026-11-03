@@ -395,7 +395,7 @@ start_libvirtd() {
 }
 
 start_datacenter_network() {
-  print_status "INFO" "Checking datacenter network..."
+  print_status "INFO" "Checking dcvm network..."
 
   virsh net-list --all | grep -q "$NETWORK_NAME" || {
     print_status "ERROR" "Network '$NETWORK_NAME' not found. Please run the setup script first."
@@ -764,7 +764,7 @@ start_existing_vms() {
 
 show_datacenter_summary() {
   echo
-  print_status_log "INFO" "=== DCVM INSTALLATION COMPLETE ==="
+  print_status_log "INFO" "=== dcvm INSTALLATION COMPLETE ==="
   echo
   echo "Installation directory: $DATACENTER_BASE"
   echo "Network: $NETWORK_NAME (10.10.10.1/24)"
@@ -779,7 +779,7 @@ show_datacenter_summary() {
   echo "    • Show help: dcvm help"
   echo "    • Uninstall: dcvm uninstall"
   echo
-  print_status_log "SUCCESS" "DCVM is ready to use!"
+  print_status_log "SUCCESS" "dcvm is ready to use!"
   print_status_log "INFO" "Run 'dcvm help' to see all available commands"
 }
 
@@ -847,7 +847,7 @@ install_completion() {
 }
 
 setup_service() {
-  print_status_log "INFO" "Setting up datacenter storage service..."
+  print_status_log "INFO" "Setting up dcvm storage service..."
 
   if ! command -v systemctl >/dev/null 2>&1; then
     print_status_log "WARNING" "systemd not available - skipping service setup"
@@ -856,7 +856,7 @@ setup_service() {
 
   cat >/etc/systemd/system/datacenter-storage.service 2>/dev/null <<EOF || {
 [Unit]
-Description=Datacenter Storage Management
+Description=dcvm Storage Management
 After=libvirtd.service
 Requires=libvirtd.service
 
@@ -871,7 +871,7 @@ EOF
 
   cat >/etc/systemd/system/datacenter-storage.timer 2>/dev/null <<'EOF' || {
 [Unit]
-Description=Run datacenter storage management hourly
+Description=Run dcvm storage management hourly
 Requires=datacenter-storage.service
 
 [Timer]
@@ -892,11 +892,11 @@ EOF
   systemctl enable datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not enable timer"
   systemctl start datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not start timer"
 
-  print_status_log "SUCCESS" "Datacenter storage service configured"
+  print_status_log "SUCCESS" "dcvm storage service configured"
 }
 
 install_dcvm_command() {
-  print_status_log "INFO" "Installing DCVM command and libraries..."
+  print_status_log "INFO" "Installing dcvm command and libraries..."
 
   local install_bin="/usr/local/bin"
   local install_lib="/usr/local/lib/dcvm"
@@ -904,26 +904,26 @@ install_dcvm_command() {
   mkdir -p "$install_bin" "$install_lib"
 
   if ! install_by_fetch "$install_bin" "$install_lib"; then
-    print_status_log "ERROR" "Failed to install DCVM files"
+    print_status_log "ERROR" "Failed to install dcvm files"
     exit 1
   fi
 
   if command -v dcvm >/dev/null 2>&1; then
-    print_status_log "SUCCESS" "DCVM command is available in PATH"
+    print_status_log "SUCCESS" "dcvm command is available in PATH"
   else
-    print_status_log "WARNING" "DCVM command not found in PATH yet"
+    print_status_log "WARNING" "dcvm command not found in PATH yet"
     print_status_log "INFO" "The command is installed at: $install_bin/dcvm"
     print_status_log "INFO" "You may need to restart your shell or add /usr/local/bin to PATH"
   fi
 }
 
 main() {
-  print_status_log "INFO" "DCVM installer is starting..." >&2
+  print_status_log "INFO" "dcvm installer is starting..." >&2
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
   echo "$(date) - Installation started" >>"$LOG_FILE" 2>/dev/null || true
 
-  print_status_log "INFO" "Starting DCVM installation..."
+  print_status_log "INFO" "Starting dcvm installation..."
 
   check_root
 
@@ -960,22 +960,22 @@ main() {
 
 dcvm_init() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Welcome to DCVM Installer!"
+    echo "Welcome to dcvm Installer!"
     echo "Repository: ${DCVM_REPO_SLUG}"
     echo "Branch: ${DCVM_REPO_BRANCH}"
     echo ""
 
     if [[ -t 0 && -t 1 ]]; then
-      echo "Please choose the installation directory for Datacenter VM."
+      echo "Please choose the installation directory for dcvm."
       read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
       USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
       DATACENTER_BASE="$USER_DIR"
 
-      echo "Please enter the network name for the datacenter."
+      echo "Please enter the network name for dcvm."
       read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
       NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
 
-      echo "Please enter the bridge name for the datacenter."
+      echo "Please enter the bridge name for dcvm."
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 
@@ -1034,7 +1034,7 @@ dcvm_init() {
     esac
   done
   echo ""
-  print_status_log "INFO" "Executing DCVM installer..." >&2
+  print_status_log "INFO" "Executing dcvm installer..." >&2
   main "$@"
 }
 

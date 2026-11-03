@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# DCVM Comprehensive Test Suite
-# This script tests all DCVM commands and validates functionality.
+# dcvm Comprehensive Test Suite
+# This script tests all dcvm commands and validates functionality.
 # Run with: ./test-suite.sh [options]
 #
 # Options:
@@ -43,7 +43,7 @@ readonly C_RESET="${NC}"
 
 show_test_usage() {
   cat <<-EOF
-	DCVM Comprehensive Test Suite
+	dcvm Comprehensive Test Suite
 	
 	Usage: $0 [options]
 	
@@ -326,7 +326,7 @@ test_configuration() {
     [ -n "$BRIDGE_NAME" ] && log_test "PASS" "BRIDGE_NAME: $BRIDGE_NAME" || log_test "WARN" "BRIDGE_NAME not defined"
     [ -n "$DCVM_LIB_DIR" ] && log_test "PASS" "DCVM_LIB_DIR: $DCVM_LIB_DIR" || log_test "WARN" "DCVM_LIB_DIR not defined"
   else
-    log_test "SKIP" "Config file tests" "DCVM not installed"
+    log_test "SKIP" "Config file tests" "dcvm not installed"
   fi
 }
 
@@ -1571,7 +1571,7 @@ main() {
   done
 
   echo ""
-  echo -e "${C_INFO}DCVM COMPREHENSIVE TEST SUITE${C_RESET}"
+  echo -e "${C_INFO}dcvm COMPREHENSIVE TEST SUITE${C_RESET}"
   echo ""
   echo "Date: $(date)"
   echo "Mode: ${FULL_MODE:+Full }${QUICK_MODE:+Quick }${SYNTAX_ONLY:+Syntax }${UNIT_ONLY:+Unit }${INTEGRATION_ONLY:+Integration }${FULL_MODE:-${QUICK_MODE:-${SYNTAX_ONLY:-${UNIT_ONLY:-${INTEGRATION_ONLY:-Default}}}}}"
