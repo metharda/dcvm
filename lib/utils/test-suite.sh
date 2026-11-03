@@ -1452,7 +1452,7 @@ test_dhcp_clear_exact() {
   cp "$t/br.status" "$t/status.orig"
   out=$(run_dhcp_fixture "$t" 'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }' clear vm1)
   ok=$?
-  if [ "$ok" != 0 ] && cmp -s "$t/br.status" "$t/status.orig" && ! grep -q '^dhcp_release' "$t/calls" &&
+  if [ "$ok" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" && ! grep -q '^dhcp_release' "$t/calls" &&
     echo "$out" | grep -qF "jq not available; the lease is still listed in $t/br.status"; then
     log_test "PASS" "dhcp clear without jq: fails, status file left as is, with the reason (#37)"
   else
@@ -1496,12 +1496,12 @@ test_dhcp_release() {
     cp "$t/br.status" "$t/status.orig"
     out=$(run_dhcp_fixture "$t" "$nostub" clear "$name")
     rc=$?
-    if [ "$rc" != 0 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+    if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" &&
       echo "$out" | grep -qF "dhcp_release not found" && echo "$out" | grep -qF "dnsmasq-utils" &&
       ! echo "$out" | grep -q 'No matching DHCP lease'; then
-      log_test "PASS" "dhcp clear $name without dhcp_release: fails with an install hint, status untouched (37-10)"
+      log_test "PASS" "dhcp clear $name without dhcp_release: exits 1 with an install hint, status untouched (37-10)"
     else
-      log_test "FAIL" "dhcp clear $name without dhcp_release: fails with an install hint, status untouched (37-10)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+      log_test "FAIL" "dhcp clear $name without dhcp_release: exits 1 with an install hint, status untouched (37-10)" "exit $rc; $(echo "$out" | tr '\n' ';')"
     fi
   done
 
@@ -1523,10 +1523,25 @@ test_dhcp_release() {
     # shellcheck disable=SC2086 # split the args on purpose
     out=$(run_dhcp_fixture "$t" "" $args)
     rc=$?
-    if [ "$rc" != 0 ] && echo "$out" | grep -qF "$t/br.status" && ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
-      log_test "PASS" "dhcp $args fails on an unreadable status file (37-12)"
+    if [ "$rc" = 1 ] && echo "$out" | grep -qF "$t/br.status" && ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
+      log_test "PASS" "dhcp $args exits 1 on an unreadable status file (37-12)"
     else
-      log_test "FAIL" "dhcp $args fails on an unreadable status file (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+      log_test "FAIL" "dhcp $args exits 1 on an unreadable status file (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
+  # Nothing to clear is not an error for the command.
+  for name in nosuchvm 52:54:00:99:99:99; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/status.orig"
+    out=$(run_dhcp_fixture "$t" "" clear "$name")
+    rc=$?
+    if [ "$rc" = 0 ] && cmp -s "$t/br.status" "$t/status.orig" && echo "$out" | grep -qF "No matching DHCP lease found" &&
+      ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
+      log_test "PASS" "dhcp clear $name with no matching lease exits 0 and changes nothing (37-12)"
+    else
+      log_test "FAIL" "dhcp clear $name with no matching lease exits 0 and changes nothing (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
     fi
   done
 
@@ -1721,6 +1736,25 @@ test_cleanup_dhcp_lease_failures() {
     log_test "PASS" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)"
   else
     log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  # Exit codes: 0 cleared, 1 nothing matched, 2 failure.
+  local codes="" args extra mac host want
+  for args in "|52:54:00:00:00:01|vm1|0" "|52:54:00:99:99:99|nosuchvm|1" "|||1" "rm -f \"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
+    ": >\"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
+    'unset -f dhcp_release; command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }|52:54:00:00:00:01|vm1|2' \
+    'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }|52:54:00:00:00:01|vm1|2'; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    IFS='|' read -r extra mac host want <<<"$args"
+    run_cleanup_fixture "$t" "$extra" "$mac" "$host" >/dev/null
+    rc=$?
+    [ "$rc" = "$want" ] || codes+="${mac:-none}/${host:-none} [$extra]: got $rc, want $want; "
+  done
+  if [ -z "$codes" ]; then
+    log_test "PASS" "cleanup_dhcp_lease exits 0 when cleared, 1 when nothing matched, 2 when dhcp_release or jq is missing (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease exits 0 when cleared, 1 when nothing matched, 2 when dhcp_release or jq is missing (#37)" "$codes"
   fi
 
   rm -rf "${t:?}"/*

@@ -22,6 +22,7 @@ is_mac_address() {
 clear_lease_by_mac() {
   local mac_address="$1"
   [ -z "$mac_address" ] && print_error "MAC address required" && return 1
+  # Command exit code: 0 when cleared or nothing matched (1), 1 on failure (2).
   cleanup_dhcp_lease "$mac_address" "" || [ $? -ne 2 ]
 }
 
@@ -65,6 +66,7 @@ clear_vm_lease() {
 
   # A static reservation for this MAC is kept; only VM delete removes it.
   [ -n "$mac_address" ] && print_info "Found MAC address: $mac_address"
+  # Command exit code: 0 when cleared or nothing matched (1), 1 on failure (2).
   cleanup_dhcp_lease "$mac_address" "$vm_name" || [ $? -ne 2 ]
 }
 
