@@ -557,11 +557,13 @@ filter_lease_lines() {
 # or whose hostname is $2 (whole field, any case), then tell dnsmasq. Files
 # are rewritten in place only when something is removed. Never restarts the
 # network. Returns 1 when nothing matched.
+# Remove the lease of MAC $1 and/or hostname $2 from dnsmasq's lease and
+# status files and release it in dnsmasq. $3=noreload skips the SIGHUP.
 cleanup_dhcp_lease() {
-  local mac="${1,,}" host="${2,,}"
+  local mac="${1,,}" host="${2,,}" reload="${3:-reload}"
   local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}"
   local lease_file="$dir/${BRIDGE_NAME}.leases" status_file="$dir/${BRIDGE_NAME}.status"
-  local removed=0 n tmp
+  local removed=0 n tmp ts lmac ip rest
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
@@ -576,6 +578,15 @@ cleanup_dhcp_lease() {
     fi
     n=$(($(awk 'END { print NR }' "$lease_file") - $(awk 'END { print NR }' "$tmp")))
     if [ "$n" -gt 0 ]; then
+      # dnsmasq keeps leases in memory (SIGHUP does not drop them), so
+      # release each removed IPv4 lease too.
+      if command_exists dhcp_release; then
+        grep -vxFf "$tmp" "$lease_file" | while read -r ts lmac ip rest; do
+          [[ "$ip" == *.* ]] && dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null
+        done
+      else
+        print_warning "dhcp_release not found; dnsmasq keeps the lease in memory until it expires (install dnsmasq-utils)"
+      fi
       cat "$tmp" >"$lease_file"
       removed=$((removed + n))
       print_info "Removed $n lease(s) from $lease_file"
@@ -608,7 +619,7 @@ cleanup_dhcp_lease() {
   fi
 
   if [ "$removed" -gt 0 ]; then
-    reload_dnsmasq || true
+    [ "$reload" = noreload ] || reload_dnsmasq || true
     return 0
   fi
   print_info "No matching DHCP lease found"

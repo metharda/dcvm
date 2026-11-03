@@ -126,8 +126,9 @@ clear_stale_leases() {
 
   local mac
   for mac in $(printf '%s\n' "${macs_to_remove[@]}" | sort -u); do
-    cleanup_dhcp_lease "$mac" "" || true
+    cleanup_dhcp_lease "$mac" "" noreload || true
   done
+  [ $removed_count -gt 0 ] && { reload_dnsmasq || true; }
 
   if [ $removed_count -gt 0 ]; then
     print_success "Removed $removed_count stale/orphaned lease(s)"

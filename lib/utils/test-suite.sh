@@ -1440,6 +1440,68 @@ test_dhcp_clear_exact() {
   rm -rf "$t"
 }
 
+# 37-10: cleared leases are released from dnsmasq's memory with dhcp_release
+# (SIGHUP does not drop them); without dhcp_release there is a warning.
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_release() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear releases leases (37-10)" "jq not available"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  local stub='PATH="$t/bin:$PATH"'
+  local nostub='command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }'
+  mkbin() {
+    mkdir -p "$t/bin"
+    printf '#!/bin/sh\necho "dhcp_release $*" >>"%s/calls"\n' "$t" >"$t/bin/dhcp_release"
+    chmod +x "$t/bin/dhcp_release"
+  }
+
+  write_lease_fixture "$t"
+  mkbin
+  run_dhcp_fixture "$t" "$stub" clear vm1 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ]; then
+    log_test "PASS" "dhcp clear vm1 runs dhcp_release br <ip> <mac> for its lease only (37-10)"
+  else
+    log_test "FAIL" "dhcp clear vm1 runs dhcp_release br <ip> <mac> for its lease only (37-10)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  mkbin
+  run_dhcp_fixture "$t" "$stub" clear 52:54:00:AB:C2:54 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.254 52:54:00:ab:c2:54" ]; then
+    log_test "PASS" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)"
+  else
+    log_test "FAIL" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  out=$(run_dhcp_fixture "$t" "$nostub" clear vm1)
+  if ! grep -q ' VM1 ' "$t/br.leases" && echo "$out" | grep -qF "dhcp_release not found" &&
+    ! grep -q '^dhcp_release' "$t/calls"; then
+    log_test "PASS" "dhcp clear without dhcp_release: lease file cleaned, warning printed (37-10)"
+  else
+    log_test "FAIL" "dhcp clear without dhcp_release: lease file cleaned, warning printed (37-10)" "$(echo "$out" | tr '\n' ';')"
+  fi
+
+  # --stale with two leases to drop (gone expired, web orphaned) reloads once.
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  mkbin
+  printf 'vm10\nvm1\nvm1-copy\n' >"$t/vms"
+  run_dhcp_fixture "$t" "$stub" clear --stale >/dev/null
+  if [ "$(grep -c '^reload' "$t/calls")" = 1 ] && [ "$(grep -c '^dhcp_release' "$t/calls")" = 2 ] &&
+    [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy"]' ]; then
+    log_test "PASS" "dhcp clear --stale releases each lease and reloads dnsmasq once (37-10)"
+  else
+    log_test "FAIL" "dhcp clear --stale releases each lease and reloads dnsmasq once (37-10)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  rm -rf "$t"
+}
+
 # #37 and X-4: delete matches this VM's lease and status entry exactly, the
 # post-delete check ignores other VMs, and no host systemd unit is touched.
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2030 # stubs are called by delete_single_vm
@@ -1557,6 +1619,11 @@ test_installer_packages() {
       log_test "FAIL" "installer installs jq on $fam hosts"
     fi
   done
+  if installer_packages debian | grep -qx dnsmasq-utils && installer_packages arch | grep -qx dnsmasq; then
+    log_test "PASS" "installer installs dhcp_release (dnsmasq-utils on debian, dnsmasq on arch)"
+  else
+    log_test "FAIL" "installer installs dhcp_release (dnsmasq-utils on debian, dnsmasq on arch)"
+  fi
 }
 
 # #37: get_vm_ip's lease fallback matches the whole hostname field.
@@ -1699,6 +1766,7 @@ test_common_functions() {
   test_userdata_per_os
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
+  test_dhcp_release
   test_installer_packages
   test_delete_vm_exact_match
   test_get_vm_ip_exact
