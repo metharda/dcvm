@@ -41,7 +41,8 @@ clear_all_leases() {
 
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
-  [ -f "$status_file" ] && >"$status_file" && echo "Cleared status file"
+  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && echo "Cleared status file"
 
   restart_network
 }

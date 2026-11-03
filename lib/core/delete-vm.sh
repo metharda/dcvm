@@ -188,7 +188,8 @@ delete_all_vms() {
 
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
-  [ -f "$status_file" ] && >"$status_file" && print_info "Cleared DHCP status file"
+  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && print_info "Cleared DHCP status file"
 
   local port_file=$(get_port_mappings_file)
   [ -f "$port_file" ] && >"$port_file" && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"

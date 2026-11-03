@@ -1547,6 +1547,68 @@ test_dhcp_release() {
 
 # #37 and X-4: delete matches this VM's lease and status entry exactly, the
 # post-delete check ignores other VMs, and no host systemd unit is touched.
+# Bulk clears leave a valid empty JSON array in the status file, in place
+# (same inode and mode), because libvirt parses it.
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
+test_bulk_status_reset() {
+  local t before after
+  t=$(mktemp -d)
+
+  write_lease_fixture "$t"
+  chmod 640 "$t/br.status"
+  before=$(stat -c '%i %a' "$t/br.status")
+  (
+    source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+    DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t"
+    virsh() {
+      [ "$1" = list ] && echo " 1    vm1    running"
+      return 0
+    }
+    is_vm_in_network() { [ ! -e "$t/deleted" ]; }
+    get_vm_state() { echo running; }
+    shuf() { echo 1234; }
+    delete_single_vm() { : >"$t/deleted"; }
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    iptables() { :; }
+    command_exists() { return 1; }
+    delete_all_vms
+  ) <<<$'yes\n1234' >/dev/null 2>&1
+  after=$(stat -c '%i %a' "$t/br.status")
+  if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ]; then
+    log_test "PASS" "delete --all writes [] to the status file, same inode and mode (#37)"
+  else
+    log_test "FAIL" "delete --all writes [] to the status file, same inode and mode (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
+  fi
+
+  if ! command -v script >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear --all writes [] to the status file (#37)" "script not available"
+    rm -rf "$t"
+    return
+  fi
+  write_lease_fixture "$t"
+  chmod 640 "$t/br.status"
+  before=$(stat -c '%i %a' "$t/br.status")
+  cat >"$t/run.sh" <<EOF
+source "$SCRIPT_DIR/../network/dhcp.sh" 2>/dev/null
+load_dcvm_config() { :; }
+require_root() { :; }
+check_dependencies() { :; }
+restart_network() { echo restart >>"$t/calls"; }
+DNSMASQ_DIR="$t" BRIDGE_NAME=br NETWORK_NAME=net
+main clear --all
+EOF
+  # clear --all asks for confirmation only on a terminal.
+  printf 'y\n' | script -qec "bash $t/run.sh" /dev/null >/dev/null 2>&1
+  after=$(stat -c '%i %a' "$t/br.status")
+  if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ] &&
+    grep -qx restart "$t/calls" 2>/dev/null; then
+    log_test "PASS" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)"
+  else
+    log_test "FAIL" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2030 # stubs are called by delete_single_vm
 test_delete_vm_exact_match() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -1966,6 +2028,7 @@ test_common_functions() {
   test_dhcp_release
   test_installer_packages
   test_delete_vm_exact_match
+  test_bulk_status_reset
   test_get_vm_ip_exact
 }
 
