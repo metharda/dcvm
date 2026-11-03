@@ -32,15 +32,19 @@ README pitch and the dcvm name in the docs and the CLI.
   Virtual Machine Manager". Config, path and network names such as
   `DATACENTER_BASE`, `/srv/datacenter` and `datacenter-net` are unchanged.
 - CLI messages, help text and the systemd unit `Description=` lines say
-  "dcvm" instead of "datacenter", and `dcvm --version` prints "dcvm - a VM
-  manager". Function, variable, unit, log and path names are unchanged.
+  "dcvm" instead of "datacenter" or "DCVM", including the installer,
+  uninstaller and `dcvm self-update` output, and `dcvm --version` prints
+  "dcvm - a VM manager". Function, variable, unit, log and path names are
+  unchanged.
 
 ### Fixed
 
 - `docs/examples/basic-vm-creation.md` links to `docs/backups.md` instead of
   the old, missing `docs/backup-restore.md`.
-- The `dcvm network` usage text shows `datacenter-net` as the default network name
-  for `start|stop|restart`, not `datacenter`.
+- In `dcvm network help`, the fallback network name on the
+  `start|stop|restart` line is `datacenter-net`, the default in
+  `lib/utils/common.sh`, instead of `datacenter`. The line still shows the
+  configured network name, so the printed help does not change.
 
 ## [0.9.4] - 2026-10-08
 
