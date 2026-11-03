@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DCVM - Datacenter Virtual Machine Manager
+# dcvm - a VM manager
 # Main CLI entry point
 
 set -euo pipefail
@@ -30,14 +30,14 @@ if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 show_version() {
-  echo "DCVM - Datacenter Virtual Machine Manager"
-  echo "Version: 0.9.4"
+  echo "dcvm - a VM manager"
+  echo "Version: 0.9.5"
   echo "https://github.com/metharda/dcvm"
 }
 
 show_usage() {
   cat <<EOF
-DCVM - Datacenter Virtual Machine Manager
+dcvm - a VM manager
 
 Usage: dcvm <command> [options]
 

@@ -395,7 +395,7 @@ start_libvirtd() {
 }
 
 start_datacenter_network() {
-  print_status "INFO" "Checking datacenter network..."
+  print_status "INFO" "Checking dcvm network..."
 
   virsh net-list --all | grep -q "$NETWORK_NAME" || {
     print_status "ERROR" "Network '$NETWORK_NAME' not found. Please run the setup script first."
@@ -847,7 +847,7 @@ install_completion() {
 }
 
 setup_service() {
-  print_status_log "INFO" "Setting up datacenter storage service..."
+  print_status_log "INFO" "Setting up dcvm storage service..."
 
   if ! command -v systemctl >/dev/null 2>&1; then
     print_status_log "WARNING" "systemd not available - skipping service setup"
@@ -856,7 +856,7 @@ setup_service() {
 
   cat >/etc/systemd/system/datacenter-storage.service 2>/dev/null <<EOF || {
 [Unit]
-Description=Datacenter Storage Management
+Description=dcvm Storage Management
 After=libvirtd.service
 Requires=libvirtd.service
 
@@ -871,7 +871,7 @@ EOF
 
   cat >/etc/systemd/system/datacenter-storage.timer 2>/dev/null <<'EOF' || {
 [Unit]
-Description=Run datacenter storage management hourly
+Description=Run dcvm storage management hourly
 Requires=datacenter-storage.service
 
 [Timer]
@@ -892,7 +892,7 @@ EOF
   systemctl enable datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not enable timer"
   systemctl start datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not start timer"
 
-  print_status_log "SUCCESS" "Datacenter storage service configured"
+  print_status_log "SUCCESS" "dcvm storage service configured"
 }
 
 install_dcvm_command() {
@@ -966,16 +966,16 @@ dcvm_init() {
     echo ""
 
     if [[ -t 0 && -t 1 ]]; then
-      echo "Please choose the installation directory for Datacenter VM."
+      echo "Please choose the installation directory for dcvm."
       read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
       USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
       DATACENTER_BASE="$USER_DIR"
 
-      echo "Please enter the network name for the datacenter."
+      echo "Please enter the network name for dcvm."
       read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
       NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
 
-      echo "Please enter the bridge name for the datacenter."
+      echo "Please enter the bridge name for dcvm."
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
 

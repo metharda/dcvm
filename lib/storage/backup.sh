@@ -1786,17 +1786,17 @@ CONFIGURATION:
 
 EXAMPLES:
   # Create backups
-  dcvm backup create datacenter-vm1
+  dcvm backup create myvm
 
   # Restore backups
-  dcvm backup restore datacenter-vm1                     # Restore from latest
-  dcvm backup restore datacenter-vm1 20250722_143052     # Restore from specific backup
-  dcvm backup restore datacenter-vm1 20250722_143052 vm1-copy  # Restore as a new VM named vm1-copy
-  dcvm backup restore datacenter-vm1 latest vm1-copy     # Latest backup as a new VM
+  dcvm backup restore myvm                               # Restore from latest
+  dcvm backup restore myvm 20250722_143052               # Restore from specific backup
+  dcvm backup restore myvm 20250722_143052 vm1-copy      # Restore as a new VM named vm1-copy
+  dcvm backup restore myvm latest vm1-copy               # Latest backup as a new VM
 
   # List backups
   dcvm backup list                                       # List all backups
-  dcvm backup list datacenter-vm1                        # List backups of specific VM
+  dcvm backup list myvm                                  # List backups of specific VM
 
   # Delete backups
   dcvm backup delete vm1                                 # Interactive delete (numbered menu)

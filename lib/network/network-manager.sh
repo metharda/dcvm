@@ -11,7 +11,7 @@ cmd_show() {
   print_header "Network Information"
   echo "Virtual Networks:" && virsh net-list || true
   echo ""
-  echo "Datacenter Network Details:" && virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
+  echo "dcvm Network Details:" && virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
 
   echo ""
   echo "Active DHCP Leases (via virsh):"
@@ -57,7 +57,7 @@ cmd_show() {
   echo "Active port forwarding rules (iptables):"
   local nat_rules
   nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" || true)
-  [ -n "${nat_rules:-}" ] && echo "$nat_rules" || echo "No datacenter port forwarding rules found"
+  [ -n "${nat_rules:-}" ] && echo "$nat_rules" || echo "No dcvm port forwarding rules found"
 
   echo ""
   echo "Connectivity test:"

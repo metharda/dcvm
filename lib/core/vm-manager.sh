@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
 show_port_status() {
-  echo "=== Datacenter VM Port Status ==="
+  echo "=== dcvm VM Port Status ==="
   echo ""
 
   local port_file=$(get_port_mappings_file)
@@ -43,7 +43,7 @@ show_port_status() {
       echo "  $line"
     done
   else
-    echo "  No datacenter port forwarding rules found"
+    echo "  No dcvm port forwarding rules found"
   fi
   echo ""
 
@@ -99,7 +99,7 @@ start_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Starting all datacenter VMs..."
+    echo "Starting all dcvm VMs..."
 
     stopped_vms=$(virsh list --all | grep -E "shut off" | while read line; do
       vm=$(echo "$line" | awk '{print $2}')
@@ -144,7 +144,7 @@ stop_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Stopping all datacenter VMs..."
+    echo "Stopping all dcvm VMs..."
 
     running_vms=$(virsh list | grep -E "running" | while read line; do
       vm=$(echo "$line" | awk '{print $2}')
@@ -185,7 +185,7 @@ restart_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Restarting all datacenter VMs..."
+    echo "Restarting all dcvm VMs..."
 
     all_vms=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
       vm=$(echo "$line" | awk '{print $2}')
@@ -254,7 +254,7 @@ show_enhanced_status() {
 
   echo "Port forwarding status:"
   port_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
-  [ -n "$port_rules" ] && echo "$port_rules" || echo "No datacenter port forwarding rules found"
+  [ -n "$port_rules" ] && echo "$port_rules" || echo "No dcvm port forwarding rules found"
   echo ""
 
   echo "Network status:"
@@ -324,7 +324,7 @@ main() {
     echo "Virtual Networks:"
     virsh net-list
     echo ""
-    echo "Datacenter Network Details:"
+    echo "dcvm Network Details:"
     virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
     echo ""
     echo "=== ALL DHCP LEASES ==="
@@ -376,7 +376,7 @@ main() {
     "$SCRIPTS_PATH/../network/dhcp.sh" clear --all
     ;;
   "uninstall")
-    require_confirmation "This will completely remove all Datacenter VM files, VMs, networks, and this script."
+    require_confirmation "This will completely remove all dcvm files, VMs, networks, and this script."
     "$SCRIPTS_PATH/uninstall-dcvm.sh"
     ;;
   *)

@@ -85,7 +85,7 @@ Modes:
   Force Mode (-f)                		# Uses default values for unspecified options
 
 Interactive Mode Examples:
-  dcvm create datacenter-vm1             								          # Prompts for all options
+  dcvm create myvm                       								          # Prompts for all options
   dcvm create web-server -p mypass        								        # Prompts for username, memory, CPU, disk, root
   dcvm create db-server -u dbadmin -m 4096 -k mysql-server  			# Prompts for password, CPU, disk, root
 
@@ -231,7 +231,7 @@ check_dependencies() {
 
   if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     print_error "Network '$NETWORK_NAME' does not exist"
-    echo "Please run 'dcvm install' to set up the datacenter network."
+    echo "Please run 'dcvm install' to set up the dcvm network."
     exit 1
   fi
 

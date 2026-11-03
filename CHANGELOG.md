@@ -12,7 +12,7 @@ from git history, so the commit or PR is listed for each release.
 
 ## [0.9.5] - 2026-11-03
 
-Documentation-only release: README pitch and the dcvm name.
+README pitch and the dcvm name in the docs and the CLI.
 
 ### Changed
 
@@ -29,6 +29,9 @@ Documentation-only release: README pitch and the dcvm name.
 - The docs call the project "dcvm, a VM manager" instead of "Datacenter
   Virtual Machine Manager". Config, path and network names such as
   `DATACENTER_BASE`, `/srv/datacenter` and `datacenter-net` are unchanged.
+- CLI messages, help text and the systemd unit `Description=` lines say
+  "dcvm" instead of "datacenter", and `dcvm --version` prints "dcvm - a VM
+  manager". Function, variable, unit, log and path names are unchanged.
 - `docs/examples/basic-vm-creation.md` links to `docs/backups.md` instead of
   the old `docs/backup-restore.md`.
 
