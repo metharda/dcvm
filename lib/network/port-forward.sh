@@ -23,7 +23,7 @@ fi
 cleanup_port_forwarding() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
-  print_info "Cleaning up existing datacenter port forwarding rules"
+  print_info "Cleaning up existing dcvm port forwarding rules"
   for port in {2220..2299} {8080..8179}; do
     while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q ":$port "; do
       local line=$(iptables -t nat -L PREROUTING -n --line-numbers | grep ":$port " | head -1 | awk '{print $1}')
@@ -119,7 +119,7 @@ save_mappings_tmp_to_file() {
 }
 
 cmd_setup() {
-  print_info "=== DCVM Port Forwarding Setup ==="
+  print_info "=== dcvm Port Forwarding Setup ==="
   if ! virsh net-list --all | grep -q "$NETWORK_NAME"; then
     print_error "$NETWORK_NAME network not found"
     print_info "Please run: dcvm status (to initialize the environment)"
@@ -216,7 +216,7 @@ cmd_show() {
 cmd_rules() {
   echo "Active port forwarding rules (iptables):"
   local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
-  [ -n "$nat_rules" ] && echo "$nat_rules" || echo "No datacenter port forwarding rules found"
+  [ -n "$nat_rules" ] && echo "$nat_rules" || echo "No dcvm port forwarding rules found"
 }
 
 cmd_clear() {
@@ -261,7 +261,7 @@ cmd_test() {
 
 cmd_help() {
   cat <<EOF
-DCVM Port Forwarding
+dcvm Port Forwarding
 
 Usage: dcvm network ports <command>
 

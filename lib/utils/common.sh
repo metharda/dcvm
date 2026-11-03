@@ -34,7 +34,7 @@ load_dcvm_config() {
 
   if [ ! -f "$config_file" ]; then
     print_error "Configuration file not found: $config_file"
-    print_info "Please run the DCVM installer first"
+    print_info "Please run the dcvm installer first"
     exit 1
   fi
 

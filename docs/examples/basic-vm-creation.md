@@ -367,5 +367,5 @@ dcvm create-iso customvm --iso /path/to/custom-linux.iso \
 ## Next Steps
 
 - Learn about [Networking](../networking.md)
-- Set up [Backups](../backup-restore.md)
+- Set up [Backups](../backups.md)
 - Read [Advanced Networking Examples](advanced-networking.md)

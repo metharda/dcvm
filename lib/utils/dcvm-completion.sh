@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DCVM tab-completion for Bash and Zsh
+# dcvm tab-completion for Bash and Zsh
 
 _dcvm_commands() {
   echo "create create-iso delete list status start stop restart console network backup storage uninstall version help"

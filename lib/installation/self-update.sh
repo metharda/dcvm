@@ -51,7 +51,7 @@ validate_backup() {
 
 show_usage() {
   cat <<EOF
-DCVM Self-Update
+dcvm Self-Update
 
 Usage: dcvm self-update [options]
 
@@ -160,11 +160,11 @@ do_update() {
   fi
 
   if [[ "$current_version" == "$remote_version" ]] && [[ "$force" != "true" ]]; then
-    print_success "DCVM is already up to date (v$current_version)"
+    print_success "dcvm is already up to date (v$current_version)"
     exit 0
   fi
 
-  print_info "Updating DCVM from v$current_version to v$remote_version..."
+  print_info "Updating dcvm from v$current_version to v$remote_version..."
 
   create_backup_dir
   local backup_dir="$BACKUP_DIR/dcvm-backup-$(date +%Y%m%d%H%M%S)"
@@ -272,7 +272,7 @@ do_update() {
 
   if [[ "$ok" == "true" ]]; then
     print_success "Successfully updated $updated_count files"
-    print_success "DCVM updated to v$remote_version"
+    print_success "dcvm updated to v$remote_version"
     rm -rf "$backup_dir"
   else
     print_error "Some files failed to update"
@@ -297,7 +297,7 @@ check_update() {
   fi
 
   if [[ "$current_version" == "$remote_version" ]]; then
-    print_success "DCVM is up to date"
+    print_success "dcvm is up to date"
   else
     print_info "Update available: v$current_version -> v$remote_version"
     print_info "Run 'dcvm self-update' to update"

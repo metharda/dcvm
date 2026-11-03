@@ -11,7 +11,7 @@ cmd_show() {
   print_header "Network Information"
   echo "Virtual Networks:" && virsh net-list || true
   echo ""
-  echo "Datacenter Network Details:" && virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
+  echo "dcvm Network Details:" && virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
 
   echo ""
   echo "Active DHCP Leases (via virsh):"
@@ -57,7 +57,7 @@ cmd_show() {
   echo "Active port forwarding rules (iptables):"
   local nat_rules
   nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" || true)
-  [ -n "${nat_rules:-}" ] && echo "$nat_rules" || echo "No datacenter port forwarding rules found"
+  [ -n "${nat_rules:-}" ] && echo "$nat_rules" || echo "No dcvm port forwarding rules found"
 
   echo ""
   echo "Connectivity test:"
@@ -309,19 +309,19 @@ cmd_vnc() {
 
 cmd_help() {
   cat <<EOF
-DCVM Network Manager
+dcvm Network Manager
 
 Usage: dcvm network <subcommand> [options]
 
 Subcommands:
   show                 Show network overview (default)
   status               Show concise network/bridge status
-  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter}
+  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter-net}
   leases               List current DHCP leases and files
   bridge               Show bridge details, routes, dnsmasq
   ip-forwarding [on|off|show]
                        Get or toggle net.ipv4.ip_forward
-  config               Show effective DCVM network config
+  config               Show effective dcvm network config
   ports <cmd>          Manage port forwarding (delegates)
   dhcp <cmd>           Manage DHCP leases (delegates)
   help                 Show this help

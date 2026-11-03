@@ -719,7 +719,7 @@ main() {
     fi
 
     if [ -z "$target" ]; then
-      echo "DCVM Template Download"
+      echo "dcvm Template Download"
       echo ""
       echo "Usage: dcvm template download <filename> [--force]"
       echo "       dcvm template download -a, --all [-f]  (download all)"
@@ -769,7 +769,7 @@ main() {
     fi
     ;;
   status)
-    echo "DCVM Template Status"
+    echo "dcvm Template Status"
     echo ""
     echo "Template directory: $TEMPLATE_DIR"
     echo ""
@@ -820,7 +820,7 @@ main() {
     ;;
   verify)
     local target="${2:-}"
-    echo "DCVM Template Verification"
+    echo "dcvm Template Verification"
     echo ""
     if [ "$target" = "-a" ] || [ "$target" = "--all" ] || [ -z "$target" ]; then
       echo "Verifying all installed templates..."
@@ -862,7 +862,7 @@ main() {
     fi
     ;;
   help | --help | -h | "")
-    echo "DCVM Template Management"
+    echo "dcvm Template Management"
     echo ""
     echo "Usage: dcvm template <command> [args]"
     echo ""
