@@ -1400,7 +1400,7 @@ test_dhcp_clear_exact() {
   write_lease_fixture "$t"
   cp "$t/br.status" "$t/status.orig"
   out=$(run_dhcp_fixture "$t" 'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }' clear vm1)
-  if ! grep -q ' VM1 ' "$t/br.leases" && cmp -s "$t/br.status" "$t/status.orig" && echo "$out" | grep -q 'jq'; then
+  if ! grep -q ' VM1 ' "$t/br.leases" && cmp -s "$t/br.status" "$t/status.orig" && echo "$out" | grep -qF "jq not available; the lease is still listed in $t/br.status"; then
     log_test "PASS" "dhcp clear without jq: lease removed, status file left as is with a warning (#37)"
   else
     log_test "FAIL" "dhcp clear without jq: lease removed, status file left as is with a warning (#37)"
@@ -1504,6 +1504,27 @@ test_cleanup_dhcp_lease_failures() {
     log_test "FAIL" "cleanup_dhcp_lease: failing lease filter leaves the files as they were, exit 1 (#37)" "exit $rc; $(wc -l <"$t/br.leases") lines; $(echo "$out" | tr '\n' ';')"
   fi
   rm -rf "$t"
+}
+
+# Print the installer's package list for host family $1 (debian or arch).
+installer_packages() {
+  local line
+  line=$(grep -m1 "^  local $1_packages=(" "$SCRIPT_DIR/../installation/install-dcvm.sh") || return 1
+  eval "${line#  local }"
+  local -n list="$1_packages"
+  printf '%s\n' "${list[@]}"
+}
+
+# The installer pulls in the host tools dcvm's lease cleanup needs.
+test_installer_packages() {
+  local fam
+  for fam in debian arch; do
+    if installer_packages "$fam" | grep -qx jq; then
+      log_test "PASS" "installer installs jq on $fam hosts"
+    else
+      log_test "FAIL" "installer installs jq on $fam hosts"
+    fi
+  done
 }
 
 # #37: get_vm_ip's lease fallback matches the whole hostname field.
@@ -1646,6 +1667,7 @@ test_common_functions() {
   test_userdata_per_os
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
+  test_installer_packages
   test_delete_vm_exact_match
   test_get_vm_ip_exact
 }

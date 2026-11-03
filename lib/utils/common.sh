@@ -583,7 +583,7 @@ cleanup_dhcp_lease() {
 
   if [ -s "$status_file" ]; then
     if ! command_exists jq; then
-      print_warning "jq not available; $status_file left unchanged"
+      print_warning "jq not available; the lease is still listed in $status_file (install jq)"
     else
       tmp=$(mktemp) || return 1
       # shellcheck disable=SC2016 # jq variables
