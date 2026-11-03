@@ -567,6 +567,11 @@ cleanup_dhcp_lease() {
   if [ -f "$lease_file" ]; then
     tmp=$(mktemp) || return 1
     filter_lease_lines "$mac" 2 keep <"$lease_file" | filter_lease_lines "$host" 4 keep >"$tmp"
+    if [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" != 00 ]; then
+      rm -f "$tmp"
+      print_error "Could not filter $lease_file; left unchanged"
+      return 1
+    fi
     n=$(($(awk 'END { print NR }' "$lease_file") - $(awk 'END { print NR }' "$tmp")))
     if [ "$n" -gt 0 ]; then
       cat "$tmp" >"$lease_file"

@@ -1472,6 +1472,40 @@ test_delete_vm_exact_match() {
   command rm -rf "$t"
 }
 
+# Run cleanup_dhcp_lease "${@:3}" on the fixtures in $1 with extra stub code
+# $2; reload calls are logged to $1/calls, temp files go to $1/tmp.
+# shellcheck disable=SC2034,SC2317 # globals read by cleanup_dhcp_lease; stubs
+run_cleanup_fixture() {
+  local t="$1" extra="$2"
+  shift 2
+  mkdir -p "$t/tmp"
+  (
+    DNSMASQ_DIR="$t" BRIDGE_NAME=br TMPDIR="$t/tmp"
+    reload_dnsmasq() { echo reload >>"$t/calls"; }
+    eval "$extra"
+    cleanup_dhcp_lease "$@"
+  ) </dev/null 2>&1
+}
+
+# #37: cleanup_dhcp_lease never loses lease data when a step fails.
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_cleanup_dhcp_lease_failures() {
+  local t out rc
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  cp "$t/br.leases" "$t/leases.orig"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'filter_lease_lines() { cat >/dev/null; return 2; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 1 ] && cmp -s "$t/br.leases" "$t/leases.orig" && cmp -s "$t/br.status" "$t/status.orig" &&
+    [ -z "$(ls -A "$t/tmp")" ] && [ ! -e "$t/calls" ]; then
+    log_test "PASS" "cleanup_dhcp_lease: failing lease filter leaves the files as they were, exit 1 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: failing lease filter leaves the files as they were, exit 1 (#37)" "exit $rc; $(wc -l <"$t/br.leases") lines; $(echo "$out" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
 # #37: get_vm_ip's lease fallback matches the whole hostname field.
 # shellcheck disable=SC2317,SC2030 # stub; DATACENTER_BASE set for the call only
 test_get_vm_ip_exact() {
@@ -1611,6 +1645,7 @@ test_common_functions() {
   test_userdata_passwords
   test_userdata_per_os
   test_dhcp_clear_exact
+  test_cleanup_dhcp_lease_failures
   test_delete_vm_exact_match
   test_get_vm_ip_exact
 }
