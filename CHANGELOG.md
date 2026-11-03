@@ -32,8 +32,12 @@ Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
 
 ### Changed
 
-- `-k mysql-server` installs MariaDB on Debian 12/13 and Arch Linux, which have
-  no `mysql-server` package (#36).
+- `-k mysql-server` installs MariaDB (service `mariadb`) on Debian 11/12/13,
+  Kali and Arch Linux, which have no `mysql-server` package; only Ubuntu keeps
+  MySQL. `-k default-mysql-server` also runs the database setup: it
+  installs as named on Debian, Kali (MariaDB) and Ubuntu (MySQL), and as
+  `mariadb` on Arch Linux. Other names containing `mysql` no longer trigger
+  the setup (#36).
 - `dhcp clear <vm|mac>` and `dhcp clear --stale` no longer restart the
   network; only `dhcp clear --all` does. With no matching lease, `clear`
   says so and changes nothing (#37).

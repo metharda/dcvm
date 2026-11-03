@@ -1033,12 +1033,13 @@ generate_cloud_init_userdata() {
     exit 1
   }
 
-  # Per-OS names. Debian 12/13 and Arch have no mysql-server package, so an
-  # exact -k mysql-server installs MariaDB there.
-  local mysql_package=mysql-server mysql_service=mysql mysql_auth=" WITH mysql_native_password"
+  # Per-OS names. Only Ubuntu ships a real mysql-server; on Debian, Kali and
+  # Arch an exact -k mysql-server installs MariaDB. default-mysql-server is
+  # kept as named where it exists (Debian family: MariaDB, Ubuntu: MySQL).
+  local mysql_package=mariadb-server mysql_service=mariadb mysql_auth=""
   case "$VM_OS" in
-  debian12 | debian13) mysql_package=mariadb-server mysql_service=mariadb mysql_auth="" ;;
-  archlinux) mysql_package=mariadb mysql_service=mariadb mysql_auth="" ;;
+  ubuntu*) mysql_package=mysql-server mysql_service=mysql mysql_auth=" WITH mysql_native_password" ;;
+  archlinux) mysql_package=mariadb ;;
   esac
   local ssh_service=ssh sftp_server=/usr/lib/openssh/sftp-server
   local base_packages="openssh-server openssh-sftp-server nfs-common"
@@ -1066,9 +1067,11 @@ generate_cloud_init_userdata() {
         TAILSCALE_REQUESTED=true
         continue
       fi
-      if [ "$package" = mysql-server ]; then
+      if [ "$package" = mysql-server ] || [ "$package" = default-mysql-server ]; then
         MYSQL_REQUESTED=true
-        package=$mysql_package
+        if [ "$package" = mysql-server ] || [ "$VM_OS" = archlinux ]; then
+          package=$mysql_package
+        fi
       fi
       if [ "$VM_OS" = archlinux ] && [[ "$package" =~ ^apache2?$ ]]; then
         APACHE_REQUESTED=true

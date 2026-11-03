@@ -1175,43 +1175,52 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
     log_test "FAIL" "validate_password accepts 128 and rejects 129 characters (#36)"
   fi
 
-  generate_test_userdata tester n "" "$t/def.yaml" default-mysql-server
+  generate_test_userdata tester n "" "$t/client.yaml" mysql-client
   generate_test_userdata tester n "" "$t/docker.yaml" docker
-  if ! grep -qE 'dcvm-mysql-init|systemctl (enable|start) (mysql|mariadb)' "$t/def.yaml" &&
-    grep -q '^    for pkg in default-mysql-server; do$' "$t/def.yaml" &&
+  if ! grep -qE 'dcvm-mysql-init|systemctl (enable|start) (mysql|mariadb)' "$t/client.yaml" &&
+    grep -q '^    for pkg in mysql-client; do$' "$t/client.yaml" &&
     grep -qx '  - usermod -aG docker tester' "$t/docker.yaml"; then
-    log_test "PASS" "-k mysql-server matches the exact name; docker group gets the user (#36)"
+    log_test "PASS" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
   else
-    log_test "FAIL" "-k mysql-server matches the exact name; docker group gets the user (#36)"
+    log_test "FAIL" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
   fi
 
-  local os pkg svc
-  for os in debian12 debian13 archlinux ubuntu24.04; do
-    generate_test_userdata tester n "" "$t/$os.yaml" mysql-server pw1234 "$os"
-    case "$os" in
-    debian*) pkg=mariadb-server svc=mariadb ;;
-    archlinux) pkg=mariadb svc=mariadb ;;
-    *) pkg=mysql-server svc=mysql ;;
-    esac
-    sql=$(ud_py "$t/$os.yaml" "$sql_expr" 2>/dev/null)
-    ok=true
-    grep -q "^    for pkg in $pkg; do\$" "$t/$os.yaml" || ok=false
-    grep -qx "  - systemctl enable $svc" "$t/$os.yaml" || ok=false
-    grep -qx "  - $svc < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql" "$t/$os.yaml" || ok=false
-    if [ "$svc" = mariadb ]; then
-      grep -q 'IDENTIFIED WITH' <<<"$sql" && ok=false
-    else
-      grep -q 'IDENTIFIED WITH mysql_native_password' <<<"$sql" || ok=false
-    fi
-    if [ "$os" = archlinux ]; then
-      [ "$(grep -nx '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql' "$t/$os.yaml" | cut -d: -f1)" \
-        -lt "$(grep -nx '  - systemctl start mariadb' "$t/$os.yaml" | cut -d: -f1)" ] 2>/dev/null || ok=false
-    fi
-    if [ "$ok" = true ]; then
-      log_test "PASS" "-k mysql-server on $os uses $pkg/$svc (#36)"
-    else
-      log_test "FAIL" "-k mysql-server on $os uses $pkg/$svc (#36)"
-    fi
+  # Every supported VM_OS x both server names: package, service, SQL setup,
+  # and mysql_native_password only where real MySQL is installed (Ubuntu).
+  local os pkg svc req
+  for os in debian11 debian12 debian13 kali ubuntu20.04 ubuntu22.04 ubuntu24.04 archlinux; do
+    for req in mysql-server default-mysql-server; do
+      generate_test_userdata tester n "" "$t/$os-$req.yaml" "$req" pw1234 "$os"
+      case "$os" in
+      ubuntu*) pkg=$req svc=mysql ;;
+      archlinux) pkg=mariadb svc=mariadb ;;
+      *) pkg=mariadb-server svc=mariadb ;;
+      esac
+      [ "$req" = default-mysql-server ] && [ "$os" != archlinux ] && pkg=default-mysql-server
+      f="$t/$os-$req.yaml"
+      sql=$(ud_py "$f" "$sql_expr" 2>/dev/null)
+      ok=true
+      grep -q "^    for pkg in $pkg; do\$" "$f" || ok=false
+      grep -qx "  - systemctl enable $svc" "$f" || ok=false
+      grep -qx "  - $svc < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
+      grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
+      if [ "$svc" = mariadb ]; then
+        grep -q 'IDENTIFIED WITH' <<<"$sql" && ok=false
+      else
+        grep -q 'IDENTIFIED WITH mysql_native_password' <<<"$sql" || ok=false
+      fi
+      if [ "$os" = archlinux ]; then
+        [ "$(grep -nx '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql' "$f" | cut -d: -f1)" \
+          -lt "$(grep -nx '  - systemctl start mariadb' "$f" | cut -d: -f1)" ] 2>/dev/null || ok=false
+      else
+        grep -q 'mariadb-install-db' "$f" && ok=false
+      fi
+      if [ "$ok" = true ]; then
+        log_test "PASS" "-k $req on $os uses $pkg/$svc (#36)"
+      else
+        log_test "FAIL" "-k $req on $os uses $pkg/$svc (#36)"
+      fi
+    done
   done
   rm -rf "$t"
 }
