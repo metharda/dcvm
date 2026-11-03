@@ -1159,13 +1159,13 @@ test_userdata_passwords() {
   sql=$(ud_py "$t/root.yaml" "$sql_expr" 2>/dev/null)
   rm -f "$t/chpasswd.in"
   PATH="$t/bin:$PATH" sh -c "$(ud_py "$t/root.yaml" "d['bootcmd'][0]" 2>/dev/null)" >/dev/null 2>&1
-  if [ "$sql" = "ALTER USER 'root'@'localhost' IDENTIFIED BY 'a''b #c';
+  if [ "$sql" = "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('a''b #c');
 FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &&
     [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "root:$pw" ] &&
     [ "$(ud_py "$t/root.yaml" 'len(d["bootcmd"])')" = "1" ]; then
-    log_test "PASS" "username root: one password in chpasswd and ALTER USER only (#36)"
+    log_test "PASS" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)"
   else
-    log_test "FAIL" "username root: one password in chpasswd and ALTER USER only (#36)" "$sql"
+    log_test "FAIL" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)" "$sql"
   fi
 
   if validate_password "$(printf 'a%.0s' {1..128})" >/dev/null &&
@@ -1186,7 +1186,8 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
   fi
 
   # Every supported VM_OS x both server names: package, service, SQL setup,
-  # and mysql_native_password only where real MySQL is installed (Ubuntu).
+  # and the root login: MySQL (Ubuntu) gets mysql_native_password, MariaDB
+  # keeps unix_socket and adds the password.
   local os pkg svc req auth
   for os in debian11 debian12 debian13 kali ubuntu20.04 ubuntu22.04 ubuntu24.04 archlinux; do
     for req in mysql-server default-mysql-server; do
@@ -1204,9 +1205,9 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
       grep -qx "  - systemctl enable $svc" "$f" || ok=false
       grep -qx "  - $svc < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
       grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
-      auth=""
-      [ "$svc" = mysql ] && auth=" WITH mysql_native_password"
-      grep -qxF "ALTER USER 'root'@'localhost' IDENTIFIED$auth BY 'pw1234';" <<<"$sql" || ok=false
+      auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('pw1234')"
+      [ "$svc" = mysql ] && auth="IDENTIFIED WITH mysql_native_password BY 'pw1234'"
+      grep -qxF "ALTER USER 'root'@'localhost' $auth;" <<<"$sql" || ok=false
       grep -qxF "  - systemctl start $svc" "$f" || ok=false
       if [ "$os" = archlinux ]; then
         # install, then mariadb-install-db, then start

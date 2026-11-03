@@ -1036,9 +1036,9 @@ generate_cloud_init_userdata() {
   # Per-OS names. Only Ubuntu ships a real mysql-server; on Debian, Kali and
   # Arch an exact -k mysql-server installs MariaDB. default-mysql-server is
   # kept as named where it exists (Debian family: MariaDB, Ubuntu: MySQL).
-  local mysql_package=mariadb-server mysql_service=mariadb mysql_auth=""
+  local mysql_package=mariadb-server mysql_service=mariadb
   case "$VM_OS" in
-  ubuntu*) mysql_package=mysql-server mysql_service=mysql mysql_auth=" WITH mysql_native_password" ;;
+  ubuntu*) mysql_package=mysql-server mysql_service=mysql ;;
   archlinux) mysql_package=mariadb ;;
   esac
   local ssh_service=ssh sftp_server=/usr/lib/openssh/sftp-server
@@ -1120,7 +1120,10 @@ PACKAGES_EOF
   if [ "$MYSQL_REQUESTED" = true ]; then
     local sql_password=${VM_PASSWORD//\\/\\\\}
     sql_password=${sql_password//\'/\'\'}
-    mysql_sql="ALTER USER 'root'@'localhost' IDENTIFIED${mysql_auth} BY '$sql_password';"
+    # MariaDB root keeps its unix_socket login and also gets the password.
+    local root_auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password')"
+    [ "$mysql_service" = mysql ] && root_auth="IDENTIFIED WITH mysql_native_password BY '$sql_password'"
+    mysql_sql="ALTER USER 'root'@'localhost' $root_auth;"
     # Username root: the ALTER USER above already covers root@localhost.
     if [ "$VM_USERNAME" != "root" ]; then
       mysql_sql+="
