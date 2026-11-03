@@ -278,8 +278,9 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    ```
 
 3. **Formatting** (`format.yaml`, on PRs touching `dcvm` or `*.sh`). CI runs
-   `shfmt -i 2 -d` (check-only diff, read-only permissions, no bot commits).
-   Format locally with `shfmt -i 2 -w` before pushing so the check stays green:
+   `shfmt -i 2 -d` (check-only diff, read-only permissions, no automatic
+   commits). Format locally with `shfmt -i 2 -w` before pushing so the check
+   stays green:
 
    ```bash
    shfmt -i 2 -w dcvm $(git ls-files -- '*.sh')

@@ -52,7 +52,7 @@ dcvm create myvm \
 
 **Options:**
 - `-u, --username`: VM username (default: depends on OS, e.g., 'ubuntu', 'debian'). 3-32 characters, starting with a letter or `_`; `admin`, `administrator`, `sysadmin`, `user` and `guest` are reserved. `root` configures root login (root access on, one password from `-p`, SSH key in `/root/.ssh`; `-r` must be omitted or equal `-p`)
-- `-p, --password`: User password (required in force mode)
+- `-p, --password`: User password (required in force mode). 4-128 characters with no line breaks (`\n`, `\r`, U+0085, U+2028, U+2029); every other character is taken literally. The user and root passwords are set once, at first boot, so a password changed later inside the VM with `passwd` is kept.
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
 - `-d, --disk`: Disk size (default: 30G)
@@ -70,8 +70,8 @@ Note about multiple VMs and `--ip`:
 
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
 - `--enable-root`: Enable root login
-- `-r, --root-password`: Set root password
-- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Names must start with a letter or number and may contain letters, numbers, `@`, `.`, `_`, `+` and `-`. Each package is installed separately, so one unavailable name does not block the rest; failures are logged in the guest to `/var/log/dcvm-packages.log`.
+- `-r, --root-password`: Set root password (enables root access; same rules as `-p`)
+- `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Names must start with a letter or number and may contain letters, numbers, `@`, `.`, `_`, `+` and `-`. Each package is installed separately, so one unavailable name does not block the rest; failures are logged in the guest to `/var/log/dcvm-packages.log`. See [Service setup for `-k` packages](#service-setup-for--k-packages).
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
@@ -213,7 +213,9 @@ Automatically sets up port forwarding for:
 dcvm network dhcp cleanup
 ```
 
-Removes stale DHCP lease entries.
+Removes stale DHCP lease entries without restarting the network (same as
+`dcvm network dhcp clear -s`). Needs `jq` and `dhcp_release`; see
+[Networking](networking.md).
 
 ### VNC Management
 
@@ -347,6 +349,36 @@ ls /mnt/shared/
 ```bash
 dcvm create webserver -f -p pass123 -k nginx,php,mysql-server
 ```
+
+### Service setup for `-k` packages
+
+Besides installing the package, dcvm sets up a service only for these exact
+names. Names that only contain them, such as `nginx-extras`,
+`libapache2-mod-php` or `python3-docker`, are installed as typed with no
+setup.
+
+| `-k` name | Setup |
+| --- | --- |
+| `nginx` | Enables and starts nginx and writes a welcome `index.html` (`/var/www/html`; `/usr/share/nginx/html` on Arch Linux) |
+| `apache2` (also `apache` on Arch Linux) | Enables and starts Apache (`apache2`; package `apache`, service `httpd` on Arch Linux) and writes a welcome `index.html` (`/var/www/html`; `/srv/http` on Arch Linux) |
+| `docker`, `docker.io` | Enables and starts Docker and adds the VM user to the `docker` group |
+| `mysql-server`, `default-mysql-server` | Installs the database server below and sets the database passwords |
+
+Database server installed:
+
+| OS | `-k mysql-server` | `-k default-mysql-server` |
+| --- | --- | --- |
+| Ubuntu 20.04/22.04/24.04 | MySQL (`mysql-server`, service `mysql`) | `default-mysql-server` (MySQL, service `mysql`) |
+| Debian 11/12/13, Kali Linux | MariaDB (`mariadb-server`, service `mariadb`) | `default-mysql-server` (MariaDB, service `mariadb`) |
+| Arch Linux | MariaDB (`mariadb`, service `mariadb`) | MariaDB (`mariadb`, service `mariadb`) |
+
+Database accounts:
+
+- The database `root@localhost` gets the VM password (`-p`). With MariaDB it
+  also keeps its passwordless login from the system root account
+  (`sudo mariadb`); with MySQL it uses the password only.
+- Unless the username is `root`, a database user with the VM username and
+  password is created with all privileges.
 
 ### After VM Creation
 

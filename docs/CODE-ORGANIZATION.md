@@ -24,7 +24,7 @@
 - trim_whitespace() - Strip leading/trailing whitespace in pure bash, keeping quotes and backslashes intact (exported)
 - validate_username() - Validate username (3-32 chars, starts with a letter or underscore; rejects admin, administrator, sysadmin, user, guest; root is allowed)
 - validate_package_list() - Validate -k package names (letters, numbers, @ . _ + -; must start with a letter or number) (exported)
-- validate_password() - Validate password (4-128 chars)
+- validate_password() - Validate password (4-128 chars, no line breaks)
 - validate_ip_in_subnet() - Validate IP address is within configured subnet
 
 **VM Management:**
