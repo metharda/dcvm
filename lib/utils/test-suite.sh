@@ -1714,6 +1714,12 @@ test_get_vm_ip_subnet_dots() {
   else
     log_test "FAIL" "get_vm_ip: subnet 10.10.10 does not match 10x10y10.5" "got '$got'"
   fi
+  if ! NETWORK_SUBNET=1.1.1 validate_ip_in_subnet 111.1.1.5 >/dev/null 2>&1 &&
+    NETWORK_SUBNET=1.1.1 validate_ip_in_subnet 1.1.1.5 >/dev/null 2>&1; then
+    log_test "PASS" "validate_ip_in_subnet: subnet 1.1.1 accepts 1.1.1.5, not 111.1.1.5"
+  else
+    log_test "FAIL" "validate_ip_in_subnet: subnet 1.1.1 accepts 1.1.1.5, not 111.1.1.5"
+  fi
 }
 
 # -k nginx, apache2 and docker.io set up their service; packages that only

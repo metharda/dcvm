@@ -718,7 +718,7 @@ detect_host_ip() {
   local subnet_re="${subnet//./\\.}"
   for interface in eth0 ens3 ens18 enp0s3 wlan0; do
     host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-    [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
+    [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet_re}\. ]] && break
   done
   [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
   [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
@@ -756,7 +756,7 @@ validate_ip_in_subnet() {
     return 1
   fi
 
-  if [[ ! "$ip" =~ ^${subnet}\. ]]; then
+  if [[ ! "$ip" =~ ^${subnet_re}\. ]]; then
     print_error "IP address $ip is not in subnet ${subnet}.0/24"
     print_info "Valid range: ${subnet}.2 - ${subnet}.254"
     return 1
@@ -773,7 +773,6 @@ validate_ip_in_subnet() {
 interactive_prompt_static_ip_common() {
   local var_name="${1:-STATIC_IP}"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
-  local subnet_re="${subnet//./\\.}"
   local result=""
 
   echo ""
