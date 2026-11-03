@@ -1753,7 +1753,7 @@ ssh_setup_vm() {
 
 show_help() {
   cat <<EOF
-DCVM Backup & Restore Management
+dcvm Backup & Restore Management
 
 Usage: dcvm backup <subcommand> [options]
 

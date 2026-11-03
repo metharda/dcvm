@@ -381,7 +381,7 @@ except Exception as e:
   echo ""
   print_info "Next steps:"
   echo "  1. Try starting VM: virsh start $vm_name"
-  echo "  2. Or use DCVM:     dcvm start $vm_name"
+  echo "  2. Or use dcvm:     dcvm start $vm_name"
   echo "  3. Check status:    virsh list --all"
   echo "  4. View logs:       tail -f /var/log/libvirt/qemu/$vm_name.log"
   echo ""

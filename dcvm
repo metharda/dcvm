@@ -24,7 +24,7 @@ else
   LIB_DIR="$SCRIPT_DIR/lib"
 fi
 if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
-  echo -e "${RED}[ERROR]${NC} DCVM is not installed. Please run the installer first."
+  echo -e "${RED}[ERROR]${NC} dcvm is not installed. Please run the installer first."
   echo "Visit: https://github.com/metharda/dcvm"
   exit 1
 fi
@@ -65,8 +65,8 @@ COMMANDS:
     template <cmd>                 Template management (list, download, check)
 
   System:
-    self-update                    Update DCVM to the latest version
-    uninstall                      Uninstall DCVM completely
+    self-update                    Update dcvm to the latest version
+    uninstall                      Uninstall dcvm completely
     version                        Show version information
     help                           Show this help message
     fix-lock                       Fix locked resources

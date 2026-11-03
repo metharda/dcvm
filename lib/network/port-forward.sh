@@ -119,7 +119,7 @@ save_mappings_tmp_to_file() {
 }
 
 cmd_setup() {
-  print_info "=== DCVM Port Forwarding Setup ==="
+  print_info "=== dcvm Port Forwarding Setup ==="
   if ! virsh net-list --all | grep -q "$NETWORK_NAME"; then
     print_error "$NETWORK_NAME network not found"
     print_info "Please run: dcvm status (to initialize the environment)"
@@ -261,7 +261,7 @@ cmd_test() {
 
 cmd_help() {
   cat <<EOF
-DCVM Port Forwarding
+dcvm Port Forwarding
 
 Usage: dcvm network ports <command>
 

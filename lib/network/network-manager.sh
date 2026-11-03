@@ -309,7 +309,7 @@ cmd_vnc() {
 
 cmd_help() {
   cat <<EOF
-DCVM Network Manager
+dcvm Network Manager
 
 Usage: dcvm network <subcommand> [options]
 
@@ -321,7 +321,7 @@ Subcommands:
   bridge               Show bridge details, routes, dnsmasq
   ip-forwarding [on|off|show]
                        Get or toggle net.ipv4.ip_forward
-  config               Show effective DCVM network config
+  config               Show effective dcvm network config
   ports <cmd>          Manage port forwarding (delegates)
   dhcp <cmd>           Manage DHCP leases (delegates)
   help                 Show this help
