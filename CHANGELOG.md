@@ -3,10 +3,12 @@
 All notable changes to DCVM are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-DCVM does not publish git tags; versions below are the `Version:` string reported
-by `dcvm version` (defined in `show_version()` in the `dcvm` entry point), and the
-date is the day that version first landed on `main`. Entries were reconstructed
-from git history, so the commit or PR is listed for each release.
+Versions are the `Version:` string reported by `dcvm version` (defined in
+`show_version()` in the `dcvm` entry point). Each release is tagged `vX.Y.Z` on
+`main`, and each version heading links to the compare between the previous tag
+and its own (0.5.2, the first tag, links to its tag page). The date is the day
+that version first landed on `main`. Entries were reconstructed from git
+history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
@@ -258,10 +260,11 @@ PR #24 (d9336b1).
 
 ## [0.7.2] - 2025-12-19
 
-PR #21 (658ee60).
+PR #20 (25ef022), PR #21 (658ee60).
 
 ### Changed
 
+- Lint and test workflows no longer run on pushes to `main`, only on PRs (#20).
 - Installer output uses `print_status_log` consistently.
 
 ### Fixed
@@ -271,30 +274,12 @@ PR #21 (658ee60).
 
 ## [0.7.1] - 2025-12-18
 
-PR #19 (fde93c6), PR #20 (25ef022).
+PR #13 (12cdf24), PR #15 (c001e8b), PR #17 (e40e630), PR #19 (fde93c6).
 
 Version jumped from 0.5.2 to 0.7.1 (no 0.6.x releases).
 
 ### Added
 
-- CI workflows: version-bump enforcement (`version-bump.yaml`), quick test
-  matrix (`test.yaml`), lint (`bash -n` + `shellcheck`) and `shfmt` format.
-- `lib/utils/test-suite.sh` repository test suite.
-
-### Changed
-
-- License changed to Apache License 2.0.
-- All shell scripts reformatted with `shfmt -i 2`.
-- Lint and test workflows no longer run on pushes to `main`, only on PRs (#20).
-
-## [0.5.2] - 2025-11-18
-
-Version `0.5.2` first appeared in `bin/dcvm` in de6400d (#12) on 2025-11-18.
-Later commits kept the same version string until 0.7.1.
-
-### Added
-
-- Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 - Improved installer (`lib/installation/install-dcvm.sh`) (#13, 12cdf24).
 - Full Arch Linux guest support and Arch cloud-init fixes (#15, c001e8b).
 - `dcvm self-update` with version checks and backup/rollback (#17, e40e630).
@@ -303,22 +288,37 @@ Later commits kept the same version string until 0.7.1.
 - Mirror manager (`lib/utils/mirror-manager.sh`) with mirror speed tests and
   fallbacks for Debian, Ubuntu and Arch Linux images (#17).
 - Static IP option and interactive prompts for memory, CPUs and disk size (#17).
+- CI workflows: version-bump enforcement (`version-bump.yaml`), quick test
+  matrix (`test.yaml`), lint (`bash -n` + `shellcheck`) and `shfmt` format.
+- `lib/utils/test-suite.sh` repository test suite.
 
 ### Changed
 
+- License changed to Apache License 2.0.
+- All shell scripts reformatted with `shfmt -i 2`.
 - `dcvm` entry point moved from `bin/dcvm` to the repository root (#17).
 - Unified logging format; `vm_exists` replaced by `check_vm_exists`;
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/457bb31...HEAD
-[0.9.5]: https://github.com/metharda/dcvm/compare/457bb31...docs/readme-everyday-pitch
-[0.9.4]: https://github.com/metharda/dcvm/pull/39
-[0.9.3]: https://github.com/metharda/dcvm/pull/35
-[0.9.2]: https://github.com/metharda/dcvm/pull/34
-[0.9.1]: https://github.com/metharda/dcvm/pull/32
-[0.9.0]: https://github.com/metharda/dcvm/commit/109eb9c
-[0.8.0]: https://github.com/metharda/dcvm/commit/d9336b1
-[0.7.2]: https://github.com/metharda/dcvm/commit/658ee60
-[0.7.1]: https://github.com/metharda/dcvm/commit/fde93c6
-[0.5.2]: https://github.com/metharda/dcvm/commit/de6400d
+## [0.5.2] - 2025-11-18
+
+Version `0.5.2` first appeared in `bin/dcvm` in de6400d (#12) on 2025-11-18.
+Later commits (#13, #15, #17) kept the same version string, but they landed
+after the `v0.5.2` tag, so they are listed under 0.7.1.
+
+### Added
+
+- Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
+
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5
+[0.9.4]: https://github.com/metharda/dcvm/compare/v0.9.3...v0.9.4
+[0.9.3]: https://github.com/metharda/dcvm/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/metharda/dcvm/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/metharda/dcvm/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/metharda/dcvm/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/metharda/dcvm/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/metharda/dcvm/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/metharda/dcvm/compare/v0.5.2...v0.7.1
+[0.5.2]: https://github.com/metharda/dcvm/releases/tag/v0.5.2

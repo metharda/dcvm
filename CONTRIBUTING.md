@@ -254,8 +254,7 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    ```
 
    The README version badge (`https://img.shields.io/badge/version-X.Y.Z-...`)
-   is static, because the project publishes no tags or releases. Update it to
-   the same `X.Y.Z` in the same PR.
+   is static. Update it to the same `X.Y.Z` in the same PR.
 
    If two open PRs bump to the same version, the second one to merge must be
    rebased onto the updated `main` and bumped again. Treat that as a manual
@@ -292,7 +291,10 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    `bash lib/utils/test-suite.sh --quick` on `ubuntu-latest`, `ubuntu-22.04`
    and in a `debian:bookworm` container.
 
-When you release, also add your changes to `CHANGELOG.md`.
+When you release, also add your changes to `CHANGELOG.md`. A release PR links
+`[X.Y.Z]` to `compare/vPREV...vX.Y.Z` and `[Unreleased]` to
+`compare/vX.Y.Z...HEAD`. Tag `vX.Y.Z` on the merge commit right after merge;
+the new links return 404 until that tag is pushed.
 
 ## Documentation
 
