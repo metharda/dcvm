@@ -1050,18 +1050,24 @@ test_root_username_userdata() {
 
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 test_root_mysql_userdata() {
-  local t
+  if ! has_pyyaml; then
+    log_test "SKIP" "-k mysql-server SQL" "python3 yaml not available"
+    return
+  fi
+  local t root_sql user_sql
   t=$(mktemp -d)
   generate_test_userdata root y "" "$t/root.yaml" mysql-server
   generate_test_userdata tester n "" "$t/user.yaml" mysql-server
-  if grep -q "ALTER USER 'root'@'localhost'" "$t/root.yaml" 2>/dev/null &&
-    ! grep -qE 'CREATE USER|GRANT ' "$t/root.yaml"; then
+  root_sql=$(ud_py "$t/root.yaml" "$ud_sql_expr" 2>/dev/null)
+  user_sql=$(ud_py "$t/user.yaml" "$ud_sql_expr" 2>/dev/null)
+  if grep -q "ALTER USER 'root'@'localhost'" <<<"$root_sql" &&
+    ! grep -qE 'CREATE USER|GRANT ' <<<"$root_sql"; then
     log_test "PASS" "-k mysql-server with username root (no CREATE USER/GRANT)"
   else
-    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(grep -nE 'ALTER USER|CREATE USER|GRANT ' "$t/root.yaml" 2>/dev/null | tr '\n' ';')"
+    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(tr '\n' ';' <<<"$root_sql")"
   fi
-  if grep -q 'CREATE USER' "$t/user.yaml" 2>/dev/null && grep -q 'GRANT ALL PRIVILEGES' "$t/user.yaml" &&
-    grep -q 'FLUSH PRIVILEGES' "$t/user.yaml" && grep -q 'FLUSH PRIVILEGES' "$t/root.yaml"; then
+  if grep -q 'CREATE USER' <<<"$user_sql" && grep -q 'GRANT ALL PRIVILEGES' <<<"$user_sql" &&
+    grep -q 'FLUSH PRIVILEGES' <<<"$user_sql" && grep -q 'FLUSH PRIVILEGES' <<<"$root_sql"; then
     log_test "PASS" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
   else
     log_test "FAIL" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
@@ -1108,6 +1114,9 @@ print(r if isinstance(r, str) else repr(r), end="")' "$1" "$2"
 
 has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
 
+# ud_py expression for the decoded SQL file content, which must be base64.
+ud_sql_expr='[__import__("base64").b64decode(w["content"]).decode() for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql" and w.get("encoding") == "b64"][0]'
+
 # #36: one password reaches chpasswd (list and bootcmd) and MySQL unchanged,
 # whatever it contains, and never passes through a guest shell as text.
 # shellcheck disable=SC2016 # literal $ in patterns and passwords
@@ -1121,7 +1130,7 @@ test_userdata_passwords() {
   mkdir "$t/bin"
   printf '#!/bin/sh\ncat >"%s/chpasswd.in"\n' "$t" >"$t/bin/chpasswd"
   chmod +x "$t/bin/chpasswd"
-  local sql_expr='[w["content"] for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql"][0]'
+  local sql_expr="$ud_sql_expr"
   local shell_expr='"\n".join(d["bootcmd"] + [c if isinstance(c, str) else " ".join(c) for c in d["runcmd"]])'
   local pws=('plainpw1' 'ab #cd' "a'b\\c" 'x"$y`id`$(id): z' 'abcd' "$(printf 'p%.0s' {1..128})")
   for i in "${!pws[@]}"; do
@@ -1173,6 +1182,28 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
     log_test "PASS" "validate_password accepts 128 and rejects 129 characters (#36)"
   else
     log_test "FAIL" "validate_password accepts 128 and rejects 129 characters (#36)"
+  fi
+
+  local sep
+  ok=true
+  for sep in $'\u2028' $'\u2029' $'\u0085'; do
+    [ "$(validate_password "ab${sep}cd")" = "Password must not contain line breaks" ] || ok=false
+  done
+  if [ "$ok" = true ]; then
+    log_test "PASS" "validate_password rejects U+2028, U+2029 and U+0085 (YAML line breaks) (#36)"
+  else
+    log_test "FAIL" "validate_password rejects U+2028, U+2029 and U+0085 (YAML line breaks) (#36)"
+  fi
+
+  # Even a password that bypasses validation cannot break the YAML: the SQL
+  # file is base64.
+  pw=$'ab\u2028cd\u0085ef'
+  generate_test_userdata tester n "" "$t/sep.yaml" mysql-server "$pw" debian12
+  sql=$(ud_py "$t/sep.yaml" "$ud_sql_expr" 2>/dev/null)
+  if grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$pw';" <<<"$sql"; then
+    log_test "PASS" "user-data with U+2028/U+0085 in the MySQL password still loads in PyYAML (#36)"
+  else
+    log_test "FAIL" "user-data with U+2028/U+0085 in the MySQL password still loads in PyYAML (#36)"
   fi
 
   generate_test_userdata tester n "" "$t/client.yaml" mysql-client

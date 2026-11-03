@@ -190,7 +190,9 @@ validate_password() {
     echo "Password must be at most 128 characters"
     return 1
   fi
-  if [[ "$password" == *[$'\n\r']* ]]; then
+  # YAML also breaks lines at U+0085, U+2028 and U+2029.
+  if [[ "$password" == *[$'\n\r']* || "$password" == *$'\xc2\x85'* ||
+    "$password" == *$'\xe2\x80\xa8'* || "$password" == *$'\xe2\x80\xa9'* ]]; then
     echo "Password must not contain line breaks"
     return 1
   fi

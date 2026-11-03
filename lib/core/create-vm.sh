@@ -1112,8 +1112,8 @@ PACKAGES_EOF
   [ "$VM_USERNAME" = "root" ] && vm_home="/root"
 
   # Passwords never appear in a guest shell command: chpasswd gets them
-  # base64-encoded, MySQL gets SQL-quoted statements from a 0600 file, and
-  # both YAML values are block scalars, so any character is taken literally.
+  # base64-encoded, MySQL gets SQL-quoted statements from a base64-encoded
+  # 0600 file, so any character is taken literally.
   local user_chpasswd root_chpasswd="" mysql_sql=""
   user_chpasswd=$(printf '%s:%s\n' "$VM_USERNAME" "$VM_PASSWORD" | base64 | tr -d '\n')
   [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && root_chpasswd=$(printf 'root:%s\n' "$ROOT_PASSWORD" | base64 | tr -d '\n')
@@ -1195,9 +1195,9 @@ write_files:
     owner: root:root
     permissions: '0644'$(if [ -n "$mysql_sql" ]; then
     echo "
-  - content: |"
-    echo "      ${mysql_sql//$'\n'/$'\n'      }"
-    echo "    path: /root/dcvm-mysql-init.sql
+  - encoding: b64
+    content: $(printf '%s\n' "$mysql_sql" | base64 | tr -d '\n')
+    path: /root/dcvm-mysql-init.sql
     owner: root:root
     permissions: '0600'"
   fi)
