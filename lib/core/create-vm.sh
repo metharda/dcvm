@@ -59,7 +59,7 @@ Usage: dcvm create <vm_name> [options]
 
 Options:
   -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu; 'root' logs in as root)
-  -p, --password <password>     		# Set VM password (required in force mode)
+  -p, --password <password>  # Set VM password (4-128 chars, no line breaks; required in force mode)
   --enable-root                  		# Enable root login (uses same password as user)
   -r, --root-password <password> 		# Set root password (enables root access)
   -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)

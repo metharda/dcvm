@@ -554,8 +554,8 @@ filter_lease_lines() {
 # file. libvirt runs dnsmasq with --leasefile-ro, so the status file is the
 # only lease store, and SIGHUP does not drop leases. Never restarts the
 # network. Runs under a lock so parallel cleanups do not undo each other's
-# edits. Returns 1 when nothing matched or the status file could not be
-# read, 2 when dhcp_release or jq is missing.
+# edits.
+# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, dhcp_release failed).
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
   if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
