@@ -1190,9 +1190,12 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
   fi
 
-  local sep
+  # Build the characters from their UTF-8 bytes: $'\u....' stays literal in
+  # the C locale.
+  local sep lsep psep nel
+  lsep=$(printf '\xe2\x80\xa8') psep=$(printf '\xe2\x80\xa9') nel=$(printf '\xc2\x85')
   ok=true
-  for sep in $'\u2028' $'\u2029' $'\u0085'; do
+  for sep in "$lsep" "$psep" "$nel"; do
     [ "$(validate_password "ab${sep}cd")" = "Password must not contain line breaks" ] || ok=false
   done
   if [ "$ok" = true ]; then
@@ -1203,7 +1206,7 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
 
   # Even a password that bypasses validation cannot break the YAML: the SQL
   # file is base64.
-  pw=$'ab\u2028cd\u0085ef'
+  pw="ab${lsep}cd${nel}ef"
   generate_test_userdata tester n "" "$t/sep.yaml" mysql-server "$pw" debian12
   sql=$(ud_py "$t/sep.yaml" "$ud_sql_expr" 2>/dev/null)
   if grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$pw';" <<<"$sql"; then
