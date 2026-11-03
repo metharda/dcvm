@@ -34,8 +34,8 @@ clear_lease_by_mac() {
 
   print_info "Clearing lease for MAC: $mac_address"
 
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
   [ -f "$lease_file" ] && sed -i "/$mac_address/d" "$lease_file" && echo "Removed from lease file"
   [ -f "$status_file" ] && sed -i "/$mac_address/d" "$status_file" && echo "Removed from status file"
@@ -57,9 +57,9 @@ clear_all_leases() {
 
   print_info "Clearing ALL DHCP leases for $NETWORK_NAME"
 
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
-  local pid_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.pid"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+  local pid_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.pid"
 
   [ -f "$lease_file" ] && >"$lease_file" && echo "Cleared lease file"
   [ -f "$status_file" ] && >"$status_file" && echo "Cleared status file"
@@ -92,8 +92,8 @@ clear_vm_lease() {
     restart_network
   else
     print_warning "No MAC address found. Searching lease files for '$vm_name'..."
-    local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-    local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+    local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+    local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
     local found=false
     if [ -f "$lease_file" ] && grep -qFi "$vm_name" "$lease_file"; then
       grep -vFi "$vm_name" "$lease_file" >"$lease_file.tmp" && mv "$lease_file.tmp" "$lease_file"
@@ -118,7 +118,7 @@ clear_stale_leases() {
   local current_time=$(date +%s)
   local temp_file=$(mktemp)
   trap 'rm -f "$temp_file" 2>/dev/null' RETURN
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
   local removed_count=0
   local -a macs_to_remove=()
   local existing_vms=$(virsh list --all --name 2>/dev/null | grep -v '^$')
@@ -166,7 +166,7 @@ clear_stale_leases() {
     :
   fi
 
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   if [ -f "$status_file" ] && [ ${#macs_to_remove[@]} -gt 0 ]; then
     for mac in "${macs_to_remove[@]}"; do
       sed -i "/$mac/d" "$status_file"
@@ -254,15 +254,15 @@ force_renew_all() {
 
 show_lease_files() {
   echo "DHCP lease files location:"
-  echo "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  echo "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  echo "${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  echo "${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   echo ""
   echo "Lease file contents:"
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
   [ -f "$lease_file" ] && cat "$lease_file" || echo "Lease file not found"
   echo ""
   echo "Status file contents:"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   [ -f "$status_file" ] && cat "$status_file" || echo "Status file not found"
 }
 

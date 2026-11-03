@@ -34,8 +34,8 @@ cleanup_port_forwarding_for_vm() {
 cleanup_dhcp_lease() {
   local mac_address="$1"
   local vm_name="$2"
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
   [ -z "$mac_address" ] && [ -z "$vm_name" ] && return
 
@@ -268,8 +268,8 @@ delete_all_vms() {
 
   print_info "Performing final cleanup"
 
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
   [ -f "$lease_file" ] && >"$lease_file" && print_info "Cleared all DHCP leases"
   [ -f "$status_file" ] && >"$status_file" && print_info "Cleared DHCP status file"
