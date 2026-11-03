@@ -1234,7 +1234,7 @@ $(if [ "$MYSQL_REQUESTED" = true ]; then
     cat <<MYSQL_EOF
   - systemctl enable $mysql_service
   - systemctl start $mysql_service
-  - $mysql_service < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql
+  - $mysql_service < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql
 MYSQL_EOF
   fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then

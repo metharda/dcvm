@@ -1060,14 +1060,17 @@ test_root_mysql_userdata() {
   generate_test_userdata tester n "" "$t/user.yaml" mysql-server
   root_sql=$(ud_py "$t/root.yaml" "$ud_sql_expr" 2>/dev/null)
   user_sql=$(ud_py "$t/user.yaml" "$ud_sql_expr" 2>/dev/null)
-  if grep -q "ALTER USER 'root'@'localhost'" <<<"$root_sql" &&
-    ! grep -qE 'CREATE USER|GRANT ' <<<"$root_sql"; then
+  local alter="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('testpass123');"
+  if [ "$root_sql" = "$alter
+FLUSH PRIVILEGES;" ] && ! grep -qF '$VM_' "$t/root.yaml"; then
     log_test "PASS" "-k mysql-server with username root (no CREATE USER/GRANT)"
   else
     log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(tr '\n' ';' <<<"$root_sql")"
   fi
-  if grep -q 'CREATE USER' <<<"$user_sql" && grep -q 'GRANT ALL PRIVILEGES' <<<"$user_sql" &&
-    grep -q 'FLUSH PRIVILEGES' <<<"$user_sql" && grep -q 'FLUSH PRIVILEGES' <<<"$root_sql"; then
+  if [ "$user_sql" = "$alter
+CREATE USER 'tester'@'localhost' IDENTIFIED BY 'testpass123';
+GRANT ALL PRIVILEGES ON *.* TO 'tester'@'localhost' WITH GRANT OPTION;
+FLUSH PRIVILEGES;" ] && ! grep -qF '$VM_' "$t/user.yaml"; then
     log_test "PASS" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
   else
     log_test "FAIL" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
@@ -1216,6 +1219,20 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
     log_test "FAIL" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
   fi
 
+  # Other names containing mysql-server install as typed, with no SQL setup.
+  for os in debian12 ubuntu24.04; do
+    for req in my-mysql-server-tools mysql-server-core-8.0; do
+      f="$t/$os-$req.yaml"
+      generate_test_userdata tester n "" "$f" "$req" pw1234 "$os"
+      if grep -qx "    for pkg in $req; do" "$f" &&
+        ! grep -qE 'dcvm-mysql-init|systemctl (enable|start) (mysql|mariadb)' "$f"; then
+        log_test "PASS" "-k $req on $os installs as typed, no SQL setup (#36)"
+      else
+        log_test "FAIL" "-k $req on $os installs as typed, no SQL setup (#36)"
+      fi
+    done
+  done
+
   # Every supported VM_OS x both server names: package, service, SQL setup,
   # and the root login: MySQL (Ubuntu) gets mysql_native_password, MariaDB
   # keeps unix_socket and adds the password.
@@ -1234,7 +1251,7 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
       ok=true
       grep -q "^    for pkg in $pkg; do\$" "$f" || ok=false
       grep -qx "  - systemctl enable $svc" "$f" || ok=false
-      grep -qx "  - $svc < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
+      grep -qx "  - $svc < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
       grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
       auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('pw1234')"
       [ "$svc" = mysql ] && auth="IDENTIFIED WITH mysql_native_password BY 'pw1234'"
@@ -1277,6 +1294,7 @@ test_userdata_per_os() {
       [ "$(ud_py "$f" 'd["runcmd"][0:3]' 2>/dev/null)" = "['systemctl enable sshd', 'systemctl restart sshd', 'systemctl status sshd --no-pager']" ] || ok=false
       grep -qx '      Subsystem sftp /usr/lib/ssh/sftp-server' "$f" || ok=false
       grep -qx '    for pkg in nginx apache; do' "$f" || ok=false
+      grep -qxF '        pacman -S --noconfirm --needed "$pkg"' "$f" || ok=false
       grep -qF '> /usr/share/nginx/html/index.html' "$f" || ok=false
       grep -qx '  - chown http:http /usr/share/nginx/html/index.html' "$f" || ok=false
       grep -qx '  - systemctl enable httpd' "$f" || ok=false
@@ -1287,6 +1305,7 @@ test_userdata_per_os() {
       [ "$(ud_py "$f" 'd["runcmd"][0:3]' 2>/dev/null)" = "['systemctl enable ssh', 'systemctl restart ssh', 'systemctl status ssh --no-pager']" ] || ok=false
       grep -qx '      Subsystem sftp /usr/lib/openssh/sftp-server' "$f" || ok=false
       grep -qx '    for pkg in nginx apache2; do' "$f" || ok=false
+      grep -qxF '        DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "$pkg"' "$f" || ok=false
       [ "$(grep -c '^  - chown www-data:www-data /var/www/html/index.html$' "$f")" = "2" ] || ok=false
       grep -qx '  - systemctl enable apache2' "$f" || ok=false
     fi
