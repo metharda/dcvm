@@ -31,6 +31,16 @@ Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
   of single lines, which left invalid JSON (#37).
 - Arch Linux VMs get Arch package names (`openssh`, `nfs-utils`), the `sshd`
   unit, the Arch sftp-server path and Arch nginx/Apache paths (#38).
+- A password changed inside the VM (`passwd`) now survives a reboot: the user
+  and root passwords are set once at first boot, as SHA-512 hashes, instead of
+  by a `bootcmd` that reset them on every boot. The root password is no longer
+  written to user-data in plain text (#36).
+- nginx, Apache and Docker setup runs only for `-k nginx`, `-k apache2` and
+  `-k docker`/`docker.io`; packages such as `nginx-extras`,
+  `libapache2-mod-php` and `python3-docker` install as typed without it (#38).
+- `dhcp clear`, `dhcp clear --stale` and `delete` no longer send SIGHUP to
+  dnsmasq, which never found libvirt's dnsmasq and does not drop leases, and
+  no longer edit a `.leases` file, which libvirt does not use (#37).
 
 ### Changed
 
@@ -45,17 +55,19 @@ Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
   says so and changes nothing (#37).
 - `delete` no longer stops or removes host systemd units whose name contains
   the VM name; dcvm does not create per-VM units.
-- Without `jq`, lease cleanup leaves the status file unchanged and warns
-  instead of emptying it.
+- Without `jq`, lease cleanup leaves the status file unchanged instead of
+  emptying it.
 - Passwords may be up to 128 characters and must not contain line breaks,
   including the Unicode line and paragraph separators (U+2028, U+2029) and
   U+0085 (#36).
 - With MariaDB (Debian, Kali, Arch Linux), the database root user keeps its
   passwordless login from the system root account (`sudo mariadb`) and also
   gets the VM password (#36).
-- `dhcp clear <vm|mac>`, `dhcp clear --stale` and `delete` also release the
-  cleared lease in the running dnsmasq with `dhcp_release`, so the address
-  can be handed out again right away (#37).
+- `dhcp clear <vm|mac>`, `dhcp clear --stale` and `delete` release the
+  cleared lease in the running dnsmasq with `dhcp_release` and remove it from
+  libvirt's status file, so the address can be handed out again right away.
+  Without `dhcp_release` or `jq`, `dhcp clear` fails with an error that names
+  the package to install, and changes nothing (#37).
 - `dhcp clear <vm>` keeps a static DHCP reservation for the VM's MAC;
   `delete` removes the deleted VM's reservation (#37).
 - The installer also installs `jq` and `dhcp_release` (`dnsmasq-utils` on

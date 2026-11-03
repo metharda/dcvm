@@ -142,12 +142,12 @@ dcvm network dhcp clear -s
 dcvm network dhcp clear -a
 ```
 
-  `clear <vm_name_or_mac>` and `clear -s` remove the lease from dnsmasq's lease
-  and status files and release it in the running dnsmasq with `dhcp_release`
-  (package `dnsmasq-utils` on Debian/Ubuntu, part of `dnsmasq` on Arch). Without
-  `dhcp_release` they warn, and dnsmasq keeps the lease in memory until it
-  expires. Without `jq` the entry stays in the status file, with a warning. The
-  installer installs both. A static DHCP reservation (`ip-dhcp-host`) for the
+  `clear <vm_name_or_mac>` and `clear -s` release the lease in the running
+  dnsmasq with `dhcp_release` (package `dnsmasq-utils` on Debian/Ubuntu, part
+  of `dnsmasq` on Arch) and remove it from libvirt's status file
+  (`/var/lib/libvirt/dnsmasq/<bridge>.status`). Without `dhcp_release` or `jq`
+  they fail with an error and change nothing. The installer installs both. A
+  running VM gets the same address back when it renews its lease. A static DHCP reservation (`ip-dhcp-host`) for the
   MAC is kept; `dcvm delete` removes the deleted VM's reservation.
 
 - Service helpers:
