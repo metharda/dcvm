@@ -1502,6 +1502,17 @@ test_dhcp_release() {
     fi
   done
 
+  # libvirt's lease helper rewrites the status file when dnsmasq releases a
+  # lease, so dcvm writes it first and the helper writes last.
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" 'dhcp_release() { echo "dhcp_release $(status_hosts "$t")" >>"$t/calls"; }' clear vm1 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = 'dhcp_release ["vm10","vm1-copy","web","gone"]' ]; then
+    log_test "PASS" "dhcp clear writes the status file before dhcp_release runs (37-12)"
+  else
+    log_test "FAIL" "dhcp clear writes the status file before dhcp_release runs (37-12)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
   # --stale with two leases to drop (gone expired, web orphaned).
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
@@ -1564,10 +1575,11 @@ test_delete_vm_exact_match() {
   else
     log_test "FAIL" "delete vm1 releases and removes only its lease, vm10/vm1-copy kept (#37)" "$(status_hosts "$t")"
   fi
-  if grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --live --config" "$t/calls"; then
-    log_test "PASS" "delete vm1 removes the static DHCP reservation for its MAC (#37)"
+  if grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --config" "$t/calls" &&
+    grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --live" "$t/calls"; then
+    log_test "PASS" "delete vm1 removes the static DHCP reservation for its MAC, saved and live separately (#37)"
   else
-    log_test "FAIL" "delete vm1 removes the static DHCP reservation for its MAC (#37)" "$(grep '^virsh net' "$t/calls" | tr '\n' ';')"
+    log_test "FAIL" "delete vm1 removes the static DHCP reservation for its MAC, saved and live separately (#37)" "$(grep '^virsh net' "$t/calls" | tr '\n' ';')"
   fi
   out=$(run_delete vm1 "")
   if echo "$out" | grep -q 'No DHCP leases found' && ! echo "$out" | grep -q 'DHCP leases still exist'; then

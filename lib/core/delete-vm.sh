@@ -70,7 +70,10 @@ delete_single_vm() {
 
   [ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
   if [ -n "$MAC_ADDRESS" ]; then
-    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live --config 2>/dev/null || true
+    # Saved and live config separately: with both flags, an inactive network
+    # fails the whole update and the saved reservation stays.
+    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --config 2>/dev/null || true
+    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live 2>/dev/null || true
   fi
   if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
     cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME" || true

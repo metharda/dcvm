@@ -611,14 +611,16 @@ cleanup_dhcp_lease_unlocked() {
     return 1
   fi
 
+  # Write the status file first: dnsmasq's release makes libvirt's lease
+  # helper rewrite it, and that write must come last.
+  n=$(($(jq length "$status_file") - $(jq length "$tmp")))
+  cat "$tmp" >"$status_file"
+  rm -f "$tmp"
   while IFS=$'\t' read -r lmac ip; do
     [[ "$ip" == *.* ]] || continue
     dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null ||
       print_warning "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
   done <<<"$matches"
-  n=$(($(jq length "$status_file") - $(jq length "$tmp")))
-  cat "$tmp" >"$status_file"
-  rm -f "$tmp"
   print_info "Released and removed $n lease(s) from $status_file"
   return 0
 }
