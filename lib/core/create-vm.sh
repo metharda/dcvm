@@ -1057,6 +1057,8 @@ generate_cloud_init_userdata() {
   TAILSCALE_REQUESTED=false
   MYSQL_REQUESTED=false
   APACHE_REQUESTED=false
+  NGINX_REQUESTED=false
+  DOCKER_REQUESTED=false
   if [ -n "$ADDITIONAL_PACKAGES" ]; then
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
@@ -1072,7 +1074,13 @@ generate_cloud_init_userdata() {
           package=$mysql_package
         fi
       fi
-      [ "$package" = apache2 ] && APACHE_REQUESTED=true
+      # Service setup only for these exact names, not for packages that
+      # contain them (python3-docker, nginx-extras, libapache2-mod-php).
+      case "$package" in
+      apache2) APACHE_REQUESTED=true ;;
+      nginx) NGINX_REQUESTED=true ;;
+      docker | docker.io) DOCKER_REQUESTED=true ;;
+      esac
       if [ "$VM_OS" = archlinux ] && [[ "$package" =~ ^apache2?$ ]]; then
         APACHE_REQUESTED=true
         package=apache
@@ -1215,7 +1223,7 @@ runcmd:
   - mkdir -p $vm_home/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME $vm_home
 $(if [ -n "$EXTRA_PACKAGES_RUNCMD" ]; then echo "$EXTRA_PACKAGES_RUNCMD"; fi)
-$(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
+$(if [ "$NGINX_REQUESTED" = true ]; then
     cat <<NGINX_EOF
   - systemctl enable nginx
   - systemctl start nginx
@@ -1239,7 +1247,7 @@ $(if [ "$MYSQL_REQUESTED" = true ]; then
   - $mysql_service < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql
 MYSQL_EOF
   fi)
-$(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
+$(if [ "$DOCKER_REQUESTED" = true ]; then
     cat <<DOCKER_EOF
   - systemctl enable docker
   - systemctl start docker

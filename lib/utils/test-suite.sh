@@ -1703,15 +1703,33 @@ test_get_vm_ip_subnet_dots() {
   fi
 }
 
-# -k apache2 sets up Apache; packages that only contain the name do not.
+# -k nginx, apache2 and docker.io set up their service; packages that only
+# contain the name (python3-docker, nginx-extras, libapache2-mod-php,
+# apache2-utils) install as typed with no setup.
 test_apache_exact_match() {
-  local t
+  local t pkg
   t=$(mktemp -d)
-  generate_test_userdata tester n "" "$t/u.yaml" apache2-utils pw1234 debian12
-  if grep -qx '    for pkg in apache2-utils; do' "$t/u.yaml" && ! grep -q 'systemctl enable apache2' "$t/u.yaml"; then
-    log_test "PASS" "-k apache2-utils installs as typed, no Apache setup"
+  for pkg in apache2-utils libapache2-mod-php nginx-extras python3-docker; do
+    generate_test_userdata tester n "" "$t/u.yaml" "$pkg" pw1234 debian12
+    if grep -qx "    for pkg in $pkg; do" "$t/u.yaml" &&
+      ! grep -qE 'systemctl (enable|start) (apache2|httpd|nginx|docker)|usermod -aG docker|index\.html' "$t/u.yaml"; then
+      log_test "PASS" "-k $pkg installs as typed, no service setup"
+    else
+      log_test "FAIL" "-k $pkg installs as typed, no service setup"
+    fi
+  done
+  generate_test_userdata tester n "" "$t/u.yaml" "nginx, apache2, docker.io" pw1234 debian12
+  if grep -qx '  - systemctl enable nginx' "$t/u.yaml" && grep -qx '  - systemctl enable apache2' "$t/u.yaml" &&
+    grep -qx '  - systemctl enable docker' "$t/u.yaml" && grep -qx '  - usermod -aG docker tester' "$t/u.yaml"; then
+    log_test "PASS" "-k nginx, apache2, docker.io set up their services"
   else
-    log_test "FAIL" "-k apache2-utils installs as typed, no Apache setup"
+    log_test "FAIL" "-k nginx, apache2, docker.io set up their services"
+  fi
+  generate_test_userdata tester n "" "$t/u.yaml" docker pw1234 archlinux
+  if grep -qx '  - systemctl enable docker' "$t/u.yaml"; then
+    log_test "PASS" "-k docker on Arch sets up Docker"
+  else
+    log_test "FAIL" "-k docker on Arch sets up Docker"
   fi
   rm -rf "$t"
 }
