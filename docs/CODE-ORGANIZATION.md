@@ -165,6 +165,7 @@ export -f check_port_connectivity check_port_forward is_vm_in_network get_port_m
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
 export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username
 ```

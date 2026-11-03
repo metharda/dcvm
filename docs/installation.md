@@ -168,11 +168,11 @@ Manually install dependencies:
 # Ubuntu/Debian
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients \
-    bridge-utils virt-manager nfs-kernel-server
+    bridge-utils virt-manager nfs-kernel-server jq dnsmasq-utils
 
 # Arch Linux
 sudo pacman -S qemu-full libvirt virt-install virt-viewer \
-    bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode
+    bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode jq
 ```
 
 ## Uninstallation

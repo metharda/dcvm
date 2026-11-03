@@ -47,7 +47,20 @@ Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
   the VM name; dcvm does not create per-VM units.
 - Without `jq`, lease cleanup leaves the status file unchanged and warns
   instead of emptying it.
-- Passwords may be up to 128 characters and must not contain line breaks.
+- Passwords may be up to 128 characters and must not contain line breaks,
+  including the Unicode line and paragraph separators (U+2028, U+2029) and
+  U+0085 (#36).
+- With MariaDB (Debian, Kali, Arch Linux), the database root user keeps its
+  passwordless login from the system root account (`sudo mariadb`) and also
+  gets the VM password (#36).
+- `dhcp clear <vm|mac>`, `dhcp clear --stale` and `delete` also release the
+  cleared lease in the running dnsmasq with `dhcp_release`, so the address
+  can be handed out again right away (#37).
+- `dhcp clear <vm>` keeps a static DHCP reservation for the VM's MAC;
+  `delete` removes the deleted VM's reservation (#37).
+- The installer also installs `jq` and `dhcp_release` (`dnsmasq-utils` on
+  Debian/Ubuntu; Arch already gets it with `dnsmasq`), which lease cleanup
+  uses (#37).
 
 ## [0.9.5] - 2026-11-03
 

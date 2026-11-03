@@ -142,6 +142,14 @@ dcvm network dhcp clear -s
 dcvm network dhcp clear -a
 ```
 
+  `clear <vm_name_or_mac>` and `clear -s` remove the lease from dnsmasq's lease
+  and status files and release it in the running dnsmasq with `dhcp_release`
+  (package `dnsmasq-utils` on Debian/Ubuntu, part of `dnsmasq` on Arch). Without
+  `dhcp_release` they warn, and dnsmasq keeps the lease in memory until it
+  expires. Without `jq` the entry stays in the status file, with a warning. The
+  installer installs both. A static DHCP reservation (`ip-dhcp-host`) for the
+  MAC is kept; `dcvm delete` removes the deleted VM's reservation.
+
 - Service helpers:
 ```bash
 dcvm network status
