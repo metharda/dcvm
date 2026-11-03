@@ -1058,7 +1058,7 @@ test_root_mysql_userdata() {
     ! grep -qE 'CREATE USER|GRANT ' "$t/root.yaml"; then
     log_test "PASS" "-k mysql-server with username root (no CREATE USER/GRANT)"
   else
-    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(grep -n 'mysql -e' "$t/root.yaml" 2>/dev/null | tr '\n' ';')"
+    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(grep -nE 'ALTER USER|CREATE USER|GRANT ' "$t/root.yaml" 2>/dev/null | tr '\n' ';')"
   fi
   if grep -q 'CREATE USER' "$t/user.yaml" 2>/dev/null && grep -q 'GRANT ALL PRIVILEGES' "$t/user.yaml" &&
     grep -q 'FLUSH PRIVILEGES' "$t/user.yaml" && grep -q 'FLUSH PRIVILEGES' "$t/root.yaml"; then
@@ -1187,7 +1187,7 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
 
   # Every supported VM_OS x both server names: package, service, SQL setup,
   # and mysql_native_password only where real MySQL is installed (Ubuntu).
-  local os pkg svc req
+  local os pkg svc req auth
   for os in debian11 debian12 debian13 kali ubuntu20.04 ubuntu22.04 ubuntu24.04 archlinux; do
     for req in mysql-server default-mysql-server; do
       generate_test_userdata tester n "" "$t/$os-$req.yaml" "$req" pw1234 "$os"
@@ -1204,14 +1204,15 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
       grep -qx "  - systemctl enable $svc" "$f" || ok=false
       grep -qx "  - $svc < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
       grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
-      if [ "$svc" = mariadb ]; then
-        grep -q 'IDENTIFIED WITH' <<<"$sql" && ok=false
-      else
-        grep -q 'IDENTIFIED WITH mysql_native_password' <<<"$sql" || ok=false
-      fi
+      auth=""
+      [ "$svc" = mysql ] && auth=" WITH mysql_native_password"
+      grep -qxF "ALTER USER 'root'@'localhost' IDENTIFIED$auth BY 'pw1234';" <<<"$sql" || ok=false
+      grep -qxF "  - systemctl start $svc" "$f" || ok=false
       if [ "$os" = archlinux ]; then
-        [ "$(grep -nx '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql' "$f" | cut -d: -f1)" \
-          -lt "$(grep -nx '  - systemctl start mariadb' "$f" | cut -d: -f1)" ] 2>/dev/null || ok=false
+        # install, then mariadb-install-db, then start
+        line_of() { grep -nxF -- "$1" "$f" | head -1 | cut -d: -f1; }
+        [ "$(line_of "    for pkg in mariadb; do")" -lt "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" ] 2>/dev/null &&
+          [ "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" -lt "$(line_of '  - systemctl start mariadb')" ] 2>/dev/null || ok=false
       else
         grep -q 'mariadb-install-db' "$f" && ok=false
       fi
