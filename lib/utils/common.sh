@@ -221,7 +221,7 @@ get_vm_ip() {
     if [ -z "$ip" ]; then
       local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
       if [ -n "$mac" ]; then
-        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
       fi
     fi
     if [ -z "$ip" ] && [ $attempts -gt 1 ]; then

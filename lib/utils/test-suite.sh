@@ -1492,6 +1492,21 @@ test_get_vm_ip_exact() {
   else
     log_test "FAIL" "get_vm_ip vm1 finds its own lease (VM1, any case) (#37)" "got '$got'"
   fi
+  got=$(
+    virsh() {
+      case "$1" in
+      net-dhcp-leases) cat "$t/virsh-leases" ;;
+      domiflist) echo " vnet1  network  datacenter-net  virtio  52:54:00:AB:C2:54" ;;
+      esac
+      return 0
+    }
+    DATACENTER_BASE="$t" get_vm_ip renamed-vm
+  )
+  if [ "$got" = "10.10.10.254" ]; then
+    log_test "PASS" "get_vm_ip falls back to its exact MAC (any case) (#37)"
+  else
+    log_test "FAIL" "get_vm_ip falls back to its exact MAC (any case) (#37)" "got '$got'"
+  fi
   rm -rf "$t"
 }
 
