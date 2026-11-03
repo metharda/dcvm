@@ -247,11 +247,15 @@ Every pull request goes through the GitHub Actions workflows in `.github/workflo
    ```bash
    # in dcvm
    show_version() {
-     echo "DCVM - Datacenter Virtual Machine Manager"
+     echo "dcvm - a VM manager"
      echo "Version: X.Y.Z"   # bump this
      ...
    }
    ```
+
+   The README version badge (`https://img.shields.io/badge/version-X.Y.Z-...`)
+   is static, because the project publishes no tags or releases. Update it to
+   the same `X.Y.Z` in the same PR.
 
    If two open PRs bump to the same version, the second one to merge must be
    rebased onto the updated `main` and bumped again. Treat that as a manual

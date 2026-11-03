@@ -10,6 +10,28 @@ from git history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-03
+
+Documentation-only release: README pitch and the dcvm name.
+
+### Changed
+
+- README opens with a one-line pitch for students, homelab users, CTF and
+  security practice, and anyone who wants ready Linux VMs on one machine, and
+  the intro no longer describes a "virtual datacenter environment".
+- README has a "Why dcvm?" section comparing dcvm with Multipass, Vagrant +
+  vagrant-libvirt, virt-install and quickemu, with links to their docs.
+- README shows badges for the test workflow, the Apache-2.0 license and the
+  version. The version badge is static and is bumped by hand (see
+  `CONTRIBUTING.md`).
+- README install section has a "Review before you run" note: download the
+  installer, read it, then run it.
+- The docs call the project "dcvm, a VM manager" instead of "Datacenter
+  Virtual Machine Manager". Config, path and network names such as
+  `DATACENTER_BASE`, `/srv/datacenter` and `datacenter-net` are unchanged.
+- `docs/examples/basic-vm-creation.md` links to `docs/backups.md` instead of
+  the old `docs/backup-restore.md`.
+
 ## [0.9.4] - 2026-10-08
 
 Post-merge documentation follow-up to 0.9.3.
@@ -155,7 +177,7 @@ PR #32 (73624ac, a83dc88).
 - `validate_username` now rejects reserved names (`root`, `admin`,
   `administrator`, `sysadmin`, `user`, `guest`) for the VM user (9191006).
 - Uninstall documentation now warns that `dcvm uninstall` deletes every
-  datacenter VM (and its storage), removes `DATACENTER_BASE` (including
+  dcvm VM (and its storage), removes `DATACENTER_BASE` (including
   backups), and cleans up network, logs, aliases, and completions (73624ac).
 
 ### Fixed
@@ -286,7 +308,8 @@ Later commits kept the same version string until 0.7.1.
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/74c12f6...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/457bb31...HEAD
+[0.9.5]: https://github.com/metharda/dcvm/compare/457bb31...docs/readme-everyday-pitch
 [0.9.4]: https://github.com/metharda/dcvm/pull/39
 [0.9.3]: https://github.com/metharda/dcvm/pull/35
 [0.9.2]: https://github.com/metharda/dcvm/pull/34

@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide will walk you through installing DCVM (Datacenter Virtual Machine Manager) on your system.
+This guide will walk you through installing dcvm, a VM manager, on your system.
 
 ## Prerequisites
 
@@ -192,13 +192,13 @@ sudo bash /usr/local/lib/dcvm/installation/uninstall-dcvm.sh
 > [!WARNING]
 > **Uninstalling DCVM is destructive and cannot be undone.** `dcvm uninstall` asks for confirmation first, then will:
 >
-> - **Permanently delete every DCVM VM** (all VMs attached to the DCVM datacenter network), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
+> - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
 > - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`.
-> - Remove the datacenter network, port-forwarding rules, DHCP leases, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
+> - Remove the dcvm network, port-forwarding rules, DHCP leases, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
 > - Delete `/var/log/datacenter-startup.log`.
 > - Remove `alias dcvm` and `dcvm-completion.sh` lines from `~/.bashrc`, `~/.zshrc`, `~/.bash_profile`, and `~/.profile` (leaving `.bak` copies), and remove the bash completion scripts.
 >
-> To keep a VM, either detach it from the datacenter network before uninstalling (uninstall only deletes VMs attached to it), or save its definition (`virsh dumpxml <vm>`) and copy its disk images off the host. Copy any backups you want out of `$DATACENTER_BASE/backups`.
+> To keep a VM, either detach it from the dcvm network before uninstalling (uninstall only deletes VMs attached to it), or save its definition (`virsh dumpxml <vm>`) and copy its disk images off the host. Copy any backups you want out of `$DATACENTER_BASE/backups`.
 
 ## Updating DCVM
 
