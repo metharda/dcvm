@@ -307,7 +307,7 @@ read_password() {
   local var_name="$2"
   local password=""
   echo -n "$prompt"
-  read -s password
+  IFS= read -rs password
   echo
   printf -v "$var_name" '%s' "$password"
 }

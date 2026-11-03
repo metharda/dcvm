@@ -1190,6 +1190,16 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
   fi
 
+  # The wizard keeps the password as typed: spaces at either end and
+  # backslashes included.
+  local typed='  a\b c\  ' got=""
+  read_password "Password: " got <<<"$typed" >/dev/null
+  if [ "$got" = "$typed" ]; then
+    log_test "PASS" "read_password keeps leading/trailing spaces and backslashes (#36)"
+  else
+    log_test "FAIL" "read_password keeps leading/trailing spaces and backslashes (#36)" "got '$got'"
+  fi
+
   # Build the characters from their UTF-8 bytes: $'\u....' stays literal in
   # the C locale.
   local sep lsep psep nel
