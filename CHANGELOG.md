@@ -67,7 +67,9 @@ Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
   cleared lease in the running dnsmasq with `dhcp_release` and remove it from
   libvirt's status file, so the address can be handed out again right away.
   Without `dhcp_release` or `jq`, `dhcp clear` fails with an error that names
-  the package to install, and changes nothing (#37).
+  the package to install, and changes nothing. It also fails, instead of
+  reporting success, when the status file cannot be read, the lock times out
+  or `dhcp_release` itself fails (#37).
 - `dhcp clear <vm>` keeps a static DHCP reservation for the VM's MAC;
   `delete` removes the deleted VM's reservation (#37).
 - The installer also installs `jq` and `dhcp_release` (`dnsmasq-utils` on

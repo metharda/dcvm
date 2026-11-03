@@ -80,6 +80,10 @@ clear_stale_leases() {
     print_error "jq not available; cannot read $status_file (install jq)"
     return 1
   fi
+  if [ -s "$status_file" ] && ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1; then
+    print_error "Could not parse $status_file; left unchanged"
+    return 1
+  fi
 
   if [ -s "$status_file" ]; then
     while IFS=$'\t' read -r timestamp mac ip hostname; do

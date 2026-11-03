@@ -146,7 +146,9 @@ dcvm network dhcp clear -a
   dnsmasq with `dhcp_release` (package `dnsmasq-utils` on Debian/Ubuntu, part
   of `dnsmasq` on Arch) and remove it from libvirt's status file
   (`/var/lib/libvirt/dnsmasq/<bridge>.status`). Without `dhcp_release` or `jq`
-  they fail with an error and change nothing. The installer installs both. A
+  they fail with an error and change nothing. They also exit non-zero when
+  the status file cannot be read or `dhcp_release` fails. The installer
+  installs both. A
   running VM gets the same address back when it renews its lease. A static DHCP reservation (`ip-dhcp-host`) for the
   MAC is kept; `dcvm delete` removes the deleted VM's reservation.
 

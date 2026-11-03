@@ -565,7 +565,7 @@ cleanup_dhcp_lease() {
   (
     flock -w 30 9 || {
       print_error "Timed out waiting for $lock"
-      exit 1
+      exit 2
     }
     cleanup_dhcp_lease_unlocked "$@"
   ) 9>>"$lock"
@@ -574,7 +574,7 @@ cleanup_dhcp_lease() {
 cleanup_dhcp_lease_unlocked() {
   local mac="${1,,}" host="${2,,}"
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local tmp matches lmac ip n
+  local tmp matches lmac ip n rc=0
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
@@ -593,7 +593,7 @@ cleanup_dhcp_lease_unlocked() {
   fi
   if ! tmp=$(mktemp); then
     print_error "Could not create a temp file; $status_file left unchanged"
-    return 1
+    return 2
   fi
   # shellcheck disable=SC2016 # jq variables
   local sel='(($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
@@ -602,8 +602,8 @@ cleanup_dhcp_lease_unlocked() {
     ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
     ! jq --arg mac "$mac" --arg host "$host" "[.[] | select($sel | not)]" "$status_file" >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
-    print_warning "Could not parse $status_file; left unchanged"
-    return 1
+    print_error "Could not parse $status_file; left unchanged"
+    return 2
   fi
   if [ -z "$matches" ]; then
     rm -f "$tmp"
@@ -618,11 +618,17 @@ cleanup_dhcp_lease_unlocked() {
   rm -f "$tmp"
   while IFS=$'\t' read -r lmac ip; do
     [[ "$ip" == *.* ]] || continue
-    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null ||
-      print_warning "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
+    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null || {
+      print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
+      rc=2
+    }
   done <<<"$matches"
-  print_info "Released and removed $n lease(s) from $status_file"
-  return 0
+  if [ "$rc" = 0 ]; then
+    print_info "Released and removed $n lease(s) from $status_file"
+  else
+    print_info "Removed $n lease(s) from $status_file"
+  fi
+  return "$rc"
 }
 
 interactive_prompt_memory_common() {

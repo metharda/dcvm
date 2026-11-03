@@ -1513,6 +1513,20 @@ test_dhcp_release() {
     log_test "FAIL" "dhcp clear writes the status file before dhcp_release runs (37-12)" "$(tr '\n' ';' <"$t/calls")"
   fi
 
+  for args in "clear vm1" "clear --stale"; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    printf '[{"ip-address": "10.10.10.11"' >"$t/br.status"
+    # shellcheck disable=SC2086 # split the args on purpose
+    out=$(run_dhcp_fixture "$t" "" $args)
+    rc=$?
+    if [ "$rc" != 0 ] && echo "$out" | grep -qF "$t/br.status" && ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
+      log_test "PASS" "dhcp $args fails on an unreadable status file (37-12)"
+    else
+      log_test "FAIL" "dhcp $args fails on an unreadable status file (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
   # --stale with two leases to drop (gone expired, web orphaned).
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
@@ -1626,11 +1640,11 @@ test_cleanup_dhcp_lease_failures() {
   cp "$t/br.status" "$t/status.orig"
   out=$(run_cleanup_fixture "$t" "" 52:54:00:00:00:01 vm1)
   rc=$?
-  if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" &&
     [ -z "$(ls -A "$t/tmp")" ] && [ ! -e "$t/calls" ]; then
-    log_test "PASS" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 1 (#37)"
+    log_test "PASS" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 2 (#37)"
   else
-    log_test "FAIL" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 1 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    log_test "FAIL" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
   fi
 
   rm -rf "${t:?}"/*
@@ -1638,10 +1652,33 @@ test_cleanup_dhcp_lease_failures() {
   cp "$t/br.status" "$t/status.orig"
   out=$(run_cleanup_fixture "$t" 'mktemp() { return 1; }' 52:54:00:00:00:01 vm1)
   rc=$?
-  if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ]; then
-    log_test "PASS" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 1 (#37)"
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ]; then
+    log_test "PASS" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)"
   else
-    log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 1 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'flock() { return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ] &&
+    echo "$out" | grep -qF "Timed out waiting for"; then
+    log_test "PASS" "cleanup_dhcp_lease: lock timeout changes nothing, exit 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: lock timeout changes nothing, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  out=$(run_cleanup_fixture "$t" 'dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && echo "$out" | grep -qF "dhcp_release failed for 10.10.10.11" &&
+    ! echo "$out" | grep -q "Released and removed"; then
+    log_test "PASS" "cleanup_dhcp_lease: a failed dhcp_release is reported and exits 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: a failed dhcp_release is reported and exits 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
   fi
   rm -rf "$t"
 }
