@@ -187,7 +187,11 @@ validate_password() {
     return 1
   fi
   if [ ${#password} -gt 128 ]; then
-    echo "Password must be less than 128 characters"
+    echo "Password must be at most 128 characters"
+    return 1
+  fi
+  if [[ "$password" == *[$'\n\r']* ]]; then
+    echo "Password must not contain line breaks"
     return 1
   fi
   return 0
@@ -212,7 +216,7 @@ get_vm_ip() {
     fi
     if [ -z "$ip" ]; then
       local network_name="${NETWORK_NAME:-datacenter-net}"
-      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
     fi
     if [ -z "$ip" ]; then
       local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
@@ -526,6 +530,82 @@ stop_vm_gracefully() {
 
   virsh destroy "$vm_name" >/dev/null 2>&1
   return 0
+}
+
+# Print the stdin lines whose field $2 equals $1 (case-insensitive), or with
+# $3 = keep, every other line. Only lines with a MAC address can match, so
+# headers and duid lines never do, and an empty $1 matches nothing. Used for
+# dnsmasq .leases lines (MAC 2, hostname 4) and virsh net-dhcp-leases
+# output (MAC 3, hostname 6).
+filter_lease_lines() {
+  local keep=0
+  [ "${3:-}" = keep ] && keep=1
+  awk -v v="$1" -v f="$2" -v keep="$keep" '
+    function has_mac(i, h) {
+      h = "[0-9a-f][0-9a-f]"
+      for (i = 1; i <= NF; i++)
+        if (tolower($i) ~ ("^" h ":" h ":" h ":" h ":" h ":" h "$")) return 1
+      return 0
+    }
+    { hit = (v != "" && has_mac() && tolower($f) == tolower(v)) }
+    hit != keep'
+}
+
+# Remove the dnsmasq lease lines and libvirt status entries whose MAC is $1
+# or whose hostname is $2 (whole field, any case), then tell dnsmasq. Files
+# are rewritten in place only when something is removed. Never restarts the
+# network. Returns 1 when nothing matched.
+cleanup_dhcp_lease() {
+  local mac="${1,,}" host="${2,,}"
+  local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}"
+  local lease_file="$dir/${BRIDGE_NAME}.leases" status_file="$dir/${BRIDGE_NAME}.status"
+  local removed=0 n tmp
+
+  [ -z "$mac" ] && [ -z "$host" ] && return 1
+  print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
+
+  if [ -f "$lease_file" ]; then
+    tmp=$(mktemp) || return 1
+    filter_lease_lines "$mac" 2 keep <"$lease_file" | filter_lease_lines "$host" 4 keep >"$tmp"
+    n=$(($(awk 'END { print NR }' "$lease_file") - $(awk 'END { print NR }' "$tmp")))
+    if [ "$n" -gt 0 ]; then
+      cat "$tmp" >"$lease_file"
+      removed=$((removed + n))
+      print_info "Removed $n lease(s) from $lease_file"
+    fi
+    rm -f "$tmp"
+  fi
+
+  if [ -s "$status_file" ]; then
+    if ! command_exists jq; then
+      print_warning "jq not available; $status_file left unchanged"
+    else
+      tmp=$(mktemp) || return 1
+      # shellcheck disable=SC2016 # jq variables
+      if jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 &&
+        jq --arg mac "$mac" --arg host "$host" '[.[] | select(
+            (($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
+             ($host != "" and ((.hostname // "") | ascii_downcase) == $host)) | not)]' \
+          "$status_file" >"$tmp" 2>/dev/null; then
+        n=$(($(jq length "$status_file") - $(jq length "$tmp")))
+        if [ "$n" -gt 0 ]; then
+          cat "$tmp" >"$status_file"
+          removed=$((removed + n))
+          print_info "Removed $n entry(ies) from $status_file"
+        fi
+      else
+        print_warning "Could not parse $status_file; left unchanged"
+      fi
+      rm -f "$tmp"
+    fi
+  fi
+
+  if [ "$removed" -gt 0 ]; then
+    reload_dnsmasq || true
+    return 0
+  fi
+  print_info "No matching DHCP lease found"
+  return 1
 }
 
 reload_dnsmasq() {

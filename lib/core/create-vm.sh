@@ -1022,6 +1022,9 @@ prepare_vm_directory() {
   }
 }
 
+# The per-OS names are used only inside the user-data heredoc, where the
+# linter does not look for uses.
+# shellcheck disable=SC2034
 generate_cloud_init_userdata() {
   [ "$FORCE_MODE" = true ] && print_info "Generating password hash" || print_info "Generating secure password hash..."
   PASSWORD_HASH=$(generate_password_hash "$VM_PASSWORD")
@@ -1030,11 +1033,30 @@ generate_cloud_init_userdata() {
     exit 1
   }
 
+  # Per-OS names. Debian 12/13 and Arch have no mysql-server package, so an
+  # exact -k mysql-server installs MariaDB there.
+  local mysql_package=mysql-server mysql_service=mysql mysql_auth=" WITH mysql_native_password"
+  case "$VM_OS" in
+  debian12 | debian13) mysql_package=mariadb-server mysql_service=mariadb mysql_auth="" ;;
+  archlinux) mysql_package=mariadb mysql_service=mariadb mysql_auth="" ;;
+  esac
+  local ssh_service=ssh sftp_server=/usr/lib/openssh/sftp-server
+  local base_packages="openssh-server openssh-sftp-server nfs-common"
+  local nginx_root=/var/www/html apache_root=/var/www/html web_owner=www-data:www-data apache_service=apache2
+  if [ "$VM_OS" = archlinux ]; then
+    ssh_service=sshd sftp_server=/usr/lib/ssh/sftp-server base_packages="openssh nfs-utils"
+    nginx_root=/usr/share/nginx/html apache_root=/srv/http web_owner=http:http apache_service=httpd
+  fi
+  base_packages="$base_packages htop curl wget net-tools rsync nano vim tree unzip"
+
   # -k packages are installed one by one in runcmd, so one unavailable
   # package does not abort the install of the others (cloud-init installs
   # its packages list in a single apt-get/pacman call).
   EXTRA_PACKAGES=""
   TAILSCALE_REQUESTED=false
+  MYSQL_REQUESTED=false
+  APACHE_REQUESTED=false
+  echo "$ADDITIONAL_PACKAGES" | grep -q "apache2" && APACHE_REQUESTED=true
   if [ -n "$ADDITIONAL_PACKAGES" ]; then
     IFS=',' read -ra PACKAGES <<<"$ADDITIONAL_PACKAGES"
     for package in "${PACKAGES[@]}"; do
@@ -1043,6 +1065,14 @@ generate_cloud_init_userdata() {
       if [[ "${package,,}" == "tailscale" ]]; then
         TAILSCALE_REQUESTED=true
         continue
+      fi
+      if [ "$package" = mysql-server ]; then
+        MYSQL_REQUESTED=true
+        package=$mysql_package
+      fi
+      if [ "$VM_OS" = archlinux ] && [[ "$package" =~ ^apache2?$ ]]; then
+        APACHE_REQUESTED=true
+        package=apache
       fi
       EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
     done
@@ -1078,6 +1108,26 @@ PACKAGES_EOF
   local vm_home="/home/$VM_USERNAME"
   [ "$VM_USERNAME" = "root" ] && vm_home="/root"
 
+  # Passwords never appear in a guest shell command: chpasswd gets them
+  # base64-encoded, MySQL gets SQL-quoted statements from a 0600 file, and
+  # both YAML values are block scalars, so any character is taken literally.
+  local user_chpasswd root_chpasswd="" mysql_sql=""
+  user_chpasswd=$(printf '%s:%s\n' "$VM_USERNAME" "$VM_PASSWORD" | base64 | tr -d '\n')
+  [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && root_chpasswd=$(printf 'root:%s\n' "$ROOT_PASSWORD" | base64 | tr -d '\n')
+  if [ "$MYSQL_REQUESTED" = true ]; then
+    local sql_password=${VM_PASSWORD//\\/\\\\}
+    sql_password=${sql_password//\'/\'\'}
+    mysql_sql="ALTER USER 'root'@'localhost' IDENTIFIED${mysql_auth} BY '$sql_password';"
+    # Username root: the ALTER USER above already covers root@localhost.
+    if [ "$VM_USERNAME" != "root" ]; then
+      mysql_sql+="
+CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
+GRANT ALL PRIVILEGES ON *.* TO '$VM_USERNAME'@'localhost' WITH GRANT OPTION;"
+    fi
+    mysql_sql+="
+FLUSH PRIVILEGES;"
+  fi
+
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" <<USERDATA_EOF
 #cloud-config
 hostname: $VM_NAME
@@ -1098,22 +1148,14 @@ chpasswd:
   expire: False"; fi)
 package_update: true
 packages:
-  - openssh-server
-  - openssh-sftp-server
-  - nfs-common
-  - htop
-  - curl
-  - wget
-  - net-tools
-  - rsync
-  - nano
-  - vim
-  - tree
-  - unzip
+$(
+    # shellcheck disable=SC2086 # one package per word
+    printf '  - %s\n' $base_packages
+  )
 
 bootcmd:
-  - echo '$VM_USERNAME:$VM_PASSWORD' | chpasswd
-$(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ "$VM_USERNAME" != "root" ]; then echo "  - echo 'root:$ROOT_PASSWORD' | chpasswd"; fi)
+  - echo $user_chpasswd | base64 -d | chpasswd
+$(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ "$VM_USERNAME" != "root" ]; then echo "  - echo $root_chpasswd | base64 -d | chpasswd"; fi)
 
 write_files:
   - content: |
@@ -1125,7 +1167,7 @@ write_files:
       AuthorizedKeysFile .ssh/authorized_keys
       UsePAM yes
       ChallengeResponseAuthentication no
-      Subsystem sftp /usr/lib/openssh/sftp-server
+      Subsystem sftp $sftp_server
       ClientAliveInterval 300
       ClientAliveCountMax 2
       MaxAuthTries 6
@@ -1145,12 +1187,19 @@ write_files:
       CREATED="$(date)"
     path: /etc/vm-info
     owner: root:root
-    permissions: '0644'
+    permissions: '0644'$(if [ -n "$mysql_sql" ]; then
+    echo "
+  - content: |"
+    echo "      ${mysql_sql//$'\n'/$'\n'      }"
+    echo "    path: /root/dcvm-mysql-init.sql
+    owner: root:root
+    permissions: '0600'"
+  fi)
 
 runcmd:
-  - systemctl enable ssh
-  - systemctl restart ssh
-  - systemctl status ssh --no-pager
+  - systemctl enable $ssh_service
+  - systemctl restart $ssh_service
+  - systemctl status $ssh_service --no-pager
   - mkdir -p /mnt/shared
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
   - echo "10.10.10.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
@@ -1162,37 +1211,28 @@ $(if echo "$ADDITIONAL_PACKAGES" | grep -q "nginx"; then
     cat <<NGINX_EOF
   - systemctl enable nginx
   - systemctl start nginx
-  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
-  - chown www-data:www-data /var/www/html/index.html
+  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Nginx server running!</p><p>User: $VM_USERNAME</p>" > $nginx_root/index.html'
+  - chown $web_owner $nginx_root/index.html
 NGINX_EOF
   fi)
-$(if echo "$ADDITIONAL_PACKAGES" | grep -q "apache2"; then
+$(if [ "$APACHE_REQUESTED" = true ]; then
     cat <<APACHE_EOF
-  - systemctl enable apache2
-  - systemctl start apache2
-  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > /var/www/html/index.html'
-  - chown www-data:www-data /var/www/html/index.html
+  - systemctl enable $apache_service
+  - systemctl start $apache_service
+  - 'echo "<h1>Welcome to $VM_NAME</h1><p>Apache server running!</p><p>User: $VM_USERNAME</p>" > $apache_root/index.html'
+  - chown $web_owner $apache_root/index.html
 APACHE_EOF
   fi)
-$(if echo "$ADDITIONAL_PACKAGES" | grep -q "mysql-server"; then
-    cat <<'MYSQL_EOF'
-  - systemctl enable mysql
-  - systemctl start mysql
-  - mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$VM_PASSWORD';"
+$(if [ "$MYSQL_REQUESTED" = true ]; then
+    [ "$VM_OS" = archlinux ] && echo "  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql"
+    cat <<MYSQL_EOF
+  - systemctl enable $mysql_service
+  - systemctl start $mysql_service
+  - $mysql_service < /root/dcvm-mysql-init.sql; rm -f /root/dcvm-mysql-init.sql
 MYSQL_EOF
-    # Username root: the ALTER USER above already covers root@localhost.
-    if [ "$VM_USERNAME" != "root" ]; then
-      cat <<'MYSQL_USER_EOF'
-  - mysql -e "CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$VM_PASSWORD';"
-  - mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$VM_USERNAME'@'localhost' WITH GRANT OPTION;"
-MYSQL_USER_EOF
-    fi
-    cat <<'MYSQL_FLUSH_EOF'
-  - mysql -e "FLUSH PRIVILEGES;"
-MYSQL_FLUSH_EOF
   fi)
 $(if echo "$ADDITIONAL_PACKAGES" | grep -q "docker"; then
-    cat <<'DOCKER_EOF'
+    cat <<DOCKER_EOF
   - systemctl enable docker
   - systemctl start docker
   - usermod -aG docker $VM_USERNAME

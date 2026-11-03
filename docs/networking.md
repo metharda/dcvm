@@ -134,10 +134,12 @@ dcvm network dhcp show
 # Force renewal for all VMs
 dcvm network dhcp renew
 
-# Clear specific lease
+# Clear one lease: exact VM hostname (any case) or MAC; no network restart
 dcvm network dhcp clear <vm_name_or_mac>
-# Clear stale/orphaned leases
+# Clear stale/orphaned leases (no network restart)
 dcvm network dhcp clear -s
+# Clear ALL leases and restart the network (asks first)
+dcvm network dhcp clear -a
 ```
 
 - Service helpers:
