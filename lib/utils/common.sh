@@ -580,7 +580,7 @@ cleanup_dhcp_lease_unlocked() {
   local mac="${1,,}" host="${2,,}" reload="${3:-reload}"
   local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}"
   local lease_file="$dir/${BRIDGE_NAME}.leases" status_file="$dir/${BRIDGE_NAME}.status"
-  local removed=0 n tmp ts lmac ip rest
+  local removed=0 n tmp lmac ip
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
@@ -598,7 +598,7 @@ cleanup_dhcp_lease_unlocked() {
       # dnsmasq keeps leases in memory (SIGHUP does not drop them), so
       # release each removed IPv4 lease too.
       if command_exists dhcp_release; then
-        grep -vxFf "$tmp" "$lease_file" | while read -r ts lmac ip rest; do
+        grep -vxFf "$tmp" "$lease_file" | while read -r _ lmac ip _; do
           [[ "$ip" == *.* ]] && dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null
         done
       else

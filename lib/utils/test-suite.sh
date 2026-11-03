@@ -1276,6 +1276,7 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
 }
 
 # #38: per-OS base packages, SSH unit, sftp path and web server paths.
+# shellcheck disable=SC2016 # literal $pkg in the expected install lines
 test_userdata_per_os() {
   if ! has_pyyaml; then
     log_test "SKIP" "per-OS user-data (#38)" "python3 yaml not available"
