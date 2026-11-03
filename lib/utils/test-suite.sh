@@ -1388,6 +1388,11 @@ test_dhcp_clear_exact() {
   else
     log_test "FAIL" "dhcp clear vm1 removes only VM1 (not vm10/vm1-copy), status stays JSON, no restart (#37)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
   fi
+  if ! grep -q '^virsh net-update' "$t/calls"; then
+    log_test "PASS" "dhcp clear vm1 keeps any static DHCP reservation (no net-update) (#37)"
+  else
+    log_test "FAIL" "dhcp clear vm1 keeps any static DHCP reservation (no net-update) (#37)" "$(grep '^virsh net-update' "$t/calls")"
+  fi
 
   rm -f "$t"/*
   write_lease_fixture "$t"
@@ -1548,6 +1553,11 @@ test_delete_vm_exact_match() {
     log_test "PASS" "delete vm1 removes only its lease and status entry, vm10/vm1-copy kept (#37)"
   else
     log_test "FAIL" "delete vm1 removes only its lease and status entry, vm10/vm1-copy kept (#37)" "$(status_hosts "$t")"
+  fi
+  if grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --live --config" "$t/calls"; then
+    log_test "PASS" "delete vm1 removes the static DHCP reservation for its MAC (#37)"
+  else
+    log_test "FAIL" "delete vm1 removes the static DHCP reservation for its MAC (#37)" "$(grep '^virsh net' "$t/calls" | tr '\n' ';')"
   fi
   out=$(run_delete vm1 "")
   if echo "$out" | grep -q 'No DHCP leases found' && ! echo "$out" | grep -q 'DHCP leases still exist'; then

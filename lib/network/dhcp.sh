@@ -76,10 +76,8 @@ clear_vm_lease() {
     mac_address=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $3}' | head -1)
   fi
 
-  if [ -n "$mac_address" ]; then
-    print_info "Found MAC address: $mac_address"
-    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$mac_address'/>" --live --config 2>/dev/null || true
-  fi
+  # A static reservation for this MAC is kept; only VM delete removes it.
+  [ -n "$mac_address" ] && print_info "Found MAC address: $mac_address"
   cleanup_dhcp_lease "$mac_address" "$vm_name" || true
 }
 
