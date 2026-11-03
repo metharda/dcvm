@@ -615,7 +615,6 @@ test_delete_vm_keeps_network() {
           load_dcvm_config() { :; }
           require_root() { :; }
           check_dependencies() { :; }
-          reload_dnsmasq() { :; }
           BRIDGE_NAME=dcvm-test-no-such-bridge
           main "$@"
         ) >/dev/null 2>&1 </dev/null
@@ -1323,30 +1322,23 @@ test_userdata_per_os() {
   rm -rf "$t"
 }
 
-# dnsmasq lease/status files for bridge "br" in $1, and a matching
+# libvirt dnsmasq status file for bridge "br" in $1 (libvirt runs dnsmasq with
+# --leasefile-ro, so there is no .leases file), and a matching
 # `virsh net-dhcp-leases` listing in $1/virsh-leases. vm10 comes first, so a
-# substring match for vm1 picks the wrong VM; VM1 is upper case on purpose.
+# substring match for vm1 picks the wrong VM; VM1 is upper case in virsh.
 write_lease_fixture() {
-  cat >"$1/br.leases" <<'EOF'
-1893456000 52:54:00:00:00:10 10.10.10.10 vm10 01:52:54:00:00:00:10
-1893456000 52:54:00:00:00:01 10.10.10.11 VM1 01:52:54:00:00:00:01
-1893456000 52:54:00:00:00:02 10.10.10.12 vm1-copy *
-1893456000 52:54:00:ab:c2:54 10.10.10.254 web *
-1000 52:54:00:00:00:66 10.10.10.66 gone *
-duid 00:01:00:01:2a:2b:2c:2d:52:54:00:00:00:99
-EOF
-  local h m ip sep=""
+  local h m ip exp sep=""
   {
     echo "["
-    while read -r h m ip; do
-      printf '%s  {\n    "ip-address": "%s",\n    "mac-address": "%s",\n    "hostname": "%s",\n    "expiry-time": 1893456000\n  }' "$sep" "$ip" "$m" "$h"
+    while read -r h m ip exp; do
+      printf '%s  {\n    "ip-address": "%s",\n    "mac-address": "%s",\n    "hostname": "%s",\n    "expiry-time": %s\n  }' "$sep" "$ip" "$m" "$h" "$exp"
       sep=$',\n'
     done <<'EOF'
-vm10 52:54:00:00:00:10 10.10.10.10
-vm1 52:54:00:00:00:01 10.10.10.11
-vm1-copy 52:54:00:00:00:02 10.10.10.12
-web 52:54:00:ab:c2:54 10.10.10.254
-gone 52:54:00:00:00:66 10.10.10.66
+vm10 52:54:00:00:00:10 10.10.10.10 1893456000
+vm1 52:54:00:00:00:01 10.10.10.11 1893456000
+vm1-copy 52:54:00:00:00:02 10.10.10.12 1893456000
+web 52:54:00:ab:c2:54 10.10.10.254 1893456000
+gone 52:54:00:00:00:66 10.10.10.66 1000
 EOF
     printf '\n]\n'
   } >"$1/br.status"
@@ -1362,7 +1354,7 @@ EOF
 }
 
 # Run dhcp.sh main "${@:3}" on the fixtures in $1 with extra stub code $2;
-# virsh is stubbed and every virsh/reload call is logged to $1/calls.
+# virsh and dhcp_release are stubbed and every call is logged to $1/calls.
 # shellcheck disable=SC2317,SC2034,SC1090,SC1091 # stubs; globals read by dhcp.sh
 run_dhcp_fixture() {
   local t="$1" extra="$2"
@@ -1372,7 +1364,7 @@ run_dhcp_fixture() {
     load_dcvm_config() { :; }
     require_root() { :; }
     check_dependencies() { :; }
-    reload_dnsmasq() { echo reload >>"$t/calls"; }
+    dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
     get_vm_mac() { :; }
     sleep() { :; }
     virsh() {
@@ -1403,10 +1395,8 @@ test_dhcp_clear_exact() {
   t=$(mktemp -d)
 
   write_lease_fixture "$t"
-  grep -v ' VM1 ' "$t/br.leases" >"$t/leases.want"
   out=$(run_dhcp_fixture "$t" "" clear vm1)
-  if cmp -s "$t/br.leases" "$t/leases.want" &&
-    [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
+  if [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
     ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
     log_test "PASS" "dhcp clear vm1 removes only VM1 (not vm10/vm1-copy), status stays JSON, no restart (#37)"
   else
@@ -1421,25 +1411,23 @@ test_dhcp_clear_exact() {
   rm -f "$t"/*
   write_lease_fixture "$t"
   run_dhcp_fixture "$t" "" clear 52:54:00:AB:C2:54 >/dev/null
-  if ! grep -q ' web ' "$t/br.leases" && [ "$(wc -l <"$t/br.leases")" = "5" ] &&
-    [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","gone"]' ] &&
+  if [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","gone"]' ] &&
     ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
-    log_test "PASS" "dhcp clear <upper-case MAC> removes that lease and status entry, no restart (#37)"
+    log_test "PASS" "dhcp clear <upper-case MAC> removes that status entry, no restart (#37)"
   else
-    log_test "FAIL" "dhcp clear <upper-case MAC> removes that lease and status entry, no restart (#37)" "$(status_hosts "$t")"
+    log_test "FAIL" "dhcp clear <upper-case MAC> removes that status entry, no restart (#37)" "$(status_hosts "$t")"
   fi
 
   for name in 254 ipv4 ip hostname mac abc 10 vm2; do
     rm -f "$t"/*
     write_lease_fixture "$t"
-    cp "$t/br.leases" "$t/leases.orig"
     cp "$t/br.status" "$t/status.orig"
-    inode=$(stat -c %i "$t/br.leases")
+    inode=$(stat -c %i "$t/br.status")
     out=$(run_dhcp_fixture "$t" "" clear "$name")
     ok=$?
-    if [ "$ok" = 0 ] && cmp -s "$t/br.leases" "$t/leases.orig" && cmp -s "$t/br.status" "$t/status.orig" &&
-      [ "$(stat -c %i "$t/br.leases")" = "$inode" ] && echo "$out" | grep -q 'No matching DHCP lease' &&
-      ! grep -qE '^virsh net-(destroy|start|update)|^reload' "$t/calls"; then
+    if [ "$ok" = 0 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+      [ "$(stat -c %i "$t/br.status")" = "$inode" ] && echo "$out" | grep -q 'No matching DHCP lease' &&
+      ! grep -qE '^virsh net-(destroy|start|update)|^dhcp_release' "$t/calls"; then
       log_test "PASS" "dhcp clear $name: no lease, files untouched, exit 0, no restart (#37)"
     else
       log_test "FAIL" "dhcp clear $name: no lease, files untouched, exit 0, no restart (#37)" "exit $ok; $(tr '\n' ';' <"$t/calls")"
@@ -1449,47 +1437,41 @@ test_dhcp_clear_exact() {
   rm -f "$t"/*
   write_lease_fixture "$t"
   run_dhcp_fixture "$t" "" clear --stale >/dev/null
-  if ! grep -q ' gone ' "$t/br.leases" && [ "$(grep -c '^1893456000 ' "$t/br.leases")" = "4" ] &&
-    [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","web"]' ] &&
+  if [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","web"]' ] &&
     ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
-    log_test "PASS" "dhcp clear --stale removes the expired lease and its status entry, no restart (#37)"
+    log_test "PASS" "dhcp clear --stale removes the expired status entry, no restart (#37)"
   else
-    log_test "FAIL" "dhcp clear --stale removes the expired lease and its status entry, no restart (#37)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
+    log_test "FAIL" "dhcp clear --stale removes the expired status entry, no restart (#37)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
   fi
 
   rm -f "$t"/*
   write_lease_fixture "$t"
   cp "$t/br.status" "$t/status.orig"
   out=$(run_dhcp_fixture "$t" 'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }' clear vm1)
-  if ! grep -q ' VM1 ' "$t/br.leases" && cmp -s "$t/br.status" "$t/status.orig" && echo "$out" | grep -qF "jq not available; the lease is still listed in $t/br.status"; then
-    log_test "PASS" "dhcp clear without jq: lease removed, status file left as is with a warning (#37)"
+  ok=$?
+  if [ "$ok" != 0 ] && cmp -s "$t/br.status" "$t/status.orig" && ! grep -q '^dhcp_release' "$t/calls" &&
+    echo "$out" | grep -qF "jq not available; the lease is still listed in $t/br.status"; then
+    log_test "PASS" "dhcp clear without jq: fails, status file left as is, with the reason (#37)"
   else
-    log_test "FAIL" "dhcp clear without jq: lease removed, status file left as is with a warning (#37)"
+    log_test "FAIL" "dhcp clear without jq: fails, status file left as is, with the reason (#37)" "exit $ok; $(echo "$out" | tr '\n' ';')"
   fi
   rm -rf "$t"
 }
 
 # 37-10: cleared leases are released from dnsmasq's memory with dhcp_release
-# (SIGHUP does not drop them); without dhcp_release there is a warning.
+# (SIGHUP does not drop them); without dhcp_release, clear fails.
 # shellcheck disable=SC2016 # stub code is eval'd later
 test_dhcp_release() {
   if ! command -v jq >/dev/null 2>&1; then
     log_test "SKIP" "dhcp clear releases leases (37-10)" "jq not available"
     return
   fi
-  local t out
+  local t out rc
   t=$(mktemp -d)
-  local stub='PATH="$t/bin:$PATH"'
-  local nostub='command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }'
-  mkbin() {
-    mkdir -p "$t/bin"
-    printf '#!/bin/sh\necho "dhcp_release $*" >>"%s/calls"\n' "$t" >"$t/bin/dhcp_release"
-    chmod +x "$t/bin/dhcp_release"
-  }
+  local nostub='unset -f dhcp_release; command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }'
 
   write_lease_fixture "$t"
-  mkbin
-  run_dhcp_fixture "$t" "$stub" clear vm1 >/dev/null
+  run_dhcp_fixture "$t" "" clear vm1 >/dev/null
   if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ]; then
     log_test "PASS" "dhcp clear vm1 runs dhcp_release br <ip> <mac> for its lease only (37-10)"
   else
@@ -1498,35 +1480,39 @@ test_dhcp_release() {
 
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
-  mkbin
-  run_dhcp_fixture "$t" "$stub" clear 52:54:00:AB:C2:54 >/dev/null
+  run_dhcp_fixture "$t" "" clear 52:54:00:AB:C2:54 >/dev/null
   if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.254 52:54:00:ab:c2:54" ]; then
     log_test "PASS" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)"
   else
     log_test "FAIL" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)" "$(tr '\n' ';' <"$t/calls")"
   fi
 
-  rm -rf "${t:?}"/*
-  write_lease_fixture "$t"
-  out=$(run_dhcp_fixture "$t" "$nostub" clear vm1)
-  if ! grep -q ' VM1 ' "$t/br.leases" && echo "$out" | grep -qF "dhcp_release not found" &&
-    ! grep -q '^dhcp_release' "$t/calls"; then
-    log_test "PASS" "dhcp clear without dhcp_release: lease file cleaned, warning printed (37-10)"
-  else
-    log_test "FAIL" "dhcp clear without dhcp_release: lease file cleaned, warning printed (37-10)" "$(echo "$out" | tr '\n' ';')"
-  fi
+  for name in vm1 52:54:00:00:00:01; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/status.orig"
+    out=$(run_dhcp_fixture "$t" "$nostub" clear "$name")
+    rc=$?
+    if [ "$rc" != 0 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+      echo "$out" | grep -qF "dhcp_release not found" && echo "$out" | grep -qF "dnsmasq-utils" &&
+      ! echo "$out" | grep -q 'No matching DHCP lease'; then
+      log_test "PASS" "dhcp clear $name without dhcp_release: fails with an install hint, status untouched (37-10)"
+    else
+      log_test "FAIL" "dhcp clear $name without dhcp_release: fails with an install hint, status untouched (37-10)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
 
-  # --stale with two leases to drop (gone expired, web orphaned) reloads once.
+  # --stale with two leases to drop (gone expired, web orphaned).
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
-  mkbin
   printf 'vm10\nvm1\nvm1-copy\n' >"$t/vms"
-  run_dhcp_fixture "$t" "$stub" clear --stale >/dev/null
-  if [ "$(grep -c '^reload' "$t/calls")" = 1 ] && [ "$(grep -c '^dhcp_release' "$t/calls")" = 2 ] &&
+  run_dhcp_fixture "$t" "" clear --stale >/dev/null
+  if [ "$(grep -c '^dhcp_release' "$t/calls")" = 2 ] &&
+    grep -qxF "dhcp_release br 10.10.10.66 52:54:00:00:00:66" "$t/calls" &&
     [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy"]' ]; then
-    log_test "PASS" "dhcp clear --stale releases each lease and reloads dnsmasq once (37-10)"
+    log_test "PASS" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)"
   else
-    log_test "FAIL" "dhcp clear --stale releases each lease and reloads dnsmasq once (37-10)" "$(tr '\n' ';' <"$t/calls")"
+    log_test "FAIL" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
   fi
   rm -rf "$t"
 }
@@ -1559,7 +1545,7 @@ test_delete_vm_exact_match() {
         *) command rm "$@" ;;
         esac
       }
-      reload_dnsmasq() { :; }
+      dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
       check_vm_exists() { return 0; }
       get_vm_disk_path() { :; }
       get_vm_ip() { :; }
@@ -1572,11 +1558,11 @@ test_delete_vm_exact_match() {
     )
   }
   out=$(run_delete vm1 52:54:00:00:00:01)
-  if ! grep -q ' VM1 ' "$t/br.leases" && [ "$(wc -l <"$t/br.leases")" = "5" ] &&
-    [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ]; then
-    log_test "PASS" "delete vm1 removes only its lease and status entry, vm10/vm1-copy kept (#37)"
+  if [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
+    [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ]; then
+    log_test "PASS" "delete vm1 releases and removes only its lease, vm10/vm1-copy kept (#37)"
   else
-    log_test "FAIL" "delete vm1 removes only its lease and status entry, vm10/vm1-copy kept (#37)" "$(status_hosts "$t")"
+    log_test "FAIL" "delete vm1 releases and removes only its lease, vm10/vm1-copy kept (#37)" "$(status_hosts "$t")"
   fi
   if grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --live --config" "$t/calls"; then
     log_test "PASS" "delete vm1 removes the static DHCP reservation for its MAC (#37)"
@@ -1601,7 +1587,7 @@ test_delete_vm_exact_match() {
 }
 
 # Run cleanup_dhcp_lease "${@:3}" on the fixtures in $1 with extra stub code
-# $2; reload calls are logged to $1/calls, temp files go to $1/tmp.
+# $2; dhcp_release calls are logged to $1/calls, temp files go to $1/tmp.
 # shellcheck disable=SC2034,SC2317 # globals read by cleanup_dhcp_lease; stubs
 run_cleanup_fixture() {
   local t="$1" extra="$2"
@@ -1609,7 +1595,7 @@ run_cleanup_fixture() {
   mkdir -p "$t/tmp"
   (
     DNSMASQ_DIR="$t" BRIDGE_NAME=br TMPDIR="$t/tmp"
-    reload_dnsmasq() { echo reload >>"$t/calls"; }
+    dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
     eval "$extra"
     cleanup_dhcp_lease "$@"
   ) </dev/null 2>&1
@@ -1618,71 +1604,86 @@ run_cleanup_fixture() {
 # #37: cleanup_dhcp_lease never loses lease data when a step fails.
 # shellcheck disable=SC2016 # stub code is eval'd later
 test_cleanup_dhcp_lease_failures() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "cleanup_dhcp_lease failure handling (#37)" "jq not available"
+    return
+  fi
   local t out rc
   t=$(mktemp -d)
-  write_lease_fixture "$t"
-  cp "$t/br.leases" "$t/leases.orig"
+  printf '[{"ip-address": "10.10.10.11", "mac-address": "52:54:00:00:00:01", "hostname": "vm1"' >"$t/br.status"
   cp "$t/br.status" "$t/status.orig"
-  out=$(run_cleanup_fixture "$t" 'filter_lease_lines() { cat >/dev/null; return 2; }' 52:54:00:00:00:01 vm1)
+  out=$(run_cleanup_fixture "$t" "" 52:54:00:00:00:01 vm1)
   rc=$?
-  if [ "$rc" = 1 ] && cmp -s "$t/br.leases" "$t/leases.orig" && cmp -s "$t/br.status" "$t/status.orig" &&
+  if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" &&
     [ -z "$(ls -A "$t/tmp")" ] && [ ! -e "$t/calls" ]; then
-    log_test "PASS" "cleanup_dhcp_lease: failing lease filter leaves the files as they were, exit 1 (#37)"
+    log_test "PASS" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 1 (#37)"
   else
-    log_test "FAIL" "cleanup_dhcp_lease: failing lease filter leaves the files as they were, exit 1 (#37)" "exit $rc; $(wc -l <"$t/br.leases") lines; $(echo "$out" | tr '\n' ';')"
+    log_test "FAIL" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 1 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'mktemp() { return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ]; then
+    log_test "PASS" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 1 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 1 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
   fi
   rm -rf "$t"
 }
 
-# #37: two cleanups running at once on one lease file both take effect.
+# #37: two cleanups running at once on one status file both take effect.
 test_cleanup_dhcp_lease_parallel() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "cleanup_dhcp_lease parallel (#37)" "jq not available"
+    return
+  fi
   local t i lost=0
   t=$(mktemp -d)
   for i in $(seq 50); do
-    printf '1893456000 52:54:00:00:00:01 10.10.10.11 a *\n1893456000 52:54:00:00:00:02 10.10.10.12 b *\n' >"$t/br.leases"
+    printf '[{"ip-address":"10.10.10.11","mac-address":"52:54:00:00:00:01","hostname":"a"},{"ip-address":"10.10.10.12","mac-address":"52:54:00:00:00:02","hostname":"b"}]\n' >"$t/br.status"
     run_cleanup_fixture "$t" "" 52:54:00:00:00:01 a >/dev/null &
     run_cleanup_fixture "$t" "" 52:54:00:00:00:02 b >/dev/null &
     wait
-    [ -s "$t/br.leases" ] && lost=$((lost + 1))
+    [ "$(jq length "$t/br.status" 2>/dev/null)" = 0 ] || lost=$((lost + 1))
   done
   if [ "$lost" = 0 ]; then
-    log_test "PASS" "cleanup_dhcp_lease: 50 parallel pairs lose no update (lease file locked) (#37)"
+    log_test "PASS" "cleanup_dhcp_lease: 50 parallel pairs lose no update (status file locked) (#37)"
   else
-    log_test "FAIL" "cleanup_dhcp_lease: 50 parallel pairs lose no update (lease file locked) (#37)" "$lost of 50 left a lease"
+    log_test "FAIL" "cleanup_dhcp_lease: 50 parallel pairs lose no update (status file locked) (#37)" "$lost of 50 left a lease"
   fi
   rm -rf "$t"
 }
 
-# Lease cleanup review nits: one reload_dnsmasq, a reload even when the
-# status step cannot get a temp file, and helpers exported to child shells.
-# shellcheck disable=SC2016,SC1091 # stub code is eval'd later
+# 37-12: no SIGHUP "reload" of dnsmasq (it never found libvirt's dnsmasq and
+# does not drop leases), no dead .leases handling, and the lease helpers are
+# exported to child shells.
+# shellcheck disable=SC1091
 test_dhcp_cleanup_nits() {
-  local t out
-  t=$(mktemp -d)
-  if [ "$(
-    source "$SCRIPT_DIR/../network/dhcp.sh" >/dev/null 2>&1
-    declare -f reload_dnsmasq
-  )" = "$(declare -f reload_dnsmasq)" ]; then
-    log_test "PASS" "dhcp.sh uses common.sh's reload_dnsmasq (no duplicate)"
+  local lib="$SCRIPT_DIR/.."
+  if ! (
+    source "$lib/network/dhcp.sh" >/dev/null 2>&1
+    declare -F reload_dnsmasq >/dev/null
+  ) && ! grep -rqE 'kill -HUP|reload_dnsmasq' "$lib/network/dhcp.sh" "$lib/utils/common.sh" "$lib/core/delete-vm.sh"; then
+    log_test "PASS" "no dnsmasq SIGHUP reload left in dhcp.sh, common.sh or delete-vm.sh (37-12)"
   else
-    log_test "FAIL" "dhcp.sh uses common.sh's reload_dnsmasq (no duplicate)"
+    log_test "FAIL" "no dnsmasq SIGHUP reload left in dhcp.sh, common.sh or delete-vm.sh (37-12)" "$(grep -nE 'kill -HUP|reload_dnsmasq' "$lib/network/dhcp.sh" "$lib/utils/common.sh" "$lib/core/delete-vm.sh" | head -3 | tr '\n' ';')"
   fi
-
-  write_lease_fixture "$t"
-  cp "$t/br.status" "$t/status.orig"
-  out=$(run_cleanup_fixture "$t" 'mktemp() { [ -e "$t/m1" ] && return 1; : >"$t/m1"; command mktemp "$@"; }' 52:54:00:00:00:01 vm1)
-  if ! grep -q ' VM1 ' "$t/br.leases" && cmp -s "$t/br.status" "$t/status.orig" && grep -qx reload "$t/calls" 2>/dev/null; then
-    log_test "PASS" "cleanup_dhcp_lease reloads dnsmasq even when the status step's mktemp fails"
+  if ! grep -qF '.leases' "$lib/utils/common.sh" "$lib/core/delete-vm.sh" && ! (
+    source "$lib/network/dhcp.sh" >/dev/null 2>&1
+    declare -f clear_all_leases clear_stale_leases clear_vm_lease clear_lease_by_mac
+  ) | grep -qF '.leases'; then
+    log_test "PASS" "lease cleanup works on the .status file only, no .leases handling (37-12)"
   else
-    log_test "FAIL" "cleanup_dhcp_lease reloads dnsmasq even when the status step's mktemp fails" "$(echo "$out" | tr '\n' ';')"
+    log_test "FAIL" "lease cleanup works on the .status file only, no .leases handling (37-12)"
   fi
-
-  if bash -c 'declare -F filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked' >/dev/null 2>&1; then
-    log_test "PASS" "filter_lease_lines and cleanup_dhcp_lease are exported to child shells"
+  if bash -c 'declare -F cleanup_dhcp_lease cleanup_dhcp_lease_unlocked' >/dev/null 2>&1; then
+    log_test "PASS" "cleanup_dhcp_lease is exported to child shells"
   else
-    log_test "FAIL" "filter_lease_lines and cleanup_dhcp_lease are exported to child shells"
+    log_test "FAIL" "cleanup_dhcp_lease is exported to child shells"
   fi
-  rm -rf "$t"
 }
 
 # get_vm_ip treats the subnet's dots literally.

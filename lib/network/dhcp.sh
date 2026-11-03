@@ -22,7 +22,7 @@ is_mac_address() {
 clear_lease_by_mac() {
   local mac_address="$1"
   [ -z "$mac_address" ] && print_error "MAC address required" && return 1
-  cleanup_dhcp_lease "$mac_address" "" || true
+  cleanup_dhcp_lease "$mac_address" "" || [ $? -ne 2 ]
 }
 
 clear_all_leases() {
@@ -39,15 +39,10 @@ clear_all_leases() {
 
   print_info "Clearing ALL DHCP leases for $NETWORK_NAME"
 
-  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local pid_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.pid"
 
-  [ -f "$lease_file" ] && >"$lease_file" && echo "Cleared lease file"
   [ -f "$status_file" ] && >"$status_file" && echo "Cleared status file"
-  [ -f "$pid_file" ] && rm -f "$pid_file"
 
-  reload_dnsmasq || true
   restart_network
 }
 
@@ -69,22 +64,26 @@ clear_vm_lease() {
 
   # A static reservation for this MAC is kept; only VM delete removes it.
   [ -n "$mac_address" ] && print_info "Found MAC address: $mac_address"
-  cleanup_dhcp_lease "$mac_address" "$vm_name" || true
+  cleanup_dhcp_lease "$mac_address" "$vm_name" || [ $? -ne 2 ]
 }
 
 clear_stale_leases() {
   print_info "Cleaning up stale/expired leases and orphaned VM leases"
   local current_time=$(date +%s)
-  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   local removed_count=0
   local -a macs_to_remove=()
   local existing_vms=$(virsh list --all --name 2>/dev/null | grep -v '^$')
   local active_macs=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR>2 {print $3}' | sort -u)
 
-  if [ -f "$lease_file" ] && [ -s "$lease_file" ]; then
-    while IFS=' ' read -r timestamp mac ip hostname client_id rest; do
-      [ -z "$timestamp" ] && continue
-      [[ "$timestamp" == "duid" ]] && continue
+  if ! command_exists jq; then
+    print_error "jq not available; cannot read $status_file (install jq)"
+    return 1
+  fi
+
+  if [ -s "$status_file" ]; then
+    while IFS=$'\t' read -r timestamp mac ip hostname; do
+      [ -z "$mac" ] && continue
 
       local keep_lease=false
       local reason=""
@@ -110,14 +109,13 @@ clear_stale_leases() {
         macs_to_remove+=("$mac")
         ((removed_count++))
       fi
-    done <"$lease_file"
+    done < <(jq -r '.[] | [(."expiry-time" // 0 | tostring), (."mac-address" // ""), (."ip-address" // ""), (.hostname // "")] | @tsv' "$status_file" 2>/dev/null)
   fi
 
   local mac
   for mac in $(printf '%s\n' "${macs_to_remove[@]}" | sort -u); do
-    cleanup_dhcp_lease "$mac" "" noreload || true
+    cleanup_dhcp_lease "$mac" "" || [ $? -ne 2 ] || return 1
   done
-  [ $removed_count -gt 0 ] && { reload_dnsmasq || true; }
 
   if [ $removed_count -gt 0 ]; then
     print_success "Removed $removed_count stale/orphaned lease(s)"

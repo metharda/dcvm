@@ -535,32 +535,27 @@ stop_vm_gracefully() {
   return 0
 }
 
-# Print the stdin lines whose field $2 equals $1 (case-insensitive), or with
-# $3 = keep, every other line. Only lines with a MAC address can match, so
-# headers and duid lines never do, and an empty $1 matches nothing. Used for
-# dnsmasq .leases lines (MAC 2, hostname 4) and virsh net-dhcp-leases
-# output (MAC 3, hostname 6).
+# Print the stdin lines whose field $2 equals $1 (case-insensitive). Only
+# lines with a MAC address can match, so headers never do, and an empty $1
+# matches nothing. Used for virsh net-dhcp-leases output (MAC 3, hostname 6).
 filter_lease_lines() {
-  local keep=0
-  [ "${3:-}" = keep ] && keep=1
-  awk -v v="$1" -v f="$2" -v keep="$keep" '
+  awk -v v="$1" -v f="$2" '
     function has_mac(i, h) {
       h = "[0-9a-f][0-9a-f]"
       for (i = 1; i <= NF; i++)
         if (tolower($i) ~ ("^" h ":" h ":" h ":" h ":" h ":" h "$")) return 1
       return 0
     }
-    { hit = (v != "" && has_mac() && tolower($f) == tolower(v)) }
-    hit != keep'
+    v != "" && has_mac() && tolower($f) == tolower(v)'
 }
 
-# Remove the dnsmasq lease lines and libvirt status entries whose MAC is $1
-# or whose hostname is $2 (whole field, any case), then tell dnsmasq. Files
-# are rewritten in place only when something is removed. Never restarts the
-# network. Returns 1 when nothing matched.
-# Remove the lease of MAC $1 and/or hostname $2 from dnsmasq's lease and
-# status files and release it in dnsmasq. $3=noreload skips the SIGHUP.
-# Runs under a lock so parallel cleanups do not undo each other's edits.
+# Release the lease of MAC $1 and/or hostname $2 (whole field, any case) in
+# libvirt's dnsmasq with dhcp_release, and drop it from the libvirt status
+# file. libvirt runs dnsmasq with --leasefile-ro, so the status file is the
+# only lease store, and SIGHUP does not drop leases. Never restarts the
+# network. Runs under a lock so parallel cleanups do not undo each other's
+# edits. Returns 1 when nothing matched or the status file could not be
+# read, 2 when dhcp_release or jq is missing.
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
   if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
@@ -577,80 +572,55 @@ cleanup_dhcp_lease() {
 }
 
 cleanup_dhcp_lease_unlocked() {
-  local mac="${1,,}" host="${2,,}" reload="${3:-reload}"
-  local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}"
-  local lease_file="$dir/${BRIDGE_NAME}.leases" status_file="$dir/${BRIDGE_NAME}.status"
-  local removed=0 n tmp lmac ip
+  local mac="${1,,}" host="${2,,}"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+  local tmp matches lmac ip n
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
 
-  if [ -f "$lease_file" ]; then
-    tmp=$(mktemp) || return 1
-    filter_lease_lines "$mac" 2 keep <"$lease_file" | filter_lease_lines "$host" 4 keep >"$tmp"
-    if [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" != 00 ]; then
-      rm -f "$tmp"
-      print_error "Could not filter $lease_file; left unchanged"
-      return 1
-    fi
-    n=$(($(awk 'END { print NR }' "$lease_file") - $(awk 'END { print NR }' "$tmp")))
-    if [ "$n" -gt 0 ]; then
-      # dnsmasq keeps leases in memory (SIGHUP does not drop them), so
-      # release each removed IPv4 lease too.
-      if command_exists dhcp_release; then
-        grep -vxFf "$tmp" "$lease_file" | while read -r _ lmac ip _; do
-          [[ "$ip" == *.* ]] && dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null
-        done
-      else
-        print_warning "dhcp_release not found; dnsmasq keeps the lease in memory until it expires (install dnsmasq-utils)"
-      fi
-      cat "$tmp" >"$lease_file"
-      removed=$((removed + n))
-      print_info "Removed $n lease(s) from $lease_file"
-    fi
+  if ! command_exists dhcp_release; then
+    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian/Ubuntu, dnsmasq on Arch)"
+    return 2
+  fi
+  if [ ! -s "$status_file" ]; then
+    print_info "No matching DHCP lease found"
+    return 1
+  fi
+  if ! command_exists jq; then
+    print_error "jq not available; the lease is still listed in $status_file (install jq)"
+    return 2
+  fi
+  if ! tmp=$(mktemp); then
+    print_error "Could not create a temp file; $status_file left unchanged"
+    return 1
+  fi
+  # shellcheck disable=SC2016 # jq variables
+  local sel='(($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
+    ($host != "" and ((.hostname // "") | ascii_downcase) == $host))'
+  if ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 ||
+    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
+    ! jq --arg mac "$mac" --arg host "$host" "[.[] | select($sel | not)]" "$status_file" >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
+    print_warning "Could not parse $status_file; left unchanged"
+    return 1
+  fi
+  if [ -z "$matches" ]; then
+    rm -f "$tmp"
+    print_info "No matching DHCP lease found"
+    return 1
   fi
 
-  if [ -s "$status_file" ]; then
-    if ! command_exists jq; then
-      print_warning "jq not available; the lease is still listed in $status_file (install jq)"
-    elif ! tmp=$(mktemp); then
-      print_error "Could not create a temp file; $status_file left unchanged"
-    else
-      # shellcheck disable=SC2016 # jq variables
-      if jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 &&
-        jq --arg mac "$mac" --arg host "$host" '[.[] | select(
-            (($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
-             ($host != "" and ((.hostname // "") | ascii_downcase) == $host)) | not)]' \
-          "$status_file" >"$tmp" 2>/dev/null; then
-        n=$(($(jq length "$status_file") - $(jq length "$tmp")))
-        if [ "$n" -gt 0 ]; then
-          cat "$tmp" >"$status_file"
-          removed=$((removed + n))
-          print_info "Removed $n entry(ies) from $status_file"
-        fi
-      else
-        print_warning "Could not parse $status_file; left unchanged"
-      fi
-      rm -f "$tmp"
-    fi
-  fi
-
-  if [ "$removed" -gt 0 ]; then
-    [ "$reload" = noreload ] || reload_dnsmasq || true
-    return 0
-  fi
-  print_info "No matching DHCP lease found"
-  return 1
-}
-
-reload_dnsmasq() {
-  local bridge="${BRIDGE_NAME:-virbr-dc}"
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${bridge}" | grep -v grep | awk '{print $2}' | head -1)
-  if [ -n "$dnsmasq_pid" ]; then
-    kill -HUP "$dnsmasq_pid" 2>/dev/null && return 0 || return 1
-  fi
-  return 1
+  while IFS=$'\t' read -r lmac ip; do
+    [[ "$ip" == *.* ]] || continue
+    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null ||
+      print_warning "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
+  done <<<"$matches"
+  n=$(($(jq length "$status_file") - $(jq length "$tmp")))
+  cat "$tmp" >"$status_file"
+  rm -f "$tmp"
+  print_info "Released and removed $n lease(s) from $status_file"
+  return 0
 }
 
 interactive_prompt_memory_common() {
@@ -860,7 +830,7 @@ export -f get_system_info get_host_info
 export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
-export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f detect_host_ip get_fix_lock_script_path
 export -f filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
 export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username

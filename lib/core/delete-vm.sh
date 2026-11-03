@@ -183,14 +183,9 @@ delete_all_vms() {
 
   print_info "Performing final cleanup"
 
-  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
-  [ -f "$lease_file" ] && >"$lease_file" && print_info "Cleared all DHCP leases"
   [ -f "$status_file" ] && >"$status_file" && print_info "Cleared DHCP status file"
-
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
-  [ -n "$dnsmasq_pid" ] && kill -HUP "$dnsmasq_pid" 2>/dev/null
 
   local port_file=$(get_port_mappings_file)
   [ -f "$port_file" ] && >"$port_file" && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
