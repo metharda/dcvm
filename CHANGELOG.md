@@ -12,6 +12,10 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-03
+
+Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
+
 ### Fixed
 
 - Passwords containing ` #`, quotes, `\`, `$`, backticks or `: ` now work: the
@@ -353,7 +357,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/metharda/dcvm/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/metharda/dcvm/compare/v0.9.2...v0.9.3
