@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to DCVM are documented in this file.
+All notable changes to dcvm are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions are the `Version:` string reported by `dcvm version` (defined in
@@ -34,8 +34,11 @@ README pitch and the dcvm name in the docs and the CLI.
 - CLI messages, help text and the systemd unit `Description=` lines say
   "dcvm" instead of "datacenter", and `dcvm --version` prints "dcvm - a VM
   manager". Function, variable, unit, log and path names are unchanged.
+
+### Fixed
+
 - `docs/examples/basic-vm-creation.md` links to `docs/backups.md` instead of
-  the old `docs/backup-restore.md`.
+  the old, missing `docs/backup-restore.md`.
 
 ## [0.9.4] - 2026-10-08
 
