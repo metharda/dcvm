@@ -764,7 +764,7 @@ start_existing_vms() {
 
 show_datacenter_summary() {
   echo
-  print_status_log "INFO" "=== DCVM INSTALLATION COMPLETE ==="
+  print_status_log "INFO" "=== dcvm INSTALLATION COMPLETE ==="
   echo
   echo "Installation directory: $DATACENTER_BASE"
   echo "Network: $NETWORK_NAME (10.10.10.1/24)"
@@ -779,7 +779,7 @@ show_datacenter_summary() {
   echo "    • Show help: dcvm help"
   echo "    • Uninstall: dcvm uninstall"
   echo
-  print_status_log "SUCCESS" "DCVM is ready to use!"
+  print_status_log "SUCCESS" "dcvm is ready to use!"
   print_status_log "INFO" "Run 'dcvm help' to see all available commands"
 }
 
@@ -896,7 +896,7 @@ EOF
 }
 
 install_dcvm_command() {
-  print_status_log "INFO" "Installing DCVM command and libraries..."
+  print_status_log "INFO" "Installing dcvm command and libraries..."
 
   local install_bin="/usr/local/bin"
   local install_lib="/usr/local/lib/dcvm"
@@ -904,26 +904,26 @@ install_dcvm_command() {
   mkdir -p "$install_bin" "$install_lib"
 
   if ! install_by_fetch "$install_bin" "$install_lib"; then
-    print_status_log "ERROR" "Failed to install DCVM files"
+    print_status_log "ERROR" "Failed to install dcvm files"
     exit 1
   fi
 
   if command -v dcvm >/dev/null 2>&1; then
-    print_status_log "SUCCESS" "DCVM command is available in PATH"
+    print_status_log "SUCCESS" "dcvm command is available in PATH"
   else
-    print_status_log "WARNING" "DCVM command not found in PATH yet"
+    print_status_log "WARNING" "dcvm command not found in PATH yet"
     print_status_log "INFO" "The command is installed at: $install_bin/dcvm"
     print_status_log "INFO" "You may need to restart your shell or add /usr/local/bin to PATH"
   fi
 }
 
 main() {
-  print_status_log "INFO" "DCVM installer is starting..." >&2
+  print_status_log "INFO" "dcvm installer is starting..." >&2
 
   touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
   echo "$(date) - Installation started" >>"$LOG_FILE" 2>/dev/null || true
 
-  print_status_log "INFO" "Starting DCVM installation..."
+  print_status_log "INFO" "Starting dcvm installation..."
 
   check_root
 
@@ -960,7 +960,7 @@ main() {
 
 dcvm_init() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Welcome to DCVM Installer!"
+    echo "Welcome to dcvm Installer!"
     echo "Repository: ${DCVM_REPO_SLUG}"
     echo "Branch: ${DCVM_REPO_BRANCH}"
     echo ""
@@ -1034,7 +1034,7 @@ dcvm_init() {
     esac
   done
   echo ""
-  print_status_log "INFO" "Executing DCVM installer..." >&2
+  print_status_log "INFO" "Executing dcvm installer..." >&2
   main "$@"
 }
 

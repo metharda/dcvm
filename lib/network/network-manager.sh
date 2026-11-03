@@ -316,7 +316,7 @@ Usage: dcvm network <subcommand> [options]
 Subcommands:
   show                 Show network overview (default)
   status               Show concise network/bridge status
-  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter}
+  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter-net}
   leases               List current DHCP leases and files
   bridge               Show bridge details, routes, dnsmasq
   ip-forwarding [on|off|show]

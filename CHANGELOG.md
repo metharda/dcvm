@@ -39,6 +39,8 @@ README pitch and the dcvm name in the docs and the CLI.
 
 - `docs/examples/basic-vm-creation.md` links to `docs/backups.md` instead of
   the old, missing `docs/backup-restore.md`.
+- The `dcvm network` usage text shows `datacenter-net` as the default network name
+  for `start|stop|restart`, not `datacenter`.
 
 ## [0.9.4] - 2026-10-08
 
