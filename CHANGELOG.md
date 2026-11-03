@@ -10,6 +10,39 @@ from git history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-03
+
+Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
+
+### Fixed
+
+- Passwords containing ` #`, quotes, `\`, `$`, backticks or `: ` now work: the
+  user, root and MySQL passwords are set to exactly the value entered (#36).
+- MySQL setup no longer leaves `$VM_USERNAME`/`$VM_PASSWORD` unexpanded; with
+  username `root` only the root password is set (#36).
+- `-k docker` adds the VM user to the `docker` group (the name was not
+  expanded).
+- `dcvm network dhcp clear <vm>`, `delete` and the IP lookup match the whole
+  hostname (any case), so `vm1` no longer hits `vm10` or `vm1-copy`, and a
+  name such as `254` or `ipv4` no longer clears other leases (#37).
+- Clearing a lease removes whole entries from the libvirt status file instead
+  of single lines, which left invalid JSON (#37).
+- Arch Linux VMs get Arch package names (`openssh`, `nfs-utils`), the `sshd`
+  unit, the Arch sftp-server path and Arch nginx/Apache paths (#38).
+
+### Changed
+
+- `-k mysql-server` installs MariaDB on Debian 12/13 and Arch Linux, which have
+  no `mysql-server` package (#36).
+- `dhcp clear <vm|mac>` and `dhcp clear --stale` no longer restart the
+  network; only `dhcp clear --all` does. With no matching lease, `clear`
+  says so and changes nothing (#37).
+- `delete` no longer stops or removes host systemd units whose name contains
+  the VM name; DCVM does not create per-VM units.
+- Without `jq`, lease cleanup leaves the status file unchanged and warns
+  instead of emptying it.
+- Passwords may be up to 128 characters and must not contain line breaks.
+
 ## [0.9.4] - 2026-10-08
 
 Post-merge documentation follow-up to 0.9.3.
@@ -286,7 +319,8 @@ Later commits kept the same version string until 0.7.1.
   `fix-lock` argument handling and verbosity improved (#17).
 - IP validation checks the address is inside the configured subnet (#17).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/74c12f6...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/457bb31...HEAD
+[0.9.5]: https://github.com/metharda/dcvm/compare/457bb31...HEAD
 [0.9.4]: https://github.com/metharda/dcvm/pull/39
 [0.9.3]: https://github.com/metharda/dcvm/pull/35
 [0.9.2]: https://github.com/metharda/dcvm/pull/34
