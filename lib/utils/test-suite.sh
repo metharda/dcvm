@@ -973,6 +973,11 @@ test_create_extra_packages_userdata() {
   rm -rf "$t"
 }
 
+# Stand-in for generate_password_hash: a fake "\$6\$test\$..." hash that
+# records which password was hashed, so tests can check it.
+# shellcheck disable=SC2016 # literal $6$ prefix
+test_hash() { printf '$6$test$%s\n' "$(printf '%s' "$1" | base64 -w0 | tr '+/=' '._-')"; }
+
 # Generate user-data with create-vm.sh's generator ($1 user, $2 ENABLE_ROOT,
 # $3 SSH key, $4 output file, $5 -k packages, $6 password (testpass123),
 # $7 VM_OS (debian12), $8 ROOT_PASSWORD); the password hash is stubbed.
@@ -982,7 +987,7 @@ generate_test_userdata() {
   t=$(mktemp -d)
   (
     source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
-    generate_password_hash() { echo '$6$test$hash'; }
+    generate_password_hash() { test_hash "$1"; }
     FORCE_MODE=true VM_NAME=usertest VM_USERNAME="$1" VM_PASSWORD="${6:-testpass123}"
     VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT="$2" ROOT_PASSWORD="${8:-}" SSH_KEY="$3"
     DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="${5:-}" VM_OS="${7:-debian12}" TAILSCALE_AUTHKEY=""
@@ -1007,8 +1012,8 @@ test_root_username_userdata() {
   else
     log_test "FAIL" "username root (one root entry, no create/sudo fields)"
   fi
-  if echo "$users_block" | grep -q "^      - $key\$" && grep -q '^    root:testpass123$' "$t/root.yaml" &&
-    [ "$(grep -c "chpasswd\$" "$t/root.yaml")" = "1" ]; then
+  if echo "$users_block" | grep -q "^      - $key\$" && grep -qxF "    root:$(test_hash testpass123)" "$t/root.yaml" &&
+    ! grep -q 'testpass123' "$t/root.yaml" && ! grep -q '^bootcmd:' "$t/root.yaml"; then
     log_test "PASS" "username root (SSH key and password for root)"
   else
     log_test "FAIL" "username root (SSH key and password for root)"
@@ -1037,7 +1042,7 @@ test_root_username_userdata() {
 
   generate_test_userdata tester n "$key" "$t/user.yaml"
   if grep -q '^  - name: tester$' "$t/user.yaml" && grep -q "^    sudo: \['ALL=(ALL) NOPASSWD:ALL'\]$" "$t/user.yaml" &&
-    grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -q "^    passwd: '\$6\$test\$hash'$" "$t/user.yaml" &&
+    grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -qxF "    passwd: '$(test_hash testpass123)'" "$t/user.yaml" &&
     grep -q "^      - $key\$" "$t/user.yaml" && grep -q '^disable_root: true$' "$t/user.yaml" &&
     grep -q 'PermitRootLogin no' "$t/user.yaml" && grep -q '^  - chown -R tester:tester /home/tester$' "$t/user.yaml" &&
     ! grep -qE "^    root:|echo 'root:" "$t/user.yaml"; then
@@ -1120,21 +1125,19 @@ has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>
 # ud_py expression for the decoded SQL file content, which must be base64.
 ud_sql_expr='[__import__("base64").b64decode(w["content"]).decode() for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql" and w.get("encoding") == "b64"][0]'
 
-# #36: one password reaches chpasswd (list and bootcmd) and MySQL unchanged,
-# whatever it contains, and never passes through a guest shell as text.
+# #36: one password reaches the user's passwd hash, the root chpasswd hash
+# and MySQL unchanged, whatever it contains, and never passes through a guest
+# shell as text. Nothing sets a password on every boot (bootcmd).
 # shellcheck disable=SC2016 # literal $ in patterns and passwords
 test_userdata_passwords() {
   if ! has_pyyaml; then
     log_test "SKIP" "user-data passwords (#36)" "python3 yaml not available"
     return
   fi
-  local t f i n pw esc sql ok want
+  local t f i pw esc sql ok
   t=$(mktemp -d)
-  mkdir "$t/bin"
-  printf '#!/bin/sh\ncat >"%s/chpasswd.in"\n' "$t" >"$t/bin/chpasswd"
-  chmod +x "$t/bin/chpasswd"
   local sql_expr="$ud_sql_expr"
-  local shell_expr='"\n".join(d["bootcmd"] + [c if isinstance(c, str) else " ".join(c) for c in d["runcmd"]])'
+  local shell_expr='"\n".join(d.get("bootcmd", []) + [c if isinstance(c, str) else " ".join(c) for c in d["runcmd"]])'
   local pws=('plainpw1' 'ab #cd' "a'b\\c" 'x"$y`id`$(id): z' 'abcd' "$(printf 'p%.0s' {1..128})")
   for i in "${!pws[@]}"; do
     pw=${pws[$i]}
@@ -1145,14 +1148,9 @@ test_userdata_passwords() {
     ok=true
     ud_py "$f" 'd["hostname"]' >/dev/null 2>&1 || ok=false
     grep -qF -e '$VM_PASSWORD' -e '$VM_USERNAME' -e "''@'localhost'" "$f" 2>/dev/null && ok=false
-    for n in 0 1; do
-      want=tester
-      [ "$n" = 1 ] && want=root
-      rm -f "$t/chpasswd.in"
-      PATH="$t/bin:$PATH" sh -c "$(ud_py "$f" "d['bootcmd'][$n]" 2>/dev/null)" >/dev/null 2>&1
-      [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "$want:$pw" ] || ok=false
-    done
-    [ "$(ud_py "$f" 'd["chpasswd"]["list"]' 2>/dev/null)" = "root:$pw" ] || ok=false
+    [ "$(ud_py "$f" 'd["users"][0]["passwd"]' 2>/dev/null)" = "$(test_hash "$pw")" ] || ok=false
+    [ "$(ud_py "$f" 'd["chpasswd"]["list"]' 2>/dev/null)" = "root:$(test_hash "$pw")" ] || ok=false
+    ud_py "$f" 'd.get("bootcmd") or ""' 2>/dev/null | grep -q chpasswd && ok=false
     sql=$(ud_py "$f" "$sql_expr" 2>/dev/null)
     grep -qxF "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$esc';" <<<"$sql" || ok=false
     grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$esc';" <<<"$sql" || ok=false
@@ -1160,21 +1158,18 @@ test_userdata_passwords() {
     [ "$(ud_py "$f" '[w["permissions"] for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql"][0]' 2>/dev/null)" = "0600" ] || ok=false
     ud_py "$f" "$shell_expr" 2>/dev/null | grep -qF -- "$pw" && ok=false
     if [ "$ok" = true ]; then
-      log_test "PASS" "user-data password #$i reaches chpasswd and MySQL unchanged, no shell text (#36)"
+      log_test "PASS" "user-data password #$i reaches the passwd/chpasswd hashes and MySQL unchanged, no shell text, no bootcmd chpasswd (#36)"
     else
-      log_test "FAIL" "user-data password #$i reaches chpasswd and MySQL unchanged, no shell text (#36)" "password: $(printf %q "${pw:0:20}")"
+      log_test "FAIL" "user-data password #$i reaches the passwd/chpasswd hashes and MySQL unchanged, no shell text, no bootcmd chpasswd (#36)" "password: $(printf %q "${pw:0:20}")"
     fi
   done
 
   pw="a'b #c"
   generate_test_userdata root y "" "$t/root.yaml" mysql-server "$pw" debian12
   sql=$(ud_py "$t/root.yaml" "$sql_expr" 2>/dev/null)
-  rm -f "$t/chpasswd.in"
-  PATH="$t/bin:$PATH" sh -c "$(ud_py "$t/root.yaml" "d['bootcmd'][0]" 2>/dev/null)" >/dev/null 2>&1
   if [ "$sql" = "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('a''b #c');
-FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &&
-    [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "root:$pw" ] &&
-    [ "$(ud_py "$t/root.yaml" 'len(d["bootcmd"])')" = "1" ]; then
+FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "root:$(test_hash "$pw")" ] &&
+    [ "$(ud_py "$t/root.yaml" '"bootcmd" in d')" = "False" ]; then
     log_test "PASS" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)"
   else
     log_test "FAIL" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)" "$sql"
@@ -1185,6 +1180,15 @@ FLUSH PRIVILEGES;" ] && [ "$(cat "$t/chpasswd.in" 2>/dev/null)" = "root:$pw" ] &
     log_test "PASS" "validate_password accepts 128 and rejects 129 characters (#36)"
   else
     log_test "FAIL" "validate_password accepts 128 and rejects 129 characters (#36)"
+  fi
+
+  local h
+  h=$(generate_password_hash -neE)
+  if command -v openssl >/dev/null 2>&1 &&
+    [ "$(printf '%s\n' -neE | openssl passwd -6 -salt "$(cut -d'$' -f3 <<<"$h")" -stdin)" = "$h" ]; then
+    log_test "PASS" "generate_password_hash hashes a password that looks like echo options (#36)"
+  else
+    log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
   fi
 
   local sep

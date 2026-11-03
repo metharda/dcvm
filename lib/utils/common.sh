@@ -315,7 +315,7 @@ read_password() {
 generate_password_hash() {
   local password="$1"
   local salt=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
-  echo "$password" | openssl passwd -6 -salt "$salt" -stdin
+  printf '%s\n' "$password" | openssl passwd -6 -salt "$salt" -stdin
 }
 
 generate_random_mac() {

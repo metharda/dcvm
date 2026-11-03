@@ -1107,16 +1107,22 @@ PACKAGES_EOF
 
   # Username root configures the existing root account: no sudo/shell (and
   # no passwd, which cloud-init only applies when it creates the user); the
-  # password is set by chpasswd below, the key goes to /root/.ssh.
+  # password hash is set by chpasswd below, the key goes to /root/.ssh.
   local vm_home="/home/$VM_USERNAME"
   [ "$VM_USERNAME" = "root" ] && vm_home="/root"
 
-  # Passwords never appear in a guest shell command: chpasswd gets them
-  # base64-encoded, MySQL gets SQL-quoted statements from a base64-encoded
-  # 0600 file, so any character is taken literally.
-  local user_chpasswd root_chpasswd="" mysql_sql=""
-  user_chpasswd=$(printf '%s:%s\n' "$VM_USERNAME" "$VM_PASSWORD" | base64 | tr -d '\n')
-  [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && root_chpasswd=$(printf 'root:%s\n' "$ROOT_PASSWORD" | base64 | tr -d '\n')
+  # Passwords are set once, on first boot, and only as hashes: the user's
+  # in users.passwd, root's in the chpasswd list. MySQL gets SQL-quoted
+  # statements from a base64-encoded 0600 file. No password text reaches
+  # the YAML or a guest shell command, so any character is taken literally.
+  local root_hash="" mysql_sql=""
+  if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+    root_hash=$(generate_password_hash "$ROOT_PASSWORD")
+    [ -z "$root_hash" ] && {
+      print_error "Failed to generate root password hash"
+      exit 1
+    }
+  fi
   if [ "$MYSQL_REQUESTED" = true ]; then
     local sql_password=${VM_PASSWORD//\\/\\\\}
     sql_password=${sql_password//\'/\'\'}
@@ -1150,7 +1156,7 @@ ssh_pwauth: true
 disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")$(if [ "$ROOT_LOGIN_SETTING" = "yes" ]; then echo "
 chpasswd:
   list: |
-    root:$ROOT_PASSWORD
+    root:$root_hash
   expire: False"; fi)
 package_update: true
 packages:
@@ -1158,10 +1164,6 @@ $(
     # shellcheck disable=SC2086 # one package per word
     printf '  - %s\n' $base_packages
   )
-
-bootcmd:
-  - echo $user_chpasswd | base64 -d | chpasswd
-$(if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && [ "$VM_USERNAME" != "root" ]; then echo "  - echo $root_chpasswd | base64 -d | chpasswd"; fi)
 
 write_files:
   - content: |
