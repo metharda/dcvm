@@ -214,6 +214,27 @@ To check for updates without installing:
 dcvm self-update --check
 ```
 
+### Dependencies added in 0.9.6
+
+`dcvm self-update` updates the dcvm files only; it does not install packages.
+Since 0.9.6, DHCP lease cleanup (`dcvm network dhcp clear` and `dcvm delete`)
+needs `jq` and `dhcp_release`, which the installer now installs. On a host
+installed before 0.9.6, install them once:
+
+```bash
+# Debian, Ubuntu, Kali
+sudo apt update
+sudo apt install jq dnsmasq-utils
+
+# Arch Linux (dhcp_release comes with dnsmasq)
+sudo pacman -S jq
+```
+
+Without them, `dcvm network dhcp clear` (other than `--all`) fails with an
+error that names the package to install, and `dcvm delete` still deletes the
+VM but prints that error and leaves the VM's DHCP lease listed until it
+expires.
+
 ## Next Steps
 
 After installation:

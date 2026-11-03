@@ -16,6 +16,15 @@ history, so the commit or PR is listed for each release.
 
 Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
 
+**Upgrading:** `dcvm self-update` updates the dcvm files only and does not
+install packages. On a host installed before 0.9.6, install `jq` and
+`dnsmasq-utils` (Debian, Ubuntu, Kali) or `jq` (Arch Linux, whose `dnsmasq`
+already ships `dhcp_release`); see
+[Updating DCVM](docs/installation.md#updating-dcvm). Without them,
+`dcvm network dhcp clear` (other than `--all`) fails with an error that names
+the package to install, and `dcvm delete` still deletes the VM but prints that
+error and leaves the VM's lease listed until it expires.
+
 ### Changed
 
 - `-k mysql-server` installs MariaDB (service `mariadb`) on Debian 11/12/13,
