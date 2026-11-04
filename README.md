@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/metharda/dcvm/actions/workflows/test.yaml/badge.svg)](https://github.com/metharda/dcvm/actions/workflows/test.yaml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.5-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.6-informational.svg)](CHANGELOG.md)
 
 **Ready Linux VMs on one machine with one command: dcvm is a VM manager for students, homelabs, CTF and security practice, and anyone who wants a Linux box to try things on.**
 

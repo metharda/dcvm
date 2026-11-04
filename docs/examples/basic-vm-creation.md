@@ -41,7 +41,7 @@ curl http://<vm-ip>
 
 ## Example 2: Database Server
 
-Create a MySQL database server with more resources:
+Create a database server with more resources:
 
 ```bash
 dcvm create dbserver \
@@ -63,13 +63,13 @@ dcvm create dbserver \
 - 4 CPU cores
 - 100GB disk for data storage
 - Uses Debian 12 (option 2)
-- Installs MySQL server
+- Installs MariaDB, since Debian has no `mysql-server` package (Ubuntu installs MySQL; see [Service setup for `-k` packages](../usage.md#service-setup-for--k-packages))
 - Enables root access
 
-**Connect to MySQL:**
+**Connect to the database:**
 ```bash
 ssh dbadmin@<vm-ip>
-mysql -u dbadmin -p
+mariadb -u dbadmin -p
 ```
 
 ## Example 3: Docker Host
@@ -292,7 +292,7 @@ Keep track of your VMs:
 # Create a VM inventory file
 cat > vm-inventory.txt << EOF
 webserver1: 10.10.10.10 - nginx web server
-dbserver: 10.10.10.11 - MySQL database
+dbserver: 10.10.10.11 - MariaDB database
 dockerhost: 10.10.10.12 - Docker container host
 EOF
 ```

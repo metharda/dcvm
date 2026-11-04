@@ -187,7 +187,13 @@ validate_password() {
     return 1
   fi
   if [ ${#password} -gt 128 ]; then
-    echo "Password must be less than 128 characters"
+    echo "Password must be at most 128 characters"
+    return 1
+  fi
+  # YAML also breaks lines at U+0085, U+2028 and U+2029.
+  if [[ "$password" == *[$'\n\r']* || "$password" == *$'\xc2\x85'* ||
+    "$password" == *$'\xe2\x80\xa8'* || "$password" == *$'\xe2\x80\xa9'* ]]; then
+    echo "Password must not contain line breaks"
     return 1
   fi
   return 0
@@ -204,20 +210,21 @@ get_vm_ip() {
   local ip=""
   local count=0
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
 
   while [ -z "$ip" ] && [ $count -lt $attempts ]; do
-    ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+    ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     if [ -z "$ip" ]; then
-      ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+      ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     fi
     if [ -z "$ip" ]; then
       local network_name="${NETWORK_NAME:-datacenter-net}"
-      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | grep "$vm_name" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
     fi
     if [ -z "$ip" ]; then
       local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
       if [ -n "$mac" ]; then
-        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | grep "$mac" | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet}\." | head -1)
+        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
       fi
     fi
     if [ -z "$ip" ] && [ $attempts -gt 1 ]; then
@@ -300,7 +307,7 @@ read_password() {
   local var_name="$2"
   local password=""
   echo -n "$prompt"
-  read -s password
+  IFS= read -rs password
   echo
   printf -v "$var_name" '%s' "$password"
 }
@@ -308,7 +315,7 @@ read_password() {
 generate_password_hash() {
   local password="$1"
   local salt=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
-  echo "$password" | openssl passwd -6 -salt "$salt" -stdin
+  printf '%s\n' "$password" | openssl passwd -6 -salt "$salt" -stdin
 }
 
 generate_random_mac() {
@@ -528,13 +535,100 @@ stop_vm_gracefully() {
   return 0
 }
 
-reload_dnsmasq() {
-  local bridge="${BRIDGE_NAME:-virbr-dc}"
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${bridge}" | grep -v grep | awk '{print $2}' | head -1)
-  if [ -n "$dnsmasq_pid" ]; then
-    kill -HUP "$dnsmasq_pid" 2>/dev/null && return 0 || return 1
+# Print the stdin lines whose field $2 equals $1 (case-insensitive). Only
+# lines with a MAC address can match, so headers never do, and an empty $1
+# matches nothing. Used for virsh net-dhcp-leases output (MAC 3, hostname 6).
+filter_lease_lines() {
+  awk -v v="$1" -v f="$2" '
+    function has_mac(i, h) {
+      h = "[0-9a-f][0-9a-f]"
+      for (i = 1; i <= NF; i++)
+        if (tolower($i) ~ ("^" h ":" h ":" h ":" h ":" h ":" h "$")) return 1
+      return 0
+    }
+    v != "" && has_mac() && tolower($f) == tolower(v)'
+}
+
+# Release the lease of MAC $1 and/or hostname $2 (whole field, any case) in
+# libvirt's dnsmasq with dhcp_release, and drop it from the libvirt status
+# file. libvirt runs dnsmasq with --leasefile-ro, so the status file is the
+# only lease store, and SIGHUP does not drop leases. Never restarts the
+# network. Runs under a lock so parallel cleanups do not undo each other's
+# edits.
+# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, dhcp_release failed).
+cleanup_dhcp_lease() {
+  local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
+  if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
+    cleanup_dhcp_lease_unlocked "$@"
+    return
   fi
-  return 1
+  (
+    flock -w 30 9 || {
+      print_error "Timed out waiting for $lock"
+      exit 2
+    }
+    cleanup_dhcp_lease_unlocked "$@"
+  ) 9>>"$lock"
+}
+
+cleanup_dhcp_lease_unlocked() {
+  local mac="${1,,}" host="${2,,}"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+  local tmp matches lmac ip n rc=0
+
+  [ -z "$mac" ] && [ -z "$host" ] && return 1
+  print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
+
+  if ! command_exists dhcp_release; then
+    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian/Ubuntu, dnsmasq on Arch)"
+    return 2
+  fi
+  if [ ! -s "$status_file" ]; then
+    print_info "No matching DHCP lease found"
+    return 1
+  fi
+  if ! command_exists jq; then
+    print_error "jq not available; the lease is still listed in $status_file (install jq)"
+    return 2
+  fi
+  if ! tmp=$(mktemp); then
+    print_error "Could not create a temp file; $status_file left unchanged"
+    return 2
+  fi
+  # shellcheck disable=SC2016 # jq variables
+  local sel='(($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
+    ($host != "" and ((.hostname // "") | ascii_downcase) == $host))'
+  if ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 ||
+    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
+    ! jq --arg mac "$mac" --arg host "$host" "[.[] | select($sel | not)]" "$status_file" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    print_error "Could not parse $status_file; left unchanged"
+    return 2
+  fi
+  if [ -z "$matches" ]; then
+    rm -f "$tmp"
+    print_info "No matching DHCP lease found"
+    return 1
+  fi
+
+  # Write the status file first: dnsmasq's release makes libvirt's lease
+  # helper rewrite it, and that write must come last.
+  n=$(($(jq length "$status_file") - $(jq length "$tmp")))
+  cat "$tmp" >"$status_file"
+  rm -f "$tmp"
+  while IFS=$'\t' read -r lmac ip; do
+    [[ "$ip" == *.* ]] || continue
+    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null || {
+      print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
+      rc=2
+    }
+  done <<<"$matches"
+  if [ "$rc" = 0 ]; then
+    print_info "Released and removed $n lease(s) from $status_file"
+  else
+    print_info "Removed $n lease(s) from $status_file"
+  fi
+  return "$rc"
 }
 
 interactive_prompt_memory_common() {
@@ -627,9 +721,10 @@ interactive_prompt_disk_common() {
 detect_host_ip() {
   local host_ip=""
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
   for interface in eth0 ens3 ens18 enp0s3 wlan0; do
     host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-    [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
+    [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet_re}\. ]] && break
   done
   [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
   [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
@@ -650,6 +745,7 @@ get_fix_lock_script_path() {
 validate_ip_in_subnet() {
   local ip="$1"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
+  local subnet_re="${subnet//./\\.}"
 
   if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
     print_error "Invalid IP address format: $ip"
@@ -666,7 +762,7 @@ validate_ip_in_subnet() {
     return 1
   fi
 
-  if [[ ! "$ip" =~ ^${subnet}\. ]]; then
+  if [[ ! "$ip" =~ ^${subnet_re}\. ]]; then
     print_error "IP address $ip is not in subnet ${subnet}.0/24"
     print_info "Valid range: ${subnet}.2 - ${subnet}.254"
     return 1
@@ -741,6 +837,7 @@ export -f get_system_info get_host_info
 export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
-export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f detect_host_ip get_fix_lock_script_path
+export -f filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
 export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username

@@ -615,7 +615,6 @@ test_delete_vm_keeps_network() {
           load_dcvm_config() { :; }
           require_root() { :; }
           check_dependencies() { :; }
-          reload_dnsmasq() { :; }
           BRIDGE_NAME=dcvm-test-no-such-bridge
           main "$@"
         ) >/dev/null 2>&1 </dev/null
@@ -647,7 +646,7 @@ test_delete_vm_keeps_network() {
   else
     log_test "FAIL" "delete VM (never calls virsh net-destroy or net-start)" "$(grep -E '^virsh net-' "$t/calls" 2>/dev/null | tr '\n' ';')"
   fi
-  if echo "$out" | grep -qF 'They expire on their own; to remove stale leases now: dcvm network dhcp cleanup (restarts datacenter-net if it removes any)' &&
+  if echo "$out" | grep -qF 'They expire on their own; to remove stale leases now: dcvm network dhcp cleanup' &&
     ! echo "$out" | grep -q 'dhcp clear'; then
     log_test "PASS" "delete VM (lingering lease prints the dhcp cleanup hint, not clear <vm>)"
   else
@@ -973,18 +972,24 @@ test_create_extra_packages_userdata() {
   rm -rf "$t"
 }
 
+# Stand-in for generate_password_hash: a fake "\$6\$test\$..." hash that
+# records which password was hashed, so tests can check it.
+# shellcheck disable=SC2016 # literal $6$ prefix
+test_hash() { printf '$6$test$%s\n' "$(printf '%s' "$1" | base64 -w0 | tr '+/=' '._-')"; }
+
 # Generate user-data with create-vm.sh's generator ($1 user, $2 ENABLE_ROOT,
-# $3 SSH key, $4 output file); the password hash is stubbed.
+# $3 SSH key, $4 output file, $5 -k packages, $6 password (testpass123),
+# $7 VM_OS (debian12), $8 ROOT_PASSWORD); the password hash is stubbed.
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 generate_test_userdata() {
   local t
   t=$(mktemp -d)
   (
     source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
-    generate_password_hash() { echo '$6$test$hash'; }
-    FORCE_MODE=true VM_NAME=usertest VM_USERNAME="$1" VM_PASSWORD=testpass123
-    VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT="$2" ROOT_PASSWORD="" SSH_KEY="$3"
-    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="${5:-}" VM_OS=debian12 TAILSCALE_AUTHKEY=""
+    generate_password_hash() { test_hash "$1"; }
+    FORCE_MODE=true VM_NAME=usertest VM_USERNAME="$1" VM_PASSWORD="${6:-testpass123}"
+    VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT="$2" ROOT_PASSWORD="${8:-}" SSH_KEY="$3"
+    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="${5:-}" VM_OS="${7:-debian12}" TAILSCALE_AUTHKEY=""
     mkdir -p "$t/vms/usertest/cloud-init"
     generate_cloud_init_userdata >/dev/null 2>&1
   )
@@ -1006,8 +1011,8 @@ test_root_username_userdata() {
   else
     log_test "FAIL" "username root (one root entry, no create/sudo fields)"
   fi
-  if echo "$users_block" | grep -q "^      - $key\$" && grep -q '^    root:testpass123$' "$t/root.yaml" &&
-    [ "$(grep -c "chpasswd\$" "$t/root.yaml")" = "1" ]; then
+  if echo "$users_block" | grep -q "^      - $key\$" && grep -qxF "    root:$(test_hash testpass123)" "$t/root.yaml" &&
+    ! grep -q 'testpass123' "$t/root.yaml" && ! grep -q '^bootcmd:' "$t/root.yaml"; then
     log_test "PASS" "username root (SSH key and password for root)"
   else
     log_test "FAIL" "username root (SSH key and password for root)"
@@ -1036,7 +1041,7 @@ test_root_username_userdata() {
 
   generate_test_userdata tester n "$key" "$t/user.yaml"
   if grep -q '^  - name: tester$' "$t/user.yaml" && grep -q "^    sudo: \['ALL=(ALL) NOPASSWD:ALL'\]$" "$t/user.yaml" &&
-    grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -q "^    passwd: '\$6\$test\$hash'$" "$t/user.yaml" &&
+    grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -qxF "    passwd: '$(test_hash testpass123)'" "$t/user.yaml" &&
     grep -q "^      - $key\$" "$t/user.yaml" && grep -q '^disable_root: true$' "$t/user.yaml" &&
     grep -q 'PermitRootLogin no' "$t/user.yaml" && grep -q '^  - chown -R tester:tester /home/tester$' "$t/user.yaml" &&
     ! grep -qE "^    root:|echo 'root:" "$t/user.yaml"; then
@@ -1049,18 +1054,27 @@ test_root_username_userdata() {
 
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 test_root_mysql_userdata() {
-  local t
+  if ! has_pyyaml; then
+    log_test "SKIP" "-k mysql-server SQL" "python3 yaml not available"
+    return
+  fi
+  local t root_sql user_sql
   t=$(mktemp -d)
   generate_test_userdata root y "" "$t/root.yaml" mysql-server
   generate_test_userdata tester n "" "$t/user.yaml" mysql-server
-  if grep -q "ALTER USER 'root'@'localhost'" "$t/root.yaml" 2>/dev/null &&
-    ! grep -qE 'CREATE USER|GRANT ' "$t/root.yaml"; then
+  root_sql=$(ud_py "$t/root.yaml" "$ud_sql_expr" 2>/dev/null)
+  user_sql=$(ud_py "$t/user.yaml" "$ud_sql_expr" 2>/dev/null)
+  local alter="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('testpass123');"
+  if [ "$root_sql" = "$alter
+FLUSH PRIVILEGES;" ] && ! grep -qF '$VM_' "$t/root.yaml"; then
     log_test "PASS" "-k mysql-server with username root (no CREATE USER/GRANT)"
   else
-    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(grep -n 'mysql -e' "$t/root.yaml" 2>/dev/null | tr '\n' ';')"
+    log_test "FAIL" "-k mysql-server with username root (no CREATE USER/GRANT)" "$(tr '\n' ';' <<<"$root_sql")"
   fi
-  if grep -q 'CREATE USER' "$t/user.yaml" 2>/dev/null && grep -q 'GRANT ALL PRIVILEGES' "$t/user.yaml" &&
-    grep -q 'FLUSH PRIVILEGES' "$t/user.yaml" && grep -q 'FLUSH PRIVILEGES' "$t/root.yaml"; then
+  if [ "$user_sql" = "$alter
+CREATE USER 'tester'@'localhost' IDENTIFIED BY 'testpass123';
+GRANT ALL PRIVILEGES ON *.* TO 'tester'@'localhost' WITH GRANT OPTION;
+FLUSH PRIVILEGES;" ] && ! grep -qF '$VM_' "$t/user.yaml"; then
     log_test "PASS" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
   else
     log_test "FAIL" "-k mysql-server with a normal user (CREATE USER/GRANT kept)"
@@ -1094,6 +1108,869 @@ test_root_username_setup() {
   else
     log_test "PASS" "create -u root with a different --root-password (expected failure)"
   fi
+}
+
+# Print a value from a user-data file: $1 file, $2 a Python expression over
+# d (the yaml.safe_load result). Fails when the file does not parse.
+ud_py() {
+  python3 -c 'import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+r = eval(sys.argv[2])
+print(r if isinstance(r, str) else repr(r), end="")' "$1" "$2"
+}
+
+has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
+
+# ud_py expression for the decoded SQL file content, which must be base64.
+ud_sql_expr='[__import__("base64").b64decode(w["content"]).decode() for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql" and w.get("encoding") == "b64"][0]'
+
+# #36: one password reaches the user's passwd hash, the root chpasswd hash
+# and MySQL unchanged, whatever it contains, and never passes through a guest
+# shell as text. Nothing sets a password on every boot (bootcmd).
+# shellcheck disable=SC2016 # literal $ in patterns and passwords
+test_userdata_passwords() {
+  if ! has_pyyaml; then
+    log_test "SKIP" "user-data passwords (#36)" "python3 yaml not available"
+    return
+  fi
+  local t f i pw esc sql ok
+  t=$(mktemp -d)
+  local sql_expr="$ud_sql_expr"
+  local shell_expr='"\n".join(d.get("bootcmd", []) + [c if isinstance(c, str) else " ".join(c) for c in d["runcmd"]])'
+  local pws=('plainpw1' 'ab #cd' "a'b\\c" 'x"$y`id`$(id): z' 'abcd' "$(printf 'p%.0s' {1..128})")
+  for i in "${!pws[@]}"; do
+    pw=${pws[$i]}
+    esc=${pw//\\/\\\\}
+    esc=${esc//\'/\'\'}
+    f="$t/u$i.yaml"
+    generate_test_userdata tester y "" "$f" mysql-server "$pw" ubuntu24.04 "$pw"
+    ok=true
+    ud_py "$f" 'd["hostname"]' >/dev/null 2>&1 || ok=false
+    grep -qF -e '$VM_PASSWORD' -e '$VM_USERNAME' -e "''@'localhost'" "$f" 2>/dev/null && ok=false
+    [ "$(ud_py "$f" 'd["users"][0]["passwd"]' 2>/dev/null)" = "$(test_hash "$pw")" ] || ok=false
+    [ "$(ud_py "$f" 'd["chpasswd"]["list"]' 2>/dev/null)" = "root:$(test_hash "$pw")" ] || ok=false
+    ud_py "$f" 'd.get("bootcmd") or ""' 2>/dev/null | grep -q chpasswd && ok=false
+    sql=$(ud_py "$f" "$sql_expr" 2>/dev/null)
+    grep -qxF "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$esc';" <<<"$sql" || ok=false
+    grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$esc';" <<<"$sql" || ok=false
+    grep -qxF "GRANT ALL PRIVILEGES ON *.* TO 'tester'@'localhost' WITH GRANT OPTION;" <<<"$sql" || ok=false
+    [ "$(ud_py "$f" '[w["permissions"] for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql"][0]' 2>/dev/null)" = "0600" ] || ok=false
+    ud_py "$f" "$shell_expr" 2>/dev/null | grep -qF -- "$pw" && ok=false
+    if [ "$ok" = true ]; then
+      log_test "PASS" "user-data password #$i reaches the passwd/chpasswd hashes and MySQL unchanged, no shell text, no bootcmd chpasswd (#36)"
+    else
+      log_test "FAIL" "user-data password #$i reaches the passwd/chpasswd hashes and MySQL unchanged, no shell text, no bootcmd chpasswd (#36)" "password: $(printf %q "${pw:0:20}")"
+    fi
+  done
+
+  pw="a'b #c"
+  generate_test_userdata root y "" "$t/root.yaml" mysql-server "$pw" debian12
+  sql=$(ud_py "$t/root.yaml" "$sql_expr" 2>/dev/null)
+  if [ "$sql" = "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('a''b #c');
+FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "root:$(test_hash "$pw")" ] &&
+    [ "$(ud_py "$t/root.yaml" '"bootcmd" in d')" = "False" ]; then
+    log_test "PASS" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)"
+  else
+    log_test "FAIL" "username root: one password in chpasswd and ALTER USER only, MariaDB keeps socket auth (#36)" "$sql"
+  fi
+
+  if validate_password "$(printf 'a%.0s' {1..128})" >/dev/null &&
+    [ "$(validate_password "$(printf 'a%.0s' {1..129})")" = "Password must be at most 128 characters" ]; then
+    log_test "PASS" "validate_password accepts 128 and rejects 129 characters (#36)"
+  else
+    log_test "FAIL" "validate_password accepts 128 and rejects 129 characters (#36)"
+  fi
+
+  local h
+  h=$(generate_password_hash -neE)
+  if command -v openssl >/dev/null 2>&1 &&
+    [ "$(printf '%s\n' -neE | openssl passwd -6 -salt "$(cut -d'$' -f3 <<<"$h")" -stdin)" = "$h" ]; then
+    log_test "PASS" "generate_password_hash hashes a password that looks like echo options (#36)"
+  else
+    log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
+  fi
+
+  # The wizard keeps the password as typed: spaces at either end and
+  # backslashes included.
+  local typed='  a\b c\  ' got=""
+  read_password "Password: " got <<<"$typed" >/dev/null
+  if [ "$got" = "$typed" ]; then
+    log_test "PASS" "read_password keeps leading/trailing spaces and backslashes (#36)"
+  else
+    log_test "FAIL" "read_password keeps leading/trailing spaces and backslashes (#36)" "got '$got'"
+  fi
+
+  # Build the characters from their UTF-8 bytes: $'\u....' stays literal in
+  # the C locale.
+  local sep lsep psep nel
+  lsep=$(printf '\xe2\x80\xa8') psep=$(printf '\xe2\x80\xa9') nel=$(printf '\xc2\x85')
+  ok=true
+  for sep in "$lsep" "$psep" "$nel"; do
+    [ "$(validate_password "ab${sep}cd")" = "Password must not contain line breaks" ] || ok=false
+  done
+  if [ "$ok" = true ]; then
+    log_test "PASS" "validate_password rejects U+2028, U+2029 and U+0085 (YAML line breaks) (#36)"
+  else
+    log_test "FAIL" "validate_password rejects U+2028, U+2029 and U+0085 (YAML line breaks) (#36)"
+  fi
+
+  # Even a password that bypasses validation cannot break the YAML: the SQL
+  # file is base64.
+  pw="ab${lsep}cd${nel}ef"
+  generate_test_userdata tester n "" "$t/sep.yaml" mysql-server "$pw" debian12
+  sql=$(ud_py "$t/sep.yaml" "$ud_sql_expr" 2>/dev/null)
+  if grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$pw';" <<<"$sql"; then
+    log_test "PASS" "user-data with U+2028/U+0085 in the MySQL password still loads in PyYAML (#36)"
+  else
+    log_test "FAIL" "user-data with U+2028/U+0085 in the MySQL password still loads in PyYAML (#36)"
+  fi
+
+  generate_test_userdata tester n "" "$t/client.yaml" mysql-client
+  generate_test_userdata tester n "" "$t/docker.yaml" docker
+  if ! grep -qE 'dcvm-mysql-init|systemctl (enable|start) (mysql|mariadb)' "$t/client.yaml" &&
+    grep -q '^    for pkg in mysql-client; do$' "$t/client.yaml" &&
+    grep -qx '  - usermod -aG docker tester' "$t/docker.yaml"; then
+    log_test "PASS" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
+  else
+    log_test "FAIL" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
+  fi
+
+  # Other names containing mysql-server install as typed, with no SQL setup.
+  for os in debian12 ubuntu24.04; do
+    for req in my-mysql-server-tools mysql-server-core-8.0; do
+      f="$t/$os-$req.yaml"
+      generate_test_userdata tester n "" "$f" "$req" pw1234 "$os"
+      if grep -qx "    for pkg in $req; do" "$f" &&
+        ! grep -qE 'dcvm-mysql-init|systemctl (enable|start) (mysql|mariadb)' "$f"; then
+        log_test "PASS" "-k $req on $os installs as typed, no SQL setup (#36)"
+      else
+        log_test "FAIL" "-k $req on $os installs as typed, no SQL setup (#36)"
+      fi
+    done
+  done
+
+  # Every supported VM_OS x both server names: package, service, SQL setup,
+  # and the root login: MySQL (Ubuntu) gets mysql_native_password, MariaDB
+  # keeps unix_socket and adds the password.
+  local os pkg svc req auth
+  for os in debian11 debian12 debian13 kali ubuntu20.04 ubuntu22.04 ubuntu24.04 archlinux; do
+    for req in mysql-server default-mysql-server; do
+      generate_test_userdata tester n "" "$t/$os-$req.yaml" "$req" pw1234 "$os"
+      case "$os" in
+      ubuntu*) pkg=$req svc=mysql ;;
+      archlinux) pkg=mariadb svc=mariadb ;;
+      *) pkg=mariadb-server svc=mariadb ;;
+      esac
+      [ "$req" = default-mysql-server ] && [ "$os" != archlinux ] && pkg=default-mysql-server
+      f="$t/$os-$req.yaml"
+      sql=$(ud_py "$f" "$sql_expr" 2>/dev/null)
+      ok=true
+      grep -q "^    for pkg in $pkg; do\$" "$f" || ok=false
+      grep -qx "  - systemctl enable $svc" "$f" || ok=false
+      grep -qx "  - $svc < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
+      grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
+      auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('pw1234')"
+      [ "$svc" = mysql ] && auth="IDENTIFIED WITH mysql_native_password BY 'pw1234'"
+      grep -qxF "ALTER USER 'root'@'localhost' $auth;" <<<"$sql" || ok=false
+      grep -qxF "  - systemctl start $svc" "$f" || ok=false
+      if [ "$os" = archlinux ]; then
+        # install, then mariadb-install-db, then start
+        line_of() { grep -nxF -- "$1" "$f" | head -1 | cut -d: -f1; }
+        [ "$(line_of "    for pkg in mariadb; do")" -lt "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" ] 2>/dev/null &&
+          [ "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" -lt "$(line_of '  - systemctl start mariadb')" ] 2>/dev/null || ok=false
+      else
+        grep -q 'mariadb-install-db' "$f" && ok=false
+      fi
+      if [ "$ok" = true ]; then
+        log_test "PASS" "-k $req on $os uses $pkg/$svc (#36)"
+      else
+        log_test "FAIL" "-k $req on $os uses $pkg/$svc (#36)"
+      fi
+    done
+  done
+  rm -rf "$t"
+}
+
+# #38: per-OS base packages, SSH unit, sftp path and web server paths.
+# shellcheck disable=SC2016 # literal $pkg in the expected install lines
+test_userdata_per_os() {
+  if ! has_pyyaml; then
+    log_test "SKIP" "per-OS user-data (#38)" "python3 yaml not available"
+    return
+  fi
+  local t f os ok
+  local deb="['openssh-server', 'openssh-sftp-server', 'nfs-common', 'htop', 'curl', 'wget', 'net-tools', 'rsync', 'nano', 'vim', 'tree', 'unzip']"
+  local arch="['openssh', 'nfs-utils', 'htop', 'curl', 'wget', 'net-tools', 'rsync', 'nano', 'vim', 'tree', 'unzip']"
+  t=$(mktemp -d)
+  for os in debian12 debian13 ubuntu24.04 kali archlinux; do
+    f="$t/$os.yaml"
+    generate_test_userdata tester n "" "$f" "nginx,apache2" pw1234 "$os"
+    ok=true
+    if [ "$os" = archlinux ]; then
+      [ "$(ud_py "$f" 'd["packages"]' 2>/dev/null)" = "$arch" ] || ok=false
+      [ "$(ud_py "$f" 'd["runcmd"][0:3]' 2>/dev/null)" = "['systemctl enable sshd', 'systemctl restart sshd', 'systemctl status sshd --no-pager']" ] || ok=false
+      grep -qx '      Subsystem sftp /usr/lib/ssh/sftp-server' "$f" || ok=false
+      grep -qx '    for pkg in nginx apache; do' "$f" || ok=false
+      grep -qxF '        pacman -S --noconfirm --needed "$pkg"' "$f" || ok=false
+      grep -qF '> /usr/share/nginx/html/index.html' "$f" || ok=false
+      grep -qx '  - chown http:http /usr/share/nginx/html/index.html' "$f" || ok=false
+      grep -qx '  - systemctl enable httpd' "$f" || ok=false
+      grep -qx '  - chown http:http /srv/http/index.html' "$f" || ok=false
+      grep -qE 'www-data|/var/www|systemctl (enable|start) apache2' "$f" && ok=false
+    else
+      [ "$(ud_py "$f" 'd["packages"]' 2>/dev/null)" = "$deb" ] || ok=false
+      [ "$(ud_py "$f" 'd["runcmd"][0:3]' 2>/dev/null)" = "['systemctl enable ssh', 'systemctl restart ssh', 'systemctl status ssh --no-pager']" ] || ok=false
+      grep -qx '      Subsystem sftp /usr/lib/openssh/sftp-server' "$f" || ok=false
+      grep -qx '    for pkg in nginx apache2; do' "$f" || ok=false
+      grep -qxF '        DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "$pkg"' "$f" || ok=false
+      [ "$(grep -c '^  - chown www-data:www-data /var/www/html/index.html$' "$f")" = "2" ] || ok=false
+      grep -qx '  - systemctl enable apache2' "$f" || ok=false
+    fi
+    if [ "$ok" = true ]; then
+      log_test "PASS" "user-data for $os: packages, ssh unit, sftp path, web paths (#38)"
+    else
+      log_test "FAIL" "user-data for $os: packages, ssh unit, sftp path, web paths (#38)"
+    fi
+  done
+  rm -rf "$t"
+}
+
+# libvirt dnsmasq status file for bridge "br" in $1 (libvirt runs dnsmasq with
+# --leasefile-ro, so there is no .leases file), and a matching
+# `virsh net-dhcp-leases` listing in $1/virsh-leases. vm10 comes first, so a
+# substring match for vm1 picks the wrong VM; VM1 is upper case in virsh.
+write_lease_fixture() {
+  local h m ip exp sep=""
+  {
+    echo "["
+    while read -r h m ip exp; do
+      printf '%s  {\n    "ip-address": "%s",\n    "mac-address": "%s",\n    "hostname": "%s",\n    "expiry-time": %s\n  }' "$sep" "$ip" "$m" "$h" "$exp"
+      sep=$',\n'
+    done <<'EOF'
+vm10 52:54:00:00:00:10 10.10.10.10 1893456000
+vm1 52:54:00:00:00:01 10.10.10.11 1893456000
+vm1-copy 52:54:00:00:00:02 10.10.10.12 1893456000
+web 52:54:00:ab:c2:54 10.10.10.254 1893456000
+gone 52:54:00:00:00:66 10.10.10.66 1000
+EOF
+    printf '\n]\n'
+  } >"$1/br.status"
+  cat >"$1/virsh-leases" <<'EOF'
+ Expiry Time           MAC address         Protocol   IP address        Hostname   Client ID or DUID
+-----------------------------------------------------------------------------------------------------
+ 2030-01-01 00:00:00   52:54:00:00:00:10   ipv4       10.10.10.10/24    vm10       01:52:54:00:00:00:10
+ 2030-01-01 00:00:00   52:54:00:00:00:01   ipv4       10.10.10.11/24    VM1        01:52:54:00:00:00:01
+ 2030-01-01 00:00:00   52:54:00:00:00:02   ipv4       10.10.10.12/24    vm1-copy   -
+ 2030-01-01 00:00:00   52:54:00:ab:c2:54   ipv4       10.10.10.254/24   web        -
+EOF
+  printf 'vm10\nvm1\nvm1-copy\nweb\n' >"$1/vms"
+}
+
+# Run dhcp.sh main "${@:3}" on the fixtures in $1 with extra stub code $2;
+# virsh and dhcp_release are stubbed and every call is logged to $1/calls.
+# shellcheck disable=SC2317,SC2034,SC1090,SC1091 # stubs; globals read by dhcp.sh
+run_dhcp_fixture() {
+  local t="$1" extra="$2"
+  shift 2
+  (
+    source "$SCRIPT_DIR/../network/dhcp.sh" 2>/dev/null
+    load_dcvm_config() { :; }
+    require_root() { :; }
+    check_dependencies() { :; }
+    dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
+    get_vm_mac() { :; }
+    sleep() { :; }
+    virsh() {
+      echo "virsh $*" >>"$t/calls"
+      case "$1" in
+      net-dhcp-leases) cat "$t/virsh-leases" ;;
+      list) cat "$t/vms" ;;
+      esac
+      return 0
+    }
+    DNSMASQ_DIR="$t" BRIDGE_NAME=br NETWORK_NAME=net
+    eval "$extra"
+    main "$@"
+  ) </dev/null 2>&1
+}
+
+# Status hostnames left in $1/br.status, or "invalid" when it is not JSON.
+status_hosts() { jq -c '[.[].hostname]' "$1/br.status" 2>/dev/null || echo invalid; }
+
+# #37: dhcp clear matches whole hostname/MAC fields and never restarts.
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_clear_exact() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear exact match (#37)" "jq not available"
+    return
+  fi
+  local t out name ok inode
+  t=$(mktemp -d)
+
+  write_lease_fixture "$t"
+  out=$(run_dhcp_fixture "$t" "" clear vm1)
+  if [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
+    ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
+    log_test "PASS" "dhcp clear vm1 removes only VM1 (not vm10/vm1-copy), status stays JSON, no restart (#37)"
+  else
+    log_test "FAIL" "dhcp clear vm1 removes only VM1 (not vm10/vm1-copy), status stays JSON, no restart (#37)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
+  fi
+  if ! grep -q '^virsh net-update' "$t/calls"; then
+    log_test "PASS" "dhcp clear vm1 keeps any static DHCP reservation (no net-update) (#37)"
+  else
+    log_test "FAIL" "dhcp clear vm1 keeps any static DHCP reservation (no net-update) (#37)" "$(grep '^virsh net-update' "$t/calls")"
+  fi
+
+  rm -f "$t"/*
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" "" clear 52:54:00:AB:C2:54 >/dev/null
+  if [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","gone"]' ] &&
+    ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
+    log_test "PASS" "dhcp clear <upper-case MAC> removes that status entry, no restart (#37)"
+  else
+    log_test "FAIL" "dhcp clear <upper-case MAC> removes that status entry, no restart (#37)" "$(status_hosts "$t")"
+  fi
+
+  for name in 254 ipv4 ip hostname mac abc 10 vm2; do
+    rm -f "$t"/*
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/status.orig"
+    inode=$(stat -c %i "$t/br.status")
+    out=$(run_dhcp_fixture "$t" "" clear "$name")
+    ok=$?
+    if [ "$ok" = 0 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+      [ "$(stat -c %i "$t/br.status")" = "$inode" ] && echo "$out" | grep -q 'No matching DHCP lease' &&
+      ! grep -qE '^virsh net-(destroy|start|update)|^dhcp_release' "$t/calls"; then
+      log_test "PASS" "dhcp clear $name: no lease, files untouched, exit 0, no restart (#37)"
+    else
+      log_test "FAIL" "dhcp clear $name: no lease, files untouched, exit 0, no restart (#37)" "exit $ok; $(tr '\n' ';' <"$t/calls")"
+    fi
+  done
+
+  rm -f "$t"/*
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" "" clear --stale >/dev/null
+  if [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy","web"]' ] &&
+    ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
+    log_test "PASS" "dhcp clear --stale removes the expired status entry, no restart (#37)"
+  else
+    log_test "FAIL" "dhcp clear --stale removes the expired status entry, no restart (#37)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
+  fi
+
+  rm -f "$t"/*
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_dhcp_fixture "$t" 'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }' clear vm1)
+  ok=$?
+  if [ "$ok" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" && ! grep -q '^dhcp_release' "$t/calls" &&
+    echo "$out" | grep -qF "jq not available; the lease is still listed in $t/br.status"; then
+    log_test "PASS" "dhcp clear without jq: fails, status file left as is, with the reason (#37)"
+  else
+    log_test "FAIL" "dhcp clear without jq: fails, status file left as is, with the reason (#37)" "exit $ok; $(echo "$out" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# 37-10: cleared leases are released from dnsmasq's memory with dhcp_release
+# (SIGHUP does not drop them); without dhcp_release, clear fails.
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_release() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear releases leases (37-10)" "jq not available"
+    return
+  fi
+  local t out rc
+  t=$(mktemp -d)
+  local nostub='unset -f dhcp_release; command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }'
+
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" "" clear vm1 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ]; then
+    log_test "PASS" "dhcp clear vm1 runs dhcp_release br <ip> <mac> for its lease only (37-10)"
+  else
+    log_test "FAIL" "dhcp clear vm1 runs dhcp_release br <ip> <mac> for its lease only (37-10)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" "" clear 52:54:00:AB:C2:54 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.254 52:54:00:ab:c2:54" ]; then
+    log_test "PASS" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)"
+  else
+    log_test "FAIL" "dhcp clear <MAC> runs dhcp_release for that lease (37-10)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  for name in vm1 52:54:00:00:00:01; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/status.orig"
+    out=$(run_dhcp_fixture "$t" "$nostub" clear "$name")
+    rc=$?
+    if [ "$rc" = 1 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+      echo "$out" | grep -qF "dhcp_release not found" && echo "$out" | grep -qF "dnsmasq-utils" &&
+      ! echo "$out" | grep -q 'No matching DHCP lease'; then
+      log_test "PASS" "dhcp clear $name without dhcp_release: exits 1 with an install hint, status untouched (37-10)"
+    else
+      log_test "FAIL" "dhcp clear $name without dhcp_release: exits 1 with an install hint, status untouched (37-10)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
+  # libvirt's lease helper rewrites the status file when dnsmasq releases a
+  # lease, so dcvm writes it first and the helper writes last.
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  run_dhcp_fixture "$t" 'dhcp_release() { echo "dhcp_release $(status_hosts "$t")" >>"$t/calls"; }' clear vm1 >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = 'dhcp_release ["vm10","vm1-copy","web","gone"]' ]; then
+    log_test "PASS" "dhcp clear writes the status file before dhcp_release runs (37-12)"
+  else
+    log_test "FAIL" "dhcp clear writes the status file before dhcp_release runs (37-12)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  for args in "clear vm1" "clear --stale"; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    printf '[{"ip-address": "10.10.10.11"' >"$t/br.status"
+    # shellcheck disable=SC2086 # split the args on purpose
+    out=$(run_dhcp_fixture "$t" "" $args)
+    rc=$?
+    if [ "$rc" = 1 ] && echo "$out" | grep -qF "$t/br.status" && ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
+      log_test "PASS" "dhcp $args exits 1 on an unreadable status file (37-12)"
+    else
+      log_test "FAIL" "dhcp $args exits 1 on an unreadable status file (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
+  # Nothing to clear is not an error for the command.
+  for name in nosuchvm 52:54:00:99:99:99; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/status.orig"
+    out=$(run_dhcp_fixture "$t" "" clear "$name")
+    rc=$?
+    if [ "$rc" = 0 ] && cmp -s "$t/br.status" "$t/status.orig" && echo "$out" | grep -qF "No matching DHCP lease found" &&
+      ! grep -q '^dhcp_release' "$t/calls" 2>/dev/null; then
+      log_test "PASS" "dhcp clear $name with no matching lease exits 0 and changes nothing (37-12)"
+    else
+      log_test "FAIL" "dhcp clear $name with no matching lease exits 0 and changes nothing (37-12)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
+  # --stale with two leases to drop (gone expired, web orphaned).
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  printf 'vm10\nvm1\nvm1-copy\n' >"$t/vms"
+  run_dhcp_fixture "$t" "" clear --stale >/dev/null
+  if [ "$(grep -c '^dhcp_release' "$t/calls")" = 2 ] &&
+    grep -qxF "dhcp_release br 10.10.10.66 52:54:00:00:00:66" "$t/calls" &&
+    [ "$(status_hosts "$t")" = '["vm10","vm1","vm1-copy"]' ]; then
+    log_test "PASS" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)"
+  else
+    log_test "FAIL" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
+  fi
+  rm -rf "$t"
+}
+
+# #37 and X-4: delete matches this VM's lease and status entry exactly, the
+# post-delete check ignores other VMs, and no host systemd unit is touched.
+# Bulk clears leave a valid empty JSON array in the status file, in place
+# (same inode and mode), because libvirt parses it.
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
+test_bulk_status_reset() {
+  local t before after
+  t=$(mktemp -d)
+
+  write_lease_fixture "$t"
+  chmod 640 "$t/br.status"
+  before=$(stat -c '%i %a' "$t/br.status")
+  (
+    source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+    DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t"
+    virsh() {
+      [ "$1" = list ] && echo " 1    vm1    running"
+      return 0
+    }
+    is_vm_in_network() { [ ! -e "$t/deleted" ]; }
+    get_vm_state() { echo running; }
+    shuf() { echo 1234; }
+    delete_single_vm() { : >"$t/deleted"; }
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    iptables() { :; }
+    command_exists() { return 1; }
+    delete_all_vms
+  ) <<<$'yes\n1234' >/dev/null 2>&1
+  after=$(stat -c '%i %a' "$t/br.status")
+  if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ]; then
+    log_test "PASS" "delete --all writes [] to the status file, same inode and mode (#37)"
+  else
+    log_test "FAIL" "delete --all writes [] to the status file, same inode and mode (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
+  fi
+
+  if ! command -v script >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear --all writes [] to the status file (#37)" "script not available"
+    rm -rf "$t"
+    return
+  fi
+  write_lease_fixture "$t"
+  chmod 640 "$t/br.status"
+  before=$(stat -c '%i %a' "$t/br.status")
+  cat >"$t/run.sh" <<EOF
+source "$SCRIPT_DIR/../network/dhcp.sh" 2>/dev/null
+load_dcvm_config() { :; }
+require_root() { :; }
+check_dependencies() { :; }
+restart_network() { echo restart >>"$t/calls"; }
+DNSMASQ_DIR="$t" BRIDGE_NAME=br NETWORK_NAME=net
+main clear --all
+EOF
+  # clear --all asks for confirmation only on a terminal.
+  printf 'y\n' | script -qec "bash $t/run.sh" /dev/null >/dev/null 2>&1
+  after=$(stat -c '%i %a' "$t/br.status")
+  if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ] &&
+    grep -qx restart "$t/calls" 2>/dev/null; then
+    log_test "PASS" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)"
+  else
+    log_test "FAIL" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2030 # stubs are called by delete_single_vm
+test_delete_vm_exact_match() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "delete VM exact lease match (#37)" "jq not available"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  run_delete() {
+    (
+      HOME="$t"
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t"
+      virsh() {
+        echo "virsh $*" >>"$t/calls"
+        [ "$1" = net-dhcp-leases ] && grep -v ' VM1 ' "$t/virsh-leases"
+        return 0
+      }
+      systemctl() { echo "systemctl $*" >>"$t/calls"; }
+      rm() {
+        case "$*" in
+        */etc/systemd/*) echo "rm $*" >>"$t/calls" ;;
+        *) command rm "$@" ;;
+        esac
+      }
+      dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
+      check_vm_exists() { return 0; }
+      get_vm_disk_path() { :; }
+      get_vm_ip() { :; }
+      get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+      stop_vm_gracefully() { :; }
+      cleanup_port_forwarding_for_vm() { :; }
+      sleep() { :; }
+      eval "get_vm_mac() { echo '$2'; }"
+      delete_single_vm "$1" 2>&1
+    )
+  }
+  out=$(run_delete vm1 52:54:00:00:00:01)
+  if [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
+    [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ]; then
+    log_test "PASS" "delete vm1 releases and removes only its lease, vm10/vm1-copy kept (#37)"
+  else
+    log_test "FAIL" "delete vm1 releases and removes only its lease, vm10/vm1-copy kept (#37)" "$(status_hosts "$t")"
+  fi
+  if grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --config" "$t/calls" &&
+    grep -qxF "virsh net-update net delete ip-dhcp-host <host mac='52:54:00:00:00:01'/> --live" "$t/calls"; then
+    log_test "PASS" "delete vm1 removes the static DHCP reservation for its MAC, saved and live separately (#37)"
+  else
+    log_test "FAIL" "delete vm1 removes the static DHCP reservation for its MAC, saved and live separately (#37)" "$(grep '^virsh net' "$t/calls" | tr '\n' ';')"
+  fi
+  out=$(run_delete vm1 "")
+  if echo "$out" | grep -q 'No DHCP leases found' && ! echo "$out" | grep -q 'DHCP leases still exist'; then
+    log_test "PASS" "delete with no MAC: other VMs' leases are not reported as this VM's (#37)"
+  else
+    log_test "FAIL" "delete with no MAC: other VMs' leases are not reported as this VM's (#37)"
+  fi
+  : >"$t/calls"
+  run_delete s "" >/dev/null
+  if ! grep -qE '^systemctl|^rm .*/etc/systemd/' "$t/calls" &&
+    ! grep -q '/etc/systemd/system/\*' "$SCRIPT_DIR/../core/delete-vm.sh"; then
+    log_test "PASS" "delete never stops or removes host systemd units matching the VM name (X-4)"
+  else
+    log_test "FAIL" "delete never stops or removes host systemd units matching the VM name (X-4)" "$(grep -E '^(systemctl|rm)' "$t/calls" | head -3 | tr '\n' ';')"
+  fi
+  command rm -rf "$t"
+}
+
+# Run cleanup_dhcp_lease "${@:3}" on the fixtures in $1 with extra stub code
+# $2; dhcp_release calls are logged to $1/calls, temp files go to $1/tmp.
+# shellcheck disable=SC2034,SC2317 # globals read by cleanup_dhcp_lease; stubs
+run_cleanup_fixture() {
+  local t="$1" extra="$2"
+  shift 2
+  mkdir -p "$t/tmp"
+  (
+    DNSMASQ_DIR="$t" BRIDGE_NAME=br TMPDIR="$t/tmp"
+    dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
+    eval "$extra"
+    cleanup_dhcp_lease "$@"
+  ) </dev/null 2>&1
+}
+
+# #37: cleanup_dhcp_lease never loses lease data when a step fails.
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_cleanup_dhcp_lease_failures() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "cleanup_dhcp_lease failure handling (#37)" "jq not available"
+    return
+  fi
+  local t out rc
+  t=$(mktemp -d)
+  printf '[{"ip-address": "10.10.10.11", "mac-address": "52:54:00:00:00:01", "hostname": "vm1"' >"$t/br.status"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" "" 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" &&
+    [ -z "$(ls -A "$t/tmp")" ] && [ ! -e "$t/calls" ]; then
+    log_test "PASS" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: unreadable status file is left as it was, nothing released, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'mktemp() { return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ]; then
+    log_test "PASS" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  # Exit codes: 0 cleared, 1 nothing matched, 2 failure.
+  local codes="" args extra mac host want
+  for args in "|52:54:00:00:00:01|vm1|0" "|52:54:00:99:99:99|nosuchvm|1" "|||1" "rm -f \"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
+    ": >\"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
+    'unset -f dhcp_release; command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }|52:54:00:00:00:01|vm1|2' \
+    'command_exists() { [ "$1" != jq ] && command -v "$1" >/dev/null; }|52:54:00:00:00:01|vm1|2'; do
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    IFS='|' read -r extra mac host want <<<"$args"
+    run_cleanup_fixture "$t" "$extra" "$mac" "$host" >/dev/null
+    rc=$?
+    [ "$rc" = "$want" ] || codes+="${mac:-none}/${host:-none} [$extra]: got $rc, want $want; "
+  done
+  if [ -z "$codes" ]; then
+    log_test "PASS" "cleanup_dhcp_lease exits 0 when cleared, 1 when nothing matched, 2 when dhcp_release or jq is missing (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease exits 0 when cleared, 1 when nothing matched, 2 when dhcp_release or jq is missing (#37)" "$codes"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  cp "$t/br.status" "$t/status.orig"
+  out=$(run_cleanup_fixture "$t" 'flock() { return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && cmp -s "$t/br.status" "$t/status.orig" && [ ! -e "$t/calls" ] &&
+    echo "$out" | grep -qF "Timed out waiting for"; then
+    log_test "PASS" "cleanup_dhcp_lease: lock timeout changes nothing, exit 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: lock timeout changes nothing, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  out=$(run_cleanup_fixture "$t" 'dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; return 1; }' 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && echo "$out" | grep -qF "dhcp_release failed for 10.10.10.11" &&
+    ! echo "$out" | grep -q "Released and removed"; then
+    log_test "PASS" "cleanup_dhcp_lease: a failed dhcp_release is reported and exits 2 (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: a failed dhcp_release is reported and exits 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# #37: two cleanups running at once on one status file both take effect.
+test_cleanup_dhcp_lease_parallel() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "cleanup_dhcp_lease parallel (#37)" "jq not available"
+    return
+  fi
+  local t i lost=0
+  t=$(mktemp -d)
+  for i in $(seq 50); do
+    printf '[{"ip-address":"10.10.10.11","mac-address":"52:54:00:00:00:01","hostname":"a"},{"ip-address":"10.10.10.12","mac-address":"52:54:00:00:00:02","hostname":"b"}]\n' >"$t/br.status"
+    run_cleanup_fixture "$t" "" 52:54:00:00:00:01 a >/dev/null &
+    run_cleanup_fixture "$t" "" 52:54:00:00:00:02 b >/dev/null &
+    wait
+    [ "$(jq length "$t/br.status" 2>/dev/null)" = 0 ] || lost=$((lost + 1))
+  done
+  if [ "$lost" = 0 ]; then
+    log_test "PASS" "cleanup_dhcp_lease: 50 parallel pairs lose no update (status file locked) (#37)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: 50 parallel pairs lose no update (status file locked) (#37)" "$lost of 50 left a lease"
+  fi
+  rm -rf "$t"
+}
+
+# 37-12: no SIGHUP "reload" of dnsmasq (it never found libvirt's dnsmasq and
+# does not drop leases), no dead .leases handling, and the lease helpers are
+# exported to child shells.
+# shellcheck disable=SC1091
+test_dhcp_cleanup_nits() {
+  local lib="$SCRIPT_DIR/.."
+  if ! (
+    source "$lib/network/dhcp.sh" >/dev/null 2>&1
+    declare -F reload_dnsmasq >/dev/null
+  ) && ! grep -rqE 'kill -HUP|reload_dnsmasq' "$lib/network/dhcp.sh" "$lib/utils/common.sh" "$lib/core/delete-vm.sh"; then
+    log_test "PASS" "no dnsmasq SIGHUP reload left in dhcp.sh, common.sh or delete-vm.sh (37-12)"
+  else
+    log_test "FAIL" "no dnsmasq SIGHUP reload left in dhcp.sh, common.sh or delete-vm.sh (37-12)" "$(grep -nE 'kill -HUP|reload_dnsmasq' "$lib/network/dhcp.sh" "$lib/utils/common.sh" "$lib/core/delete-vm.sh" | head -3 | tr '\n' ';')"
+  fi
+  if ! grep -qF '.leases' "$lib/utils/common.sh" "$lib/core/delete-vm.sh" && ! (
+    source "$lib/network/dhcp.sh" >/dev/null 2>&1
+    declare -f clear_all_leases clear_stale_leases clear_vm_lease clear_lease_by_mac
+  ) | grep -qF '.leases'; then
+    log_test "PASS" "lease cleanup works on the .status file only, no .leases handling (37-12)"
+  else
+    log_test "FAIL" "lease cleanup works on the .status file only, no .leases handling (37-12)"
+  fi
+  if bash -c 'declare -F cleanup_dhcp_lease cleanup_dhcp_lease_unlocked' >/dev/null 2>&1; then
+    log_test "PASS" "cleanup_dhcp_lease is exported to child shells"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease is exported to child shells"
+  fi
+}
+
+# get_vm_ip treats the subnet's dots literally.
+# shellcheck disable=SC2317,SC2030,SC2031 # stub; globals set for the call only
+test_get_vm_ip_subnet_dots() {
+  local got
+  got=$(
+    virsh() {
+      [ "$1" = domifaddr ] && printf ' vnet0  52:54:00:00:00:01  ipv4  10x10y10.5/24\n'
+      return 0
+    }
+    NETWORK_SUBNET=10.10.10 get_vm_ip vm1
+  )
+  if [ "$got" = "N/A" ]; then
+    log_test "PASS" "get_vm_ip: subnet 10.10.10 does not match 10x10y10.5"
+  else
+    log_test "FAIL" "get_vm_ip: subnet 10.10.10 does not match 10x10y10.5" "got '$got'"
+  fi
+  if ! NETWORK_SUBNET=1.1.1 validate_ip_in_subnet 111.1.1.5 >/dev/null 2>&1 &&
+    NETWORK_SUBNET=1.1.1 validate_ip_in_subnet 1.1.1.5 >/dev/null 2>&1; then
+    log_test "PASS" "validate_ip_in_subnet: subnet 1.1.1 accepts 1.1.1.5, not 111.1.1.5"
+  else
+    log_test "FAIL" "validate_ip_in_subnet: subnet 1.1.1 accepts 1.1.1.5, not 111.1.1.5"
+  fi
+}
+
+# -k nginx, apache2 and docker.io set up their service; packages that only
+# contain the name (python3-docker, nginx-extras, libapache2-mod-php,
+# apache2-utils) install as typed with no setup.
+test_apache_exact_match() {
+  local t pkg
+  t=$(mktemp -d)
+  for pkg in apache2-utils libapache2-mod-php nginx-extras python3-docker; do
+    generate_test_userdata tester n "" "$t/u.yaml" "$pkg" pw1234 debian12
+    if grep -qx "    for pkg in $pkg; do" "$t/u.yaml" &&
+      ! grep -qE 'systemctl (enable|start) (apache2|httpd|nginx|docker)|usermod -aG docker|index\.html' "$t/u.yaml"; then
+      log_test "PASS" "-k $pkg installs as typed, no service setup"
+    else
+      log_test "FAIL" "-k $pkg installs as typed, no service setup"
+    fi
+  done
+  generate_test_userdata tester n "" "$t/u.yaml" "nginx, apache2, docker.io" pw1234 debian12
+  if grep -qx '  - systemctl enable nginx' "$t/u.yaml" && grep -qx '  - systemctl enable apache2' "$t/u.yaml" &&
+    grep -qx '  - systemctl enable docker' "$t/u.yaml" && grep -qx '  - usermod -aG docker tester' "$t/u.yaml"; then
+    log_test "PASS" "-k nginx, apache2, docker.io set up their services"
+  else
+    log_test "FAIL" "-k nginx, apache2, docker.io set up their services"
+  fi
+  generate_test_userdata tester n "" "$t/u.yaml" docker pw1234 archlinux
+  if grep -qx '  - systemctl enable docker' "$t/u.yaml"; then
+    log_test "PASS" "-k docker on Arch sets up Docker"
+  else
+    log_test "FAIL" "-k docker on Arch sets up Docker"
+  fi
+  rm -rf "$t"
+}
+
+# Print the installer's package list for host family $1 (debian or arch).
+installer_packages() {
+  local line
+  line=$(grep -m1 "^  local $1_packages=(" "$SCRIPT_DIR/../installation/install-dcvm.sh") || return 1
+  eval "${line#  local }"
+  local -n list="$1_packages"
+  printf '%s\n' "${list[@]}"
+}
+
+# The installer pulls in the host tools dcvm's lease cleanup needs.
+test_installer_packages() {
+  local fam
+  for fam in debian arch; do
+    if installer_packages "$fam" | grep -qx jq; then
+      log_test "PASS" "installer installs jq on $fam hosts"
+    else
+      log_test "FAIL" "installer installs jq on $fam hosts"
+    fi
+  done
+  if installer_packages debian | grep -qx dnsmasq-utils && installer_packages arch | grep -qx dnsmasq; then
+    log_test "PASS" "installer installs dhcp_release (dnsmasq-utils on debian, dnsmasq on arch)"
+  else
+    log_test "FAIL" "installer installs dhcp_release (dnsmasq-utils on debian, dnsmasq on arch)"
+  fi
+}
+
+# #37: get_vm_ip's lease fallback matches the whole hostname field.
+# shellcheck disable=SC2317,SC2030 # stub; DATACENTER_BASE set for the call only
+test_get_vm_ip_exact() {
+  local t got
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  got=$(
+    virsh() {
+      [ "$1" = net-dhcp-leases ] && grep -v ' VM1 ' "$t/virsh-leases"
+      return 0
+    }
+    DATACENTER_BASE="$t" get_vm_ip vm1
+  )
+  if [ "$got" = "N/A" ]; then
+    log_test "PASS" "get_vm_ip vm1 ignores vm10's lease (#37)"
+  else
+    log_test "FAIL" "get_vm_ip vm1 ignores vm10's lease (#37)" "got '$got'"
+  fi
+  got=$(
+    virsh() {
+      [ "$1" = net-dhcp-leases ] && cat "$t/virsh-leases"
+      return 0
+    }
+    DATACENTER_BASE="$t" get_vm_ip vm1
+  )
+  if [ "$got" = "10.10.10.11" ]; then
+    log_test "PASS" "get_vm_ip vm1 finds its own lease (VM1, any case) (#37)"
+  else
+    log_test "FAIL" "get_vm_ip vm1 finds its own lease (VM1, any case) (#37)" "got '$got'"
+  fi
+  got=$(
+    virsh() {
+      case "$1" in
+      net-dhcp-leases) cat "$t/virsh-leases" ;;
+      domiflist) echo " vnet1  network  datacenter-net  virtio  52:54:00:AB:C2:54" ;;
+      esac
+      return 0
+    }
+    DATACENTER_BASE="$t" get_vm_ip renamed-vm
+  )
+  if [ "$got" = "10.10.10.254" ]; then
+    log_test "PASS" "get_vm_ip falls back to its exact MAC (any case) (#37)"
+  else
+    log_test "FAIL" "get_vm_ip falls back to its exact MAC (any case) (#37)" "got '$got'"
+  fi
+  rm -rf "$t"
 }
 
 test_common_functions() {
@@ -1184,6 +2061,19 @@ test_common_functions() {
   test_root_username_userdata
   test_root_username_setup
   test_root_mysql_userdata
+  test_userdata_passwords
+  test_userdata_per_os
+  test_dhcp_clear_exact
+  test_cleanup_dhcp_lease_failures
+  test_cleanup_dhcp_lease_parallel
+  test_dhcp_cleanup_nits
+  test_get_vm_ip_subnet_dots
+  test_apache_exact_match
+  test_dhcp_release
+  test_installer_packages
+  test_delete_vm_exact_match
+  test_bulk_status_reset
+  test_get_vm_ip_exact
 }
 
 test_cli_help() {

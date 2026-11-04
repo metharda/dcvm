@@ -31,85 +31,6 @@ cleanup_port_forwarding_for_vm() {
   command_exists iptables-save && iptables-save >/etc/iptables/rules.v4 2>/dev/null
 }
 
-cleanup_dhcp_lease() {
-  local mac_address="$1"
-  local vm_name="$2"
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
-
-  [ -z "$mac_address" ] && [ -z "$vm_name" ] && return
-
-  print_info "Clearing DHCP lease for MAC: ${mac_address:-unknown}, VM: ${vm_name:-unknown}"
-
-  local removed=0
-
-  if [ -f "$lease_file" ] && [ -n "$mac_address" ]; then
-    local before
-    before=$(wc -l <"$lease_file")
-    local escaped_mac
-    escaped_mac=$(printf '%s\n' "$mac_address" | sed 's/[]\\^$.*\/[]/\\&/g')
-    sed -i "/${escaped_mac}/Id" "$lease_file"
-    local after
-    after=$(wc -l <"$lease_file")
-    removed=$((before - after))
-  fi
-
-  if [ -f "$lease_file" ] && [ -n "$vm_name" ]; then
-    local before
-    before=$(wc -l <"$lease_file")
-    local escaped_name
-    escaped_name=$(printf '%s\n' "$vm_name" | sed 's/[]\\^$.*\/[]/\\&/g')
-    sed -i "/${escaped_name}/Id" "$lease_file"
-    local after
-    after=$(wc -l <"$lease_file")
-    removed=$((removed + before - after))
-  fi
-
-  if [ -f "$status_file" ]; then
-    if command_exists jq; then
-      local tmp_status
-      tmp_status="$(mktemp /tmp/dhcp_status_XXXXXX.json)"
-      local original_count=0
-      local new_count=0
-
-      original_count=$(jq 'length' "$status_file" 2>/dev/null || echo 0)
-      local jq_filter="."
-
-      if [ -n "$mac_address" ] && [ -n "$vm_name" ]; then
-        jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\" and .hostname != \"$vm_name\")]"
-      elif [ -n "$mac_address" ]; then
-        jq_filter="[.[] | select(.\"mac-address\" != \"$mac_address\")]"
-      elif [ -n "$vm_name" ]; then
-        jq_filter="[.[] | select(.hostname != \"$vm_name\")]"
-      fi
-
-      if jq "$jq_filter" "$status_file" >"$tmp_status" 2>/dev/null; then
-        new_count=$(jq 'length' "$tmp_status" 2>/dev/null || echo 0)
-        if [ "$new_count" -lt "$original_count" ]; then
-          mv "$tmp_status" "$status_file"
-          chmod 644 "$status_file"
-          removed=$((removed + original_count - new_count))
-          print_info "Removed $((original_count - new_count)) entry from status file"
-        else
-          rm -f "$tmp_status"
-        fi
-      else
-        rm -f "$tmp_status"
-        print_warning "Failed to parse status file with jq, resetting"
-        echo "[]" >"$status_file"
-      fi
-    else
-      print_warning "jq not available, resetting status file"
-      echo "[]" >"$status_file"
-    fi
-  fi
-
-  [ $removed -gt 0 ] && print_info "Removed $removed lease(s)" || print_info "No matching lease found in files"
-
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
-  [ -n "$dnsmasq_pid" ] && kill -HUP "$dnsmasq_pid" 2>/dev/null && print_info "DHCP service refreshed"
-}
-
 delete_single_vm() {
   local VM_NAME="$1"
 
@@ -148,8 +69,14 @@ delete_single_vm() {
   fi
 
   [ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
+  if [ -n "$MAC_ADDRESS" ]; then
+    # Saved and live config separately: with both flags, an inactive network
+    # fails the whole update and the saved reservation stays.
+    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --config 2>/dev/null || true
+    virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live 2>/dev/null || true
+  fi
   if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
-    cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"
+    cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME" || true
   fi
 
   [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file" && print_info "Removed from port mappings"
@@ -176,18 +103,6 @@ delete_single_vm() {
     print_info "Removed SSH config entry"
   fi
 
-  if [ -d /etc/systemd/system ]; then
-    for service_file in /etc/systemd/system/*$VM_NAME*.service; do
-      if [ -f "$service_file" ]; then
-        systemctl stop "$(basename "$service_file")" 2>/dev/null || true
-        systemctl disable "$(basename "$service_file")" 2>/dev/null || true
-        rm -f "$service_file"
-        print_info "Removed systemd service: $(basename "$service_file")"
-      fi
-    done
-    systemctl daemon-reload 2>/dev/null || true
-  fi
-
   print_success "VM $VM_NAME deleted successfully!"
 
   echo ""
@@ -195,12 +110,15 @@ delete_single_vm() {
   check_vm_exists "$VM_NAME" && print_warning "✗ VM still exists in libvirt" || print_success "✓ VM completely removed from libvirt"
 
   sleep 2
-  local dhcp_check=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | grep -E "$VM_NAME|$MAC_ADDRESS" || echo "")
+  local leases dhcp_check
+  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
+  dhcp_check=$(filter_lease_lines "$VM_NAME" 6 <<<"$leases")
+  [ -n "$MAC_ADDRESS" ] && dhcp_check+=$(filter_lease_lines "$MAC_ADDRESS" 3 <<<"$leases")
   if [ -z "$dhcp_check" ]; then
     print_success "✓ No DHCP leases found"
   else
     print_warning "✗ DHCP leases still exist"
-    print_info "They expire on their own; to remove stale leases now: dcvm network dhcp cleanup (restarts $NETWORK_NAME if it removes any)"
+    print_info "They expire on their own; to remove stale leases now: dcvm network dhcp cleanup"
   fi
 
   [ -n "$VM_DISK_PATH" ] && { [ ! -f "$VM_DISK_PATH" ] && print_success "✓ Disk file removed" || print_warning "✗ Disk file still exists"; }
@@ -268,14 +186,10 @@ delete_all_vms() {
 
   print_info "Performing final cleanup"
 
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
-  local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
-  [ -f "$lease_file" ] && >"$lease_file" && print_info "Cleared all DHCP leases"
-  [ -f "$status_file" ] && >"$status_file" && print_info "Cleared DHCP status file"
-
-  local dnsmasq_pid=$(ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep | awk '{print $2}' | head -1)
-  [ -n "$dnsmasq_pid" ] && kill -HUP "$dnsmasq_pid" 2>/dev/null
+  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && print_info "Cleared DHCP status file"
 
   local port_file=$(get_port_mappings_file)
   [ -f "$port_file" ] && >"$port_file" && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"

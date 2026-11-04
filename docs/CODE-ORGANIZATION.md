@@ -24,7 +24,7 @@
 - trim_whitespace() - Strip leading/trailing whitespace in pure bash, keeping quotes and backslashes intact (exported)
 - validate_username() - Validate username (3-32 chars, starts with a letter or underscore; rejects admin, administrator, sysadmin, user, guest; root is allowed)
 - validate_package_list() - Validate -k package names (letters, numbers, @ . _ + -; must start with a letter or number) (exported)
-- validate_password() - Validate password (4-128 chars)
+- validate_password() - Validate password (4-128 chars, no line breaks)
 - validate_ip_in_subnet() - Validate IP address is within configured subnet
 
 **VM Management:**
@@ -164,7 +164,8 @@ export -f get_system_info get_host_info
 export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
-export -f reload_dnsmasq detect_host_ip get_fix_lock_script_path
+export -f detect_host_ip get_fix_lock_script_path
+export -f filter_lease_lines cleanup_dhcp_lease cleanup_dhcp_lease_unlocked
 export -f validate_ip_in_subnet interactive_prompt_static_ip_common
 export -f interactive_prompt_memory_common interactive_prompt_cpus_common interactive_prompt_disk_common default_username
 ```

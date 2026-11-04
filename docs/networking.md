@@ -134,11 +134,24 @@ dcvm network dhcp show
 # Force renewal for all VMs
 dcvm network dhcp renew
 
-# Clear specific lease
+# Clear one lease: exact VM hostname (any case) or MAC; no network restart
 dcvm network dhcp clear <vm_name_or_mac>
-# Clear stale/orphaned leases
+# Clear stale/orphaned leases (no network restart)
 dcvm network dhcp clear -s
+# Clear ALL leases and restart the network (asks first)
+dcvm network dhcp clear -a
 ```
+
+  `clear <vm_name_or_mac>` and `clear -s` release the lease in the running
+  dnsmasq with `dhcp_release` (package `dnsmasq-utils` on Debian/Ubuntu, part
+  of `dnsmasq` on Arch) and remove it from libvirt's status file
+  (`/var/lib/libvirt/dnsmasq/<bridge>.status`) with `jq`. The installer
+  installs both. Without `dhcp_release` or `jq` they fail with an error and
+  change nothing. They also fail when the status file cannot be read, another
+  cleanup holds the lock for more than 30 seconds, or `dhcp_release` fails.
+  When no lease matches, `clear` says so and succeeds. A static DHCP
+  reservation (`ip-dhcp-host`) for the MAC is kept; `dcvm delete` removes the
+  deleted VM's reservation.
 
 - Service helpers:
 ```bash

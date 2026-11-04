@@ -12,6 +12,88 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-03
+
+Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
+
+**Upgrading:** `dcvm self-update` updates the dcvm files only and does not
+install packages. On a host installed before 0.9.6, install `jq` and
+`dnsmasq-utils` (Debian, Ubuntu, Kali) or `jq` (Arch Linux, whose `dnsmasq`
+already ships `dhcp_release`); see
+[Updating DCVM](docs/installation.md#updating-dcvm). Without them,
+`dcvm network dhcp clear` (other than `--all`) fails with an error that names
+the package to install, and `dcvm delete` still deletes the VM but prints that
+error and leaves the VM's lease listed until it expires.
+
+### Changed
+
+- `-k mysql-server` installs MariaDB (service `mariadb`) on Debian 11/12/13,
+  Kali and Arch Linux, which have no `mysql-server` package; only Ubuntu keeps
+  MySQL. `-k default-mysql-server` also runs the database setup: it
+  installs as named on Debian, Kali (MariaDB) and Ubuntu (MySQL), and as
+  `mariadb` on Arch Linux. Other names containing `mysql` no longer trigger
+  the setup (#36).
+- With MariaDB (Debian, Kali, Arch Linux), the database root user keeps its
+  passwordless login from the system root account (`sudo mariadb`) and also
+  gets the VM password (#36).
+- Passwords must not contain line breaks (`\n`, `\r`, U+0085 and the Unicode
+  line and paragraph separators U+2028, U+2029). The length limit is still
+  128 characters; its error now says "at most 128 characters" (#36).
+- `dhcp clear <vm|mac>` and `dhcp clear --stale` no longer restart the
+  network; only `dhcp clear --all` does. With no matching lease, `clear`
+  says so and changes nothing (#37).
+- `dhcp clear <vm|mac>`, `dhcp clear --stale` and `delete` release the
+  cleared lease in the running dnsmasq with `dhcp_release` and remove it from
+  libvirt's status file, so the address can be handed out again right away.
+  Without `dhcp_release` or `jq`, `dhcp clear` fails with an error that names
+  the package to install, and changes nothing. It also fails, instead of
+  reporting success, when the status file cannot be read, the lock times out
+  or `dhcp_release` itself fails (#37).
+- `dhcp clear <vm>` keeps a static DHCP reservation for the VM's MAC;
+  `delete` removes the deleted VM's reservation (#37).
+- `delete` no longer stops or removes host systemd units whose name contains
+  the VM name; dcvm does not create per-VM units.
+- The installer also installs `jq` and `dhcp_release` (`dnsmasq-utils` on
+  Debian/Ubuntu; Arch already gets it with `dnsmasq`), which lease cleanup
+  uses (#37).
+
+### Fixed
+
+- Passwords containing ` #`, quotes, `\`, `$`, backticks or `: ` now work: the
+  user, root and MySQL passwords are set to exactly the value entered (#36).
+- MySQL setup no longer leaves `$VM_USERNAME`/`$VM_PASSWORD` unexpanded; with
+  username `root` only the root password is set (#36).
+- `-k docker` adds the VM user to the `docker` group (the name was not
+  expanded) (#36).
+- `dcvm network dhcp clear <vm>`, `delete` and the IP lookup match the whole
+  hostname (any case), so `vm1` no longer hits `vm10` or `vm1-copy`, and a
+  name such as `254` or `ipv4` no longer clears other leases (#37).
+- Clearing a lease removes whole entries from the libvirt status file instead
+  of single lines, which left invalid JSON (#37).
+- `delete` without `jq`, or with a status file `jq` cannot parse, leaves the
+  status file unchanged instead of emptying it, which dropped every VM's
+  lease (#37).
+- Arch Linux VMs get Arch package names (`openssh`, `nfs-utils`), the `sshd`
+  unit, the Arch sftp-server path and Arch nginx/Apache paths (#38).
+- A password changed inside the VM (`passwd`) now survives a reboot: the user
+  and root passwords are set once at first boot, as SHA-512 hashes, instead of
+  by a `bootcmd` that reset them on every boot (#36).
+- nginx, Apache and Docker setup runs only for `-k nginx`, `-k apache2` (also
+  `-k apache` on Arch Linux) and `-k docker`/`docker.io`; packages such as
+  `nginx-extras`, `libapache2-mod-php` and `python3-docker` install as typed
+  without it (#38).
+- `dhcp clear` (all forms) and `delete` no longer send SIGHUP to dnsmasq,
+  which never found libvirt's dnsmasq and does not drop leases, and no longer
+  edit a `.leases` file, which libvirt does not use (#37).
+
+### Security
+
+- The root password is no longer written to user-data in plain text, and the
+  user and root passwords are no longer part of a `bootcmd` shell command.
+  With `-k mysql-server` or `-k default-mysql-server`, user-data still holds
+  the VM password, base64-encoded, in the database setup file that the VM
+  deletes after use (#36).
+
 ## [0.9.5] - 2026-11-03
 
 README pitch and the dcvm name in the docs and the CLI.
@@ -127,7 +209,7 @@ installed version differs from main.
 - Contributor guidance in `CONTRIBUTING.md` for CI rules, the repository test
   suite, and testing a clone when DCVM is already installed.
 - Pull-request formatting check: `shfmt -i 2 -d` (check-only; no rewrite or
-  bot commit on the PR branch).
+  automatic commit on the PR branch).
 
 ### Changed
 
@@ -148,9 +230,9 @@ installed version differs from main.
 
 ### Removed
 
-- Approval-triggered format workflow that auto-committed `shfmt` results as
-  `github-actions[bot]`. On approval it pushed to a `<pr>/merge` ref instead
-  of the PR branch.
+- Approval-triggered format workflow that auto-committed `shfmt` results
+  from the GitHub Actions account. On approval it pushed to a `<pr>/merge`
+  ref instead of the PR branch.
 
 ### Fixed
 
@@ -320,7 +402,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/metharda/dcvm/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/metharda/dcvm/compare/v0.9.2...v0.9.3
