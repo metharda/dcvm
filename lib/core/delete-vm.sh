@@ -31,6 +31,25 @@ cleanup_port_forwarding_for_vm() {
   command_exists iptables-save && iptables-save >/etc/iptables/rules.v4 2>/dev/null
 }
 
+# Destroy and undefine the libvirt storage pool whose target is this VM's
+# own directory. Other pools (default, templates) never match. A missing
+# pool is not an error.
+remove_vm_storage_pool() {
+  local vm_dir="$DATACENTER_BASE/vms/$1" pool path
+  while read -r pool; do
+    [ -n "$pool" ] || continue
+    path=$(virsh pool-dumpxml "$pool" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)
+    [ "${path%/}" = "$vm_dir" ] || continue
+    virsh pool-destroy "$pool" >/dev/null 2>&1 || true
+    if virsh pool-undefine "$pool" >/dev/null 2>&1; then
+      print_info "Removed storage pool $pool"
+    else
+      print_warning "Could not undefine storage pool $pool"
+    fi
+  done < <(virsh pool-list --all --name 2>/dev/null)
+  return 0
+}
+
 delete_single_vm() {
   local VM_NAME="$1"
 
@@ -90,6 +109,8 @@ delete_single_vm() {
     virsh undefine "$VM_NAME" 2>/dev/null || true
     [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH" && print_info "Disk file removed"
   fi
+
+  remove_vm_storage_pool "$VM_NAME"
 
   [ -d "$DATACENTER_BASE/vms/$VM_NAME" ] && rm -rf "$DATACENTER_BASE/vms/$VM_NAME" && print_info "VM directory removed"
 
