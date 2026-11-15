@@ -69,7 +69,7 @@ https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudi
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
 
-KALI_VERSION="2025.4" # Update when there is a new Kali release
+KALI_VERSION="2026.3" # Update when there is a new Kali release
 MIRROR_kali="
 https://kali.download/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
 https://cdimage.kali.org/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz

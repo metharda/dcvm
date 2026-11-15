@@ -1016,10 +1016,14 @@ prepare_vm_directory() {
     exit 1
   }
 
-  mkdir -p "$DATACENTER_BASE/vms/$VM_NAME/cloud-init" || {
+  # cloud-init/ holds the user-data with the password hash: root only.
+  # The VM folder itself stays traversable, since QEMU runs as its own user
+  # and must reach the disk and cloud-init.iso.
+  if ! mkdir -p "$DATACENTER_BASE/vms/$VM_NAME/cloud-init" ||
+    ! chmod 700 "$DATACENTER_BASE/vms/$VM_NAME/cloud-init"; then
     print_error "Failed to create cloud-init directory"
     exit 1
-  }
+  fi
 }
 
 # The per-OS names are used only inside the user-data heredoc, where the
@@ -1085,6 +1089,7 @@ generate_cloud_init_userdata() {
         APACHE_REQUESTED=true
         package=apache
       fi
+      [ "$VM_OS" = archlinux ] && [ "$package" = docker.io ] && package=docker
       EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
     done
   fi
