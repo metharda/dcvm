@@ -536,15 +536,14 @@ stop_vm_gracefully() {
 }
 
 # Print the stdin lines whose field $2 equals $1 (case-insensitive). Only
-# lines with a MAC address can match, so headers never do, and an empty $1
-# matches nothing. Used for virsh net-dhcp-leases output (MAC 3, hostname 6).
+# lines whose MAC column (3) holds a MAC address can match, so headers never
+# do, and an empty $1 matches nothing. Used for virsh net-dhcp-leases output
+# (MAC 3, hostname 6).
 filter_lease_lines() {
   awk -v v="$1" -v f="$2" '
-    function has_mac(i, h) {
+    function has_mac(h) {
       h = "[0-9a-f][0-9a-f]"
-      for (i = 1; i <= NF; i++)
-        if (tolower($i) ~ ("^" h ":" h ":" h ":" h ":" h ":" h "$")) return 1
-      return 0
+      return tolower($3) ~ ("^" h ":" h ":" h ":" h ":" h ":" h "$")
     }
     v != "" && has_mac() && tolower($f) == tolower(v)'
 }
@@ -555,7 +554,7 @@ filter_lease_lines() {
 # only lease store, and SIGHUP does not drop leases. Never restarts the
 # network. Runs under a lock so parallel cleanups do not undo each other's
 # edits.
-# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, dhcp_release failed).
+# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed).
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
   if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
@@ -614,7 +613,11 @@ cleanup_dhcp_lease_unlocked() {
   # Write the status file first: dnsmasq's release makes libvirt's lease
   # helper rewrite it, and that write must come last.
   n=$(($(jq length "$status_file") - $(jq length "$tmp")))
-  cat "$tmp" >"$status_file"
+  if ! cat "$tmp" >"$status_file"; then
+    rm -f "$tmp"
+    print_error "Could not write $status_file; no lease was released"
+    return 2
+  fi
   rm -f "$tmp"
   while IFS=$'\t' read -r lmac ip; do
     [[ "$ip" == *.* ]] || continue
