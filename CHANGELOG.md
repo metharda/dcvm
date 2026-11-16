@@ -12,6 +12,28 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-16
+
+Small fixes for VM deletion, guest setup and DHCP lease cleanup.
+
+### Changed
+
+- The Kali Linux cloud image is now 2026.3; the 2025.4 image is no longer
+  available (#45).
+- The VM's `cloud-init` folder, which holds the user-data, is created with
+  mode 700 (#45).
+
+### Fixed
+
+- `dcvm delete` destroys and undefines the VM's own libvirt storage pool, so
+  no pool is left pointing at a removed folder. A missing pool is skipped, and
+  other pools, including the templates folder, are never touched (#48).
+- On Arch Linux, `-k docker.io` installs the `docker` package (#45).
+- DHCP lease cleanup returns an error, and releases nothing, when it cannot
+  write the lease status file back; it used to report success (#42).
+- DHCP lease lines are matched only when their MAC address column holds a
+  MAC address (#42).
+
 ## [0.9.6] - 2026-11-03
 
 Bug fixes for VM passwords, DHCP lease matching and Arch Linux VMs.
@@ -402,7 +424,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/metharda/dcvm/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/metharda/dcvm/compare/v0.9.3...v0.9.4
