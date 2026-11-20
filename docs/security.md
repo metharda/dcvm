@@ -95,6 +95,9 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   question, `$DATACENTER_BASE/nfs-share` is exported read-write to the dcvm
   subnet only (`10.10.10.0/24` by default) with `no_root_squash`, so root in
   any VM is root on the share. Machines outside the subnet can't mount it.
+  The folder has mode `1777`: every VM user (and every local user on the
+  host) can write to it, and the sticky bit stops them deleting each other's
+  files. Don't put anything private there.
   Hosts installed before 0.9.8 exported it to `*` (any host); re-running the
   installer and answering `y` again replaces that line in `/etc/exports`.
 

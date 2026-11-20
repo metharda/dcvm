@@ -214,8 +214,6 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 - Cloud images are checked against the checksum files their publishers put
   next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
   mirror that publishes no checksum is used with a warning.
-- The optional NFS share is writable by root inside the guests (`sudo`), not
-  by the VM user.
 
 ## How it compares
 

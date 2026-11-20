@@ -332,8 +332,8 @@ sftp ubuntu@<vm-ip>
 ### Using Shared NFS
 
 If you enabled the NFS share when installing (the installer asks; the default
-is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. It is
-writable by root in the guest, so use `sudo` to write to it. Read
+is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. Every VM
+user can write to it; like `/tmp`, users can't delete each other's files. Read
 [Security](security.md#network-exposure) before enabling it.
 
 ```bash

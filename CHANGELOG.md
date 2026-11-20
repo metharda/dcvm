@@ -19,7 +19,7 @@ Security and correctness fixes found while rewriting the documentation.
 **Upgrading:** `dcvm self-update` does not touch `/etc/exports`. If you
 enabled the NFS share on a host installed before 0.9.8, it is exported to
 every host (`*`); re-run the installer and answer `y` to the NFS question to
-limit it to the dcvm subnet.
+limit it to the dcvm subnet and make it writable for VM users.
 
 ### Added
 
@@ -60,6 +60,9 @@ limit it to the dcvm subnet.
 - The installer always reported `NFS server is not installed` on hosts with
   many systemd units: `systemctl list-unit-files | grep -q` failed under
   `pipefail` when grep exited early.
+- The NFS share folder was `root:root 755`, so only root in a guest could
+  write to `/mnt/shared`. The installer now sets mode `1777` (writable for
+  every VM user, sticky like `/tmp`).
 - Guests mounted the NFS share from `10.10.10.1` and `dcvm delete --all`
   matched `10.10.10.` regardless of `NETWORK_SUBNET`; both use the configured
   subnet now, as does the installer's summary.
