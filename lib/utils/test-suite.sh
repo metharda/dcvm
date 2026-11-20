@@ -905,7 +905,7 @@ EOF
     stub_backup_tools "$t"
     restore_vm vm1 vm1-01.01.2026-1 "" "" vm1-pfx </dev/null >"$t/out-pfx" 2>&1
   )
-  if grep -q '<name>vm1-pfx</name>' "$t/defined.xml" 2>/dev/null && grep -q "vm1-disk-$ts" "$t/out-pfx"; then
+  if grep -q '<name>vm1-pfx</name>' "$t/defined.xml" 2>/dev/null && grep -q "backup $ts" "$t/out-pfx"; then
     log_test "PASS" "backup restore (<vm>-dd.mm.yyyy-N as backup list prints it)"
   else
     log_test "FAIL" "backup restore (<vm>-dd.mm.yyyy-N as backup list prints it)" "$(grep -i 'selector\|error' "$t/out-pfx" | head -2)"
