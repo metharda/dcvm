@@ -12,8 +12,6 @@ on:
       tapes:
         description: Tapes to record, space separated
         default: hero backup daily
-  push:
-    branches: [feat/cli-design]
 
 permissions:
   contents: read
