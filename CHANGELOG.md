@@ -12,6 +12,18 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-20
+
+### Fixed
+
+- The installer's network summary printed a stray `0` line under
+  `NAT rules active`, and `dcvm network vnc enable|disable` printed
+  `integer expression expected` from its "is the VM running" check when the
+  VM was stopped. `$(... | grep -c pattern || echo 0)` captured the count
+  twice (`grep -c` already prints `0` when nothing matches); these now use
+  `|| true`, as does `dcvm self-update`'s file count. The test suite now fails
+  on the pattern.
+
 ## [0.9.7] - 2026-11-16
 
 Small fixes for VM deletion, guest setup and DHCP lease cleanup.
@@ -424,7 +436,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/metharda/dcvm/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/metharda/dcvm/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5

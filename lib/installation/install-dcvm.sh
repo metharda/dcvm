@@ -703,7 +703,7 @@ show_network_info() {
   local ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
   echo "    IP forwarding: $([ "$ip_forward" = "1" ] && echo "enabled" || echo "disabled")"
 
-  local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || echo "0")
+  local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || true)
   echo "    NAT rules active: $nat_count"
 }
 

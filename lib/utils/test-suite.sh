@@ -306,6 +306,23 @@ test_shellcheck() {
   done < <(find "$lib_dir" -type f -name '*.sh' -print0)
 }
 
+# `grep -c` prints 0 and exits 1 when nothing matches, so
+# `$(... | grep -c x || echo 0)` captures "0" twice ("0\n0"), which prints a
+# stray 0 and breaks `[ "$n" -gt 0 ]`. Use `|| true` instead.
+test_grep_count_fallback() {
+  echo ""
+  log_test "INFO" "═══ GREP -c FALLBACK ═══"
+
+  local hits
+  hits=$(grep -rnE 'grep -c[^|]*\|\|[[:space:]]*echo' "${SCRIPT_DIR}/.." "${SCRIPT_DIR}/../../dcvm" 2>/dev/null |
+    grep -v '/test-suite.sh:' || true)
+  if [ -z "$hits" ]; then
+    log_test "PASS" "No 'grep -c ... || echo' double output"
+  else
+    log_test "FAIL" "'grep -c ... || echo' prints the count twice; use '|| true'" "$(echo "$hits" | head -1)"
+  fi
+}
+
 test_configuration() {
   echo ""
   log_test "INFO" "═══ CONFIGURATION TESTS ═══"
@@ -2475,6 +2492,7 @@ main() {
   if [ "$SYNTAX_ONLY" = true ]; then
     test_syntax_all_scripts
     test_shellcheck
+    test_grep_count_fallback
   elif [ "$UNIT_ONLY" = true ]; then
     test_common_functions
   elif [ "$INTEGRATION_ONLY" = true ]; then
@@ -2486,6 +2504,7 @@ main() {
   else
     test_syntax_all_scripts
     test_shellcheck
+    test_grep_count_fallback
     test_configuration
     test_dependencies
     test_common_functions

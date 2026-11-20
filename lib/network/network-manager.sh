@@ -179,7 +179,7 @@ cmd_vnc() {
       return 0
     fi
 
-    local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
+    local is_running=$(virsh list | grep -c " $vm_name .*running" || true)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to disable VNC."
       if [ -t 0 ]; then
@@ -229,7 +229,7 @@ cmd_vnc() {
       return 0
     fi
 
-    local is_running=$(virsh list | grep -c " $vm_name .*running" || echo 0)
+    local is_running=$(virsh list | grep -c " $vm_name .*running" || true)
     if [ "$is_running" -gt 0 ]; then
       print_warning "VM '$vm_name' is running. It needs to be stopped to enable VNC."
       if [ -t 0 ]; then
