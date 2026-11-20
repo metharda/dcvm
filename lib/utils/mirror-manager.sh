@@ -339,6 +339,81 @@ select_best_mirror() {
   return 1
 }
 
+# Prints the hash listed for file name $1 in a SHA256SUMS/SHA512SUMS-style
+# list on stdin ("<hash>  <name>" or "<hash> *<name>").
+checksum_for_file() {
+  awk -v f="$1" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print tolower($1); exit } }'
+}
+
+fetch_text() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 5 --max-time 20 "$1" 2>/dev/null
+  else
+    wget -q -T 20 -O - "$1" 2>/dev/null
+  fi
+}
+
+# Checks a downloaded image against the checksums its publisher puts next to
+# it: SHA256SUMS or SHA512SUMS in the same folder, or <file>.SHA256. Looks on
+# the mirror it came from, then on the other mirrors that serve the same file
+# name (most mirrors don't copy the checksum files; the official servers do).
+# Returns 0 if a published checksum matches, 1 if checksums were found but
+# none matches, 2 if no mirror publishes one.
+verify_published_checksum() {
+  local filename="$1" url="$2" file="$3"
+  local base="${url##*/}" found=false dir sums hash algo
+  local -A digest=()
+  local dirs
+  dirs=$({
+    echo "$url"
+    get_mirrors "$filename" 2>/dev/null
+  } | awk -v b="$base" 'NF { n = $0; sub(/.*\//, "", n); if (n == b) { sub(/\/[^\/]*$/, ""); if (!seen[$0]++) print } }')
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    for sums in SHA256SUMS SHA512SUMS "$base.SHA256"; do
+      hash=$(fetch_text "$dir/$sums" | checksum_for_file "$base")
+      case ${#hash} in
+      64) algo=sha256 ;;
+      128) algo=sha512 ;;
+      *) continue ;;
+      esac
+      found=true
+      [ -n "${digest[$algo]:-}" ] || digest[$algo]=$("${algo}sum" "$file" | awk '{print $1}')
+      if [ "${digest[$algo]}" = "$hash" ]; then
+        echo "INFO: $algo checksum verified against $dir/$sums" >&2
+        return 0
+      fi
+    done
+  done <<<"$dirs"
+  $found && return 1
+  return 2
+}
+
+# Accepts or rejects a finished download. A pinned SHA-256 must match;
+# otherwise a published checksum must match if any mirror publishes one.
+check_download() {
+  local filename="$1" url="$2" file="$3" expected_sha256="$4" actual rc
+  if [ -n "$expected_sha256" ]; then
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    [ "$actual" = "$expected_sha256" ] && return 0
+    echo "WARNING: Checksum mismatch (expected $expected_sha256, got $actual)" >&2
+    return 1
+  fi
+  verify_published_checksum "$filename" "$url" "$file"
+  rc=$?
+  case $rc in
+  0) return 0 ;;
+  1)
+    echo "WARNING: Download from $url does not match its published checksum" >&2
+    return 1
+    ;;
+  *)
+    echo "WARNING: No published checksum found for ${url##*/}; download not verified" >&2
+    return 0
+    ;;
+  esac
+}
+
 download_with_mirrors() {
   local filename="${1:-}"
   local target_path="${2:-}"
@@ -397,18 +472,9 @@ download_with_mirrors() {
       local file_size
       file_size=$(stat -c%s "$tmp_file" 2>/dev/null || echo 0)
       if [ "$file_size" -ge "$min_size" ]; then
-        if [ -n "$expected_sha256" ]; then
-          local actual_sha256=""
-          if command -v sha256sum >/dev/null 2>&1; then
-            actual_sha256=$(sha256sum "$tmp_file" | awk '{print $1}')
-          elif command -v shasum >/dev/null 2>&1; then
-            actual_sha256=$(shasum -a 256 "$tmp_file" | awk '{print $1}')
-          fi
-          if [ -n "$actual_sha256" ] && [ "$actual_sha256" != "$expected_sha256" ]; then
-            echo "WARNING: Checksum mismatch (expected $expected_sha256, got $actual_sha256)" >&2
-            rm -f "$tmp_file" 2>/dev/null
-            rc=2
-          fi
+        if ! check_download "$filename" "$best" "$tmp_file" "$expected_sha256"; then
+          rm -f "$tmp_file" 2>/dev/null
+          rc=2
         fi
       else
         echo "WARNING: aria2c produced small file (${file_size} bytes)" >&2
@@ -466,18 +532,9 @@ download_with_mirrors() {
       local file_size
       file_size=$(stat -c%s "$tmp_file" 2>/dev/null || echo 0)
       if [ "$file_size" -ge "$min_size" ]; then
-        if [ -n "$expected_sha256" ]; then
-          local actual_sha256=""
-          if command -v sha256sum >/dev/null 2>&1; then
-            actual_sha256=$(sha256sum "$tmp_file" | awk '{print $1}')
-          elif command -v shasum >/dev/null 2>&1; then
-            actual_sha256=$(shasum -a 256 "$tmp_file" | awk '{print $1}')
-          fi
-          if [ -n "$actual_sha256" ] && [ "$actual_sha256" != "$expected_sha256" ]; then
-            echo "WARNING: Checksum mismatch (expected $expected_sha256, got $actual_sha256)" >&2
-            rm -f "$tmp_file" 2>/dev/null
-            continue
-          fi
+        if ! check_download "$filename" "$url" "$tmp_file" "$expected_sha256"; then
+          rm -f "$tmp_file" 2>/dev/null
+          continue
         fi
         if is_kali_image "$filename"; then
           if ! extract_kali_image "$tmp_file" "$target_path"; then
