@@ -2,6 +2,23 @@
 
 This guide covers VM backup and restore operations in DCVM.
 
+A backup shuts the VM down (gracefully, forced after 60 seconds), copies its
+disk and libvirt configuration, compresses the disk with gzip, and starts the
+VM again if it was running. On the demo host a fresh Ubuntu 24.04 VM took 20
+seconds to back up and 80 seconds to restore. The 5 most recent backups of
+each VM are kept; older ones are removed after each new backup.
+
+> [!IMPORTANT]
+> The disk in a backup is the VM's qcow2 *overlay*: only the VM's own changes,
+> on top of its cloud image in `$DATACENTER_BASE/storage/templates`. Restore
+> and import need that same image file. If it is missing, they download the
+> current image of that name, which only works if upstream has not published
+> a newer image since. Keep your templates, and copy the template along with
+> an export when you move a VM to another host.
+
+See also: [Architecture](architecture.md#backups) ·
+[Security](security.md#backups-and-exports)
+
 ## Backup
 
 Create a backup for a VM:
@@ -40,6 +57,10 @@ dcvm backup import /path/to/archive.tar.gz [new_vm_name]
 
 ## Restore
 
+Restoring over an existing VM asks you to type `yes`, then replaces the VM's
+disk and definition. The VM keeps its MAC addresses, so a DHCP VM gets its
+old IP back and saved port forwards still match.
+
 Restore the latest backup:
 ```bash
 # Standard command
@@ -76,6 +97,6 @@ If the source VM has a static IP recorded on this host (`$DATACENTER_BASE/config
 - File naming: `<vm>-<YYYYMMDD>_<HHMMSS>` and `<vm>-disk-<YYYYMMDD>_<HHMMSS>.qcow2(.gz)`
 
 ## Tips
-- Keep recent N backups and remove older ones regularly (`dcvm storage-cleanup`).
+- dcvm keeps the 5 most recent backups per VM; delete others with `dcvm backup delete <vm>`.
 - Store backups on a separate disk for safety.
 - Test your restore process periodically.

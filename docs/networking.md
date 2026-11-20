@@ -5,7 +5,12 @@ This guide explains DCVM networking and how to operate it.
 ## Overview
 - Default libvirt NAT network: name `datacenter-net`, bridge `virbr-dc`, CIDR `10.10.10.0/24`.
 - Host IP on the bridge: `10.10.10.1`.
-- DHCP range: `10.10.10.10` – `10.10.10.100`.
+- DHCP range: `10.10.10.10` – `10.10.10.200` (dnsmasq, run by libvirt).
+- VMs reach the internet through NAT on the host. Nothing outside the host
+  can reach a VM until you [forward a port](#port-forwarding).
+
+See also: [Architecture](architecture.md#networking) ·
+[Security](security.md#network-exposure)
 
 ## Static IP Configuration
 
@@ -30,7 +35,10 @@ dcvm create myvm -f -p password123 --ip 10.10.10.50
 - Valid range: `10.10.10.2` - `10.10.10.254`
 - `10.10.10.1` is reserved for the gateway
 - `10.10.10.255` is the broadcast address
-- Avoid IPs in the DHCP range if possible
+- Prefer addresses outside the DHCP range (`.2`-`.9` or `.201`-`.254`). An
+  address inside it works while the VM is running (dnsmasq checks with a ping
+  before handing an address out), but if the VM is off, DHCP can give its
+  address to another VM.
 
 ### Custom ISO VMs
 For custom ISO installations, static IP is noted during creation but must be configured manually inside the VM during OS installation.
@@ -88,7 +96,11 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
 ### Workflow
 
 1.  **Setup/Refresh Rules:**
-    Automatically discovers running VMs and creates forwarding rules (typically starting at port 2221/8081).
+    Removes dcvm's previous rules, then gives each *running* VM on the dcvm
+    network the next pair of host ports, starting at 2221 (to the VM's port
+    22) and 8081 (to port 80). Run it again after starting or adding VMs.
+    `SSH_PORT_START` and `HTTP_PORT_START` in the environment change the
+    starting ports.
     ```bash
     dcvm network ports setup
     ```
@@ -105,7 +117,11 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
     ```
 
 4.  **Persistence:**
-    Rules are saved to `$DATACENTER_BASE/port-mappings.txt`. You can manually edit this file and re-apply:
+    The table is saved to `$DATACENTER_BASE/port-mappings.txt`, one line per
+    VM: `VM_NAME VM_IP SSH_PORT HTTP_PORT`. The iptables rules themselves are
+    not reloaded at boot unless your system restores `/etc/iptables/rules.v4`
+    (dcvm writes it when `iptables-save` exists). Re-apply the saved table
+    after a reboot or after editing it:
     ```bash
     dcvm network ports apply
     ```
@@ -119,7 +135,7 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
 | `rules` | Show active `iptables` rules |
 | `apply` | Apply rules from mappings file |
 | `clear` | Remove all forwarding rules |
-| `test` | Test connectivity (Ping/SSH/HTTP) |
+| `test` | Per VM: ping, and for SSH and HTTP that the DNAT and FORWARD rules exist and the VM port accepts connections |
 
 ## Quick commands
 
@@ -159,6 +175,12 @@ dcvm network status
 dcvm network bridge
 dcvm network ip-forwarding on|off|show
 ```
+
+Forwarded ports listen on every host interface, and DNAT applies to
+connections arriving from other machines, not to the host's own connections:
+from the host itself, connect to the VM's IP. `setup`, `apply` and `clear`
+delete every `PREROUTING` rule on host ports 2220-2299 and 8080-8179, so keep
+other NAT rules off those ports.
 
 ## Tips
 - **Security:** Ensure your host firewall (ufw/iptables) permits traffic on the forwarded ports if you want external access.
