@@ -474,6 +474,9 @@ start_nfs_server() {
       }
     fi
 
+    # Every VM user writes as its own UID, so make the share writable for all,
+    # with the sticky bit (like /tmp) so users can't delete each other's files.
+    chmod 1777 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not make $NFS_EXPORT_PATH writable for VM users"
     exportfs -ra 2>/dev/null || print_status_log "WARNING" "Could not refresh NFS exports"
     print_status_log "SUCCESS" "NFS exports configured at: $NFS_EXPORT_PATH"
     print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from ${subnet}.1"
