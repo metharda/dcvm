@@ -4,7 +4,6 @@
 Output screens/screens.gif
 Source docs/demo/_style.tape
 Set Height 1000
-Set Framerate 10
 Source docs/demo/_login.tape
 
 Type "bash /root/dcvm-src/lib/installation/install-dcvm.sh"

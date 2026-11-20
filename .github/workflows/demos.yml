@@ -69,5 +69,6 @@ jobs:
           name: demos
           path: |
             screens/*.png
+            screens/*.gif
             docs/demo/*.gif
           if-no-files-found: warn
