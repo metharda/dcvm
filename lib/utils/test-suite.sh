@@ -2042,6 +2042,82 @@ test_published_checksum() {
   rm -rf "$t"
 }
 
+# Downloads are checked against SHA256SUMS/SHA512SUMS/<file>.SHA256 from the
+# mirror they came from or another mirror serving the same file name.
+test_published_checksum() {
+  if ! command -v curl >/dev/null 2>&1 || ! command -v sha512sum >/dev/null 2>&1; then
+    log_test "SKIP" "published checksum verification" "needs curl and sha512sum"
+    return
+  fi
+  local t rc
+  t=$(mktemp -d)
+  mkdir -p "$t/m1" "$t/m2" "$t/m3"
+  head -c 4096 /dev/urandom >"$t/m1/img.qcow2"
+  cp "$t/m1/img.qcow2" "$t/m2/img.qcow2"
+  cp "$t/m1/img.qcow2" "$t/m3/img.qcow2"
+  (cd "$t/m1" && sha256sum img.qcow2 >SHA256SUMS)
+  (
+    # shellcheck source=mirror-manager.sh
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    get_mirrors() { printf '%s\n' "file://$t/m1/img.qcow2" "file://$t/m2/img.qcow2"; }
+    verify_published_checksum x "file://$t/m1/img.qcow2" "$t/m1/img.qcow2" 2>/dev/null
+    echo "same=$?"
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "other=$?"
+    echo tampered >>"$t/m2/img.qcow2"
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "tampered=$?"
+    check_download x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" "" 2>/dev/null
+    echo "tampered_check=$?"
+    get_mirrors() { :; }
+    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
+    echo "none=$?"
+    check_download x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" "" 2>/dev/null
+    echo "none_check=$?"
+    (cd "$t/m3" && sha512sum img.qcow2 | sed 's/  / */' >SHA512SUMS)
+    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
+    echo "sha512=$?"
+  ) >"$t/out"
+  for rc in same=0 other=0 tampered=1 tampered_check=1 none=2 none_check=0 sha512=0; do
+    if grep -qx "$rc" "$t/out"; then
+      log_test "PASS" "published checksum ($rc)"
+    else
+      log_test "FAIL" "published checksum ($rc)" "$(tr '\n' ' ' <"$t/out")"
+    fi
+  done
+  rm -rf "$t"
+}
+
+# The installer starts only stopped VMs on the dcvm network, and starting one
+# must not trip set -e (((x++)) returns 1 when x is 0).
+test_installer_starts_dcvm_vms_only() {
+  local t
+  t=$(mktemp -d)
+  if (
+    set -e
+    eval "$(sed -n '/^start_existing_vms()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+    print_status_log() { :; }
+    virsh() {
+      case "$1" in
+      list) [ "${2:-}" = --all ] && printf 'dcvm1\nother1\n' ;;
+      domiflist)
+        echo " Interface   Type      Source           Model    MAC"
+        if [ "$2" = dcvm1 ]; then echo " vnet0       network   datacenter-net   virtio   52:54:00:00:00:01"; else echo " vnet1       network   default          virtio   52:54:00:00:00:02"; fi
+        ;;
+      start) echo "$2" >>"$t/started" ;;
+      esac
+    }
+    NETWORK_NAME=datacenter-net
+    start_existing_vms
+    echo done >"$t/finished"
+  ) >/dev/null 2>&1 && [ -f "$t/finished" ] && [ "$(cat "$t/started" 2>/dev/null)" = dcvm1 ]; then
+    log_test "PASS" "installer starts only dcvm-network VMs (and survives set -e)"
+  else
+    log_test "FAIL" "installer starts only dcvm-network VMs (and survives set -e)" "started: $(tr '\n' ' ' <"$t/started" 2>/dev/null)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2205,6 +2281,8 @@ test_common_functions() {
   test_apache_exact_match
   test_dhcp_release
   test_installer_packages
+  test_published_checksum
+  test_installer_starts_dcvm_vms_only
   test_published_checksum
   test_delete_vm_exact_match
   test_bulk_status_reset

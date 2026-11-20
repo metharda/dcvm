@@ -1223,7 +1223,7 @@ runcmd:
   - systemctl status $ssh_service --no-pager
   - mkdir -p /mnt/shared
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
-  - echo "10.10.10.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
+  - echo "${NETWORK_SUBNET:-10.10.10}.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
   - mount -a || true
   - mkdir -p $vm_home/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME $vm_home
