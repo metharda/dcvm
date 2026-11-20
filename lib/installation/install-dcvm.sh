@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Same output style as lib/utils/common.sh; the installer runs on its own
+# (curl | bash), so it can't source it. Colour only on a terminal, not with
+# NO_COLOR or TERM=dumb; ASCII symbols outside UTF-8 locales.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' BLUE='\033[34m'
+  CYAN='\033[36m' BOLD='\033[1m' DIM='\033[2m' NC='\033[0m'
+else
+  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
+fi
+case "${TERM:-}:${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+dumb:*) UI_UNICODE=false ;;
+*[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UI_UNICODE=true ;;
+*) UI_UNICODE=false ;;
+esac
+if [ "$UI_UNICODE" = true ]; then
+  SYM_OK='✓' SYM_FAIL='✗' SYM_WARN='!' SYM_INFO='›' SYM_DOT='·' SYM_SKIP='·'
+  BOX_TL='╭' BOX_TR='╮' BOX_BL='╰' BOX_BR='╯' BOX_H='─' BOX_V='│' SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+else
+  SYM_OK='+' SYM_FAIL='x' SYM_WARN='!' SYM_INFO='>' SYM_DOT='-' SYM_SKIP='-'
+  BOX_TL='+' BOX_TR='+' BOX_BL='+' BOX_BR='+' BOX_H='-' BOX_V='|' SPIN_FRAMES='|/-\\'
+fi
 
 DEFAULT_DATACENTER_BASE="/srv/datacenter"
 CONFIG_FILE="/etc/dcvm-install.conf"
@@ -18,20 +34,71 @@ DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
 DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
 SOURCE_DIR=""
 TMP_WORKDIR=""
+STARTED_VMS=()
 
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
 
+# Every message goes to the log. On screen: warnings and errors, and the
+# step lines below; INFO/SUCCESS details only with DCVM_VERBOSE=1.
 print_status() {
   local status=$1
   local message=$2
+  echo "[$status] $message" >>"$LOG_FILE" 2>/dev/null || true
   case $status in
-  "INFO") echo -e "${BLUE}[INFO]${NC} $message" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${BLUE}[INFO]${NC} $message" ;;
-  "SUCCESS") echo -e "${GREEN}[SUCCESS]${NC} $message" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${GREEN}[SUCCESS]${NC} $message" ;;
-  "WARNING") echo -e "${YELLOW}[WARNING]${NC} $message" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} $message" ;;
-  "ERROR") echo -e "${RED}[ERROR]${NC} $message" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${RED}[ERROR]${NC} $message" ;;
+  "INFO" | "SUCCESS")
+    if [ "${DCVM_VERBOSE:-0}" = 1 ]; then echo -e "  ${DIM}${SYM_INFO} $message${NC}"; fi
+    ;;
+  "WARNING") echo -e "${YELLOW}${SYM_WARN}${NC} $message" ;;
+  "ERROR") echo -e "${RED}${SYM_FAIL} error:${NC} $message" ;;
   esac
+  return 0
 }
 print_status_log() { print_status "$@"; }
+
+# One finished install step: step ok|warn|fail|skip <label> [detail]
+step() {
+  local sym col
+  case "$1" in
+  ok) sym=$SYM_OK col=$GREEN ;;
+  warn) sym=$SYM_WARN col=$YELLOW ;;
+  fail) sym=$SYM_FAIL col=$RED ;;
+  *) sym=$SYM_SKIP col=$DIM ;;
+  esac
+  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
+  echo "[STEP] $2: ${3:-}" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+# Runs a command with its output in the log, behind a spinner on a terminal.
+# Sets STEP_SECS; prints the output's last lines when it fails.
+run_step() {
+  local label="$1" start=$SECONDS rc=0 pid i=0 out
+  shift
+  out=$(mktemp)
+  if [ -t 1 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; then
+    "$@" >"$out" 2>&1 &
+    pid=$!
+    trap 'printf "\r\033[K\033[?25h"; kill "$pid" 2>/dev/null; exit 130' INT TERM
+    printf '\033[?25l'
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r  %b%s%b %-15s %b%ss%b' "$CYAN" "${SPIN_FRAMES:i++%${#SPIN_FRAMES}:1}" "$NC" "$label" "$DIM" "$((SECONDS - start))" "$NC"
+      sleep 0.1
+    done
+    wait "$pid" || rc=$?
+    printf '\r\033[K\033[?25h'
+    trap - INT TERM
+  else
+    "$@" >"$out" 2>&1 || rc=$?
+  fi
+  STEP_SECS=$((SECONDS - start))
+  cat "$out" >>"$LOG_FILE" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    echo -e "${DIM}"
+    tail -n 25 "$out"
+    echo -e "${NC}"
+  fi
+  rm -f "$out"
+  return "$rc"
+}
 
 cleanup_tmp_dir() {
   if [[ -n "$TMP_WORKDIR" && -d "$TMP_WORKDIR" ]]; then
@@ -421,6 +488,7 @@ start_nfs_server() {
 
   echo
   if ! prompt_yes_no "Do you want to setup NFS server for VM shared folders? [y/N]: " "N"; then
+    NFS_RESULT="skip|not set up (re-run the installer to add it)"
     print_status_log "INFO" "Skipping NFS server setup"
     return 0
   fi
@@ -479,6 +547,7 @@ start_nfs_server() {
     chmod 1777 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not make $NFS_EXPORT_PATH writable for VM users"
     exportfs -ra 2>/dev/null || print_status_log "WARNING" "Could not refresh NFS exports"
     print_status_log "SUCCESS" "NFS exports configured at: $NFS_EXPORT_PATH"
+    NFS_RESULT="ok|$NFS_EXPORT_PATH for ${subnet}.0/24, mounted in VMs at /mnt/shared"
     print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from ${subnet}.1"
   else
     print_status_log "WARNING" "NFS server could not be started - you can set it up manually later"
@@ -502,7 +571,7 @@ check_directory_structure() {
     if [[ -d "$dir" ]]; then
       print_status_log "INFO" "Directory $dir already exists."
     else
-      print_status_log "WARNING" "Directory $dir does not exist, creating..."
+      print_status_log "INFO" "Directory $dir does not exist, creating..."
       if mkdir -p "$dir" 2>/dev/null && chmod 755 "$dir" 2>/dev/null; then
         print_status_log "SUCCESS" "Directory $dir created."
       else
@@ -590,7 +659,7 @@ check_cloud_images() {
       local size=$(du -h "$image_path" 2>/dev/null | cut -f1 || echo "unknown")
       print_status_log "SUCCESS" "$label cloud image found ($size)"
     else
-      print_status_log "WARNING" "$label cloud image not found"
+      print_status_log "INFO" "$label cloud image not found"
       missing_images+=("$entry")
     fi
   done
@@ -601,7 +670,7 @@ check_cloud_images() {
 
     if [[ -t 0 && -t 1 ]]; then
       echo ""
-      echo "Some cloud images are missing. Would you like to download them now?"
+      echo -e "${BOLD}${#missing_images[@]} of ${#IMAGE_ORDER[@]} cloud images are not downloaded yet.${NC} Download them now?"
       select yn in "Yes, download now" "No, download when creating a VM"; do
         case $yn in
         "Yes, download now")
@@ -764,6 +833,7 @@ start_existing_vms() {
         print_status_log "INFO" "Starting VM: $vm_name"
         if virsh start "$vm_name" >/dev/null 2>&1; then
           print_status_log "SUCCESS" "Started VM: $vm_name"
+          STARTED_VMS+=("$vm_name")
           vms_started=$((vms_started + 1)) # ((x++)) returns 1 at 0, which set -e treats as failure
         else
           print_status_log "WARNING" "Failed to start VM: $vm_name"
@@ -782,24 +852,28 @@ start_existing_vms() {
 }
 
 show_datacenter_summary() {
-  echo
-  print_status_log "INFO" "=== dcvm INSTALLATION COMPLETE ==="
-  echo
-  echo "Installation directory: $DATACENTER_BASE"
-  echo "Network: $NETWORK_NAME (${NETWORK_SUBNET:-10.10.10}.1/24)"
-  echo "Bridge: $BRIDGE_NAME"
-  echo "NFS Share: $NFS_EXPORT_PATH"
-  echo "Log file: $LOG_FILE"
-  echo
-  echo "Management commands:"
-  echo "    • List VMs: dcvm list"
-  echo "    • Create VM: dcvm create <vm_name>"
-  echo "    • Network info: dcvm network"
-  echo "    • Show help: dcvm help"
-  echo "    • Uninstall: dcvm uninstall"
-  echo
+  local version rows=() line w=0 top bottom
+  version=$(/usr/local/bin/dcvm version 2>/dev/null | sed -n 's/^Version: //p')
+  rows+=("$(printf '%-10s%s' Data "$DATACENTER_BASE")")
+  rows+=("$(printf '%-10s%s' Network "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, bridge $BRIDGE_NAME")")
+  rows+=("$(printf '%-10s%s' Log "$LOG_FILE")")
+  local title="dcvm ${version:-} is installed"
+  w=$((${#title} + 3))
+  for line in "${rows[@]}"; do [ $((${#line} + 2)) -gt "$w" ] && w=$((${#line} + 2)); done
+  printf -v top '%*s' $((w - ${#title} - 3)) ''
+  printf -v bottom '%*s' "$w" ''
+  echo ""
+  echo -e "  ${DIM}${BOX_TL}${BOX_H}${NC} ${BOLD}${title}${NC} ${DIM}${top// /$BOX_H}${BOX_TR}${NC}"
+  for line in "${rows[@]}"; do
+    printf '  %b%s%b %-*s %b%s%b\n' "$DIM" "$BOX_V" "$NC" $((w - 2)) "$line" "$DIM" "$BOX_V" "$NC"
+  done
+  echo -e "  ${DIM}${BOX_BL}${bottom// /$BOX_H}${BOX_BR}${NC}"
+  echo ""
+  echo -e "  ${BOLD}Next steps${NC}"
+  printf '    %b%-30s%b %b%s%b\n' "$CYAN" "dcvm create myvm" "$NC" "$DIM" "create your first VM (asks a few questions)" "$NC"
+  printf '    %b%-30s%b %b%s%b\n' "$CYAN" "dcvm help" "$NC" "$DIM" "all commands" "$NC"
+  echo ""
   print_status_log "SUCCESS" "dcvm is ready to use!"
-  print_status_log "INFO" "Run 'dcvm help' to see all available commands"
 }
 
 setup_aliases() {
@@ -835,6 +909,7 @@ install_completion() {
   if [[ -t 0 && -t 1 ]]; then
     echo
     if prompt_yes_no "Enable dcvm tab-completion in your shell now? [Y/n]: " "Y"; then
+      COMPLETION_RESULT="ok|enabled (new shells)"
       local shell_info
       shell_info=$(detect_shell)
       local shell_name="${shell_info%%|*}"
@@ -857,9 +932,11 @@ install_completion() {
         source "$completion_dst" 2>/dev/null && print_status_log "SUCCESS" "Completion enabled in current shell" || print_status_log "WARNING" "Could not enable completion in current shell. You can run: source $completion_dst"
       fi
     else
+      COMPLETION_RESULT="skip|not enabled (source $completion_dst to enable)"
       print_status_log "INFO" "You can enable later by adding: 'source $completion_dst' to your shell rc"
     fi
   else
+    COMPLETION_RESULT="skip|installed, not enabled (source $completion_dst)"
     print_status_log "INFO" "Non-interactive mode. Completion script installed at $completion_dst"
     print_status_log "INFO" "Add 'source $completion_dst' to your shell rc to enable"
   fi
@@ -959,29 +1036,51 @@ main() {
     exit 0
   fi
 
-  install_required_packages
+  echo ""
+  echo -e "${BOLD}Installing dcvm${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} $DATACENTER_BASE${NC}"
+  echo ""
+  if run_step "Packages" install_required_packages; then
+    step ok "Packages" "QEMU/KVM, libvirt and image tools in ${STEP_SECS}s"
+  else
+    step fail "Packages" "installing them failed (output above, full log: $LOG_FILE)"
+    exit 1
+  fi
   check_kvm_support
+  step ok "KVM" "/dev/kvm available"
   install_dcvm_command
+  step ok "dcvm" "/usr/local/bin/dcvm and /usr/local/lib/dcvm"
   start_libvirtd
+  step ok "libvirt" "libvirtd running"
   check_directory_structure
+  step ok "Directories" "$DATACENTER_BASE"
   check_cloud_images
+  local have=0 img
+  for img in "${IMAGE_ORDER[@]}"; do [ -f "$DATACENTER_BASE/storage/templates/$img" ] && have=$((have + 1)); done
+  if [ "$have" -eq "${#IMAGE_ORDER[@]}" ]; then
+    step ok "Cloud images" "all ${#IMAGE_ORDER[@]} downloaded"
+  else
+    step skip "Cloud images" "$have of ${#IMAGE_ORDER[@]} downloaded; the rest download on first use"
+  fi
   enable_ip_forwarding
+  step ok "IP forwarding" "on, persisted in /etc/sysctl.conf"
   create_datacenter_network
+  step ok "Network" "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, DHCP .10-.200"
   install_completion
+  [ -n "${COMPLETION_RESULT:-}" ] && step "${COMPLETION_RESULT%%|*}" "Tab completion" "${COMPLETION_RESULT#*|}"
   start_nfs_server
+  [ -n "${NFS_RESULT:-}" ] && step "${NFS_RESULT%%|*}" "NFS share" "${NFS_RESULT#*|}"
   start_existing_vms
+  [ ${#STARTED_VMS[@]} -gt 0 ] && step ok "dcvm VMs" "started ${STARTED_VMS[*]}"
   setup_aliases
   setup_service
-  show_vm_status
-  show_network_info
+  step ok "Storage check" "hourly systemd timer"
   show_datacenter_summary
 }
 
 dcvm_init() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Welcome to dcvm Installer!"
-    echo "Repository: ${DCVM_REPO_SLUG}"
-    echo "Branch: ${DCVM_REPO_BRANCH}"
+    echo ""
+    echo -e "${BOLD}dcvm installer${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}${NC}"
     echo ""
 
     if [[ -t 0 && -t 1 ]]; then
@@ -1026,16 +1125,11 @@ dcvm_init() {
     echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
     echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
     echo "NETWORK_SUBNET=\"$NETWORK_SUBNET\"" >>"$CONFIG_FILE"
-    echo "Installation directory set to: $DATACENTER_BASE"
-    echo "Network name set to: $NETWORK_NAME"
-    echo "Bridge name set to: $BRIDGE_NAME"
-    echo "Network subnet set to: $NETWORK_SUBNET.0/24"
+    print_status_log "INFO" "Installation directory: $DATACENTER_BASE, network: $NETWORK_NAME, bridge: $BRIDGE_NAME, subnet: $NETWORK_SUBNET.0/24"
   else
     source "$CONFIG_FILE"
-    echo "Using existing configuration:"
-    echo "  Installation directory: $DATACENTER_BASE"
-    echo "  Network name: $NETWORK_NAME"
-    echo "  Bridge name: $BRIDGE_NAME"
+    echo ""
+    echo -e "${BOLD}dcvm installer${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} using $CONFIG_FILE${NC}"
   fi
 
   NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"

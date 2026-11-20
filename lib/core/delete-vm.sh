@@ -53,23 +53,20 @@ remove_vm_storage_pool() {
 delete_single_vm() {
   local VM_NAME="$1"
 
-  print_info "Starting deletion of VM: $VM_NAME"
-
   if ! check_vm_exists "$VM_NAME"; then
     print_error "VM $VM_NAME does not exist"
     return 1
   fi
 
-  print_info "Gathering VM information"
+  ui_quiet
+  ui_title "Deleting $VM_NAME"
 
   local MAC_ADDRESS=$(get_vm_mac "$VM_NAME")
   local VM_DISK_PATH=$(get_vm_disk_path "$VM_NAME")
   local VM_IP=$(get_vm_ip "$VM_NAME")
   local SSH_PORT=""
   local HTTP_PORT=""
-
-  [ -n "$MAC_ADDRESS" ] && print_info "Found MAC address: $MAC_ADDRESS"
-  [ -n "$VM_DISK_PATH" ] && print_info "Found disk path: $VM_DISK_PATH"
+  [ "$VM_IP" = "N/A" ] && VM_IP=""
 
   local port_file=$(get_port_mappings_file)
   if [ -f "$port_file" ]; then
@@ -78,16 +75,18 @@ delete_single_vm() {
       [ -z "$VM_IP" ] && VM_IP=$(echo "$mapping" | awk '{print $2}')
       SSH_PORT=$(echo "$mapping" | awk '{print $3}')
       HTTP_PORT=$(echo "$mapping" | awk '{print $4}')
-      print_info "Found port mappings: SSH=$SSH_PORT, HTTP=$HTTP_PORT, IP=$VM_IP"
     fi
   fi
 
   if virsh list | grep -q " $VM_NAME "; then
-    print_info "Stopping VM $VM_NAME"
     stop_vm_gracefully "$VM_NAME" 10
+    ui_step ok "Stopped" "shut down"
   fi
 
   [ -n "$VM_IP" ] && cleanup_port_forwarding_for_vm "$VM_IP" "$SSH_PORT" "$HTTP_PORT"
+  if [ -n "$SSH_PORT" ]; then
+    ui_step ok "Port forwards" "$SSH_PORT $SYM_ARROW 22, $HTTP_PORT $SYM_ARROW 80 removed"
+  fi
   if [ -n "$MAC_ADDRESS" ]; then
     # Saved and live config separately: with both flags, an inactive network
     # fails the whole update and the saved reservation stays.
@@ -95,58 +94,64 @@ delete_single_vm() {
     virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live 2>/dev/null || true
   fi
   if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
-    cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME" || true
+    if cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"; then
+      ui_step ok "DHCP lease" "released${VM_IP:+ ($VM_IP)}"
+    else
+      ui_step warn "DHCP lease" "not released (see the error above)"
+    fi
   fi
 
-  [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file" && print_info "Removed from port mappings"
+  [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file"
 
-  virsh autostart "$VM_NAME" --disable 2>/dev/null || true
+  virsh autostart "$VM_NAME" --disable >/dev/null 2>&1 || true
 
-  print_info "Removing VM definition and storage"
-  if virsh undefine "$VM_NAME" --remove-all-storage 2>/dev/null; then
-    print_info "VM undefined with storage removal"
-  else
-    virsh undefine "$VM_NAME" 2>/dev/null || true
-    [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH" && print_info "Disk file removed"
+  if ! virsh undefine "$VM_NAME" --remove-all-storage >/dev/null 2>&1; then
+    virsh undefine "$VM_NAME" >/dev/null 2>&1 || true
+    [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
   fi
 
   remove_vm_storage_pool "$VM_NAME"
 
-  [ -d "$DATACENTER_BASE/vms/$VM_NAME" ] && rm -rf "$DATACENTER_BASE/vms/$VM_NAME" && print_info "VM directory removed"
+  [ -d "$DATACENTER_BASE/vms/$VM_NAME" ] && rm -rf "$DATACENTER_BASE/vms/$VM_NAME"
 
+  local removed="$DATACENTER_BASE/vms/$VM_NAME"
   if [ -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" ]; then
-    rm -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" && print_info "Removed host static IP record"
+    rm -f "$DATACENTER_BASE/config/network/${VM_NAME}.conf" && removed+=" and static IP record"
   fi
+  ui_step ok "Disk and files" "$removed"
 
-  if [ -f ~/.ssh/config ]; then
+  if [ -f ~/.ssh/config ] && grep -q "^Host $VM_NAME$" ~/.ssh/config; then
     sed -i "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
     sed -i "/^Host $VM_NAME$/,/^$/{d;}" ~/.ssh/config
-    print_info "Removed SSH config entry"
+    ui_step ok "SSH config" "Host $VM_NAME entry removed"
   fi
 
-  print_success "VM $VM_NAME deleted successfully!"
-
-  echo ""
-  print_info "Verification Results:"
-  check_vm_exists "$VM_NAME" && print_warning "✗ VM still exists in libvirt" || print_success "✓ VM completely removed from libvirt"
-
+  # Check that nothing is left behind.
+  local left=()
+  check_vm_exists "$VM_NAME" && left+=("VM still exists in libvirt")
   sleep 2
   local leases dhcp_check
   leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
   dhcp_check=$(filter_lease_lines "$VM_NAME" 6 <<<"$leases")
   [ -n "$MAC_ADDRESS" ] && dhcp_check+=$(filter_lease_lines "$MAC_ADDRESS" 3 <<<"$leases")
-  if [ -z "$dhcp_check" ]; then
-    print_success "✓ No DHCP leases found"
-  else
-    print_warning "✗ DHCP leases still exist"
-    print_info "They expire on their own; to remove stale leases now: dcvm network dhcp cleanup"
-  fi
+  [ -n "$dhcp_check" ] && left+=("DHCP leases still exist")
+  [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && left+=("Disk file still exists")
 
-  [ -n "$VM_DISK_PATH" ] && { [ ! -f "$VM_DISK_PATH" ] && print_success "✓ Disk file removed" || print_warning "✗ Disk file still exists"; }
+  echo ""
+  if [ ${#left[@]} -eq 0 ]; then
+    echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}$VM_NAME deleted${NC}  ${DIM}No DHCP leases found, no VM or disk left${NC}"
+  else
+    local item
+    for item in "${left[@]}"; do print_warning "$item"; done
+    if [ -n "$dhcp_check" ]; then
+      echo -e "  ${DIM}They expire on their own; to remove stale leases now: dcvm network dhcp cleanup${NC}"
+    else
+      echo -e "  ${DIM}No DHCP leases found${NC}"
+    fi
+  fi
 
   return 0
 }
-
 delete_all_vms() {
   print_warning "======================================="
   print_warning "        DANGER: DELETE ALL VMs"
@@ -256,9 +261,9 @@ main() {
     ;;
   esac
 
-  echo ""
-  print_info "Remaining dcvm VMs:"
-  list_datacenter_vms || print_info "No dcvm VMs remaining"
+  local remaining
+  remaining=$(list_datacenter_vms | awk -F': ' '{ gsub(/^ +| +$/, "", $1); printf "%s%s (%s)", sep, $1, $2; sep = ", " }')
+  echo -e "  ${DIM}Remaining VMs: ${remaining:-none}${NC}"
   echo ""
 }
 
