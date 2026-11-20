@@ -1,8 +1,8 @@
 # Quick start: install dcvm on a fresh Ubuntu 24.04 host with the README one-liner.
-# Recorded at real speed and played back 6x faster (apt takes a few minutes).
+# Recorded at real speed and played back 4x faster (package install takes a few minutes).
 Output docs/demo/quickstart.gif
 Source docs/demo/_style.tape
-Set PlaybackSpeed 6
+Set PlaybackSpeed 4
 Source docs/demo/_login.tape
 
 Type 'bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"'

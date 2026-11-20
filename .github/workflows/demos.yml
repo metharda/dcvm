@@ -3,13 +3,15 @@ name: Record demos
 # Records docs/demo tapes on a fresh GitHub runner, which acts as the dcvm
 # host (KVM is available on ubuntu runners), and uploads the results.
 #   screens: screenshots of every long screen, to review output changes
-#   hero quickstart backup daily: the README GIFs (quickstart installs from main)
+#   hero backup daily: the README GIFs, in this order (each starts from the
+#     state the previous one leaves; docs/demo/prepare.sh sets up the rest)
+#   quickstart: the install GIF; run it on its own, it installs from main
 on:
   workflow_dispatch:
     inputs:
       tapes:
         description: Tapes to record, space separated
-        default: screens
+        default: hero backup daily
   push:
     branches: [feat/cli-design]
 
@@ -52,12 +54,14 @@ jobs:
 
       - name: Record
         env:
-          TAPES: ${{ inputs.tapes || 'screens' }}
+          TAPES: ${{ inputs.tapes || 'hero backup daily' }}
         run: |
           set -euo pipefail
           for tape in $TAPES; do
             echo "::group::$tape"
+            [ "$tape" = quickstart ] || sudo bash docs/demo/prepare.sh "$tape"
             docker run --rm --network host -e LAB_HOST=127.0.0.1 -v "$PWD":/vhs -w /vhs dcvm-vhs "docs/demo/$tape.tape"
+            [ "$tape" = screens ] || docker run --rm -v "$PWD":/vhs -w /vhs --entrypoint bash dcvm-vhs docs/demo/shrink.sh "docs/demo/$tape.gif"
             echo "::endgroup::"
           done
           ls -la screens docs/demo/*.gif
