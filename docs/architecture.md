@@ -97,8 +97,10 @@ sequenceDiagram
 2. **Template.** Each OS choice maps to one cloud image under
    `$DATACENTER_BASE/storage/templates`. If it is missing,
    `mirror-manager.sh` tests the mirrors for that image, picks the fastest,
-   downloads to a temporary file and keeps it only if it is at least 100 MB.
-   Kali ships as a `.tar.xz`, which is unpacked.
+   downloads to a temporary file and keeps it only if it is at least 100 MB
+   and matches the checksum published next to it (`SHA256SUMS`,
+   `SHA512SUMS` or `<file>.SHA256`); otherwise it tries the next mirror. Kali
+   ships as a `.tar.xz`, which is checked and then unpacked.
 3. **cloud-init seed.** dcvm writes `user-data` (user, SHA-512 password hash,
    optional root hash, SSH key, packages, `sshd_config`, service setup),
    `meta-data` and a netplan-style `network-config` (DHCP, or the static

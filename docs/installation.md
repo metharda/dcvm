@@ -83,8 +83,7 @@ In a terminal, the installer asks (press Enter for the default):
 - Installation directory (default: `/srv/datacenter`)
 - Network name (default: `datacenter-net`)
 - Bridge name (default: `virbr-dc`)
-- Network subnet (default: `10.10.10`, for `10.10.10.0/24`). Keep the default
-  if you plan to use the NFS share; guests mount it from `10.10.10.1`.
+- Network subnet (default: `10.10.10`, for `10.10.10.0/24`)
 - Whether to download all eight cloud images now, or each one on its first
   `dcvm create`
 - Whether to enable tab completion in your shell (default: yes)
@@ -110,15 +109,15 @@ The installer will:
 7. Enable IP forwarding (and persist it in `/etc/sysctl.conf`)
 8. Create the NAT network (DHCP `.10`-`.200`, autostart on)
 9. Offer tab completion and the NFS share
-10. Start every libvirt VM on the host that is not running
+10. Start stopped VMs on the dcvm network (other VMs on the host are left alone)
 11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` hourly
 
 On the demo host (a fresh Ubuntu 24.04 VM) the whole install took about two
 minutes, most of it `apt`.
 
-> [!NOTE]
-> Step 10 starts *all* stopped VMs that libvirt knows about, not only dcvm
-> VMs. On a host with other VMs you want to keep off, set them aside first.
+The NFS share, if you enable it, is exported to the dcvm subnet only. On a
+host installed before 0.9.8 it was exported to every host; run the installer
+again and answer `y` to the NFS question to limit it.
 
 ## Post-Installation
 

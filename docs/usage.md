@@ -69,7 +69,8 @@ Note about multiple VMs and `--ip`:
   - Base `10.10.10.254` for 3 VMs → 254, 253, 252
 
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
-- `--enable-root`: Enable root login. Force mode (`-f`) enables root login even without this flag, with the user's password unless `-r` is given; answer `n` to the root question in interactive mode to keep it off
+- `--enable-root`: Enable root login. Force mode (`-f`) enables root login even without this flag, with the user's password unless `-r` is given
+- `--disable-root`: Keep root login off (`PermitRootLogin no`, root password locked), also in force mode. Can't be combined with `-u root`, `--enable-root` or `-r`
 - `-r, --root-password`: Set root password (enables root access; same rules as `-p`)
 - `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Names must start with a letter or number and may contain letters, numbers, `@`, `.`, `_`, `+` and `-`. Each package is installed separately, so one unavailable name does not block the rest; failures are logged in the guest to `/var/log/dcvm-packages.log`. See [Service setup for `-k` packages](#service-setup-for--k-packages).
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
@@ -170,15 +171,14 @@ dcvm restart myvm
 ### Connecting to VM Console
 
 ```bash
-virsh console myvm
+dcvm console myvm
 ```
 
-**Tip**: Press `Ctrl+]` to exit the console.
+**Tip**: Press `Ctrl+]` to exit the console. Log in with the user and
+password you set at create time.
 
-`dcvm console` does not attach to a console: it prints SSH, HTTP and
-`virsh console` hints for the VMs in the port mappings file (and a
-`Default login: admin / admin123` line that does not apply to dcvm VMs; the
-login is the user and password you set at create time).
+Without a VM name, `dcvm console` prints SSH, HTTP and console hints for the
+VMs in the port mappings file.
 
 ### Deleting a VM
 
@@ -281,13 +281,11 @@ dcvm storage           # same as storage-cleanup
 dcvm storage-cleanup   # also run hourly by datacenter-storage.timer
 ```
 
-Runs the in-guest storage check: for each VM with a port mapping it connects
-over SSH and, when the root file system is over 85% full, archives old `/tmp`
-files and logs to the NFS share. It prints nothing and logs to
-`/var/log/datacenter-storage.log`. It needs `DATACENTER_IP` in
-`/etc/dcvm-install.conf`, which the installer does not set; see
-[Operations](operations.md#logs-and-monitoring). To see disk use, run
-`du -sh /srv/datacenter/*` and `dcvm template status`.
+Connects over SSH to each running dcvm VM and prints its root file system
+usage (also logged to `/var/log/datacenter-storage.log`). Over 85% full, it
+gzips old logs and moves old `/tmp` files and logs to the NFS share. See
+[Operations](operations.md#logs-and-monitoring). For disk use on the host,
+run `du -sh /srv/datacenter/*`.
 
 ## SSH Access
 
@@ -334,7 +332,8 @@ sftp ubuntu@<vm-ip>
 ### Using Shared NFS
 
 If you enabled the NFS share when installing (the installer asks; the default
-is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. Read
+is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. It is
+writable by root in the guest, so use `sudo` to write to it. Read
 [Security](security.md#network-exposure) before enabling it.
 
 ```bash

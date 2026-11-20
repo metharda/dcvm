@@ -27,8 +27,8 @@ All commands need root.
 | Find a VM's IP | `dcvm status`, or `dcvm network` | `dcvm network` also lists static IPs and saved port mappings |
 | SSH from the host | `ssh <user>@<vm-ip>` | `<user>` is `-u`, or the OS name (`ubuntu`, `debian`, `archlinux`, `kali`) |
 | Reach VMs from other machines | `dcvm network ports setup` | Run again after starting or adding VMs; see [Networking](networking.md#port-forwarding) |
-| Serial console | `virsh console web` | Exit with `Ctrl+]` |
-| Access summary | `dcvm console` | Prints SSH/HTTP/console hints for VMs with port mappings; it does not attach to a console |
+| Serial console | `dcvm console web` | Exit with `Ctrl+]` |
+| Access summary | `dcvm console` | Without a VM name: SSH, HTTP and console hints for VMs with port mappings |
 | Back up / restore | `dcvm backup create web`, `dcvm backup restore web` | The VM is shut down during the backup; see [Backups](backups.md) |
 | Delete | `dcvm delete web` | No confirmation prompt; removes the disk, leases, port forwards and static IP record |
 | Images | `dcvm template status`, `dcvm template download <file>` | Installed images with an integrity check |
@@ -100,7 +100,7 @@ backups and settings are not touched.
 | :-- | :--------- |
 | `/var/log/datacenter-startup.log` | Installer (falls back to `/tmp/dcvm-install.log`) |
 | `/var/log/dcvm-backup.log` | `dcvm backup` |
-| `/var/log/datacenter-storage.log` | `dcvm storage` / `storage-cleanup` and its hourly timer |
+| `/var/log/datacenter-storage.log` | `dcvm storage` / `storage-cleanup` and its hourly timer: per-VM disk usage |
 | `/var/log/cloud-init-output.log`, `/var/log/dcvm-packages.log` | Inside a VM: first boot, and `-k` packages that failed to install |
 | `journalctl -u libvirtd` | libvirt and QEMU |
 
@@ -115,15 +115,20 @@ du -sh /srv/datacenter/{vms,backups,storage/templates}
 ```
 
 **Storage check.** The installer adds a systemd timer,
-`datacenter-storage.timer`, that runs `dcvm storage-cleanup` every hour
-(`dcvm storage` runs the same check by hand; it prints nothing and writes to
-its log). After a 30-second delay it connects over SSH to each VM that has a
-port mapping and, when the VM's root file system is more than 85% full,
-moves files older than 30 days from `/tmp` and old logs to
-`/mnt/shared/archived-files`. It reaches VMs through the host address in
-`DATACENTER_IP` in `/etc/dcvm-install.conf`, which the installer does not
-set; without it every check logs `Failed to check disk usage`. Check disk use
-with the `du` and `virsh domblkinfo` commands above instead.
+`datacenter-storage.timer`, that runs `dcvm storage-cleanup` every hour;
+`dcvm storage` runs the same check by hand. For each running dcvm VM it
+connects over SSH to the VM's IP with the host root's key (never prompting
+for a password) and prints and logs the root file system usage:
+
+```
+web: root file system 7% used
+```
+
+When a VM is more than 85% full, it gzips logs older than 7 days and, if the
+NFS share is mounted in the guest, moves `/tmp` files older than 30 days and
+compressed logs older than 30 days to `/mnt/shared/archived-files/<vm>`,
+leaving symlinks. A VM created with `--without-ssh-key` shows
+`could not check disk usage over SSH`.
 
 ## Settings
 
@@ -152,8 +157,8 @@ and `HTTP_PORT_START=8081`, which can be set in the environment of
 | Installer: `CPU does not support KVM` or `/dev/kvm not present` | Virtualization off in firmware, or a VM without nested virtualization | Enable VT-x/AMD-V in BIOS/UEFI; for a VM host, enable nested KVM. Check with `grep -cE 'vmx\|svm' /proc/cpuinfo` and `ls -l /dev/kvm` |
 | `Configuration file not found: /etc/dcvm-install.conf` | dcvm not installed, or a clone run before installing | Run the installer |
 | `Network 'datacenter-net' does not exist` | Network removed or never created | `sudo bash /usr/local/lib/dcvm/installation/install-dcvm.sh --network-only` |
-| `dcvm create` fails at the template step | No internet or every mirror failed | `dcvm template check <file>` to test mirrors, then `dcvm template download <file>` |
-| VM runs but `ssh` is refused | First boot still running (about a minute, longer with packages) | Wait, or watch with `virsh console <vm>`; inside: `cloud-init status --wait` |
+| `dcvm create` fails at the template step | No internet, every mirror failed, or downloads didn't match their published checksum | `dcvm template check <file>` to test mirrors, then `dcvm template download <file>` |
+| VM runs but `ssh` is refused | First boot still running (about a minute, longer with packages) | Wait, or watch with `dcvm console <vm>`; inside: `cloud-init status --wait` |
 | `Permission denied (publickey,password)` | Wrong user name | Use the `-u` name, or the OS name (`ubuntu`, `debian`, `archlinux`, `kali`) |
 | A `-k` package is missing in the VM | That package failed to install | Read `/var/log/dcvm-packages.log` inside the VM |
 | Port forward not reachable from another machine | Rules missing after reboot, host firewall, or VM not running at setup time | `dcvm network ports test`, then `ports apply` or `ports setup`; open the ports in your firewall |

@@ -64,11 +64,10 @@ Every cloud-image VM gets:
 - `PermitRootLogin yes` and a root password when root access is on.
 
 > [!WARNING]
-> **Force mode (`-f`) always turns root login on**, with the user's password
-> unless you pass `-r`. There is no flag to turn it off in force mode. Create
-> the VM interactively and answer `n` to the root question, or disable it
-> inside the guest (`PermitRootLogin no` in `/etc/ssh/sshd_config`, then
-> `passwd -l root`).
+> **Force mode (`-f`) turns root login on by default**, with the user's
+> password unless you pass `-r`. Pass `--disable-root` to keep root login off
+> (`PermitRootLogin no`, root password locked), or answer `n` to the root
+> question in interactive mode.
 
 VNC, when enabled (by default only for Kali and Debian 13, or with
 `--graphics vnc,listen=127.0.0.1` / `dcvm network vnc enable`), listens on
@@ -93,21 +92,25 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
 - **VMs are not isolated from each other.** They share one bridge and can
   reach each other on every port.
 - **NFS share (optional).** If you answer `y` to the installer's NFS
-  question, `$DATACENTER_BASE/nfs-share` is exported to `*` with `rw` and
-  `no_root_squash`. Any machine that can reach the host's NFS port can mount
-  it read-write as root. Leave it off (the default), or change the export in
-  `/etc/exports` to `10.10.10.0/24` and firewall port 2049 from outside.
+  question, `$DATACENTER_BASE/nfs-share` is exported read-write to the dcvm
+  subnet only (`10.10.10.0/24` by default) with `no_root_squash`, so root in
+  any VM is root on the share. Machines outside the subnet can't mount it.
+  Hosts installed before 0.9.8 exported it to `*` (any host); re-running the
+  installer and answering `y` again replaces that line in `/etc/exports`.
 
 ## Images, installer and updates
 
 - **Cloud images** are downloaded over HTTPS from the official project
   servers and well-known mirrors listed in `lib/utils/mirror-manager.sh`.
-  dcvm checks that a download is at least 100 MB; it does not verify
-  checksums or signatures (the checksum table in `create-vm.sh` is empty).
-  If that matters to you, download the image yourself, check it against the
-  distribution's published checksums, and place it in
-  `$DATACENTER_BASE/storage/templates/` under the file name dcvm expects
-  (`dcvm template list`).
+  Each download must be at least 100 MB and must match the checksum its
+  publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
+  or `<file>.SHA256`, looked up on the mirror it came from and on the other
+  mirrors that serve the same file name (the official servers publish them
+  for all eight images). A download that matches no published checksum is
+  discarded and the next mirror is tried. If no mirror publishes a checksum,
+  dcvm keeps the file and prints `download not verified`. GPG signatures are
+  not checked, so a checksum file only proves the download is intact and is
+  the one that server lists, not who built it.
 - **The installer** runs as root. The README's
   [review-first install](../README.md#quick-start) downloads it to a file so
   you can read it before running it; it then fetches the rest of dcvm from the
@@ -138,10 +141,10 @@ For a host on a shared or public network:
 
 1. Firewall the forwarded ports (2221+, 8081+) to the addresses that need
    them, or skip `dcvm network ports setup`.
-2. Leave the NFS share off, or limit its export to `10.10.10.0/24`.
-3. Create VMs with SSH keys and turn password logins off inside the guest
-   (`PasswordAuthentication no`), and turn root login off if you used force
-   mode.
+2. Leave the NFS share off unless you need it; it is exported to the VM
+   subnet only, but every VM's root can write to it.
+3. Create VMs with `--disable-root` and SSH keys, and turn password logins
+   off inside the guest (`PasswordAuthentication no`).
 4. Pass passwords from variables or interactive prompts, not literally on the
    command line.
 5. Use short-lived Tailscale auth keys.

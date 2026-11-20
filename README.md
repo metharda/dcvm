@@ -147,7 +147,7 @@ backup puts the VM back exactly as it was.
 | From an installer ISO | `dcvm create-iso win --iso /isos/windows.iso -m 8192 -d 100G` |
 | List / overview | `dcvm list` · `dcvm status` |
 | Start, stop, restart (one or all) | `dcvm start web` · `dcvm stop` · `dcvm restart web` |
-| Console | `virsh console web` (exit with `Ctrl+]`) |
+| Serial console | `dcvm console web` (exit with `Ctrl+]`) |
 | Reach VMs from the LAN | `dcvm network ports setup` · `dcvm network ports test` |
 | Network, DHCP, VNC | `dcvm network` · `dcvm network dhcp show` · `dcvm network vnc enable web` |
 | Back up and restore | `dcvm backup create web` · `dcvm backup list` · `dcvm backup restore web` |
@@ -195,8 +195,8 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 ```
 
 > [!WARNING]
-> VMs created with `-f` always have root login enabled (with the user's
-> password unless you pass `-r`), and every VM accepts SSH passwords.
+> VMs created with `-f` have root login enabled with the user's password
+> unless you pass `--disable-root`, and every VM accepts SSH passwords.
 > Forwarded ports listen on all host interfaces. On a host reachable from
 > untrusted networks, read [Security](docs/security.md) first.
 
@@ -211,13 +211,11 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
   reboot unless your system restores `/etc/iptables/rules.v4`
   (`dcvm network ports apply` does it by hand).
 - VMs share one bridge and can reach each other.
-- Cloud images are checked for size, not checksums.
-- Keep the default `10.10.10` subnet if you use the optional NFS share; guests
-  mount it from `10.10.10.1`.
-- `dcvm console` prints access hints rather than attaching; use
-  `virsh console <vm>`.
-- The hourly storage check needs `DATACENTER_IP` in the config, which the
-  installer doesn't set ([details](docs/operations.md#logs-and-monitoring)).
+- Cloud images are checked against the checksum files their publishers put
+  next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
+  mirror that publishes no checksum is used with a warning.
+- The optional NFS share is writable by root inside the guests (`sudo`), not
+  by the VM user.
 
 ## How it compares
 
