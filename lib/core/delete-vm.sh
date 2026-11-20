@@ -221,7 +221,7 @@ delete_all_vms() {
     iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null || true
   done
 
-  local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -E "10\.10\.10\." | awk '{print $1}' | tac)
+  local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac)
   for rule_num in $forward_rules; do
     iptables -D FORWARD "$rule_num" 2>/dev/null || true
   done

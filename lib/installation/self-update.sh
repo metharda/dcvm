@@ -185,7 +185,7 @@ do_update() {
     exit 1
   fi
 
-  local file_count=$(echo "$files" | grep -c '^.' || echo 0)
+  local file_count=$(echo "$files" | grep -c '^.' || true)
   print_info "Updating $file_count files..."
 
   local ok=true

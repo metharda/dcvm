@@ -12,6 +12,77 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-20
+
+Security and correctness fixes found while rewriting the documentation.
+
+**Upgrading:** `dcvm self-update` does not touch `/etc/exports`. If you
+enabled the NFS share on a host installed before 0.9.8, it is exported to
+every host (`*`); re-run the installer and answer `y` to the NFS question to
+limit it to the dcvm subnet and make it writable for VM users.
+
+### Added
+
+- `dcvm create --disable-root` keeps root login off (`PermitRootLogin no`,
+  root password locked), also in force mode, which otherwise turns root login
+  on. It can't be combined with `-u root`, `--enable-root` or `-r`.
+- Cloud image downloads are checked against the checksum their publisher
+  lists next to them (`SHA256SUMS`, `SHA512SUMS` or `<file>.SHA256`), on the
+  mirror used or on another mirror serving the same file name. A download
+  that matches no published checksum is discarded and the next mirror is
+  tried; if no mirror publishes one, the file is kept with a warning. Only
+  the size was checked before.
+
+### Security
+
+- The NFS share is exported to the dcvm subnet only, not to `*` (any host
+  that could reach the NFS port could mount it read-write as root). Re-running
+  the installer replaces the old export line.
+
+### Changed
+
+- `dcvm console <vm>` attaches to the VM's serial console, as `dcvm help`
+  says. Without a name it still prints access hints, but no longer the
+  incorrect `Default login: admin / admin123` line.
+- `dcvm storage` / `storage-cleanup` (and the hourly timer) connect to each
+  running dcvm VM's IP over SSH with the host's key and print its disk usage.
+  They used the host address from `DATACENTER_IP`, which the installer never
+  set, so every check failed silently; they also no longer wait 30 seconds or
+  prompt for a password, run the cleanup with `sudo`, and archive to
+  `/mnt/shared` only when the NFS share is mounted.
+
+### Fixed
+
+- The installer started every stopped libvirt VM on the host, not only dcvm
+  VMs, and stopped with an error right after starting the first one
+  (`((n++))` at 0 fails under `set -e`). It now starts only VMs on the dcvm
+  network and finishes.
+- The installer always reported `NFS server is not installed` on hosts with
+  many systemd units: `systemctl list-unit-files | grep -q` failed under
+  `pipefail` when grep exited early.
+- The NFS share folder was `root:root 755`, so only root in a guest could
+  write to `/mnt/shared`. The installer now sets mode `1777` (writable for
+  every VM user, sticky like `/tmp`).
+- Guests mounted the NFS share from `10.10.10.1` and `dcvm delete --all`
+  matched `10.10.10.` regardless of `NETWORK_SUBNET`; both use the configured
+  subnet now, as does the installer's summary.
+
+- The installer's network summary printed a stray `0` line under
+  `NAT rules active`, and `dcvm network vnc enable|disable` printed
+  `integer expression expected` from its "is the VM running" check when the
+  VM was stopped. `$(... | grep -c pattern || echo 0)` captured the count
+  twice (`grep -c` already prints `0` when nothing matches); these now use
+  `|| true`, as does `dcvm self-update`'s file count. The test suite now fails
+  on the pattern.
+- `dcvm backup restore <vm>` (in place) gave the VM new MAC addresses, so a
+  DHCP VM came back with a new IP and its saved port forwards pointed at the
+  old one. Only a restore under a new name changes MACs now.
+- Restore removed versioned q35 machine types such as `pc-q35-8.2` or
+  `pc-q35-noble`, so libvirt fell back to i440fx and rejected the VM's PCIe
+  controllers; every restore of a dcvm VM needed two failed `virsh define`
+  attempts and printed PCI controller warnings. Restore now uses plain `q35`,
+  which also works on a host with a different QEMU version.
+
 ## [0.9.7] - 2026-11-16
 
 Small fixes for VM deletion, guest setup and DHCP lease cleanup.
@@ -424,7 +495,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/metharda/dcvm/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/metharda/dcvm/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/metharda/dcvm/compare/v0.9.4...v0.9.5

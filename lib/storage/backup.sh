@@ -1273,10 +1273,14 @@ restore_vm() {
     xmlstarlet ed -P -L -d "/domain/devices/controller[@type='ide']" "$temp_config" 2>/dev/null || true
     xmlstarlet ed -P -L -N qemu='http://libvirt.org/schemas/domain/qemu/1.0' -d "/domain/qemu:commandline[qemu:arg/@value[contains(., '.iso')]]" "$temp_config" 2>/dev/null || true
     xmlstarlet ed -P -L -d "/domain/metadata" "$temp_config" 2>/dev/null || true
+    # A versioned q35 type (pc-q35-8.2, pc-q35-noble) may not exist on this
+    # QEMU; plain q35 keeps the chipset, which the PCIe devices need.
     current_machine=$(xmlstarlet sel -t -v "/domain/os/type/@machine" "$temp_config" 2>/dev/null)
-    if [ -n "$current_machine" ] && [ "$current_machine" != "q35" ]; then
-      xmlstarlet ed -P -L -d "/domain/os/type/@machine" "$temp_config" 2>/dev/null || true
-    fi
+    case "$current_machine" in
+    "" | q35) ;;
+    *q35*) xmlstarlet ed -P -L -u "/domain/os/type/@machine" -v q35 "$temp_config" 2>/dev/null || true ;;
+    *) xmlstarlet ed -P -L -d "/domain/os/type/@machine" "$temp_config" 2>/dev/null || true ;;
+    esac
     xmlstarlet ed -P -L -N libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0' -d "/domain/@xmlns:libosinfo" "$temp_config" 2>/dev/null || true
     print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
     print_info "Normalized domain metadata and machine attribute for compatibility"
@@ -1289,6 +1293,7 @@ restore_vm() {
     sed -i "/<controller[^>]*type=['\"]ide['\"][^>]*>/,/<\\/controller>/d" "$temp_config"
     sed -i "/<qemu:commandline[\s\S]*\.iso[\s\S]*<\\/qemu:commandline>/d" "$temp_config"
     sed -i "/<metadata[ >\t]/,/<\\/metadata>/d" "$temp_config"
+    sed -i -E "s/ machine=(['\"])[^'\"]*q35[^'\"]*['\"]/ machine=\1q35\1/" "$temp_config"
     if grep -q "machine=\"q35\"" "$temp_config" || grep -q "machine='q35'" "$temp_config"; then
       :
     else
@@ -1315,7 +1320,11 @@ restore_vm() {
 		/<source[^>]*file=\"[^\"]*\\/vms\\\/$vm_name\\/[^\"]*\"[^>]*>/! d \
 	} \
 }" "$temp_config" 2>/dev/null || true
-  if command -v xmlstarlet >/dev/null 2>&1; then
+  # Only a copy needs new MACs; an in-place restore keeps them, and with
+  # them its DHCP address and port forwards.
+  if [ "$renamed" != true ]; then
+    :
+  elif command -v xmlstarlet >/dev/null 2>&1; then
     local __ifcnt
     __ifcnt=$(xmlstarlet sel -t -v "count(/domain/devices/interface/mac/@address)" "$temp_config" 2>/dev/null | tr -d '\n')
     if [[ "$__ifcnt" =~ ^[0-9]+$ ]] && [ "$__ifcnt" -gt 0 ]; then

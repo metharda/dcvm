@@ -4,7 +4,7 @@ Thank you for your interest in contributing to DCVM! This guide will help you un
 
 ## Project Structure
 
-DCVM follows a modular architecture. Please review [docs/project-structure.md](docs/project-structure.md) for a complete overview.
+DCVM follows a modular architecture. See [docs/architecture.md](docs/architecture.md) for how it works and [docs/development.md](docs/development.md) for the repository layout and workflow.
 
 ## Development Setup
 
@@ -382,7 +382,7 @@ Describe how you tested your changes.
    - Installation → `docs/installation.md`
    - Usage → `docs/usage.md`
    - Examples → `docs/examples/`
-   - Architecture → `docs/project-structure.md`
+   - Architecture → `docs/architecture.md`; layout and workflow → `docs/development.md`
 
 2. Use clear Markdown formatting
 3. Include code examples
@@ -443,7 +443,7 @@ Closes #123
 
 ## Questions?
 
-- 📖 Review [docs/project-structure.md](docs/project-structure.md)
+- 📖 Review [docs/architecture.md](docs/architecture.md) and [docs/development.md](docs/development.md)
 - 💬 Open a GitHub issue
 - 📧 Contact maintainers
 

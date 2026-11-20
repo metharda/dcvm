@@ -306,6 +306,23 @@ test_shellcheck() {
   done < <(find "$lib_dir" -type f -name '*.sh' -print0)
 }
 
+# `grep -c` prints 0 and exits 1 when nothing matches, so
+# `$(... | grep -c x || echo 0)` captures "0" twice ("0\n0"), which prints a
+# stray 0 and breaks `[ "$n" -gt 0 ]`. Use `|| true` instead.
+test_grep_count_fallback() {
+  echo ""
+  log_test "INFO" "═══ GREP -c FALLBACK ═══"
+
+  local hits
+  hits=$(grep -rnE 'grep -c[^|]*\|\|[[:space:]]*echo' "${SCRIPT_DIR}/.." "${SCRIPT_DIR}/../../dcvm" 2>/dev/null |
+    grep -v '/test-suite.sh:' || true)
+  if [ -z "$hits" ]; then
+    log_test "PASS" "No 'grep -c ... || echo' double output"
+  else
+    log_test "FAIL" "'grep -c ... || echo' prints the count twice; use '|| true'" "$(echo "$hits" | head -1)"
+  fi
+}
+
 test_configuration() {
   echo ""
   log_test "INFO" "═══ CONFIGURATION TESTS ═══"
@@ -726,6 +743,76 @@ test_hosts_rename_sed_expr() {
   else
     log_test "FAIL" "hosts_rename_sed_expr (applied twice)" "$out"
   fi
+  rm -rf "$t"
+}
+
+# An in-place restore keeps the VM's MAC (and so its DHCP IP and port
+# forwards); only a copy gets new MACs. A versioned q35 machine type becomes
+# plain q35 so libvirt accepts the q35 PCIe controllers on the first define.
+test_backup_restore_in_place() {
+  local t ts=20260101_120000 mode
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  cat >"$t/backups/vm1-$ts/vm1-config-$ts.xml" <<EOF
+<domain type='kvm'>
+  <name>vm1</name>
+  <os>
+    <type arch='x86_64' machine='pc-q35-noble'>hvm</type>
+  </os>
+  <devices>
+    <disk type='file' device='disk'>
+      <source file='$t/vms/vm1/vm1-disk.qcow2'/>
+    </disk>
+    <controller type='pci' index='0' model='pcie-root'/>
+    <interface type='network'>
+      <mac address='52:54:00:11:22:33'/>
+    </interface>
+  </devices>
+</domain>
+EOF
+
+  for mode in xmlstarlet sed; do
+    if [ "$mode" = xmlstarlet ] && ! command -v xmlstarlet >/dev/null 2>&1; then
+      log_test "SKIP" "backup restore in place ($mode)" "xmlstarlet not installed"
+      continue
+    fi
+    echo original >"$t/vms/vm1/vm1-disk.qcow2"
+    printf ' 1    vm1    running\n' >"$t/list"
+    rm -f "$t/defined.xml"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      if [ "$mode" = sed ]; then
+        # shellcheck disable=SC2317 # hide xmlstarlet to exercise the sed path
+        command() {
+          if [ "$1" = -v ] && [ "$2" = xmlstarlet ]; then return 1; fi
+          builtin command "$@"
+        }
+      fi
+      echo yes | restore_vm vm1 "$ts" >"$t/out" 2>&1
+    )
+    if grep -q "52:54:00:11:22:33" "$t/defined.xml" 2>/dev/null &&
+      grep -qE "machine=['\"]q35['\"]" "$t/defined.xml"; then
+      log_test "PASS" "backup restore in place keeps MAC, q35 machine ($mode)"
+    else
+      log_test "FAIL" "backup restore in place keeps MAC, q35 machine ($mode)" "$(grep -oE "machine=[^ >]*|address=[^ />]*" "$t/defined.xml" 2>/dev/null | tr '\n' ' ')"
+    fi
+  done
+
+  rm -f "$t/defined.xml"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 "$ts" "" "" vm1-copy </dev/null >/dev/null 2>&1
+  )
+  if [ -f "$t/defined.xml" ] && grep -q "<mac address=" "$t/defined.xml" &&
+    ! grep -q "52:54:00:11:22:33" "$t/defined.xml"; then
+    log_test "PASS" "backup restore <new_name> (new MAC)"
+  else
+    log_test "FAIL" "backup restore <new_name> (new MAC)"
+  fi
+
   rm -rf "$t"
 }
 
@@ -1909,6 +1996,131 @@ installer_packages() {
 }
 
 # The installer pulls in the host tools dcvm's lease cleanup needs.
+# Downloads are checked against SHA256SUMS/SHA512SUMS/<file>.SHA256 from the
+# mirror they came from or another mirror serving the same file name.
+test_published_checksum() {
+  if ! command -v curl >/dev/null 2>&1 || ! command -v sha512sum >/dev/null 2>&1; then
+    log_test "SKIP" "published checksum verification" "needs curl and sha512sum"
+    return
+  fi
+  local t rc
+  t=$(mktemp -d)
+  mkdir -p "$t/m1" "$t/m2" "$t/m3"
+  head -c 4096 /dev/urandom >"$t/m1/img.qcow2"
+  cp "$t/m1/img.qcow2" "$t/m2/img.qcow2"
+  cp "$t/m1/img.qcow2" "$t/m3/img.qcow2"
+  (cd "$t/m1" && sha256sum img.qcow2 >SHA256SUMS)
+  (
+    # shellcheck source=mirror-manager.sh
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    get_mirrors() { printf '%s\n' "file://$t/m1/img.qcow2" "file://$t/m2/img.qcow2"; }
+    verify_published_checksum x "file://$t/m1/img.qcow2" "$t/m1/img.qcow2" 2>/dev/null
+    echo "same=$?"
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "other=$?"
+    echo tampered >>"$t/m2/img.qcow2"
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "tampered=$?"
+    check_download x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" "" 2>/dev/null
+    echo "tampered_check=$?"
+    get_mirrors() { :; }
+    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
+    echo "none=$?"
+    check_download x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" "" 2>/dev/null
+    echo "none_check=$?"
+    (cd "$t/m3" && sha512sum img.qcow2 | sed 's/  / */' >SHA512SUMS)
+    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
+    echo "sha512=$?"
+  ) >"$t/out"
+  for rc in same=0 other=0 tampered=1 tampered_check=1 none=2 none_check=0 sha512=0; do
+    if grep -qx "$rc" "$t/out"; then
+      log_test "PASS" "published checksum ($rc)"
+    else
+      log_test "FAIL" "published checksum ($rc)" "$(tr '\n' ' ' <"$t/out")"
+    fi
+  done
+  rm -rf "$t"
+}
+
+# --disable-root turns root login off in force mode and conflicts with root
+# options; the guest NFS mount uses the configured subnet.
+test_disable_root_and_nfs_subnet() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
+    setup_root_access >/dev/null 2>&1
+    echo "$ENABLE_ROOT"
+  )
+  if [ "$out" = n ]; then
+    log_test "PASS" "create --disable-root (force mode: root off)"
+  else
+    log_test "FAIL" "create --disable-root (force mode: root off)" "ENABLE_ROOT=$out"
+  fi
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123
+    setup_root_access >/dev/null 2>&1
+    echo "$ENABLE_ROOT"
+  )
+  if [ "$out" = y ]; then
+    log_test "PASS" "create -f without --disable-root (root on, unchanged)"
+  else
+    log_test "FAIL" "create -f without --disable-root (root on, unchanged)" "ENABLE_ROOT=$out"
+  fi
+  if (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
+    FLAG_ROOT_PASSWORD=rootpass123 FLAG_ENABLE_ROOT=y
+    setup_root_access
+  ) >/dev/null 2>&1; then
+    log_test "FAIL" "create --disable-root with -r (rejected)" "Expected failure but got success"
+  else
+    log_test "PASS" "create --disable-root with -r (rejected)"
+  fi
+
+  generate_test_userdata tester n "" "$t/default.yaml"
+  NETWORK_SUBNET=192.168.100 generate_test_userdata tester n "" "$t/subnet.yaml"
+  if grep -q '"10.10.10.1:.*/nfs-share /mnt/shared nfs' "$t/default.yaml" &&
+    grep -q '"192.168.100.1:.*/nfs-share /mnt/shared nfs' "$t/subnet.yaml"; then
+    log_test "PASS" "guest NFS mount uses NETWORK_SUBNET"
+  else
+    log_test "FAIL" "guest NFS mount uses NETWORK_SUBNET" "$(grep -h 'mnt/shared nfs' "$t"/*.yaml | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# The installer starts only stopped VMs on the dcvm network, and starting one
+# must not trip set -e (((x++)) returns 1 when x is 0).
+test_installer_starts_dcvm_vms_only() {
+  local t
+  t=$(mktemp -d)
+  if (
+    set -e
+    eval "$(sed -n '/^start_existing_vms()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+    print_status_log() { :; }
+    virsh() {
+      case "$1" in
+      list) [ "${2:-}" = --all ] && printf 'dcvm1\nother1\n' ;;
+      domiflist)
+        echo " Interface   Type      Source           Model    MAC"
+        if [ "$2" = dcvm1 ]; then echo " vnet0       network   datacenter-net   virtio   52:54:00:00:00:01"; else echo " vnet1       network   default          virtio   52:54:00:00:00:02"; fi
+        ;;
+      start) echo "$2" >>"$t/started" ;;
+      esac
+    }
+    NETWORK_NAME=datacenter-net
+    start_existing_vms
+    echo done >"$t/finished"
+  ) >/dev/null 2>&1 && [ -f "$t/finished" ] && [ "$(cat "$t/started" 2>/dev/null)" = dcvm1 ]; then
+    log_test "PASS" "installer starts only dcvm-network VMs (and survives set -e)"
+  else
+    log_test "FAIL" "installer starts only dcvm-network VMs (and survives set -e)" "started: $(tr '\n' ' ' <"$t/started" 2>/dev/null)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2056,6 +2268,7 @@ test_common_functions() {
   test_delete_vm_keeps_network
   test_hosts_rename_sed_expr
   test_backup_restore_new_name
+  test_backup_restore_in_place
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
   test_root_username_userdata
@@ -2071,6 +2284,9 @@ test_common_functions() {
   test_apache_exact_match
   test_dhcp_release
   test_installer_packages
+  test_published_checksum
+  test_disable_root_and_nfs_subnet
+  test_installer_starts_dcvm_vms_only
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact
@@ -2475,6 +2691,7 @@ main() {
   if [ "$SYNTAX_ONLY" = true ]; then
     test_syntax_all_scripts
     test_shellcheck
+    test_grep_count_fallback
   elif [ "$UNIT_ONLY" = true ]; then
     test_common_functions
   elif [ "$INTEGRATION_ONLY" = true ]; then
@@ -2486,6 +2703,7 @@ main() {
   else
     test_syntax_all_scripts
     test_shellcheck
+    test_grep_count_fallback
     test_configuration
     test_dependencies
     test_common_functions

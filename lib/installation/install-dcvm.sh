@@ -434,7 +434,9 @@ start_nfs_server() {
     chmod 755 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not set permissions on NFS export path"
   fi
 
-  if ! systemctl list-unit-files 2>/dev/null | grep -q -E 'nfs-kernel-server|nfs-server'; then
+  # Not grep -q: it exits at the first match, systemctl dies of SIGPIPE, and
+  # pipefail turns that into "not installed".
+  if ! systemctl list-unit-files 2>/dev/null | grep -E 'nfs-kernel-server|nfs-server' >/dev/null; then
     print_status_log "WARNING" "NFS server is not installed"
     print_status_log "INFO" "Install with: apt install nfs-kernel-server (Debian/Ubuntu) or pacman -S nfs-utils (Arch)"
     return 0
@@ -452,16 +454,32 @@ start_nfs_server() {
   if systemctl is-active --quiet nfs-kernel-server 2>/dev/null || systemctl is-active --quiet nfs-server 2>/dev/null; then
     print_status_log "SUCCESS" "NFS server is running"
 
-    if ! grep -q "$NFS_EXPORT_PATH" /etc/exports 2>/dev/null; then
-      echo "$NFS_EXPORT_PATH *(rw,sync,no_subtree_check,no_root_squash)" >>/etc/exports 2>/dev/null || {
+    # Only the VM subnet may mount the share. no_root_squash lets the guests'
+    # root set up /mnt/shared for the VM user.
+    local subnet="${NETWORK_SUBNET:-10.10.10}"
+    local old_line="$NFS_EXPORT_PATH *(rw,sync,no_subtree_check,no_root_squash)"
+    local export_line="$NFS_EXPORT_PATH ${subnet}.0/24(rw,sync,no_subtree_check,no_root_squash)"
+    if grep -qxF "$old_line" /etc/exports 2>/dev/null; then
+      # Installers before 0.9.8 exported the share to every host.
+      local tmp_exports
+      tmp_exports=$(mktemp) &&
+        awk -v old="$old_line" -v new="$export_line" '$0 == old { $0 = new } { print }' /etc/exports >"$tmp_exports" &&
+        cat "$tmp_exports" >/etc/exports &&
+        print_status_log "SUCCESS" "Limited the NFS export to ${subnet}.0/24"
+      rm -f "$tmp_exports"
+    elif ! grep -q "$NFS_EXPORT_PATH" /etc/exports 2>/dev/null; then
+      echo "$export_line" >>/etc/exports 2>/dev/null || {
         print_status_log "WARNING" "Could not update /etc/exports"
         return 0
       }
     fi
 
+    # Every VM user writes as its own UID, so make the share writable for all,
+    # with the sticky bit (like /tmp) so users can't delete each other's files.
+    chmod 1777 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not make $NFS_EXPORT_PATH writable for VM users"
     exportfs -ra 2>/dev/null || print_status_log "WARNING" "Could not refresh NFS exports"
     print_status_log "SUCCESS" "NFS exports configured at: $NFS_EXPORT_PATH"
-    print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from 10.10.10.1"
+    print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from ${subnet}.1"
   else
     print_status_log "WARNING" "NFS server could not be started - you can set it up manually later"
   fi
@@ -703,7 +721,7 @@ show_network_info() {
   local ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
   echo "    IP forwarding: $([ "$ip_forward" = "1" ] && echo "enabled" || echo "disabled")"
 
-  local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || echo "0")
+  local nat_count=$(iptables -t nat -L POSTROUTING 2>/dev/null | grep -c "MASQUERADE" || true)
   echo "    NAT rules active: $nat_count"
 }
 
@@ -729,23 +747,24 @@ enable_ip_forwarding() {
 }
 
 start_existing_vms() {
-  print_status_log "INFO" "Checking for existing VMs to start..."
+  print_status_log "INFO" "Checking for existing dcvm VMs to start..."
 
   local vms_started=0
   local vm_list=$(virsh list --all --name 2>/dev/null | grep -v "^$" || echo "")
 
   if [[ -z "$vm_list" ]]; then
-    print_status_log "INFO" "No existing VMs found"
+    print_status_log "INFO" "No existing dcvm VMs found"
     return 0
   fi
 
   while IFS= read -r vm_name; do
-    if [[ -n "$vm_name" ]]; then
+    # Only VMs on the dcvm network; other VMs on the host are left as they are.
+    if [[ -n "$vm_name" ]] && virsh domiflist "$vm_name" 2>/dev/null | awk -v n="$NETWORK_NAME" '$3 == n { f = 1 } END { exit !f }'; then
       if ! virsh list 2>/dev/null | grep -q "$vm_name.*running"; then
         print_status_log "INFO" "Starting VM: $vm_name"
         if virsh start "$vm_name" >/dev/null 2>&1; then
           print_status_log "SUCCESS" "Started VM: $vm_name"
-          ((vms_started++))
+          vms_started=$((vms_started + 1)) # ((x++)) returns 1 at 0, which set -e treats as failure
         else
           print_status_log "WARNING" "Failed to start VM: $vm_name"
         fi
@@ -767,7 +786,7 @@ show_datacenter_summary() {
   print_status_log "INFO" "=== dcvm INSTALLATION COMPLETE ==="
   echo
   echo "Installation directory: $DATACENTER_BASE"
-  echo "Network: $NETWORK_NAME (10.10.10.1/24)"
+  echo "Network: $NETWORK_NAME (${NETWORK_SUBNET:-10.10.10}.1/24)"
   echo "Bridge: $BRIDGE_NAME"
   echo "NFS Share: $NFS_EXPORT_PATH"
   echo "Log file: $LOG_FILE"

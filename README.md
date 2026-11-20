@@ -1,414 +1,250 @@
+<div align="center">
+
 # dcvm
 
-[![Tests](https://github.com/metharda/dcvm/actions/workflows/test.yaml/badge.svg)](https://github.com/metharda/dcvm/actions/workflows/test.yaml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.7-informational.svg)](CHANGELOG.md)
+**Ready Linux VMs on your own machine, one command each.**
 
-**Ready Linux VMs on one machine with one command: dcvm is a VM manager for students, homelabs, CTF and security practice, and anyone who wants a Linux box to try things on.**
+[![Tests](https://img.shields.io/github/actions/workflow/status/metharda/dcvm/test.yaml?label=tests&logo=githubactions&logoColor=white)](https://github.com/metharda/dcvm/actions/workflows/test.yaml)
+[![Release](https://img.shields.io/github/v/release/metharda/dcvm?logo=github)](https://github.com/metharda/dcvm/releases)
+[![Runs on KVM + libvirt](https://img.shields.io/badge/runs%20on-KVM%20%2B%20libvirt-0E7490?logo=linux&logoColor=white)](docs/architecture.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-<!-- DEMO GIF: placeholder, add docs/assets/demo.gif later -->
+<img src="docs/demo/hero.gif" width="800" alt="Terminal recording: 'dcvm create web -f -p $VM_PASSWORD -k nginx --ip 10.10.10.50' prints the creation steps and 'VM web created successfully!'. After first boot, 'curl -s 10.10.10.50' returns 'Welcome to web, Nginx server running!', and 'ssh ubuntu@10.10.10.50' logs in with the generated key and reports Ubuntu 24.04.5 LTS with nginx active.">
 
-dcvm is a set of Bash scripts on top of KVM/QEMU and libvirt. `dcvm create myvm` builds a VM from a Debian, Ubuntu, Arch Linux or Kali Linux cloud image (or from an installer ISO), sets it up with cloud-init, and attaches it to a private NAT network with DHCP. Other `dcvm` commands start and stop VMs, forward host ports to them, and back them up, export and import them.
+</div>
 
-## Quick Installation
+dcvm turns one Linux machine into a small VM lab. `dcvm create web` builds a
+VM from a Debian, Ubuntu, Arch Linux or Kali Linux cloud image, creates your
+user with a password and SSH key, installs the packages you asked for, and
+puts the VM on a private network. It's for students, homelabs, CTF and
+security practice, and anyone who wants a throwaway Linux box to try things
+on. Under the hood it's Bash on top of KVM/QEMU and libvirt, so every VM is an
+ordinary libvirt domain.
 
-You can setup dcvm quickly with `curl` or `wget` commands: (you should be in root user)
+- **One command, ready VM.** Eight built-in cloud images (Debian 11/12/13,
+  Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux). `dcvm create` returns in
+  about two seconds once the image is downloaded, and the VM finishes its
+  first boot about a minute later.
+- **Set up on first boot.** User, password (stored only as a hash), SSH key,
+  static IP or DHCP, and `-k` packages, with nginx, Apache, MySQL/MariaDB,
+  Docker and Tailscale set up for you.
+- **Private by default.** VMs sit on a NAT network (`10.10.10.0/24`); one
+  command forwards SSH and HTTP ports from the host when you want them
+  reachable.
+- **Break it, get it back.** Backups, restore in place or as a copy,
+  export/import between hosts.
+- **Any installer ISO.** `dcvm create-iso` boots Windows or any other
+  installer with VNC, SPICE or a serial console.
+- **No lock-in.** No daemon or database; `virsh` and virt-manager keep
+  working on every VM.
 
-| Method   | Command                                                                                                         |
-| :------- | :-------------------------------------------------------------------------------------------------------------- |
-| **curl** | `bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"` |
-| **wget** | `bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"`  |
+## Quick start
 
-### Review before you run
-
-The one-liners above run the installer as root without showing it to you first. To read it before it runs, download it, review it, then run it:
+**You need:** an x86_64 Linux host (Debian/Ubuntu or Arch based) with
+VT-x/AMD-V enabled, root access and an internet connection.
 
 ```bash
-curl -fsSL -o install-dcvm.sh https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh
-less install-dcvm.sh
-sudo bash install-dcvm.sh
+sudo -i   # the installer runs as root
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
-The installer then downloads the rest of dcvm from the same repository and branch (`metharda/dcvm`, `main`, or `DCVM_REPO_SLUG` and `DCVM_REPO_BRANCH` below). To review everything before installing, use the [Manual Installation](#manual-installation) steps instead.
+> [!TIP]
+> Prefer to read the installer before it runs as root? Download it first:
+> `curl -fsSL -o install-dcvm.sh https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh && less install-dcvm.sh && sudo bash install-dcvm.sh`.
+> It then fetches the rest of dcvm from the same repository and branch. See
+> [Installation](docs/installation.md) for a manual install from a clone.
 
-### Custom Branch or Fork Installation
+<div align="center">
+<img src="docs/demo/quickstart.gif" width="800" alt="Terminal recording of the install one-liner on a fresh Ubuntu 24.04 host: the installer asks for the install directory, network name, bridge name and subnet (defaults accepted), installs the KVM, libvirt and cloud-init packages with apt, skips the optional image download and NFS share, enables tab completion, and ends with 'dcvm is ready to use!' and 'dcvm version' reporting the installed version.">
+<br>
+<sub>Fresh Ubuntu 24.04 host, all installer defaults. Recorded in real time (about 2 minutes, mostly <code>apt</code>) and played back 6× faster.</sub>
+</div>
 
-You can install from a different branch or fork using environment variables:
+The installer asks a few questions; the defaults are fine. It installs
+QEMU/KVM, libvirt and the image tools, creates the `datacenter-net` network
+and `/srv/datacenter`, and installs the `dcvm` command.
 
-| Use Case                                     | Command                                                                                                                                                                              |
-| :------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Install from a specific branch**           | `DCVM_REPO_BRANCH=<awesome-branch> bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/<awesome-branch>/lib/installation/install-dcvm.sh)"`                        |
-| **Install from a fork**                      | `DCVM_REPO_SLUG=<yourusername>/dcvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/<yourusername>/dcvm/main/lib/installation/install-dcvm.sh)"`                             |
-| **Install from a fork with specific branch** | `DCVM_REPO_SLUG=yourusername/dcvm DCVM_REPO_BRANCH=feature-test bash -c "$(curl -fsSL https://raw.githubusercontent.com/<yourusername>/dcvm/main/lib/installation/install-dcvm.sh)"` |
+**Next steps**
 
-**Available environment variables:**
+```bash
+read -rs VM_PASSWORD && export VM_PASSWORD     # the VM user's password, not echoed
+dcvm create web -f -p "$VM_PASSWORD" -k nginx --ip 10.10.10.50
+curl 10.10.10.50                               # after about a minute of first boot
+ssh ubuntu@10.10.10.50                         # key login with the host root's SSH key
+```
 
-- `DCVM_REPO_SLUG`: Repository in format `owner/repo` (default: `metharda/dcvm`)
-- `DCVM_REPO_BRANCH`: Branch name (default: `main`)
+The first `dcvm create` for an OS downloads its cloud image (Ubuntu 24.04 is
+about 600 MB). Run `dcvm create myvm` without flags for an interactive wizard,
+and see the [Usage guide](docs/usage.md) for every option.
 
-## Features
+## How it works
 
-### Virtual Machine Management
+```mermaid
+flowchart LR
+    cmd["dcvm create web"] --> img["Cloud image<br/>(downloaded once)"]
+    img --> disk["web-disk.qcow2<br/>copy-on-write overlay"]
+    cmd --> seed["cloud-init seed<br/>user, password hash,<br/>SSH key, packages"]
+    disk --> vm(["VM 'web'<br/>libvirt + KVM"])
+    seed --> vm
+    vm --- net["datacenter-net<br/>10.10.10.0/24, NAT + DHCP"]
+    net --- host["Host<br/>ssh / curl to the VM IP"]
+    net -. "dcvm network ports setup" .- lan["Other machines<br/>host:2221 → VM:22, host:8081 → VM:80"]
+```
 
-- **Automated VM Creation**: Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Kali Linux and Arch Linux based VMs with cloud-init support
-- **Custom ISO Support**: Create VMs from any installer ISO (Windows, Arch, Fedora, etc.)
-- **User-Friendly Wizard**: Step-by-step VM configuration
-- **Resource Optimization**: Automatic sizing based on host system resources
-- **Package Management**: Pre-installed packages like nginx, apache2, mysql-server, docker
+1. **Image.** Each OS maps to one official cloud image, downloaded once from
+   the fastest mirror into `/srv/datacenter/storage/templates`.
+2. **Disk.** The VM gets a qcow2 overlay on that image, so creating it takes
+   seconds and it only stores its own changes.
+3. **Seed.** dcvm writes a cloud-init seed with the user, the password hash,
+   your SSH key, packages and network settings.
+4. **Boot.** `virt-install` defines the VM on the NAT network and sets it to
+   start with the host; cloud-init finishes the setup inside the guest.
 
-### Network Management
+More detail, including networking and backups, is in
+[Architecture](docs/architecture.md).
 
-- **Isolated Network**: Private NAT network (`datacenter-net` by default, 10.10.10.0/24)
-- **Automatic DHCP**: Dynamic IP assignment
-- **Port Forwarding**: Automatic port forwarding for SSH and HTTP access
-- **VNC Management**: Enable/disable VNC graphics for remote access
-- **Connection Testing**: VM accessibility verification
+## Backups that bring a VM back
 
-### Storage & Backup
+Practise an exploit, misconfigure a server, `rm -rf` the wrong folder: a
+backup puts the VM back exactly as it was.
 
-- **Shared NFS**: File sharing between VMs
-- **Automated Backup**: Snapshot backup system
-- **Storage Monitoring**: Disk usage tracking and cleanup
-- **Archiving**: Automatic archiving of old files
+<div align="center">
+<img src="docs/demo/backup.gif" width="800" alt="Terminal recording: a note is written into the VM, then 'dcvm backup create web' shuts the VM down, copies and compresses its disk and starts it again. The web root and the note are deleted inside the VM and 'curl -sI' returns 'HTTP/1.1 404 Not Found'. 'dcvm backup restore web' asks for 'yes', restores the disk and starts the VM. After boot 'curl -sI' returns 'HTTP/1.1 200 OK' and 'cat notes.txt' prints 'flag{keep-me}' again.">
+<br>
+<sub>Recorded in real time and played back 3× faster; the two waits for the VM to boot are cut.</sub>
+</div>
 
-### System Management
+- **Consistent.** The VM is shut down for the copy (up to 60 seconds for a
+  clean shutdown), then started again. A fresh Ubuntu VM took 20 seconds to
+  back up and 80 seconds to restore on the demo host.
+- **In place or as a copy.** `dcvm backup restore web` replaces the VM and
+  keeps its MAC address and IP. `dcvm backup restore web latest web2` creates
+  a second VM with new MACs, hostname, machine-id and SSH host keys.
+- **Portable.** `dcvm backup export` packs a backup into a `.tar.gz` without
+  your `authorized_keys`; `dcvm backup import` restores it on another dcvm
+  host.
+- The 5 most recent backups of each VM are kept.
 
-- **Centralized Management**: All operations through `dcvm` command
-- **Self-Update**: Update DCVM with a single command
-- **System Services**: systemd integration
-- **Log Management**: Detailed operation logs
-- **Security**: SSH key-based secure access
+> [!IMPORTANT]
+> Backups store the VM's overlay disk, not a full disk image. Restoring needs
+> the same cloud image file in `storage/templates`; restore downloads it if it
+> is missing, but an overlay on a newer upstream image is not reliable. Keep
+> your templates, and copy them along with exports. See
+> [Backups](docs/backups.md).
 
-## Why dcvm?
+## Day to day
 
-| Tool | What it is for | Hosts | Worth knowing |
-| :--- | :------------- | :---- | :------------ |
-| **dcvm** | Ready Linux VMs from a built-in menu of 8 cloud images (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux), or any installer ISO | Linux with KVM and libvirt; the installer sets up dependencies on Debian/Ubuntu-based and Arch-based hosts | One CLI also covers a private NAT network, SSH/HTTP port forwarding from the host (`dcvm network ports setup`), backups with export/import between hosts, VNC on/off and an NFS share. Needs root. |
-| [Multipass](https://documentation.ubuntu.com/multipass/en/latest/) | Cloud-style Ubuntu VMs (plus other Linux images), customised with cloud-init | Linux, macOS, Windows | Cross-platform, has a GUI client, and has snapshots, clones and folder mounts built in |
-| [Vagrant](https://developer.hashicorp.com/vagrant/intro) + [vagrant-libvirt](https://vagrant-libvirt.github.io/vagrant-libvirt/) | Reproducible development environments described in a `Vagrantfile` | Vagrant runs on Linux, macOS and Windows; vagrant-libvirt needs libvirt and QEMU | The environment lives in a file you can commit and share, so a team gets the same VM with `vagrant up`; provisions with shell scripts, Chef or Puppet |
-| [virt-install](https://github.com/virt-manager/virt-manager/blob/main/man/virt-install.rst) | libvirt's command-line tool for provisioning KVM, Xen or container guests | Linux with libvirt | Exposes libvirt's install methods (ISO, network install tree, PXE, existing disk, unattended installs, cloud-init) and fine-grained device options; you choose and combine them yourself |
-| [quickemu](https://github.com/quickemu-project/quickemu) | Quickly creating and running optimised Windows, macOS and Linux VMs with QEMU; `quickget` downloads the OS image | Linux, macOS | Supports far more guest systems (including macOS and Windows), runs VMs without elevated permissions, and has SPICE, file sharing and USB pass-through |
+<div align="center">
+<img src="docs/demo/daily.gif" width="800" alt="Terminal recording: 'dcvm list' shows VMs web and ctf running. 'dcvm network ports setup' forwards host port 2221 to web's SSH and 8081 to its HTTP, 2222 and 8082 to ctf, and prints the ssh and http commands to use from other machines. 'dcvm network ports test' shows ping, SSH and HTTP checks, all passing for web and HTTP failing for ctf, which runs no web server. 'dcvm stop ctf' shuts it down and 'dcvm delete ctf' removes it, ending with checks that the VM, its DHCP lease and its disk are gone.">
+<br>
+<sub>Real time, nothing cut.</sub>
+</div>
 
-dcvm is a convenience layer for one Linux host: it handles the image, network, user and SSH key setup and port forwards for you, and its VMs are ordinary libvirt domains created with `virt-install`, so `virsh` still works on them. Choose another tool if you need a macOS host (Multipass, quickemu, Vagrant) or a Windows host (Multipass, Vagrant), macOS or tuned Windows guests (quickemu), an environment defined in a file that others can recreate (Vagrant), snapshots instead of full backups (Multipass), or full control over every libvirt option (virt-install).
+| Task | Command |
+| :--- | :------ |
+| Create (wizard / one line) | `dcvm create myvm` · `dcvm create myvm -f -p "$PASS" -o 1 -m 4096 -c 4 -d 50G` |
+| Several at once | `dcvm create web,db,cache -f -p "$PASS"` |
+| From an installer ISO | `dcvm create-iso win --iso /isos/windows.iso -m 8192 -d 100G` |
+| List / overview | `dcvm list` · `dcvm status` |
+| Start, stop, restart (one or all) | `dcvm start web` · `dcvm stop` · `dcvm restart web` |
+| Serial console | `dcvm console web` (exit with `Ctrl+]`) |
+| Reach VMs from the LAN | `dcvm network ports setup` · `dcvm network ports test` |
+| Network, DHCP, VNC | `dcvm network` · `dcvm network dhcp show` · `dcvm network vnc enable web` |
+| Back up and restore | `dcvm backup create web` · `dcvm backup list` · `dcvm backup restore web` |
+| Cloud images | `dcvm template status` · `dcvm template download -a` |
+| Delete | `dcvm delete web` |
+| Update dcvm | `dcvm self-update --check` · `dcvm self-update` |
+
+`-o` picks the OS: `1` Debian 13, `2` Debian 12, `3` Debian 11, `4` Ubuntu
+24.04 (default), `5` Ubuntu 22.04, `6` Ubuntu 20.04, `7` Arch Linux, `8` Kali
+Linux. Defaults are 2048 MB RAM, 2 vCPUs and a 30G disk (Kali needs at least
+30G).
+
+> [!WARNING]
+> `dcvm delete` does not ask for confirmation; it removes the VM, its disk,
+> DHCP lease and port forwards right away. Backups are kept.
 
 ## Requirements
 
-### Hardware
+| | |
+| :--- | :--- |
+| CPU | x86_64 with VT-x or AMD-V enabled (`/dev/kvm` present); nested virtualization works for a VM host |
+| Memory | 4 GB minimum, 8 GB or more for several VMs (each defaults to 2 GB) |
+| Disk | 50 GB or more free; each cloud image is 0.4-0.6 GB, plus what the VMs write |
+| Host OS | Debian, Ubuntu or Arch Linux, or a derivative (the installer uses `apt` or `pacman`); systemd |
+| Access | root, and internet for packages and images |
 
-- **CPU**: VT-x/AMD-V capable processor
-- **RAM**: Minimum 4GB (8GB+ recommended)
-- **Disk**: 50GB+ free space
-- **Network**: Internet connection
+## Configuration
 
-### Software
+The installer writes `/etc/dcvm-install.conf` (`DATACENTER_BASE`,
+`NETWORK_NAME`, `BRIDGE_NAME`, `NETWORK_SUBNET`); see
+[Operations › Settings](docs/operations.md#settings). These environment
+variables change behaviour:
 
-- **Operating System**: Ubuntu 20.04+, Debian 11+, Arch Linux
-- **Virtualization**: KVM/QEMU support
-- **Root Access**: sudo/root privileges
-
-## Installation
-
-### Quick Install (Recommended)
-
-See installation commands at the top of this README.
-
-### Manual Installation
-
-If you prefer step-by-step installation:
-
-#### 1. Clone Repository
+| Variable | Default | Used by | Effect |
+| :------- | :------ | :------ | :----- |
+| `DCVM_REPO_SLUG` | `metharda/dcvm` | installer, `self-update` | GitHub `owner/repo` to install or update from (for forks) |
+| `DCVM_REPO_BRANCH` | `main` | installer, `self-update` | Branch to install or update from |
+| `SSH_PORT_START` | `2221` | `dcvm network ports setup` | First host port forwarded to a VM's port 22 |
+| `HTTP_PORT_START` | `8081` | `dcvm network ports setup` | First host port forwarded to a VM's port 80 |
 
 ```bash
-git clone https://github.com/metharda/dcvm.git
-cd dcvm
+# Install from a fork's branch
+DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/you/dcvm/my-branch/lib/installation/install-dcvm.sh)"
 ```
 
-#### 2. Run Installation Script
+> [!WARNING]
+> VMs created with `-f` have root login enabled with the user's password
+> unless you pass `--disable-root`, and every VM accepts SSH passwords.
+> Forwarded ports listen on all host interfaces. On a host reachable from
+> untrusted networks, read [Security](docs/security.md) first.
 
-```bash
-sudo bash lib/installation/install-dcvm.sh
-```
+## Limitations
 
-#### 3. Verify Installation
+- One Linux x86_64 host, run as root. No macOS or Windows hosts, no clusters.
+- Automatic setup covers the eight built-in images; ISO installs are manual.
+- Backups are cold (the VM is shut down) and depend on the VM's cloud image
+  file (see above). There are no live snapshots.
+- Port forwarding covers SSH (22) and HTTP (80) for each running VM, uses
+  host ports 2220-2299 and 8080-8179, and is not reapplied after a host
+  reboot unless your system restores `/etc/iptables/rules.v4`
+  (`dcvm network ports apply` does it by hand).
+- VMs share one bridge and can reach each other.
+- Cloud images are checked against the checksum files their publishers put
+  next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
+  mirror that publishes no checksum is used with a warning.
 
-```bash
-dcvm --version
-dcvm status
-```
+## How it compares
 
-For detailed installation instructions, see [Installation Guide](docs/installation.md).
+| Tool | Good for | Hosts |
+| :--- | :------- | :---- |
+| **dcvm** | Ready Linux VMs from eight cloud images or any ISO, with NAT networking, port forwards, backups and export/import in one CLI | Linux with KVM/libvirt |
+| [Multipass](https://documentation.ubuntu.com/multipass/en/latest/) | Cloud-style Ubuntu VMs with cloud-init, snapshots, mounts and a GUI | Linux, macOS, Windows |
+| [Vagrant](https://developer.hashicorp.com/vagrant/intro) + [vagrant-libvirt](https://vagrant-libvirt.github.io/vagrant-libvirt/) | Reproducible environments described in a `Vagrantfile` you commit | Linux, macOS, Windows |
+| [virt-install](https://github.com/virt-manager/virt-manager/blob/main/man/virt-install.rst) | Full control over every libvirt install method and device | Linux with libvirt |
+| [quickemu](https://github.com/quickemu-project/quickemu) | Desktop VMs, including macOS and Windows guests, without root | Linux, macOS |
 
-## Quick Start
-
-### Create Your First VM
-
-```bash
-# Interactive mode (recommended for first time)
-dcvm create myvm
-
-# Or use force mode with defaults (defaults to Ubuntu 24.04)
-dcvm create myvm -f -p mypassword123
-```
-
-### Check VM Status
-
-```bash
-dcvm list
-dcvm status myvm
-```
-
-### Connect to Your VM
-
-```bash
-# Find VM IP
-dcvm network
-
-# SSH username: -u <name> if you set one at create time, otherwise the OS
-# default (e.g. ubuntu, debian). create-iso VMs have no recorded user, so
-# SSH hints fall back to admin as a guess.
-# For Ubuntu 24.04 (default OS):
-ssh ubuntu@<vm-ip>
-```
-
-## Usage Guide
-
-### Basic Commands
-
-```bash
-# Create VMs
-dcvm create myvm                     # Interactive mode
-dcvm create webserver -f -p pass123  # Force mode with password (Ubuntu 24.04)
-dcvm create myvm -o /path/to/iso     # Create from custom ISO
-dcvm create-iso myvm --iso /path/to/archlinux.iso  # Alternative ISO syntax
-
-# Manage VMs
-dcvm list                            # List all VMs
-dcvm start myvm                      # Start VM
-dcvm stop myvm                       # Stop VM
-dcvm restart myvm                    # Restart VM
-dcvm delete myvm                     # Delete VM
-dcvm console myvm                    # Connect to console
-
-# Network
-dcvm network                         # Show network info
-dcvm network ports setup             # Setup port forwarding
-dcvm network vnc status myvm         # Check VNC status
-dcvm network vnc disable myvm        # Disable VNC (free port)
-dcvm network vnc enable myvm         # Enable VNC
-
-# Storage & Backup
-dcvm backup myvm                     # Backup VM
-dcvm restore myvm                    # Restore VM
-dcvm storage                         # Show storage info
-dcvm storage-cleanup                 # Clean up storage
-
-# System
-dcvm fix-lock                        # Fix locked resources
-dcvm self-update                     # Update to latest version
-dcvm self-update --check             # Check for updates
-dcvm uninstall                       # Uninstall DCVM
-dcvm --version                       # Show version
-dcvm --help                          # Show help
-```
-
-For detailed usage, see [Usage Guide](docs/usage.md).
+Choose dcvm when you want a lab on one Linux box with the image, user, key,
+network and ports handled for you. Choose another tool for a macOS or Windows
+host, macOS guests, an environment defined in a file, snapshots, or full
+control over libvirt options.
 
 ## Documentation
 
-- **[Installation Guide](docs/installation.md)** - Detailed installation instructions
-- **[Usage Guide](docs/usage.md)** - Complete command reference
-- **[Examples](docs/examples/)** - Practical examples and tutorials
+| Document | What's in it |
+| :------- | :----------- |
+| [Installation](docs/installation.md) | Install options, what the installer does, updating, uninstalling |
+| [Usage](docs/usage.md) | Every command and flag, packages, ISO installs |
+| [Networking](docs/networking.md) | NAT network, static IPs, port forwarding, DHCP, VNC |
+| [Backups](docs/backups.md) | Backup, restore, copies, export and import |
+| [Operations](docs/operations.md) | Reading the checks, reboots, updates, logs, settings, troubleshooting |
+| [Security](docs/security.md) | Threat model, credentials, network exposure, hardening |
+| [Architecture](docs/architecture.md) | Components, the create flow, design decisions |
+| [Development](docs/development.md) | Repository layout, workflow, re-recording these demos |
+| [Examples](docs/examples/) | Web, database, Docker and networking walkthroughs |
+| [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) | Release notes and how to contribute |
 
-## Project Structure
-
-```
-dcvm/                     # repository root
-├── dcvm                  # CLI entry point
-├── lib/                  # core, installation, network, storage, utils
-├── docs/                 # guides and architecture notes
-└── .github/workflows/    # CI
-```
-
-See [docs/project-structure.md](docs/project-structure.md) for the full layout.
-
-### Bulk Operations
-
-```bash
-# Manage all VMs
-dcvm start                           # Start all VMs
-dcvm stop                            # Stop all VMs
-dcvm restart                         # Restart all VMs
-
-# Network management
-dcvm network ports setup             # Port forwarding setup
-dcvm network dhcp show               # Show DHCP leases
-dcvm network dhcp clear -a           # Clear all leases
-```
-
-### VM Creation Example
-
-```bash
-# Create web server
-dcvm create web-server nginx,mysql-server
-
-# After VM creation:
-# 1. IP address is automatically assigned
-# 2. SSH access is prepared
-# 3. Port forwarding is configured
-# 4. NFS share is mounted
-```
-
-## Network Configuration
-
-### Default Network Settings
-
-- **Network Range**: 10.10.10.0/24
-- **Gateway**: 10.10.10.1
-- **DHCP Pool**: 10.10.10.100-10.10.10.254
-- **DNS**: Host system DNS
-
-### Port Mapping
-
-- **SSH**: starts at port 2221 (one host port per VM)
-- **HTTP**: starts at port 8081 (one host port per VM)
-- **See current mappings**: `dcvm network ports show`
-- **Access**: `ssh -p <ssh-port> <username>@<host-ip>` — username is `-u` if set at create time, otherwise the OS default; create-iso VMs fall back to `admin` as a guess
-
-## Directory Structure
-
-```
-/srv/datacenter/
-├── vms/                    # VM disk files
-│   ├── vm1/
-│   │   ├── vm1-disk.qcow2
-│   │   └── cloud-init/
-├── storage/
-│   └── templates/          # Base OS images
-├── nfs-share/              # Shared files
-├── backups/                # VM backups
-└── scripts/                # Management scripts
-```
-
-## Script Descriptions
-
-### Main Scripts
-
-- **`install-dcvm.sh`**: System installation and startup
-- **`vm-manager.sh`**: Central VM management interface
-
-### Helper Scripts
-
-- **`create-vm.sh`**: New VM creation wizard
-- **`delete-vm.sh`**: VM deletion and cleanup
-- **`backup.sh`**: Backup and restore
-- **`setup-port-forwarding.sh`**: Port forwarding setup
-- **`storage-manager.sh`**: Storage space management
-- **`dhcp.sh`**: DHCP management
-- **`fix-lock.sh`**: System lock fix
-
-## Security
-
-### Access Control
-
-- SSH key-based authentication
-- Strong password policies
-- Isolated network environment
-- Privilege control
-
-### Security Best Practices
-
-```bash
-# SSH key creation
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/dcvm-key
-
-# Firewall settings
-ufw enable
-ufw allow 22
-ufw allow 2220:2250/tcp  # SSH ports
-ufw allow 8080:8090/tcp  # HTTP ports
-```
-
-## Monitoring and Maintenance
-
-### System Status
-
-```bash
-dcvm status                 # General system status
-virsh list --all           # All VMs
-virsh net-list             # Network status
-```
-
-### Log Files
-
-```bash
-tail -f /var/log/datacenter-startup.log        # System logs
-tail -f /var/log/datacenter-storage.log        # Storage logs
-journalctl -u libvirtd                         # KVM/QEMU logs
-```
-
-### Performance Monitoring
-
-```bash
-# VM resource usage
-virsh domstats --cpu-total --balloon
-
-# Network traffic
-virsh domifstat vm-name vnet0
-
-# Disk I/O
-virsh domblkstat vm-name vda
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### No KVM Support
-
-```bash
-# Check CPU virtualization support
-egrep -c '(vmx|svm)' /proc/cpuinfo
-
-# Load KVM modules
-modprobe kvm
-modprobe kvm_intel  # For Intel
-modprobe kvm_amd    # For AMD
-```
-
-#### Network Connection Issues
-
-```bash
-# Restart network
-virsh net-destroy datacenter-net
-virsh net-start datacenter-net
-
-# DHCP cleanup
-dcvm network dhcp clear -a
-```
-
-#### VM Startup Issues
-
-```bash
-# Check VM state
-virsh domstate vm-name
-
-# Check VM logs
-virsh console vm-name
-
-# Check disk file
-ls -la /srv/datacenter/vms/vm-name/
-```
-
-### Complete System Reset
-
-```bash
-# WARNING: Deletes all VMs!
-dcvm delete --all
-
-# Restart system services
-systemctl restart libvirtd
-./install-dcvm.sh
-```
 ## License
-This project is licensed under the Apache License, Version 2.0.
-See the `LICENSE` file for details.
+
+Apache License 2.0. See [LICENSE](LICENSE).

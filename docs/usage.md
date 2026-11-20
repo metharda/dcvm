@@ -25,7 +25,7 @@ The wizard will prompt you for:
 - Password
 - Root access settings
 - SSH key setup
-- **Static IP configuration** (new!)
+- Static IP configuration
 - Memory allocation
 - CPU count
 - Disk size
@@ -69,7 +69,8 @@ Note about multiple VMs and `--ip`:
   - Base `10.10.10.254` for 3 VMs → 254, 253, 252
 
 Be careful to choose a base IP with enough free addresses in your subnet. If DCVM cannot compute a safe address for a VM, creation will fail and you should pick a different base IP or use DHCP.
-- `--enable-root`: Enable root login
+- `--enable-root`: Enable root login. Force mode (`-f`) enables root login even without this flag, with the user's password unless `-r` is given
+- `--disable-root`: Keep root login off (`PermitRootLogin no`, root password locked), also in force mode. Can't be combined with `-u root`, `--enable-root` or `-r`
 - `-r, --root-password`: Set root password (enables root access; same rules as `-p`)
 - `-k, --packages`: Comma-separated package list (supports `tailscale` for VPN). Names must start with a letter or number and may contain letters, numbers, `@`, `.`, `_`, `+` and `-`. Each package is installed separately, so one unavailable name does not block the rest; failures are logged in the guest to `/var/log/dcvm-packages.log`. See [Service setup for `-k` packages](#service-setup-for--k-packages).
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
@@ -137,17 +138,17 @@ dcvm console myvm
 dcvm list
 ```
 
-Shows all VMs with their status, memory, CPUs, and IP addresses.
+Shows every libvirt VM on the host (`virsh list --all`), then the VMs on the
+dcvm network with their state.
 
 ### Checking VM Status
 
 ```bash
-# Single VM
-dcvm status myvm
-
-# All VMs
 dcvm status
 ```
+
+Shows all VMs, the active port-forward rules, the libvirt networks and the IP
+of each dcvm VM. It takes no VM name.
 
 ### Starting a VM
 
@@ -173,15 +174,23 @@ dcvm restart myvm
 dcvm console myvm
 ```
 
-**Tip**: Press `Ctrl+]` to exit the console.
+**Tip**: Press `Ctrl+]` to exit the console. Log in with the user and
+password you set at create time.
+
+Without a VM name, `dcvm console` prints SSH, HTTP and console hints for the
+VMs in the port mappings file.
 
 ### Deleting a VM
 
 ```bash
 dcvm delete myvm
+dcvm delete --all    # every dcvm VM; asks you to type yes and a random number
 ```
 
-**Warning**: This permanently removes the VM and its data!
+> [!WARNING]
+> `dcvm delete <vm>` does not ask for confirmation. It stops the VM and removes
+> its disk, cloud-init files, DHCP lease and reservation, port forwards and
+> static IP record. Backups are kept.
 
 ## Network Management
 
@@ -203,9 +212,8 @@ Shows:
 dcvm network ports setup
 ```
 
-Automatically sets up port forwarding for:
-- SSH access (port 2222+)
-- HTTP access (port 8080+)
+Forwards a host port to each running VM's SSH (from 2221) and HTTP (from
+8081) port. See [Networking](networking.md#port-forwarding).
 
 ### Clean DHCP Leases
 
@@ -244,10 +252,12 @@ dcvm network vnc enable myvm
 ### Backup a VM
 
 ```bash
-dcvm backup myvm
+dcvm backup create myvm
 ```
 
-Creates a snapshot backup in the backup directory.
+Shuts the VM down, copies its disk and configuration to
+`$DATACENTER_BASE/backups`, and starts it again. The 5 most recent backups of
+each VM are kept.
 
 ### Restore a VM
 
@@ -264,28 +274,18 @@ dcvm backup restore myvm latest myvm-copy
 
 Restores a backup as a new VM named `myvm-copy` and leaves `myvm` as is. `backup_date` is `YYYYMMDD_HHMMSS`, `dd.mm.yyyy[-N]`, the `<vm>-dd.mm.yyyy[-N]` ID from `backup list`, `latest` or `''`. See [backups.md](backups.md#restore) for what changes in the copy.
 
-### View Storage Information
+### Storage check
 
 ```bash
-dcvm storage
+dcvm storage           # same as storage-cleanup
+dcvm storage-cleanup   # also run hourly by datacenter-storage.timer
 ```
 
-Shows:
-- Total storage usage
-- VM disk usage
-- Available space
-- Template sizes
-
-### Storage Cleanup
-
-```bash
-dcvm storage-cleanup
-```
-
-Removes:
-- Old backups (keeps last 7 by default)
-- Unused templates
-- Temporary files
+Connects over SSH to each running dcvm VM and prints its root file system
+usage (also logged to `/var/log/datacenter-storage.log`). Over 85% full, it
+gzips old logs and moves old `/tmp` files and logs to the NFS share. See
+[Operations](operations.md#logs-and-monitoring). For disk use on the host,
+run `du -sh /srv/datacenter/*`.
 
 ## SSH Access
 
@@ -307,9 +307,8 @@ ssh ubuntu@<vm-ip>
 ### Finding VM IP Address
 
 ```bash
-dcvm network | grep myvm
-# or
-dcvm status myvm
+dcvm status            # "VM IP addresses" at the end
+dcvm network           # DHCP leases, static IPs and port mappings
 ```
 
 ## File Transfer
@@ -332,7 +331,10 @@ sftp ubuntu@<vm-ip>
 
 ### Using Shared NFS
 
-All VMs have access to shared storage at `/mnt/shared`:
+If you enabled the NFS share when installing (the installer asks; the default
+is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. Every VM
+user can write to it; like `/tmp`, users can't delete each other's files. Read
+[Security](security.md#network-exposure) before enabling it.
 
 ```bash
 # On host
@@ -487,8 +489,8 @@ dcvm status myvm
 # Check system logs
 journalctl -xe
 
-# Fix locked resources
-dcvm fix-lock
+# Fix locked resources (force-stops the VM)
+dcvm fix-lock myvm
 ```
 
 ### Can't Connect to VM
@@ -501,20 +503,18 @@ dcvm status myvm
 dcvm network
 
 # Verify SSH service in VM
-dcvm console myvm
+virsh console myvm
 # Then: systemctl status ssh
 ```
 
 ### Out of Space
 
 ```bash
-# Check storage
-dcvm storage
+# Check disk use
+du -sh /srv/datacenter/*
 
-# Clean up
-dcvm storage-cleanup
-
-# Delete unused VMs
+# Delete old backups and unused VMs
+dcvm backup delete myvm
 dcvm delete old-vm
 ```
 
@@ -523,7 +523,7 @@ dcvm delete old-vm
 For advanced topics, see:
 - [Networking Guide](networking.md)
 - [Backup and Restore](backups.md)
-- [Troubleshooting](troubleshooting.md)
+- [Operations and troubleshooting](operations.md)
 - [Examples](examples/)
 
 ## Updating DCVM

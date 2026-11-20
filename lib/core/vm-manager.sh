@@ -91,8 +91,6 @@ show_enhanced_console() {
   else
     print_warning "No port mappings found. Run: dcvm network ports setup"
   fi
-  echo ""
-  echo "Default login: admin / admin123"
 }
 
 start_vms() {
@@ -305,7 +303,15 @@ main() {
     show_port_status
     ;;
   "console")
-    show_enhanced_console
+    if [ -z "${2:-}" ]; then
+      show_enhanced_console
+    elif check_vm_exists "$2"; then
+      echo "Connecting to $2 (press Ctrl+] to exit)"
+      exec virsh console "$2"
+    else
+      print_error "VM '$2' does not exist"
+      exit 1
+    fi
     ;;
   "list")
     echo "Available VMs:"

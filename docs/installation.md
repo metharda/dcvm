@@ -31,11 +31,24 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/i
 bash -c "$(wget -qO- https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh)"
 ```
 
-Optional: you can override the download source via environment variables if needed:
+To read the installer before it runs as root, download it first:
 
-- DCVM_REPO_TARBALL_URL: Full tar.gz URL to download the repo
-- DCVM_REPO_SLUG: owner/repo (default: metharda/dcvm)
-- DCVM_REPO_BRANCH: branch name (default: main)
+```bash
+curl -fsSL -o install-dcvm.sh https://raw.githubusercontent.com/metharda/dcvm/main/lib/installation/install-dcvm.sh
+less install-dcvm.sh
+sudo bash install-dcvm.sh
+```
+
+The installer downloads the rest of dcvm from the same repository and
+branch. To install from a fork or another branch, set:
+
+- `DCVM_REPO_SLUG`: `owner/repo` (default: `metharda/dcvm`)
+- `DCVM_REPO_BRANCH`: branch name (default: `main`)
+
+```bash
+DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/you/dcvm/my-branch/lib/installation/install-dcvm.sh)"
+```
 
 ## Manual Installation
 
@@ -65,24 +78,46 @@ sudo bash lib/installation/install-dcvm.sh
 
 ### 4. Follow the Installation Wizard
 
-The installer will prompt you for:
+In a terminal, the installer asks (press Enter for the default):
 
 - Installation directory (default: `/srv/datacenter`)
 - Network name (default: `datacenter-net`)
 - Bridge name (default: `virbr-dc`)
+- Network subnet (default: `10.10.10`, for `10.10.10.0/24`)
+- Whether to download all eight cloud images now, or each one on its first
+  `dcvm create`
+- Whether to enable tab completion in your shell (default: yes)
+- Whether to set up the NFS shared folder (default: no; see
+  [Security](security.md#network-exposure))
+
+Without a terminal (for example piped input) it uses the defaults, skips the
+image download and does not set up NFS. The first four answers are saved to
+`/etc/dcvm-install.conf`; running the installer again reuses them.
 
 ## Installation Process
 
 The installer will:
 
-1. ✅ Check system requirements
-2. ✅ Install required packages (qemu-kvm, libvirt, etc.)
-3. ✅ Configure KVM/QEMU virtualization
-4. ✅ Set up the virtual network
-5. ✅ Create directory structure
-6. ✅ Configure NFS for shared storage
-7. ✅ Set up systemd services
-8. ✅ Install the `dcvm` command
+1. Install the packages with `apt` (Debian, Ubuntu and derivatives) or
+   `pacman` (Arch and derivatives): QEMU/KVM, libvirt, virt-install,
+   genisoimage/cdrtools, libguestfs-tools, NFS utilities, `jq`, dnsmasq tools
+2. Check that the CPU supports KVM and `/dev/kvm` exists
+3. Install `dcvm` to `/usr/local/bin` and its libraries to `/usr/local/lib/dcvm`
+4. Start libvirtd
+5. Create the directories under the installation directory
+6. Offer to download the cloud images
+7. Enable IP forwarding (and persist it in `/etc/sysctl.conf`)
+8. Create the NAT network (DHCP `.10`-`.200`, autostart on)
+9. Offer tab completion and the NFS share
+10. Start stopped VMs on the dcvm network (other VMs on the host are left alone)
+11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` hourly
+
+On the demo host (a fresh Ubuntu 24.04 VM) the whole install took about two
+minutes, most of it `apt`.
+
+The NFS share, if you enable it, is exported to the dcvm subnet only. On a
+host installed before 0.9.8 it was exported to every host; run the installer
+again and answer `y` to the NFS question to limit it.
 
 ## Post-Installation
 
@@ -96,11 +131,12 @@ dcvm --version
 
 ### Check System Status
 
-View the status of DCVM services:
+View the status of the services dcvm relies on:
 
 ```bash
 systemctl status libvirtd
-systemctl status nfs-server
+systemctl list-timers datacenter-storage.timer
+systemctl status nfs-server   # only if you enabled the NFS share
 ```
 
 ### Test Network Configuration
@@ -117,12 +153,10 @@ dcvm network
 
 Location: `/etc/dcvm-install.conf`
 
-Edit this file to customize:
-
-- Base directory
-- Network settings
-- Storage configuration
-- Backup settings
+It holds `DATACENTER_BASE`, `NETWORK_NAME`, `BRIDGE_NAME` and
+`NETWORK_SUBNET`, read by every dcvm command. Changing a value later does not
+move existing files or reconfigure the network. See
+[Operations › Settings](operations.md#settings) for the other knobs.
 
 ### Network Configuration
 
@@ -248,4 +282,4 @@ After installation:
 For issues and questions:
 
 - GitHub Issues: https://github.com/metharda/dcvm/issues
-- Documentation: https://github.com/metharda/dcvm/docs
+- Documentation: [docs/](https://github.com/metharda/dcvm/tree/main/docs) and [Operations › Troubleshooting](operations.md#troubleshooting)
