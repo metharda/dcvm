@@ -163,7 +163,7 @@ contact sheet of the whole recording for wrapped lines, leaked setup
 commands, empty output or errors.
 
 ```bash
-ffmpeg -v error -sseof -0.1 -i docs/demo/hero.gif -frames:v 1 -update 1 last.png
+ffmpeg -v error -sseof -1 -i docs/demo/hero.gif -update 1 last.png
 ffmpeg -v error -i docs/demo/hero.gif -vf "fps=1/2,scale=600:-1,tile=4x4" -frames:v 1 sheet.png
 ```
 
