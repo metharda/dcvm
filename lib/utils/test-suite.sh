@@ -2042,49 +2042,52 @@ test_published_checksum() {
   rm -rf "$t"
 }
 
-# Downloads are checked against SHA256SUMS/SHA512SUMS/<file>.SHA256 from the
-# mirror they came from or another mirror serving the same file name.
-test_published_checksum() {
-  if ! command -v curl >/dev/null 2>&1 || ! command -v sha512sum >/dev/null 2>&1; then
-    log_test "SKIP" "published checksum verification" "needs curl and sha512sum"
-    return
-  fi
-  local t rc
+# --disable-root turns root login off in force mode and conflicts with root
+# options; the guest NFS mount uses the configured subnet.
+test_disable_root_and_nfs_subnet() {
+  local t out
   t=$(mktemp -d)
-  mkdir -p "$t/m1" "$t/m2" "$t/m3"
-  head -c 4096 /dev/urandom >"$t/m1/img.qcow2"
-  cp "$t/m1/img.qcow2" "$t/m2/img.qcow2"
-  cp "$t/m1/img.qcow2" "$t/m3/img.qcow2"
-  (cd "$t/m1" && sha256sum img.qcow2 >SHA256SUMS)
-  (
-    # shellcheck source=mirror-manager.sh
-    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
-    get_mirrors() { printf '%s\n' "file://$t/m1/img.qcow2" "file://$t/m2/img.qcow2"; }
-    verify_published_checksum x "file://$t/m1/img.qcow2" "$t/m1/img.qcow2" 2>/dev/null
-    echo "same=$?"
-    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
-    echo "other=$?"
-    echo tampered >>"$t/m2/img.qcow2"
-    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
-    echo "tampered=$?"
-    check_download x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" "" 2>/dev/null
-    echo "tampered_check=$?"
-    get_mirrors() { :; }
-    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
-    echo "none=$?"
-    check_download x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" "" 2>/dev/null
-    echo "none_check=$?"
-    (cd "$t/m3" && sha512sum img.qcow2 | sed 's/  / */' >SHA512SUMS)
-    verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
-    echo "sha512=$?"
-  ) >"$t/out"
-  for rc in same=0 other=0 tampered=1 tampered_check=1 none=2 none_check=0 sha512=0; do
-    if grep -qx "$rc" "$t/out"; then
-      log_test "PASS" "published checksum ($rc)"
-    else
-      log_test "FAIL" "published checksum ($rc)" "$(tr '\n' ' ' <"$t/out")"
-    fi
-  done
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
+    setup_root_access >/dev/null 2>&1
+    echo "$ENABLE_ROOT"
+  )
+  if [ "$out" = n ]; then
+    log_test "PASS" "create --disable-root (force mode: root off)"
+  else
+    log_test "FAIL" "create --disable-root (force mode: root off)" "ENABLE_ROOT=$out"
+  fi
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123
+    setup_root_access >/dev/null 2>&1
+    echo "$ENABLE_ROOT"
+  )
+  if [ "$out" = y ]; then
+    log_test "PASS" "create -f without --disable-root (root on, unchanged)"
+  else
+    log_test "FAIL" "create -f without --disable-root (root on, unchanged)" "ENABLE_ROOT=$out"
+  fi
+  if (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
+    FLAG_ROOT_PASSWORD=rootpass123 FLAG_ENABLE_ROOT=y
+    setup_root_access
+  ) >/dev/null 2>&1; then
+    log_test "FAIL" "create --disable-root with -r (rejected)" "Expected failure but got success"
+  else
+    log_test "PASS" "create --disable-root with -r (rejected)"
+  fi
+
+  generate_test_userdata tester n "" "$t/default.yaml"
+  NETWORK_SUBNET=192.168.100 generate_test_userdata tester n "" "$t/subnet.yaml"
+  if grep -q '"10.10.10.1:.*/nfs-share /mnt/shared nfs' "$t/default.yaml" &&
+    grep -q '"192.168.100.1:.*/nfs-share /mnt/shared nfs' "$t/subnet.yaml"; then
+    log_test "PASS" "guest NFS mount uses NETWORK_SUBNET"
+  else
+    log_test "FAIL" "guest NFS mount uses NETWORK_SUBNET" "$(grep -h 'mnt/shared nfs' "$t"/*.yaml | tr '\n' ' ')"
+  fi
   rm -rf "$t"
 }
 
@@ -2282,8 +2285,8 @@ test_common_functions() {
   test_dhcp_release
   test_installer_packages
   test_published_checksum
+  test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only
-  test_published_checksum
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact

@@ -35,6 +35,7 @@ FLAG_DISK_SIZE=""
 FLAG_OS=""
 FLAG_ENABLE_ROOT=""
 FLAG_ROOT_PASSWORD=""
+FLAG_DISABLE_ROOT=false
 FLAG_WITH_SSH_KEY=false
 FLAG_DISABLE_SSH_KEY=false
 FLAG_STATIC_IP=""
@@ -61,6 +62,7 @@ Options:
   -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu; 'root' logs in as root)
   -p, --password <password>  # Set VM password (4-128 chars, no line breaks; required in force mode)
   --enable-root                  		# Enable root login (uses same password as user)
+  --disable-root                 		# Disable root login (force mode enables it otherwise)
   -r, --root-password <password> 		# Set root password (enables root access)
   -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)
   -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
@@ -94,6 +96,7 @@ Force Mode Examples (uses defaults for unspecified options):
   dcvm create db-server -f -p secret -m 4096 -c 4 -k mysql-server,php		# Custom memory/CPU, default disk/OS
   dcvm create test-vm -f -p mypass -o 1 --enable-root       			      # Custom OS, root enabled
   dcvm create admin-vm -f -p mypass -r rootpass123          			      # Different root password
+  dcvm create lab-vm -f -p mypass --disable-root            			      # No root login
 
 ISO Installation Examples:
   dcvm create custom-vm -f -o /path/to/ubuntu.iso -m 4096   			# Install from ISO file
@@ -121,6 +124,10 @@ parse_arguments() {
       ;;
     --enable-root)
       FLAG_ENABLE_ROOT="y"
+      shift
+      ;;
+    --disable-root)
+      FLAG_DISABLE_ROOT=true
       shift
       ;;
     -r | --root-password)
@@ -420,6 +427,14 @@ setup_user_account() {
 }
 
 setup_root_access() {
+  if [ "$FLAG_DISABLE_ROOT" = true ]; then
+    if [ "$VM_USERNAME" = "root" ] || [ -n "$FLAG_ENABLE_ROOT" ]; then
+      print_error "--disable-root can't be combined with username root, --enable-root or --root-password"
+      exit 1
+    fi
+    FLAG_ENABLE_ROOT="n"
+  fi
+
   # Username root is the root account itself: root access is on and root has
   # one password (the -p / prompted password).
   if [ "$VM_USERNAME" = "root" ]; then
