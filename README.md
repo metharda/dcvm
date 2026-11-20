@@ -9,7 +9,7 @@
 [![Runs on KVM + libvirt](https://img.shields.io/badge/runs%20on-KVM%20%2B%20libvirt-0E7490?logo=linux&logoColor=white)](docs/architecture.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-<img src="docs/demo/hero.gif" width="800" alt="Terminal recording: 'dcvm create web -f -p $VM_PASSWORD -k nginx --ip 10.10.10.50' prints the creation steps and 'VM web created successfully!'. After first boot, 'curl -s 10.10.10.50' returns 'Welcome to web, Nginx server running!', and 'ssh ubuntu@10.10.10.50' logs in with the generated key and reports Ubuntu 24.04.5 LTS with nginx active.">
+<img src="docs/demo/hero.gif" width="800" alt="Terminal recording: 'dcvm create web -f -p $VM_PASSWORD -k nginx --ip 10.10.10.50' prints one line per step (image, user, root login, network, nginx, cloud-init, disk, VM) and a 'web is booting' box with its address, login and resources. After first boot, 'curl -s 10.10.10.50' returns 'Welcome to web, Nginx server running!', and 'ssh ubuntu@10.10.10.50' logs in with the generated key and reports Ubuntu 24.04.5 LTS with nginx active.">
 
 </div>
 
@@ -109,7 +109,7 @@ Practise an exploit, misconfigure a server, `rm -rf` the wrong folder: a
 backup puts the VM back exactly as it was.
 
 <div align="center">
-<img src="docs/demo/backup.gif" width="800" alt="Terminal recording: a note is written into the VM, then 'dcvm backup create web' shuts the VM down, copies and compresses its disk and starts it again. The web root and the note are deleted inside the VM and 'curl -sI' returns 'HTTP/1.1 404 Not Found'. 'dcvm backup restore web' asks for 'yes', restores the disk and starts the VM. After boot 'curl -sI' returns 'HTTP/1.1 200 OK' and 'cat notes.txt' prints 'flag{keep-me}' again.">
+<img src="docs/demo/backup.gif" width="800" alt="Terminal recording: a note is written into the VM, then 'dcvm backup create web' shuts the VM down, copies and compresses its disk behind a spinner and starts it again. The web root and the note are deleted inside the VM and 'curl -sI' returns 'HTTP/1.1 404 Not Found'. 'dcvm backup restore web' asks for 'yes', restores the disk and starts the VM. After boot 'curl -sI' returns 'HTTP/1.1 200 OK' and 'cat notes.txt' prints 'flag{keep-me}' again.">
 <br>
 <sub>Recorded in real time and played back 3× faster; the two waits for the VM to boot are cut.</sub>
 </div>
@@ -135,7 +135,7 @@ backup puts the VM back exactly as it was.
 ## Day to day
 
 <div align="center">
-<img src="docs/demo/daily.gif" width="800" alt="Terminal recording: 'dcvm list' shows VMs web and ctf running. 'dcvm network ports setup' forwards host port 2221 to web's SSH and 8081 to its HTTP, 2222 and 8082 to ctf, and prints the ssh and http commands to use from other machines. 'dcvm network ports test' shows ping, SSH and HTTP checks, all passing for web and HTTP failing for ctf, which runs no web server. 'dcvm stop ctf' shuts it down and 'dcvm delete ctf' removes it, ending with checks that the VM, its DHCP lease and its disk are gone.">
+<img src="docs/demo/daily.gif" width="800" alt="Terminal recording: 'dcvm list' shows a table with VMs web and ctf running. 'dcvm network ports setup' prints a table forwarding host port 2221 to web's SSH and 8081 to its HTTP, 2222 and 8082 to ctf, with the ssh and http commands to use from other machines. 'dcvm network ports test' shows ping, SSH and HTTP checks, all passing for web and HTTP failing for ctf, which runs no web server. 'dcvm stop ctf' shuts it down and 'dcvm delete ctf' removes it step by step, ending with 'ctf deleted: no DHCP lease, VM or disk left'.">
 <br>
 <sub>Real time, nothing cut.</sub>
 </div>
@@ -187,6 +187,8 @@ variables change behaviour:
 | `DCVM_REPO_BRANCH` | `main` | installer, `self-update` | Branch to install or update from |
 | `SSH_PORT_START` | `2221` | `dcvm network ports setup` | First host port forwarded to a VM's port 22 |
 | `HTTP_PORT_START` | `8081` | `dcvm network ports setup` | First host port forwarded to a VM's port 80 |
+| `DCVM_VERBOSE` | unset | all commands | `1` shows every detail line instead of one line per step |
+| `NO_COLOR` | unset | all commands | Turns colours off ([no-color.org](https://no-color.org)) |
 
 ```bash
 # Install from a fork's branch

@@ -41,6 +41,17 @@ limit it to the dcvm subnet and make it writable for VM users.
 
 ### Changed
 
+- New output for the long screens: `dcvm create`, `delete`, `backup create`
+  and `restore`, `network ports setup/show/test`, `list`, `status`,
+  `start/stop/restart` and the installer print a title, one aligned line per
+  step (`✓`, `!`, `✗`), a spinner with elapsed time for slow steps, and a
+  result line or box with next steps. `dcvm list` and `status` show a table
+  of dcvm VMs and only count other libvirt VMs. The installer runs the
+  package manager behind a spinner and logs its output. Details from the
+  underlying tools are hidden on success and shown on failure;
+  `DCVM_VERBOSE=1` shows everything. Colour is off when the output is not a
+  terminal, with `NO_COLOR` or `TERM=dumb`, and symbols fall back to ASCII
+  outside UTF-8 locales.
 - `dcvm console <vm>` attaches to the VM's serial console, as `dcvm help`
   says. Without a name it still prints access hints, but no longer the
   incorrect `Default login: admin / admin123` line.

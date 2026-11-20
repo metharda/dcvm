@@ -138,8 +138,9 @@ dcvm console myvm
 dcvm list
 ```
 
-Shows every libvirt VM on the host (`virsh list --all`), then the VMs on the
-dcvm network with their state.
+Shows the VMs on the dcvm network as a table (state, IP, vCPU, memory). Other
+libvirt VMs on the host are counted, not listed; use `virsh list --all` for
+those.
 
 ### Checking VM Status
 
@@ -147,8 +148,8 @@ dcvm network with their state.
 dcvm status
 ```
 
-Shows all VMs, the active port-forward rules, the libvirt networks and the IP
-of each dcvm VM. It takes no VM name.
+Shows the same table as `dcvm list`, plus whether the dcvm network is active
+and how many VMs have port forwards. It takes no VM name.
 
 ### Starting a VM
 
