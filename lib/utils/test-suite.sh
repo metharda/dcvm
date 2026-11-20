@@ -746,6 +746,76 @@ test_hosts_rename_sed_expr() {
   rm -rf "$t"
 }
 
+# An in-place restore keeps the VM's MAC (and so its DHCP IP and port
+# forwards); only a copy gets new MACs. A versioned q35 machine type becomes
+# plain q35 so libvirt accepts the q35 PCIe controllers on the first define.
+test_backup_restore_in_place() {
+  local t ts=20260101_120000 mode
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  cat >"$t/backups/vm1-$ts/vm1-config-$ts.xml" <<EOF
+<domain type='kvm'>
+  <name>vm1</name>
+  <os>
+    <type arch='x86_64' machine='pc-q35-noble'>hvm</type>
+  </os>
+  <devices>
+    <disk type='file' device='disk'>
+      <source file='$t/vms/vm1/vm1-disk.qcow2'/>
+    </disk>
+    <controller type='pci' index='0' model='pcie-root'/>
+    <interface type='network'>
+      <mac address='52:54:00:11:22:33'/>
+    </interface>
+  </devices>
+</domain>
+EOF
+
+  for mode in xmlstarlet sed; do
+    if [ "$mode" = xmlstarlet ] && ! command -v xmlstarlet >/dev/null 2>&1; then
+      log_test "SKIP" "backup restore in place ($mode)" "xmlstarlet not installed"
+      continue
+    fi
+    echo original >"$t/vms/vm1/vm1-disk.qcow2"
+    printf ' 1    vm1    running\n' >"$t/list"
+    rm -f "$t/defined.xml"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      if [ "$mode" = sed ]; then
+        # shellcheck disable=SC2317 # hide xmlstarlet to exercise the sed path
+        command() {
+          if [ "$1" = -v ] && [ "$2" = xmlstarlet ]; then return 1; fi
+          builtin command "$@"
+        }
+      fi
+      echo yes | restore_vm vm1 "$ts" >"$t/out" 2>&1
+    )
+    if grep -q "52:54:00:11:22:33" "$t/defined.xml" 2>/dev/null &&
+      grep -qE "machine=['\"]q35['\"]" "$t/defined.xml"; then
+      log_test "PASS" "backup restore in place keeps MAC, q35 machine ($mode)"
+    else
+      log_test "FAIL" "backup restore in place keeps MAC, q35 machine ($mode)" "$(grep -oE "machine=[^ >]*|address=[^ />]*" "$t/defined.xml" 2>/dev/null | tr '\n' ' ')"
+    fi
+  done
+
+  rm -f "$t/defined.xml"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    restore_vm vm1 "$ts" "" "" vm1-copy </dev/null >/dev/null 2>&1
+  )
+  if [ -f "$t/defined.xml" ] && grep -q "<mac address=" "$t/defined.xml" &&
+    ! grep -q "52:54:00:11:22:33" "$t/defined.xml"; then
+    log_test "PASS" "backup restore <new_name> (new MAC)"
+  else
+    log_test "FAIL" "backup restore <new_name> (new MAC)"
+  fi
+
+  rm -rf "$t"
+}
+
 test_backup_restore_new_name() {
   local t ts=20260101_120000
   t=$(mktemp -d)
@@ -2073,6 +2143,7 @@ test_common_functions() {
   test_delete_vm_keeps_network
   test_hosts_rename_sed_expr
   test_backup_restore_new_name
+  test_backup_restore_in_place
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
   test_root_username_userdata

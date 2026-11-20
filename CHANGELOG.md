@@ -23,6 +23,14 @@ history, so the commit or PR is listed for each release.
   twice (`grep -c` already prints `0` when nothing matches); these now use
   `|| true`, as does `dcvm self-update`'s file count. The test suite now fails
   on the pattern.
+- `dcvm backup restore <vm>` (in place) gave the VM new MAC addresses, so a
+  DHCP VM came back with a new IP and its saved port forwards pointed at the
+  old one. Only a restore under a new name changes MACs now.
+- Restore removed versioned q35 machine types such as `pc-q35-8.2` or
+  `pc-q35-noble`, so libvirt fell back to i440fx and rejected the VM's PCIe
+  controllers; every restore of a dcvm VM needed two failed `virsh define`
+  attempts and printed PCI controller warnings. Restore now uses plain `q35`,
+  which also works on a host with a different QEMU version.
 
 ## [0.9.7] - 2026-11-16
 
