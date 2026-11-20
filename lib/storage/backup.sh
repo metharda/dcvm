@@ -1031,6 +1031,7 @@ customize_restored_guest() {
 }
 
 restore_vm() {
+  ui_quiet
   # $1 = VM whose backup is restored; $5 (optional) = name of the restored VM.
   local source_name="$1"
   local vm_name="${5:-$1}"

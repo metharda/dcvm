@@ -716,7 +716,7 @@ create_network() {
     print_status_log "INFO" "Network '$net_name' already exists."
     if ! virsh net-list | grep -q "$net_name.*active"; then
       print_status_log "INFO" "Starting existing network '$net_name'..."
-      virsh net-start "$net_name" 2>/dev/null || print_status_log "WARNING" "Could not start network"
+      virsh net-start "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not start network"
     fi
 
     return 0
@@ -744,16 +744,16 @@ create_network() {
 </network>
 EOF
 
-  if virsh net-define "$network_config" 2>/dev/null; then
+  if virsh net-define "$network_config" >/dev/null 2>&1; then
     print_status_log "SUCCESS" "Network '$net_name' defined"
 
-    if virsh net-start "$net_name" 2>/dev/null; then
+    if virsh net-start "$net_name" >/dev/null 2>&1; then
       print_status_log "SUCCESS" "Network '$net_name' started"
     else
       print_status_log "WARNING" "Network defined but could not start - may need manual start"
     fi
 
-    virsh net-autostart "$net_name" 2>/dev/null || print_status_log "WARNING" "Could not set network to autostart"
+    virsh net-autostart "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not set network to autostart"
 
     print_status_log "SUCCESS" "Network '$net_name' created"
   else

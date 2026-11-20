@@ -978,7 +978,6 @@ setup_vm_resources() {
 
 show_vm_summary() {
   if [ "$FORCE_MODE" = true ]; then
-    echo ""
     print_info "Starting VM creation"
   else
     echo ""
@@ -1655,7 +1654,6 @@ EOF
     [ -n "$FLAG_OS" ] && VM_OS_CHOICE="$FLAG_OS" || VM_OS_CHOICE="${VM_OS_CHOICE:-$DEFAULT_OS}"
     select_os
     [ "$FORCE_MODE" = true ] && {
-      echo ""
       print_info "OS configuration"
       print_success "Operating system set to: $VM_OS"
     } || {
