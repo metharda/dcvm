@@ -50,6 +50,12 @@ jobs:
             docker build -q -t dcvm-vhs -
           mkdir -p screens
 
+      - name: Wait for apt
+        run: |
+          # The runner's own package updates would hold the lock the installer needs.
+          sudo systemctl stop unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+          while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 3; done
+
       - name: Record
         env:
           TAPES: ${{ inputs.tapes || 'hero backup daily' }}
@@ -64,6 +70,10 @@ jobs:
           done
           ls -la screens docs/demo/*.gif
 
+      - name: Collect the installer log
+        if: always()
+        run: sudo cp /var/log/datacenter-startup.log screens/ 2>/dev/null && sudo chmod a+r screens/datacenter-startup.log || true
+
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,5 +82,6 @@ jobs:
           path: |
             screens/*.png
             screens/*.gif
+            screens/*.log
             docs/demo/*.gif
           if-no-files-found: warn

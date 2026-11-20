@@ -112,8 +112,8 @@ The installer will:
 10. Start stopped VMs on the dcvm network (other VMs on the host are left alone)
 11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` hourly
 
-On the demo host (a fresh Ubuntu 24.04 VM) the whole install took about two
-minutes, most of it `apt`.
+On a fresh Ubuntu 24.04 host (a GitHub runner, when recording the README
+demo) the package install took 47 seconds and the rest a few more.
 
 The NFS share, if you enable it, is exported to the dcvm subnet only. On a
 host installed before 0.9.8 it was exported to every host; run the installer

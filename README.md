@@ -55,9 +55,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/metharda/dcvm/main/lib/i
 > [Installation](docs/installation.md) for a manual install from a clone.
 
 <div align="center">
-<img src="docs/demo/quickstart.gif" width="800" alt="Terminal recording of the install one-liner on a fresh Ubuntu 24.04 host: the installer asks for the install directory, network name, bridge name and subnet (defaults accepted), installs the KVM, libvirt and cloud-init packages with apt, skips the optional image download and NFS share, enables tab completion, and ends with 'dcvm is ready to use!' and 'dcvm version' reporting the installed version.">
+<img src="docs/demo/quickstart.gif" width="800" alt="Terminal recording of the install one-liner on a fresh Ubuntu 24.04 host: the installer asks for the install directory, network name, bridge name and subnet (defaults accepted), installs the KVM, libvirt and image packages behind a spinner, then prints one line per step (KVM, dcvm, libvirt, directories, cloud images skipped, IP forwarding, network, tab completion, NFS skipped, storage check) and a 'dcvm 0.9.8 is installed' box with next steps; 'dcvm version' reports 0.9.8.">
 <br>
-<sub>Fresh Ubuntu 24.04 host, all installer defaults. Recorded in real time (about 2 minutes, mostly <code>apt</code>) and played back 6× faster.</sub>
+<sub>Fresh Ubuntu 24.04 host, all installer defaults. Recorded in real time (the packages took 47 s on this host) and played back 4× faster.</sub>
 </div>
 
 The installer asks a few questions; the defaults are fine. It installs
