@@ -1,0 +1,76 @@
+name: Record demos
+
+# Records docs/demo tapes on a fresh GitHub runner, which acts as the dcvm
+# host (KVM is available on ubuntu runners), and uploads the results.
+#   screens: screenshots of every long screen, to review output changes
+#   hero backup daily: the README GIFs, in this order (each starts from the
+#     state the previous one leaves; docs/demo/prepare.sh sets up the rest)
+#   quickstart: the install GIF; run it on its own, it installs from main
+on:
+  workflow_dispatch:
+    inputs:
+      tapes:
+        description: Tapes to record, space separated
+        default: hero backup daily
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          grep -cE 'vmx|svm' /proc/cpuinfo
+
+      - name: Prepare the recording host
+        run: |
+          set -euo pipefail
+          # VHS types into a root SSH session on this runner, like on any host.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server >/dev/null
+          ssh-keygen -q -t ed25519 -N '' -f key
+          sudo install -d -m 700 /root/.ssh
+          sudo tee -a /root/.ssh/authorized_keys <key.pub >/dev/null
+          sudo systemctl start ssh
+          sudo sh -c 'umask 077; openssl rand -base64 18 >/root/.demo-pass'
+          printf 'Host 10.10.10.*\n  StrictHostKeyChecking accept-new\n  LogLevel ERROR\n' | sudo tee /root/.ssh/config >/dev/null
+          sudo rm -rf /root/dcvm-src
+          sudo cp -r "$GITHUB_WORKSPACE" /root/dcvm-src
+          printf 'FROM ghcr.io/charmbracelet/vhs:v0.12.1\nRUN apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null && rm -rf /var/lib/apt/lists/*\n' |
+            docker build -q -t dcvm-vhs -
+          mkdir -p screens
+
+      - name: Record
+        env:
+          TAPES: ${{ inputs.tapes || 'hero backup daily' }}
+        run: |
+          set -euo pipefail
+          for tape in $TAPES; do
+            echo "::group::$tape"
+            [ "$tape" = quickstart ] || sudo bash docs/demo/prepare.sh "$tape"
+            docker run --rm --network host -e LAB_HOST=127.0.0.1 -v "$PWD":/vhs -w /vhs dcvm-vhs "docs/demo/$tape.tape"
+            [ "$tape" = screens ] || docker run --rm -v "$PWD":/vhs -w /vhs --entrypoint bash dcvm-vhs docs/demo/shrink.sh "docs/demo/$tape.gif"
+            echo "::endgroup::"
+          done
+          ls -la screens docs/demo/*.gif
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demos
+          path: |
+            screens/*.png
+            screens/*.gif
+            docs/demo/*.gif
+          if-no-files-found: warn

@@ -360,6 +360,7 @@ select_os() {
     local expected_sha
     expected_sha="${TEMPLATE_SHA256[$tmpl_key]:-}"
     if download_with_mirrors "$tmpl_key" "$TEMPLATE_FILE" 104857600 "$expected_sha"; then
+      TEMPLATE_DOWNLOADED=true
       echo "$VM_OS template downloaded successfully."
     else
       print_error "Failed to download $VM_OS template. Please check your internet connection or mirrors."
@@ -513,6 +514,7 @@ setup_ssh_key() {
       [ "$FORCE_MODE" = true ] && print_info "Creating SSH key" || print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
         SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY_CREATED=true
         [ "$FORCE_MODE" = true ] && print_success "SSH key created" || print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
         print_error "Failed to create SSH key"
@@ -804,6 +806,7 @@ interactive_prompt_ssh_key() {
       print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
         SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY_CREATED=true
         print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
         print_error "Failed to create SSH key"
@@ -975,7 +978,6 @@ setup_vm_resources() {
 
 show_vm_summary() {
   if [ "$FORCE_MODE" = true ]; then
-    echo ""
     print_info "Starting VM creation"
   else
     echo ""
@@ -1456,10 +1458,80 @@ install_vm() {
     exit 1
   fi
 
-  virsh autostart "$VM_NAME" >/dev/null 2>&1 || { [ "$FORCE_MODE" = true ] && print_warning "Failed to set VM autostart" || print_warning "Failed to set VM autostart (VM created successfully)"; }
+  VM_AUTOSTART_OK=true
+  virsh autostart "$VM_NAME" >/dev/null 2>&1 || VM_AUTOSTART_OK=false
+}
+
+os_label() {
+  case "$1" in
+  debian*) echo "Debian ${1#debian}" ;;
+  ubuntu*) echo "Ubuntu ${1#ubuntu}" ;;
+  archlinux) echo "Arch Linux" ;;
+  kali) echo "Kali Linux" ;;
+  *) echo "$1" ;;
+  esac
+}
+
+# Title and what is about to be built, one step per line.
+show_create_plan() {
+  local detail
+  ui_title "Creating $VM_NAME" "$(os_label "$VM_OS") ${SYM_DOT} ${VM_CPUS} vCPU ${SYM_DOT} ${VM_MEMORY} MB ${SYM_DOT} ${VM_DISK_SIZE} disk"
+  [ "$FORCE_MODE" = true ] || return 0
+  ui_step ok "Image" "$(basename "$TEMPLATE_FILE")$([ "${TEMPLATE_DOWNLOADED:-}" = true ] && echo " (downloaded)")"
+  detail="$VM_USERNAME with password"
+  [ -n "$SSH_KEY" ] && detail+=" and SSH key$([ "${SSH_KEY_CREATED:-}" = true ] && echo " (new ~/.ssh/id_rsa)")"
+  ui_step ok "User" "$detail"
+  if [ "$VM_USERNAME" = root ]; then
+    ui_step warn "Root login" "on (username root)"
+  elif [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
+    ui_step warn "Root login" "on, $([ "$ROOT_PASSWORD" = "$VM_PASSWORD" ] && echo "same password" || echo "own password") (--disable-root turns it off)"
+  else
+    ui_step ok "Root login" "off"
+  fi
+  if [ -n "$FLAG_STATIC_IP" ]; then
+    ui_step ok "Network" "$FLAG_STATIC_IP (static) on $NETWORK_NAME"
+  else
+    ui_step ok "Network" "DHCP on $NETWORK_NAME"
+  fi
+  if [ -n "$ADDITIONAL_PACKAGES" ]; then
+    ui_step ok "Packages" "${ADDITIONAL_PACKAGES//,/, } (installed on first boot)"
+  fi
 }
 
 show_post_creation_info() {
+  local login="log in" rows=()
+  [ -n "$SSH_KEY" ] && login="log in with the host's SSH key"
+  if [ -n "$FLAG_STATIC_IP" ]; then
+    rows+=("$(printf '%-11s%s' Address "$FLAG_STATIC_IP (static)")")
+  else
+    rows+=("$(printf '%-11s%s' Address "DHCP, shown by dcvm status")")
+  fi
+  rows+=("$(printf '%-11s%s' Login "$VM_USERNAME, password$([ -n "$SSH_KEY" ] && echo " or SSH key")")")
+  rows+=("$(printf '%-11s%s' Resources "$VM_CPUS vCPU, $VM_MEMORY MB RAM, $VM_DISK_SIZE disk")")
+  rows+=("$(printf '%-11s%s' "First boot" "about a minute (cloud-init)")")
+  [ -n "$ADDITIONAL_PACKAGES" ] && rows+=("$(printf '%-11s%s' Installs "${ADDITIONAL_PACKAGES//,/, }")")
+  ui_box "$VM_NAME is booting" "${rows[@]}"
+  if [ -n "$FLAG_STATIC_IP" ]; then
+    ui_next "ssh $VM_USERNAME@$FLAG_STATIC_IP" "$login" \
+      "dcvm console $VM_NAME" "watch the first boot" \
+      "dcvm network ports setup" "reach it from other machines"
+  else
+    ui_next "dcvm status" "shows its IP once it has booted" \
+      "ssh $VM_USERNAME@<ip>" "$login" \
+      "dcvm console $VM_NAME" "watch the first boot" \
+      "dcvm network ports setup" "reach it from other machines"
+  fi
+  if [ "${TAILSCALE_REQUESTED:-false}" = true ] || echo "$ADDITIONAL_PACKAGES" | grep -qi tailscale; then
+    if [ -n "$TAILSCALE_AUTHKEY" ]; then
+      echo -e "  Tailscale joins your tailnet after first boot; check with ${CYAN}tailscale status${NC} inside the VM."
+    else
+      echo -e "  Tailscale is installed; connect with ${CYAN}sudo tailscale up${NC} inside the VM."
+    fi
+    echo ""
+  fi
+}
+
+show_post_creation_info_verbose() {
   cat <<EOF
 ==================================================
  VM $VM_NAME created successfully!
@@ -1565,7 +1637,8 @@ main() {
       fi
     fi
 
-    cat <<EOF
+    [ "$FORCE_MODE" = true ] && ui_quiet
+    [ "$FORCE_MODE" = true ] || cat <<EOF
 ====================
  VM Creation Wizard
 ====================
@@ -1581,7 +1654,6 @@ EOF
     [ -n "$FLAG_OS" ] && VM_OS_CHOICE="$FLAG_OS" || VM_OS_CHOICE="${VM_OS_CHOICE:-$DEFAULT_OS}"
     select_os
     [ "$FORCE_MODE" = true ] && {
-      echo ""
       print_info "OS configuration"
       print_success "Operating system set to: $VM_OS"
     } || {
@@ -1596,19 +1668,27 @@ EOF
     setup_vm_resources
     show_vm_summary
     confirm_vm_creation
+    ui_quiet
+    show_create_plan
     prepare_vm_directory
     generate_cloud_init_userdata
     generate_cloud_init_metadata
     generate_cloud_init_network
     create_cloud_init_iso
+    ui_step ok "cloud-init" "seed with user-data, meta-data and network-config"
     create_vm_disk
+    ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
-    show_post_creation_info
+    if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
+      ui_step ok "VM" "defined and started, starts with the host"
+    else
+      ui_step warn "VM" "defined and started, but autostart could not be set"
+    fi
+    if [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
   done
 
   if [ ${#VM_NAMES[@]} -gt 1 ]; then
-    echo ""
-    print_success "All ${#VM_NAMES[@]} VMs created successfully!"
+    echo -e "${GREEN}${SYM_OK}${NC} All ${#VM_NAMES[@]} VMs created"
   fi
 }
 

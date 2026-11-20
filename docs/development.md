@@ -82,8 +82,12 @@ the version-bump check.
 - Scripts start with `#!/usr/bin/env bash`, find their directory with
   `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`, source
   `../utils/common.sh` and call `load_dcvm_config`.
-- Output goes through `print_info`, `print_success`, `print_warning` and
-  `print_error`, so every command looks the same.
+- Output goes through the helpers in `common.sh`, so every command looks the
+  same: a `ui_title`, one `ui_step` per step (wrap slow commands in `ui_run`),
+  then a result line or `ui_box` and `ui_next`. Colour only on a terminal and
+  never without a symbol or word next to it; keep `ui_box` rows ASCII.
+  Errors and warnings always print; detail lines go through `print_info`,
+  which `ui_quiet` hides unless `DCVM_VERBOSE=1`.
 - Validate user input with the `validate_*` helpers before writing anything.
 - Two-space indentation, kebab-case file names.
 - Anything that runs inside the guest goes into the cloud-init `user-data`;
@@ -97,6 +101,7 @@ script. Reuse these before writing new code:
 | Area | Functions |
 | :--- | :-------- |
 | Output and logs | `print_info`, `print_success`, `print_warning`, `print_error`, `print_status`, `log`, `log_to_file` |
+| Screens | `ui_title`, `ui_step` (one line per step), `ui_run` (spinner around a slow command), `ui_box` (key result), `ui_next` (next steps), `ui_table`, `ui_quiet` (hide info/success lines; `DCVM_VERBOSE=1` shows them) |
 | Config and checks | `load_dcvm_config`, `require_root`, `command_exists`, `check_dependencies` |
 | Validation | `validate_vm_name`, `validate_vm_name_list`, `validate_username`, `validate_password`, `validate_package_list`, `validate_ip_in_subnet`, `validate_memory_size`, `validate_cpu_count`, `validate_disk_size`, `trim_whitespace` |
 | VMs | `check_vm_exists`, `get_vm_state`, `get_vm_ip`, `get_vm_mac`, `get_vm_disk_path`, `get_vm_username`, `default_username`, `list_datacenter_vms`, `is_vm_in_network`, `stop_vm_gracefully` |
@@ -112,51 +117,33 @@ The GIFs in the README are recorded from real sessions with
 types real commands into a real dcvm host; nothing is mocked. Waits for a VM
 to boot are hidden, and each GIF says so in its caption or on screen.
 
-| Tape | GIF | Starting state of the recording host |
-| :--- | :-- | :----------------------------------- |
-| `quickstart.tape` | `quickstart.gif` (6× playback) | Fresh Ubuntu 24.04, dcvm not installed |
-| `hero.tape` | `hero.gif` | dcvm installed, Ubuntu 24.04 image downloaded, no VMs |
-| `backup.tape` | `backup.gif` (3× playback) | `web` from `hero.tape`, running, first boot finished |
-| `daily.tape` | `daily.gif` | `web` running, plus `ctf` (`dcvm create ctf -f -p "$VM_PASSWORD" -o 1`) running |
+They are recorded on a GitHub-hosted runner by
+[`.github/workflows/demos.yml`](../.github/workflows/demos.yml): the runner is
+a fresh Ubuntu 24.04 VM with KVM, so it serves as the dcvm host and is thrown
+away afterwards. Run it from the Actions tab (*Record demos*) or with:
 
-`_style.tape` holds the shared look (JetBrains Mono 16, 1200×720, Catppuccin
+```bash
+gh workflow run demos.yml -f tapes="hero backup daily"   # README GIFs from this checkout
+gh workflow run demos.yml -f tapes=quickstart            # install GIF; installs from main
+gh workflow run demos.yml -f tapes=screens               # screenshots of every long screen
+gh run download --name demos                             # GIFs and screenshots
+```
+
+| Tape | GIF | Starting state (set by `docs/demo/prepare.sh`) |
+| :--- | :-- | :--------------------------------------------- |
+| `hero.tape` | `hero.gif` | dcvm installed from the checkout, Ubuntu 24.04 image downloaded, no VMs |
+| `backup.tape` | `backup.gif` (3x playback) | `web` from `hero.tape`, booted |
+| `daily.tape` | `daily.gif` | `web` and `ctf` (Debian 13) running |
+| `quickstart.tape` | `quickstart.gif` (4x playback) | A fresh runner; it runs the README one-liner, so it shows `main` |
+| `screens.tape` | screenshots | A fresh runner; installs from the checkout |
+
+`_style.tape` holds the shared look (JetBrains Mono 16, 1200x720, Catppuccin
 Mocha, colourful window bar, teal margin) and `_login.tape` the hidden SSH
-login, which sets a plain `lab# ` prompt and exports `VM_PASSWORD` from a
-root-only file so no password is typed on camera.
-
-**Recording host.** Keep recordings off your own machine: run VHS in Docker
-on a test server and point it at a disposable Ubuntu 24.04 VM with nested KVM
-(here called `lab`) that acts as the dcvm host. Put the lab VM on a network
-other than `10.10.10.0/24` (libvirt's `default` network works), since dcvm
-creates that subnet inside it.
-
-```bash
-# On the test server, once
-cat > Dockerfile <<'EOF'
-FROM ghcr.io/charmbracelet/vhs:v0.12.1
-RUN apt-get update -qq && apt-get install -y -qq openssh-client && rm -rf /var/lib/apt/lists/*
-EOF
-docker build -t dcvm-vhs:0.12.1 .
-ssh-keygen -t ed25519 -N '' -f ~/dcvm-demo/key   # add key.pub to root@lab
-
-# On the lab VM, once (after dcvm is installed)
-printf 'Host 10.10.10.*\n  StrictHostKeyChecking accept-new\n  LogLevel ERROR\n' >> ~/.ssh/config
-(umask 077; openssl rand -base64 18 > /root/.demo-pass)
-```
-
-Run each tape from a checkout of this repository on the test server. Keep
-the private key outside the checkout and mount it where `_login.tape` expects
-it:
-
-```bash
-docker run --rm --network host -e LAB_HOST=<lab-ip> \
-  -v "$PWD":/vhs -v ~/dcvm-demo/key:/vhs/key:ro -w /vhs \
-  dcvm-vhs:0.12.1 docs/demo/hero.tape
-```
-
-Take a libvirt snapshot of the lab VM before each take
-(`virsh snapshot-create-as lab hero-ready`) and roll back with
-`virsh snapshot-revert lab hero-ready` to record it again.
+login to `$LAB_HOST`, which sets a plain `lab# ` prompt and exports
+`VM_PASSWORD` from a root-only file, so no password is typed on camera. The
+same tapes work against any dcvm host you can SSH into as root: put the key in
+`./key` and run
+`docker run --rm --network host -e LAB_HOST=<host> -v "$PWD":/vhs -w /vhs <vhs image with openssh-client> docs/demo/hero.tape`.
 
 **Check every GIF** before committing it: look at the last frame and a
 contact sheet of the whole recording for wrapped lines, leaked setup
@@ -167,13 +154,6 @@ ffmpeg -v error -sseof -1 -i docs/demo/hero.gif -update 1 last.png
 ffmpeg -v error -i docs/demo/hero.gif -vf "fps=1/2,scale=600:-1,tile=4x4" -frames:v 1 sheet.png
 ```
 
-**Shrink them** with `docs/demo/shrink.sh` (ffmpeg, available in the VHS
-image): 8 fps and a 64-colour palette built from all pixels, and for the
-installer recording 1 fps during the scrolling `apt` part.
-
-```bash
-docker run --rm -v "$PWD":/vhs -w /vhs --entrypoint bash dcvm-vhs:0.12.1 docs/demo/shrink.sh
-```
-
-That gives about 280 KB for the hero, 0.7-1.1 MB for the scrolling backup and
-day-to-day GIFs and 3.2 MB for the installer.
+The workflow runs `docs/demo/shrink.sh` on each GIF: 20 fps keeps typing and
+spinners smooth, and a 64-colour palette built from all pixels keeps the
+coloured labels.

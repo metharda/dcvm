@@ -846,7 +846,7 @@ backup_vm() {
   local vm_name="$1"
   local was_running=false
 
-  print_info "Starting backup for VM: $vm_name"
+  ui_quiet
   log "INFO" "Starting backup for VM: $vm_name"
 
   if ! check_vm_exists "$vm_name"; then
@@ -862,32 +862,23 @@ backup_vm() {
     return 1
   fi
 
-  print_info "VM disk path: $vm_disk_path"
-  print_info "Disk size: $(get_file_size "$vm_disk_path")"
+  ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
-  local vm_state=$(get_vm_state "$vm_name")
-  print_info "VM current state: $vm_state"
-
-  if [ "$vm_state" = "running" ]; then
+  if [ "$(get_vm_state "$vm_name")" = "running" ]; then
     was_running=true
-    print_info "Shutting down VM for consistent backup..."
-
-    if virsh shutdown "$vm_name" >/dev/null 2>&1; then
-      print_info "Shutdown command sent, waiting up to ${SHUTDOWN_TIMEOUT}s..."
-
-      if wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
-        print_success "VM shut down gracefully"
-        log "INFO" "VM $vm_name shut down gracefully"
-      else
-        print_warning "Graceful shutdown timeout, forcing shutdown..."
-        virsh destroy "$vm_name" >/dev/null 2>&1
-        sleep 5
-        log "WARNING" "Forced shutdown of VM $vm_name"
-      fi
-    else
+    if ! virsh shutdown "$vm_name" >/dev/null 2>&1; then
       print_error "Failed to send shutdown command"
       log "ERROR" "Failed to send shutdown command to VM $vm_name"
       return 1
+    fi
+    if ui_run "Shutting down" wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
+      ui_step ok "Shut down" "cleanly in ${UI_RUN_SECS}s"
+      log "INFO" "VM $vm_name shut down gracefully"
+    else
+      virsh destroy "$vm_name" >/dev/null 2>&1
+      sleep 5
+      ui_step warn "Shut down" "forced after ${SHUTDOWN_TIMEOUT}s"
+      log "WARNING" "Forced shutdown of VM $vm_name"
     fi
   fi
 
@@ -907,59 +898,60 @@ backup_vm() {
   local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
   local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
 
-  print_info "Backing up VM disk..."
-  if cp "$vm_disk_path" "$disk_backup"; then
-    local disk_size=$(get_file_size "$disk_backup")
-    print_success "Disk backup completed ($disk_size)"
-    log "INFO" "Disk backup completed for $vm_name: $disk_size"
-
-    disk_backup=$(compress_backup "$disk_backup" "$vm_name")
+  if ui_run "Copying disk" cp "$vm_disk_path" "$disk_backup"; then
+    ui_step ok "Copied disk" "$(get_file_size "$disk_backup") in ${UI_RUN_SECS}s"
+    log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk_backup")"
   else
-    print_error "Failed to backup VM disk"
+    ui_step fail "Copy disk" "failed"
+    cat "$UI_RUN_LOG"
     log "ERROR" "Failed to backup VM disk for $vm_name"
-
     if [ "$was_running" = true ]; then
-      print_info "Restarting VM..."
-      virsh start "$vm_name" >/dev/null 2>&1
+      virsh start "$vm_name" >/dev/null 2>&1 && ui_step ok "Started VM" "running again"
     fi
     return 1
   fi
 
-  print_info "Backing up VM configuration..."
+  if [ "$COMPRESSION_ENABLED" = true ]; then
+    if ui_run "Compressing" gzip "$disk_backup"; then
+      disk_backup="${disk_backup}.gz"
+      ui_step ok "Compressed" "$(get_file_size "$disk_backup") with gzip in ${UI_RUN_SECS}s"
+      log "INFO" "Compressed backup for $vm_name: $(get_file_size "$disk_backup")"
+    else
+      ui_step warn "Compress" "failed, kept the uncompressed copy"
+      log "ERROR" "Failed to compress backup for $vm_name"
+    fi
+  fi
+
   if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
-    print_success "Configuration backup completed"
+    ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
   else
-    print_error "Failed to backup VM configuration"
+    ui_step fail "Save config" "virsh dumpxml failed"
     log "ERROR" "Failed to backup VM configuration for $vm_name"
   fi
 
   if [ "$was_running" = true ]; then
-    print_info "Restarting VM..."
     if virsh start "$vm_name" >/dev/null 2>&1; then
-      print_success "VM restarted successfully"
+      ui_step ok "Started VM" "running again"
       log "INFO" "VM $vm_name restarted successfully"
     else
-      print_error "Failed to restart VM"
+      ui_step fail "Start VM" "failed; run: dcvm start $vm_name"
       log "ERROR" "Failed to restart VM $vm_name"
     fi
   fi
 
+  local before after
+  before=$(list_backup_timestamps_desc "$vm_name" | grep -c . || true)
   cleanup_old_backups "$vm_name"
+  after=$(list_backup_timestamps_desc "$vm_name" | grep -c . || true)
+  if [ "$after" -lt "$before" ]; then
+    ui_step ok "Old backups" "removed $((before - after)), keeping the $KEEP_BACKUPS newest"
+  fi
 
   echo ""
-  echo "=================================================="
-  print_success "Backup completed for VM: $vm_name"
-  echo "=================================================="
-  echo "Backup files created:"
-  echo "  Disk: $(basename "$disk_backup")"
-  echo "  Config: $(basename "$config_backup")"
-  echo "  Location: $backup_folder_path"
-  echo "  Timestamp: $DATE"
-  if [ "$COMPRESSION_ENABLED" = true ]; then
-    echo "  Compression: Enabled"
-  fi
-  echo ""
+  echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}Backup saved${NC}  ${DIM}$backup_folder_path${NC}"
+  ui_next "dcvm backup restore $vm_name" "put $vm_name back to this point" \
+    "dcvm backup list $vm_name" "all backups of $vm_name"
 
   log "SUCCESS" "Backup completed successfully for VM: $vm_name"
   return 0
@@ -1039,6 +1031,7 @@ customize_restored_guest() {
 }
 
 restore_vm() {
+  ui_quiet
   # $1 = VM whose backup is restored; $5 (optional) = name of the restored VM.
   local source_name="$1"
   local vm_name="${5:-$1}"
@@ -1106,6 +1099,12 @@ restore_vm() {
   print_info "Found backup files:"
   print_info "  Disk: $(basename "$disk_backup") ($(get_file_size "$disk_backup"))"
   print_info "  Config: $(basename "$config_backup")"
+  ui_quiet
+  if [ "$source_name" != "$vm_name" ]; then
+    ui_title "Restoring $source_name as $vm_name" "backup $backup_date ${SYM_DOT} $(get_file_size "$disk_backup")"
+  else
+    ui_title "Restoring $vm_name" "backup $backup_date ${SYM_DOT} $(get_file_size "$disk_backup")"
+  fi
 
   if check_vm_exists "$vm_name"; then
     local vm_state=$(get_vm_state "$vm_name")
@@ -1127,10 +1126,12 @@ restore_vm() {
       print_info "Stopping existing VM..."
       virsh shutdown "$vm_name" >/dev/null 2>&1
 
-      if ! wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
-        print_warning "Graceful shutdown failed, forcing stop..."
+      if ui_run "Stopping VM" wait_for_vm_state "$vm_name" "shut off" "$SHUTDOWN_TIMEOUT"; then
+        ui_step ok "Stopped VM" "cleanly in ${UI_RUN_SECS}s"
+      else
         virsh destroy "$vm_name" >/dev/null 2>&1
         sleep 5
+        ui_step warn "Stopped VM" "forced after ${SHUTDOWN_TIMEOUT}s"
       fi
     fi
 
@@ -1176,10 +1177,10 @@ restore_vm() {
     local original_size=$(stat -f%z "$disk_backup" 2>/dev/null || stat -c%s "$disk_backup" 2>/dev/null || echo "unknown")
     print_info "Decompressing $original_size bytes..."
 
-    if gunzip -c "$disk_backup" >"$vm_disk_path" 2>/dev/null; then
+    if ui_run "Restoring disk" sh -c 'gunzip -c "$1" >"$2"' _ "$disk_backup" "$vm_disk_path"; then
       if [ -f "$vm_disk_path" ] && [ -s "$vm_disk_path" ]; then
         local restored_size=$(get_file_size "$vm_disk_path")
-        print_success "Backup decompressed and restored ($restored_size)"
+        ui_step ok "Restored disk" "$restored_size in ${UI_RUN_SECS}s"
       else
         print_error "Decompressed file is empty or missing"
         rm -f "$vm_disk_path"
@@ -1195,7 +1196,7 @@ restore_vm() {
 
     if cp "$disk_backup" "$vm_disk_path"; then
       local restored_size=$(get_file_size "$vm_disk_path")
-      print_success "Backup copied successfully ($restored_size)"
+      ui_step ok "Restored disk" "$restored_size"
     else
       print_error "Failed to copy backup file"
       return 1
@@ -1369,7 +1370,7 @@ restore_vm() {
   while [ $attempt -le $max_attempts ]; do
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
-      print_success "VM configuration restored (attempt $attempt)"
+      ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi
@@ -1449,9 +1450,9 @@ restore_vm() {
 
   if [ -n "$conflicting_vms" ]; then
     print_error "The disk is referenced by other VM(s): $(echo $conflicting_vms | tr '\n' ' ')"
-    print_info "This will cause shared write lock failures."
-    print_info "Resolve by detaching/changing disk on those VMs or undefining them before start."
-    print_info "You can run: sudo $FIX_LOCK_SCRIPT $vm_name --verbose (for cleanup), but conflicts must be fixed manually."
+    echo "This will cause shared write lock failures."
+    echo "Resolve by detaching/changing disk on those VMs or undefining them before start."
+    echo "You can run: sudo $FIX_LOCK_SCRIPT $vm_name --verbose (for cleanup), but conflicts must be fixed manually."
     final_state="shut off (conflicting domains detected)"
     skip_auto_start=true
     start_error="Disk referenced by other VM(s): $(echo "$conflicting_vms" | tr '\n' ' ')"
@@ -1475,10 +1476,10 @@ restore_vm() {
       if [ $? -eq 0 ]; then
         print_success "VM restore completed and VM is now starting!"
         if wait_for_vm_state "$vm_name" "running" 30; then
-          print_success "VM is now running successfully!"
+          ui_step ok "Started VM" "running"
           final_state="running"
         else
-          print_warning "VM started but may still be booting"
+          ui_step warn "Started VM" "still booting"
           final_state="starting"
         fi
         break
@@ -1526,30 +1527,30 @@ restore_vm() {
 
   if [ "$need_manual_help" = true ] && [ "$final_state" != "running" ]; then
     print_warning "VM restored but failed to start automatically after $max_attempts attempts"
-    print_info ""
-    print_info "Manual troubleshooting steps:"
-    print_info "  1. Check for conflicting domains using the same disk:"
-    print_info "     virsh list --all --name | while read n; do [ \"$vm_name\" = \"$n\" ] || virsh domblklist \"$n\" --details | awk '{print $4}' | grep -Fxq \"$vm_disk_path\" && echo \"$n\"; done"
-    print_info "     If any are listed, detach/change their disk or undefine them."
-    print_info ""
-    print_info "  2. Run fix-lock.sh with verbose:"
-    print_info "     sudo $FIX_LOCK_SCRIPT $vm_name --verbose"
-    print_info ""
-    print_info "  3. Ensure no cdrom/ide remains in XML:"
-    print_info "     sudo grep -iE 'cdrom|controller type=\"ide\"' /etc/libvirt/qemu/$vm_name.xml || echo OK"
-    print_info ""
-    print_info "  4. Manual start:"
-    print_info "     virsh start $vm_name"
-    print_info ""
-    print_info "  5. Check detailed logs:"
-    print_info "     tail -f /var/log/libvirt/qemu/$vm_name.log"
-    print_info ""
+    echo ""
+    echo "Manual troubleshooting steps:"
+    echo "  1. Check for conflicting domains using the same disk:"
+    echo "     virsh list --all --name | while read n; do [ \"$vm_name\" = \"$n\" ] || virsh domblklist \"$n\" --details | awk '{print $4}' | grep -Fxq \"$vm_disk_path\" && echo \"$n\"; done"
+    echo "     If any are listed, detach/change their disk or undefine them."
+    echo ""
+    echo "  2. Run fix-lock.sh with verbose:"
+    echo "     sudo $FIX_LOCK_SCRIPT $vm_name --verbose"
+    echo ""
+    echo "  3. Ensure no cdrom/ide remains in XML:"
+    echo "     sudo grep -iE 'cdrom|controller type=\"ide\"' /etc/libvirt/qemu/$vm_name.xml || echo OK"
+    echo ""
+    echo "  4. Manual start:"
+    echo "     virsh start $vm_name"
+    echo ""
+    echo "  5. Check detailed logs:"
+    echo "     tail -f /var/log/libvirt/qemu/$vm_name.log"
+    echo ""
     [ -z "$start_error" ] && start_error="Auto-start skipped."
-    print_info "Last error was: $start_error"
+    echo "Last error was: $start_error"
   fi
 
   if [ "$from_import" = "true" ] && [ -n "$static_ip_copy" ]; then
-    print_info "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
+    echo "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
   elif [ "$from_import" = "true" ]; then
     read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh
     setup_ssh=${setup_ssh:-y}
@@ -1559,30 +1560,13 @@ restore_vm() {
   fi
 
   echo ""
-  echo "=================================================="
-  print_success "Restore completed for VM: $vm_name"
-  echo "=================================================="
-  echo "Restored from backup:"
-  echo "  Date: $backup_date"
-  echo "  Source: $(basename "$disk_backup")"
-  echo "  Compression: $([ "$is_compressed" = true ] && echo "Yes" || echo "No")"
-  echo "  VM Directory: $vm_dir"
-  echo "  Disk Size: $(get_file_size "$vm_disk_path")"
-  echo ""
-  echo "VM Status: $final_state"
-  echo ""
   if [ "$final_state" = "running" ]; then
-    echo "VM is ready to use!"
-    echo "  SSH access: dcvm network ports setup  (to configure ports)"
-    echo "  Console:    virsh console $vm_name"
+    echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}$vm_name restored${NC}  ${DIM}from backup $backup_date, $(get_file_size "$vm_disk_path") disk${NC}"
+    echo ""
   else
-    echo "Manual startup required:"
-    echo "  Try: dcvm start $vm_name"
-    echo "  Or:  virsh start $vm_name"
-    echo "  Fix locks: $FIX_LOCK_SCRIPT $vm_name"
+    print_warning "$vm_name restored from backup $backup_date but not running: $final_state"
+    ui_next "dcvm start $vm_name" "start it" "$FIX_LOCK_SCRIPT $vm_name" "clear stale locks if it won't start"
   fi
-  echo ""
-
   log "SUCCESS" "Restore completed successfully for VM: $vm_name from backup: $backup_date"
   return 0
 }

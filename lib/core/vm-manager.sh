@@ -125,10 +125,9 @@ start_vms() {
     if virsh list | grep -q " $target .*running"; then
       print_info "VM '$target' is already running"
     elif virsh list --all | grep -q " $target .*shut"; then
-      echo "Starting VM '$target'..."
-      if virsh start "$target"; then
-        print_success "VM '$target' started successfully"
-        print_info "Wait 30-60 seconds for full boot, then run: dcvm network ports setup"
+      if virsh start "$target" >/dev/null; then
+        print_success "$target started"
+        echo -e "  ${DIM}It boots in under a minute; then dcvm network ports setup makes it reachable from other machines.${NC}"
       else
         print_error "Failed to start VM '$target'"
       fi
@@ -167,9 +166,8 @@ stop_vms() {
     fi
 
     if virsh list | grep -q " $target .*running"; then
-      echo "Stopping VM '$target'..."
-      if virsh shutdown "$target"; then
-        print_success "Shutdown initiated for VM '$target'"
+      if virsh shutdown "$target" >/dev/null; then
+        print_success "$target is shutting down"
       else
         print_error "Failed to stop VM '$target'"
       fi
@@ -222,16 +220,14 @@ restart_vms() {
     fi
 
     if virsh list | grep -q " $target .*running"; then
-      echo "Restarting VM '$target'..."
-      if virsh reboot "$target"; then
-        print_success "Restart initiated for VM '$target'"
+      if virsh reboot "$target" >/dev/null; then
+        print_success "$target is restarting"
       else
         print_error "Failed to restart VM '$target'"
       fi
     elif virsh list --all | grep -q " $target .*shut"; then
-      echo "VM '$target' is stopped, starting it..."
-      if virsh start "$target"; then
-        print_success "VM '$target' started"
+      if virsh start "$target" >/dev/null; then
+        print_success "$target was stopped; started it"
       else
         print_error "Failed to start VM '$target'"
       fi
@@ -243,30 +239,52 @@ restart_vms() {
   fi
 }
 
+# dcvm VMs as a table, then a count line.
+show_vm_table() {
+  local vm state ip vcpu mem total=0 running=0 others=0
+  local rows
+  rows=$(
+    printf 'NAME\tSTATE\tIP\tVCPU\tMEMORY\n'
+    while read -r vm; do
+      [ -n "$vm" ] && is_vm_in_network "$vm" || continue
+      state=$(get_vm_state "$vm")
+      ip=""
+      if [ "$state" = running ]; then
+        ip=$(get_vm_ip "$vm") || ip=""
+      fi
+      read -r vcpu mem < <(virsh dominfo "$vm" 2>/dev/null | awk '/^CPU\(s\)/ { c = $2 } /^Max memory/ { m = $3 } END { print c, int(m / 1024) }')
+      printf '%s\t%s\t%s\t%s\t%s MB\n' "$vm" "$state" "$ip" "$vcpu" "$mem"
+    done < <(virsh list --all --name 2>/dev/null)
+  )
+  total=$(($(echo "$rows" | grep -c .) - 1))
+  running=$(echo "$rows" | awk -F'\t' 'NR > 1 && $2 == "running"' | grep -c . || true)
+  others=$(($(virsh list --all --name 2>/dev/null | grep -c .) - total))
+  echo ""
+  if [ "$total" -eq 0 ]; then
+    echo -e "  No dcvm VMs yet. Create one: ${CYAN}dcvm create myvm${NC}"
+  else
+    echo "$rows" | ui_table
+    echo ""
+    echo -e "  ${DIM}$total VM$([ "$total" -gt 1 ] && echo s) on $NETWORK_NAME ${SYM_DOT} $running running$([ "$others" -gt 0 ] && echo " ${SYM_DOT} $others other libvirt VM$([ "$others" -gt 1 ] && echo s) not shown (virsh list --all)")${NC}"
+  fi
+  echo ""
+}
+
 show_enhanced_status() {
-  echo "=== Enhanced VM Status ==="
+  show_vm_table
+  if virsh net-list 2>/dev/null | grep -q " $NETWORK_NAME .*active"; then
+    ui_step ok "Network" "$NETWORK_NAME active, ${NETWORK_SUBNET:-10.10.10}.0/24, bridge $BRIDGE_NAME"
+  else
+    ui_step fail "Network" "$NETWORK_NAME is not active (dcvm network start)"
+  fi
+  local n
+  n=$(read_port_mappings 2>/dev/null | grep -c . || true)
+  if [ "${n:-0}" -gt 0 ]; then
+    ui_step ok "Port forwards" "$n VM$([ "$n" -gt 1 ] && echo s) (dcvm network ports show)"
+  else
+    ui_step skip "Port forwards" "none (dcvm network ports setup)"
+  fi
   echo ""
-  echo "All VMs:"
-  virsh list --all
-  echo ""
-
-  echo "Port forwarding status:"
-  port_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
-  [ -n "$port_rules" ] && echo "$port_rules" || echo "No dcvm port forwarding rules found"
-  echo ""
-
-  echo "Network status:"
-  virsh net-list
-  echo ""
-
-  echo "VM IP addresses:"
-  virsh list --all | grep -E "(running|shut off)" | while read line; do
-    vm=$(echo "$line" | awk '{print $2}')
-    if [ -n "$vm" ] && [ "$vm" != "Name" ] && is_vm_in_network "$vm"; then
-      ip=$(get_vm_ip "$vm")
-      [ -n "$ip" ] && printf "%-15s: %s\n" "$vm" "$ip" || printf "%-15s: IP not available\n" "$vm"
-    fi
-  done
 }
 
 main() {
@@ -314,11 +332,7 @@ main() {
     fi
     ;;
   "list")
-    echo "Available VMs:"
-    virsh list --all
-    echo ""
-    echo "VMs using $NETWORK_NAME:"
-    list_datacenter_vms
+    show_vm_table
     ;;
   "setup-forwarding")
     echo "Setting up port forwarding... (deprecated: use 'dcvm network ports setup')"

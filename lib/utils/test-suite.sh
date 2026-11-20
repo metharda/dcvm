@@ -905,7 +905,7 @@ EOF
     stub_backup_tools "$t"
     restore_vm vm1 vm1-01.01.2026-1 "" "" vm1-pfx </dev/null >"$t/out-pfx" 2>&1
   )
-  if grep -q '<name>vm1-pfx</name>' "$t/defined.xml" 2>/dev/null && grep -q "vm1-disk-$ts" "$t/out-pfx"; then
+  if grep -q '<name>vm1-pfx</name>' "$t/defined.xml" 2>/dev/null && grep -q "backup $ts" "$t/out-pfx"; then
     log_test "PASS" "backup restore (<vm>-dd.mm.yyyy-N as backup list prints it)"
   else
     log_test "FAIL" "backup restore (<vm>-dd.mm.yyyy-N as backup list prints it)" "$(grep -i 'selector\|error' "$t/out-pfx" | head -2)"
@@ -2121,6 +2121,47 @@ test_installer_starts_dcvm_vms_only() {
   rm -rf "$t"
 }
 
+# Output helpers: no colour codes with NO_COLOR or when piped, columns
+# aligned by characters (printf pads by bytes), boxes with even sides, ASCII
+# symbols outside UTF-8.
+test_ui_output() {
+  local out
+  out=$(TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1 bash -c 'source "$1" >/dev/null 2>&1
+    printf "A\tBB\nx\t✓\nyyy\tz\n" | ui_table
+    ui_box "web is booting" "Address    10.10.10.50" "Login      ubuntu"
+    ui_step ok Disk 30G' _ "$SCRIPT_DIR/common.sh")
+  if ! grep -q $'\033' <<<"$out"; then
+    log_test "PASS" "ui output has no escape codes with NO_COLOR"
+  else
+    log_test "FAIL" "ui output has no escape codes with NO_COLOR"
+  fi
+  if [ "$(sed -n 1p <<<"$out")" = "  A    BB" ] && [ "$(sed -n 2p <<<"$out")" = "  x    ✓" ] &&
+    [ "$(sed -n 3p <<<"$out")" = "  yyy  z" ]; then
+    log_test "PASS" "ui_table aligns columns by characters"
+  else
+    log_test "FAIL" "ui_table aligns columns by characters" "$(sed -n 1,3p <<<"$out" | tr '\n' '|')"
+  fi
+  local widths
+  # Count characters in a UTF-8 shell; the suite itself may run in the C locale.
+  widths=$(sed -n '5,8p' <<<"$out" | LC_ALL=C.UTF-8 bash -c 'while IFS= read -r l; do echo "${#l}"; done' | sort -u | wc -l)
+  if [ "$widths" -eq 1 ] && grep -q '╭─ web is booting ─' <<<"$out"; then
+    log_test "PASS" "ui_box lines have the same width"
+  else
+    log_test "FAIL" "ui_box lines have the same width" "$(sed -n '5,8p' <<<"$out" | tr '\n' '|')"
+  fi
+  if grep -qx '  ✓ Disk            30G' <<<"$out"; then
+    log_test "PASS" "ui_step layout"
+  else
+    log_test "FAIL" "ui_step layout" "$(tail -1 <<<"$out")"
+  fi
+  out=$(TERM=xterm-256color LANG=C LC_ALL=C bash -c 'source "$1" >/dev/null 2>&1; ui_step ok Disk 30G; ui_step fail Copy x' _ "$SCRIPT_DIR/common.sh")
+  if grep -q '^  + Disk' <<<"$out" && grep -q '^  x Copy' <<<"$out"; then
+    log_test "PASS" "ui symbols fall back to ASCII outside UTF-8"
+  else
+    log_test "FAIL" "ui symbols fall back to ASCII outside UTF-8" "$out"
+  fi
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2284,6 +2325,7 @@ test_common_functions() {
   test_apache_exact_match
   test_dhcp_release
   test_installer_packages
+  test_ui_output
   test_published_checksum
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only

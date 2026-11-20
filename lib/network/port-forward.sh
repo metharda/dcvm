@@ -119,16 +119,15 @@ save_mappings_tmp_to_file() {
 }
 
 cmd_setup() {
-  print_info "=== dcvm Port Forwarding Setup ==="
+  ui_quiet
   if ! virsh net-list --all | grep -q "$NETWORK_NAME"; then
     print_error "$NETWORK_NAME network not found"
-    print_info "Please run: dcvm status (to initialize the environment)"
+    echo "Run the dcvm installer to create it."
     exit 1
   fi
   if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
-    print_warning "$NETWORK_NAME is not active, attempting to start"
+    print_warning "$NETWORK_NAME is not active, starting it"
     if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
-      print_success "$NETWORK_NAME started"
       sleep 3
     else
       print_error "Failed to start $NETWORK_NAME"
@@ -136,80 +135,80 @@ cmd_setup() {
     fi
   fi
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-  print_info "Discovering VMs on $NETWORK_NAME"
   VM_LIST=""
   while read -r vm; do
     [ -n "$vm" ] && is_vm_in_network "$vm" && VM_LIST="${VM_LIST}${vm}"$'\n'
   done < <(virsh list --all | grep -E "(running|shut off)" | awk '{print $2}' | grep -v "^$")
   VM_LIST=$(echo "$VM_LIST" | grep -v "^$")
   if [ -z "$VM_LIST" ]; then
-    print_warning "No VMs found using $NETWORK_NAME"
-    print_info "Create a VM first: dcvm create my-vm"
+    print_warning "No VMs on $NETWORK_NAME yet. Create one: dcvm create my-vm"
     exit 0
   fi
-  print_success "Found VMs using $NETWORK_NAME:"
-  echo "$VM_LIST" | while read vm; do
-    local state=$(get_vm_state "$vm")
-    echo "  - $vm ($state)"
-  done
-  echo ""
   cleanup_port_forwarding
   local HOST_IP=$(detect_host_ip)
-  print_info "Host IP detected: $HOST_IP"
+  ui_title "Port forwarding" "host $HOST_IP ${SYM_DOT} $NETWORK_NAME"
   local ssh_port=$SSH_PORT_START http_port=$HTTP_PORT_START
-  print_info "Configuring port forwarding for discovered VMs"
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
+  local skipped=() count=0
+  rm -f /tmp/dcvm_port_mappings.tmp
   while read -r vm <&3; do
     [ -z "$vm" ] && continue
     if ! virsh list | grep -q "$vm.*running"; then
-      print_warning "Skipping $vm (not running - start it first)"
+      skipped+=("$vm|not running, start it first")
       continue
     fi
     local vm_ip=$(get_vm_ip_advanced "$vm")
     if [ -n "$vm_ip" ] && [[ $vm_ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
-      setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"
+      if setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"; then
+        count=$((count + 1))
+      fi
       ssh_port=$((ssh_port + 1))
       http_port=$((http_port + 1))
     else
-      print_warning "Skipping $vm (no valid IP found or not reachable)"
+      skipped+=("$vm|no reachable IP yet; try again once it has booted")
     fi
   done 3<<<"$VM_LIST"
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_mappings_tmp_to_file
   if command_exists iptables-save; then
     create_dir_safe /etc/iptables
-    iptables-save >/etc/iptables/rules.v4 2>/dev/null && print_success "iptables rules saved to /etc/iptables/rules.v4"
+    iptables-save >/etc/iptables/rules.v4 2>/dev/null
   fi
+  if [ "$count" -gt 0 ]; then
+    {
+      printf 'VM\tIP\tSSH\tHTTP\n'
+      read_port_mappings | while read -r vm ip sp hp; do
+        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(get_vm_username "$vm")@$HOST_IP" "http://$HOST_IP:$hp"
+      done
+    } | ui_table
+  fi
+  local item
+  for item in "${skipped[@]}"; do
+    ui_step skip "${item%%|*}" "${item#*|}"
+  done
   echo ""
-  print_success "=== Port forwarding configuration complete! ==="
-  echo "Host IP: $HOST_IP"
-  echo ""
-  if [ -f "$DATACENTER_BASE/port-mappings.txt" ]; then
-    echo "VM Access Information:"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "" && echo "$vm ($ip):" && echo "  SSH:  ssh -p $ssh_port $(get_vm_username "$vm")@$HOST_IP" && echo "  HTTP: http://$HOST_IP:$http_port"
-    done
-    echo ""
+  if [ "$count" -gt 0 ]; then
+    echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}$count VM$([ "$count" -gt 1 ] && echo s) forwarded${NC}  ${DIM}saved to $DATACENTER_BASE/port-mappings.txt${NC}"
+    echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$((ssh_port - 1)) and $HTTP_PORT_START-$((http_port - 1)) in the host firewall.${NC}"
   else
-    print_warning "No VMs were successfully configured"
+    print_warning "No VMs were forwarded"
   fi
   echo ""
-  print_info "Note: Make sure your firewall allows the configured ports"
-  print_info "To check current mappings anytime: dcvm network ports show"
 }
 
 cmd_show() {
   local map_file=$(get_port_mappings_file)
   if [ -f "$map_file" ]; then
-    echo "Current port mappings (from $map_file):"
-    printf "%-15s  %-15s %-8s  %-8s\n" "VM_NAME" "VM_IP" "SSH" "HTTP"
-    echo "------------------------------------------------"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && printf "%-15s  %-15s %-8s  %-8s\n" "$vm" "$ip" "$ssh_port" "$http_port"
-    done
+    {
+      printf 'VM\tIP\tSSH PORT\tHTTP PORT\n'
+      read_port_mappings | while read -r vm ip ssh_port http_port; do
+        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
+      done
+    } | ui_table
+    echo -e "  ${DIM}from $map_file${NC}"
   else
-    print_warning "No saved port mappings file found"
+    print_warning "No saved port mappings. Run: dcvm network ports setup"
   fi
 }
 
@@ -243,19 +242,20 @@ cmd_apply() {
 cmd_test() {
   local map_file=$(get_port_mappings_file)
   if [ -f "$map_file" ]; then
-    echo "Connectivity test:"
-    printf "%-15s: %-4s  %-4s  %-4s\n" "VM_NAME" "Ping" "SSH" "HTTP"
-    echo "-------------------------------------"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      if [ -n "$vm" ]; then
-        ping_status=$(check_ping "$ip" && echo "✓" || echo "✗")
-        ssh_status=$(check_port_forward "$ssh_port" "$ip" 22 && echo "✓" || echo "✗")
-        http_status=$(check_port_forward "$http_port" "$ip" 80 && echo "✓" || echo "✗")
-        printf "%-15s: %-4s  %-4s  %-4s\n" "$vm" "$ping_status" "$ssh_status" "$http_status"
-      fi
-    done
+    {
+      printf 'VM\tPING\tSSH\tHTTP\n'
+      read_port_mappings | while read -r vm ip ssh_port http_port; do
+        if [ -n "$vm" ]; then
+          ping_status=$(check_ping "$ip" && echo "$SYM_OK" || echo "$SYM_FAIL")
+          ssh_status=$(check_port_forward "$ssh_port" "$ip" 22 && echo "$SYM_OK" || echo "$SYM_FAIL")
+          http_status=$(check_port_forward "$http_port" "$ip" 80 && echo "$SYM_OK" || echo "$SYM_FAIL")
+          printf '%s\t%s\t%s\t%s\n' "$vm" "$ping_status" "$ssh_status" "$http_status"
+        fi
+      done
+    } | ui_table
+    echo -e "  ${DIM}$SYM_OK forward rules in place and the VM port answers, $SYM_FAIL not reachable${NC}"
   else
-    print_warning "No port mappings available for testing"
+    print_warning "No port mappings to test. Run: dcvm network ports setup"
   fi
 }
 

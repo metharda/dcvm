@@ -1,15 +1,174 @@
 #!/usr/bin/env bash
 
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly NC='\033[0m'
+# Terminal output. Colour and the spinner only on a terminal; NO_COLOR or
+# TERM=dumb turn colour off (https://no-color.org). Symbols fall back to ASCII
+# when the locale isn't UTF-8.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' BLUE='\033[34m'
+  CYAN='\033[36m' BOLD='\033[1m' DIM='\033[2m' NC='\033[0m'
+else
+  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
+fi
+case "${TERM:-}:${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+dumb:*) UI_UNICODE=false ;;
+*[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UI_UNICODE=true ;;
+*) UI_UNICODE=false ;;
+esac
+if [ "$UI_UNICODE" = true ]; then
+  SYM_OK='✓' SYM_FAIL='✗' SYM_WARN='!' SYM_INFO='›' SYM_DOT='·' SYM_ARROW='→'
+  SYM_RUN='●' SYM_STOP='○' SYM_DASH='—'
+  BOX_TL='╭' BOX_TR='╮' BOX_BL='╰' BOX_BR='╯' BOX_H='─' BOX_V='│'
+  SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+else
+  SYM_OK='+' SYM_FAIL='x' SYM_WARN='!' SYM_INFO='>' SYM_DOT='-' SYM_ARROW='->'
+  SYM_RUN='*' SYM_STOP='o' SYM_DASH='-'
+  BOX_TL='+' BOX_TR='+' BOX_BL='+' BOX_BR='+' BOX_H='-' BOX_V='|'
+  SPIN_FRAMES='|/-\'
+fi
 
-print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+# UI_QUIET=true hides print_info/print_success (the step lines of a command
+# say it all); warnings and errors always print. DCVM_VERBOSE=1 shows
+# everything.
+UI_QUIET=false
+ui_quiet() { [ "${DCVM_VERBOSE:-0}" = 1 ] || UI_QUIET=true; }
+
+print_info() { [ "$UI_QUIET" = true ] || echo -e "${BLUE}${SYM_INFO}${NC} $1"; }
+print_success() { [ "$UI_QUIET" = true ] || echo -e "${GREEN}${SYM_OK}${NC} $1"; }
+print_warning() { echo -e "${YELLOW}${SYM_WARN}${NC} $1"; }
+print_error() { echo -e "${RED}${SYM_FAIL} error:${NC} $1"; }
+
+# Title of a command's output: bold subject, dim details.
+#   dcvm create web   Ubuntu 24.04 · 2 vCPU · 2048 MB · 30G
+ui_title() {
+  echo ""
+  echo -e "${BOLD}$1${NC}${2:+  ${DIM}$2${NC}}"
+  echo ""
+}
+
+# One finished step: ui_step ok|warn|fail|skip <label> [detail]
+#   ✓ Disk           30G overlay on ubuntu-24.04-server-cloudimg-amd64.img
+ui_step() {
+  local sym col
+  case "$1" in
+  ok) sym=$SYM_OK col=$GREEN ;;
+  warn) sym=$SYM_WARN col=$YELLOW ;;
+  fail) sym=$SYM_FAIL col=$RED ;;
+  *) sym=$SYM_DOT col=$DIM ;;
+  esac
+  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
+}
+
+# Runs a command behind a spinner (on a terminal) and returns its status. The
+# caller prints the final ui_step line; UI_RUN_SECS holds the duration and
+# UI_RUN_LOG the command's output, to show when it failed.
+ui_run() {
+  local label="$1" start=$SECONDS rc=0 pid i=0
+  shift
+  UI_RUN_LOG=$(mktemp)
+  if [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; then
+    "$@" >"$UI_RUN_LOG" 2>&1 &
+    pid=$!
+    trap 'printf "\r\033[K\033[?25h" >&2; kill "$pid" 2>/dev/null; exit 130' INT TERM
+    printf '\033[?25l' >&2
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r  %b%s%b %-15s %b%ss%b' "$CYAN" "${SPIN_FRAMES:i++%${#SPIN_FRAMES}:1}" "$NC" "$label" "$DIM" "$((SECONDS - start))" "$NC" >&2
+      sleep 0.1
+    done
+    wait "$pid" || rc=$?
+    printf '\r\033[K\033[?25h' >&2
+    trap - INT TERM
+  else
+    "$@" >"$UI_RUN_LOG" 2>&1 || rc=$?
+  fi
+  UI_RUN_SECS=$((SECONDS - start))
+  return "$rc"
+}
+
+# A box around the key result, title in the top border. Rows are ASCII, so
+# the width is exact; keep copyable commands outside the box (ui_next).
+#   ╭─ web is booting ───────────────────╮
+#   │ Address    10.10.10.50 (static)    │
+#   ╰────────────────────────────────────╯
+ui_box() {
+  local title="$1" line w top bottom
+  shift
+  w=$((${#title} + 3))
+  for line in "$@"; do [ $((${#line} + 2)) -gt "$w" ] && w=$((${#line} + 2)); done
+  printf -v top '%*s' $((w - ${#title} - 3)) ''
+  printf -v bottom '%*s' "$w" ''
+  echo ""
+  echo -e "  ${DIM}${BOX_TL}${BOX_H}${NC} ${BOLD}${title}${NC} ${DIM}${top// /$BOX_H}${BOX_TR}${NC}"
+  for line in "$@"; do
+    printf '  %b%s%b %-*s %b%s%b\n' "$DIM" "$BOX_V" "$NC" $((w - 2)) "$line" "$DIM" "$BOX_V" "$NC"
+  done
+  echo -e "  ${DIM}${BOX_BL}${bottom// /$BOX_H}${BOX_BR}${NC}"
+}
+
+# "Next steps" with one command per line: ui_next <command> [what it does] ...
+ui_next() {
+  echo ""
+  echo -e "  ${BOLD}Next steps${NC}"
+  while [ $# -gt 0 ]; do
+    printf '    %b%-30s%b %b%s%b\n' "$CYAN" "$1" "$NC" "$DIM" "${2:-}" "$NC"
+    shift 2 || shift
+  done
+  echo ""
+}
+
+# Table from tab-separated lines on stdin; the first line is the header (dim).
+# A state cell gets a glyph and colour (● running, ○ shut off, ◐ paused), ✓/✗
+# cells are green/red, and an empty cell shows a dim dash.
+ui_table() {
+  local -a rows widths cells
+  local row cell i out col pad
+  while IFS= read -r row; do
+    # Glyphs first, so the column widths include them.
+    if [ ${#rows[@]} -gt 0 ]; then
+      IFS=$'\t' read -r -a cells <<<"$row"
+      for i in "${!cells[@]}"; do
+        case "${cells[i]}" in
+        running) cells[i]="$SYM_RUN running" ;;
+        "shut off") cells[i]="$SYM_STOP shut off" ;;
+        paused) cells[i]="$SYM_STOP paused" ;;
+        "" | -) cells[i]=$SYM_DASH ;;
+        esac
+      done
+      row=$(
+        IFS=$'\t'
+        echo "${cells[*]}"
+      )
+    fi
+    rows+=("$row")
+  done
+  [ ${#rows[@]} -gt 0 ] || return 0
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r -a cells <<<"$row"
+    for i in "${!cells[@]}"; do
+      [ "${#cells[i]}" -gt "${widths[i]:-0}" ] && widths[i]=${#cells[i]}
+    done
+  done
+  for i in "${!rows[@]}"; do
+    IFS=$'\t' read -r -a cells <<<"${rows[i]}"
+    out="  "
+    for col in "${!cells[@]}"; do
+      # Pad by characters: printf pads by bytes, which breaks on ✓ and ✗.
+      printf -v pad '%*s' $((widths[col] - ${#cells[col]})) ''
+      cell=${cells[col]}$pad
+      if [ "$i" -eq 0 ]; then
+        cell="${DIM}${cell}${NC}"
+      else
+        case "${cells[col]}" in
+        "$SYM_RUN running" | "$SYM_OK") cell="${GREEN}${cell}${NC}" ;;
+        "$SYM_FAIL") cell="${RED}${cell}${NC}" ;;
+        "$SYM_STOP shut off" | "$SYM_DASH") cell="${DIM}${cell}${NC}" ;;
+        "$SYM_STOP paused") cell="${YELLOW}${cell}${NC}" ;;
+        esac
+      fi
+      out+="${cell}  "
+    done
+    echo -e "${out%"${out##*[![:space:]]}"}"
+  done
+}
 print_status() {
   local status=$1
   local message=$2
@@ -829,7 +988,7 @@ default_username() {
   fi
 }
 
-export -f print_info print_success print_warning print_error print_status
+export -f print_info print_success print_warning print_error print_status ui_quiet ui_title ui_step ui_run ui_box ui_next ui_table
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password

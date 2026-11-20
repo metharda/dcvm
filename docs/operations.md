@@ -5,6 +5,7 @@ checks, updates, logs, settings and fixes for common problems. The full flag
 reference is in [usage.md](usage.md).
 
 - [Everyday commands](#everyday-commands)
+- [Output](#output)
 - [Reading the checks](#reading-the-checks)
 - [After a host reboot](#after-a-host-reboot)
 - [Updating dcvm](#updating-dcvm)
@@ -21,8 +22,8 @@ All commands need root.
 
 | Task | Command | Notes |
 | :--- | :------ | :---- |
-| List VMs | `dcvm list` | All libvirt VMs, then the ones on the dcvm network with their state |
-| Overview | `dcvm status` | VMs, port-forward rules, networks and each dcvm VM's IP (takes no VM name) |
+| List VMs | `dcvm list` | Table of dcvm VMs (state, IP, vCPU, memory); other libvirt VMs are only counted |
+| Overview | `dcvm status` | The same table, plus the network and port-forward state (takes no VM name) |
 | Start / stop / restart | `dcvm start web`, `dcvm stop web`, `dcvm restart web` | Without a name: every dcvm VM. `stop` is a graceful ACPI shutdown |
 | Find a VM's IP | `dcvm status`, or `dcvm network` | `dcvm network` also lists static IPs and saved port mappings |
 | SSH from the host | `ssh <user>@<vm-ip>` | `<user>` is `-u`, or the OS name (`ubuntu`, `debian`, `archlinux`, `kali`) |
@@ -33,14 +34,32 @@ All commands need root.
 | Delete | `dcvm delete web` | No confirmation prompt; removes the disk, leases, port forwards and static IP record |
 | Images | `dcvm template status`, `dcvm template download <file>` | Installed images with an integrity check |
 
+## Output
+
+Long commands print one line per step: `✓` done, `!` done with something to
+check, `✗` failed, `·` skipped. Slow steps (shutting a VM down, copying and
+compressing a disk, installing packages) show a spinner with the seconds
+elapsed. Details from the underlying tools are hidden when a step succeeds
+and printed when it fails.
+
+| Setting | Effect |
+| :------ | :----- |
+| `DCVM_VERBOSE=1` | Show every detail line (the old output), and no spinners |
+| `NO_COLOR=1` | No colours ([no-color.org](https://no-color.org)); also off when the output is not a terminal or `TERM=dumb` |
+| Non-UTF-8 locale or `TERM=dumb` | ASCII symbols (`+`, `x`, `!`, `-`) instead of `✓ ✗ ! ·` |
+
+The installer writes everything, including the package manager's output, to
+`/var/log/datacenter-startup.log`.
+
 ## Reading the checks
 
 **`dcvm network ports test`** (also part of `dcvm network`) prints one row per
 saved mapping:
 
 ```
-VM_NAME        : Ping  SSH   HTTP
-web            : ✓     ✓     ✗
+  VM   PING  SSH  HTTP
+  web  ✓     ✓    ✓
+  ctf  ✓     ✓    ✗
 ```
 
 | Column | ✓ means |
@@ -53,10 +72,10 @@ An `✗` under HTTP is normal for a VM without a web server. An `✗` under SSH
 with a `✓` under Ping usually means the rules are gone (run
 `dcvm network ports apply`) or the VM is still booting.
 
-**`dcvm delete`** ends with a verification block: `✓ VM completely removed
-from libvirt`, `✓ No DHCP leases found` and `✓ Disk file removed`. A
-`✗ DHCP leases still exist` line is harmless (the lease expires); run
-`dcvm network dhcp cleanup` to drop it now.
+**`dcvm delete`** checks that nothing is left and ends with
+`✓ ctf deleted  No DHCP leases found, no VM or disk left`. Otherwise it lists
+what remains as warnings. `! DHCP leases still exist` is harmless (the lease
+expires); run `dcvm network dhcp cleanup` to drop it now.
 
 **`dcvm template status`** marks each installed image `✓` (readable qcow2) or
 `✗ ... CORRUPT` (redownload it with `dcvm template download <file> --force`,
