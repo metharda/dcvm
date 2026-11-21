@@ -16,30 +16,29 @@ COPY_ISO=""
 FORCE_MODE=false
 
 show_usage() {
-  cat <<EOF
-Create VM from Custom ISO (Interactive Mode)
-Usage: dcvm create <vm_name> -o /path/to/file.iso [options]
-   Or: dcvm create-iso <vm_name> --iso <path> [options]
+  ui_help <<EOF
+dcvm create-iso - a VM that boots an installer ISO
+
+Usage: dcvm create <name> -o <file.iso> [options]
+       dcvm create-iso <name> --iso <file.iso> [options]
 
 Options:
-  --iso <path>                  Path to installer ISO (required)
-  -m, --memory <MB>             Memory in MB (default: interactive)
-  -c, --cpus <N>                CPU count (default: interactive)
-  -d, --disk <SIZE>             Disk size (default: interactive; formats: 10G, 512M, 1T)
-  --os-variant <name>           libosinfo variant (e.g., ubuntu22.04, debian12)
-  --graphics <vnc|spice|none>   Graphics for installer (default: vnc)
-  --boot <order>                Boot order (default: cdrom,hd)
-  --ip <address>                Set static IP after installation (manual config required)
-  --copy-iso                    Copy ISO to VM directory (default: use original path)
-  -h, --help                    Show this help
+  --iso <path>                 Installer ISO (asked if missing)
+  -m, --memory <MB>            Memory (asked if missing)
+  -c, --cpus <N>               vCPUs (asked if missing)
+  -d, --disk <SIZE>            Disk size, e.g. 20G (asked if missing)
+  --os-variant <name>          libosinfo variant, e.g. debian12
+  --graphics <vnc|spice|none>  Installer display (default vnc, on 127.0.0.1)
+  --boot <order>               Boot order (default cdrom,hd)
+  --ip <address>               Static IP to configure in the installer
+  --copy-iso                   Copy the ISO next to the VM's disk
+  -h, --help                   Show this help
 
-NOTE: Force mode (-f) is NOT supported for ISO installations.
-      Interactive prompts will ask for any missing required options.
+You install the OS yourself over VNC or the console, so there is no -f mode.
 
 Examples:
-  dcvm create myvm -o /path/to/ubuntu.iso
-  dcvm create myvm -o /path/to/debian.iso -m 4096 -c 4
-  dcvm create-iso myvm --iso /path/to/arch.iso --graphics none
+  dcvm create web -o /srv/iso/debian-13.iso
+  dcvm create-iso arch --iso /srv/iso/arch.iso --graphics none
 EOF
 }
 
@@ -223,16 +222,7 @@ prompt_iso_path() {
 }
 
 show_iso_header() {
-  cat <<EOF
-
-==================================================
-Custom ISO VM Creation
-==================================================
-
-VM Name: $VM_NAME
-ISO: $ISO_PATH
-
-EOF
+  ui_title "New VM from an ISO" "$VM_NAME ${SYM_DOT} $(basename "$ISO_PATH")"
 }
 
 collect_vm_options() {
@@ -247,32 +237,21 @@ collect_vm_options() {
 }
 
 show_vm_summary() {
-  cat <<EOF
-
-==================================================
-VM Configuration Summary
-==================================================
-  Name:       $VM_NAME
-  ISO:        $(basename "$ISO_PATH")
-  Memory:     ${MEMORY}MB
-  CPUs:       $CPUS
-  Disk:       $DISK_SIZE
-  Graphics:   $GRAPHICS
-  OS Variant: ${OS_VARIANT:-generic}
-  Boot Order: $BOOT_ORDER
-  Copy ISO:   $COPY_ISO
-EOF
-  [ -n "$STATIC_IP" ] && echo "  Static IP:  $STATIC_IP (manual config)"
+  local rows=(
+    "$(printf '%-11s%s' ISO "$(basename "$ISO_PATH")$([ "$COPY_ISO" = true ] && echo " (copied)")")"
+    "$(printf '%-11s%s' Resources "$CPUS vCPU, $MEMORY MB RAM, $DISK_SIZE disk")"
+    "$(printf '%-11s%s' Display "$GRAPHICS")"
+    "$(printf '%-11s%s' OS "${OS_VARIANT:-generic}")"
+    "$(printf '%-11s%s' Boot "$BOOT_ORDER")"
+  )
+  [ -n "$STATIC_IP" ] && rows+=("$(printf '%-11s%s' Address "$STATIC_IP (set it in the installer)")")
+  ui_box "$VM_NAME" "${rows[@]}"
   echo ""
 }
 
 confirm_creation() {
-  read -p "Create VM with these settings? (Y/n): " confirm
-  confirm=${confirm:-y}
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    print_info "Cancelled."
-    exit 0
-  fi
+  confirm_action "Create it?" y || exit 0
+  echo ""
 }
 
 check_iso_dependencies() {
@@ -300,12 +279,11 @@ copy_iso_if_needed() {
     local iso_name
     iso_name=$(basename "$ISO_PATH")
     INSTALL_ISO="$VM_DIR/$iso_name"
-    print_info "Copying ISO to VM directory..."
-    cp "$ISO_PATH" "$INSTALL_ISO" || {
-      print_error "Failed to copy ISO"
+    ui_run "Copying ISO" cp "$ISO_PATH" "$INSTALL_ISO" || {
+      ui_step fail "ISO" "copy failed"
       exit 1
     }
-    print_success "ISO copied to: $INSTALL_ISO"
+    ui_step ok "ISO" "copied to $INSTALL_ISO (${UI_RUN_SECS}s)"
   fi
 }
 
@@ -323,12 +301,8 @@ check_iso_accessibility() {
   local iso_realpath
   iso_realpath=$(realpath "$check_path" 2>/dev/null || echo "$check_path")
   if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]]; then
-    print_warning "ISO is in a restricted directory that libvirt may not access"
-    print_info "Path: $iso_realpath"
-    echo ""
-
     if [ "$COPY_ISO" != "true" ]; then
-      print_info "The ISO will be copied to the VM directory to avoid permission issues"
+      ui_step warn "ISO" "in a home folder libvirt cannot read; copying it next to the disk"
       COPY_ISO="true"
       copy_iso_if_needed
     fi
@@ -341,11 +315,11 @@ check_iso_accessibility() {
 }
 
 create_vm_disk() {
-  print_info "Creating disk: $DISK_PATH ($DISK_SIZE)"
   qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE" >/dev/null 2>&1 || {
-    print_error "qemu-img create failed"
+    ui_step fail "Disk" "qemu-img create failed"
     exit 1
   }
+  ui_step ok "Disk" "$DISK_SIZE, $DISK_PATH"
 }
 
 build_virt_install_opts() {
@@ -369,18 +343,12 @@ build_virt_install_opts() {
 }
 
 run_virt_install() {
-  cat <<EOF
-[INFO] Starting installer from ISO
-  VM: $VM_NAME
-  Memory: ${MEMORY}MB, CPUs: $CPUS
-  Disk: $DISK_SIZE
-  Graphics: $GRAPHICS
-EOF
-
-  virt-install "${VIRT_INSTALL_OPTS[@]}" || {
-    print_error "virt-install failed"
+  ui_run "Starting VM" virt-install "${VIRT_INSTALL_OPTS[@]}" || {
+    ui_step fail "VM" "virt-install failed"
+    sed 's/^/    /' "$UI_RUN_LOG" | tail -10
     exit 1
   }
+  ui_step ok "VM" "defined and booting the installer"
 }
 
 save_vm_info() {
@@ -397,31 +365,22 @@ EOF
 }
 
 show_post_creation_info() {
-  print_success "Installer launched for VM '$VM_NAME'"
-  echo ""
-  echo "Connect to installer UI:"
-  if [ "$GRAPHICS" = "none" ]; then
-    echo "  Console: virsh console $VM_NAME"
-  else
-    echo "  VNC: virsh vncdisplay $VM_NAME"
-    echo "  Or use a VNC client to connect to the host"
-  fi
-  echo ""
+  local subnet="${NETWORK_SUBNET:-10.10.10}"
   if [ -n "$STATIC_IP" ]; then
-    local subnet="${NETWORK_SUBNET:-10.10.10}"
-    cat <<EOF
-Network configuration for VM:
-  IP Address: $STATIC_IP/24
-  Gateway: ${subnet}.1
-  DNS: 8.8.8.8, 8.8.4.4
-
-EOF
+    ui_box "$VM_NAME is running the installer" \
+      "$(printf '%-11s%s' Address "$STATIC_IP/24")" \
+      "$(printf '%-11s%s' Gateway "$subnet.1")" \
+      "$(printf '%-11s%s' DNS "8.8.8.8, 8.8.4.4")"
+  else
+    ui_box "$VM_NAME is running the installer" "$(printf '%-11s%s' Network "DHCP on $NETWORK_NAME")"
   fi
-  cat <<EOF
-After installation completes:
-  1. Configure network inside the VM
-  2. Run: dcvm network ports setup
-EOF
+  if [ "$GRAPHICS" = "none" ]; then
+    ui_next "dcvm console $VM_NAME" "the installer, on the serial console" \
+      "dcvm network ports setup" "after the install: reach it from other machines"
+  else
+    ui_next "dcvm network vnc status $VM_NAME" "the VNC port of the installer (127.0.0.1 only)" \
+      "dcvm network ports setup" "after the install: reach it from other machines"
+  fi
 }
 
 main() {
@@ -429,10 +388,7 @@ main() {
   parse_args "$@"
 
   if [ "$FORCE_MODE" = true ]; then
-    echo ""
-    print_error "Force mode (-f) is not supported for custom ISO installations."
-    print_info "Custom ISO installations require interactive setup for graphics, OS variant, and other options."
-    print_info "Remove the -f flag and run again."
+    print_error "-f does not work with an ISO: you install the OS yourself. Run it again without -f."
     exit 1
   fi
 

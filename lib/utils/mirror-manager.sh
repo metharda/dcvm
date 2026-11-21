@@ -1,80 +1,93 @@
 #!/usr/bin/env bash
 
+# Mirrors per image, spread over Europe, the Americas and Asia: dcvm
+# speed-tests them from wherever it runs and downloads from the fastest, so
+# the nearest one wins. Each entry served the same file as the official
+# server when checked (2026-11-21; dcvm template check -a shows which still
+# answer). Mirrors that lag behind (another file size) are left out, and
+# aria2c only combines mirrors serving the same file anyway.
 MIRROR_debian_13="
 https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
 https://cdimage.debian.org/cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
-https://mirrors.kernel.org/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
-https://mirror.rackspace.com/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
-https://mirror.leaseweb.net/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://ftp.acc.umu.se/cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://ftp.gwdg.de/pub/debian/debian-cloud-image/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://mirror.nju.edu.cn/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+https://mirrors.cernet.edu.cn/debian-cdimage/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
 "
 
 MIRROR_debian_12="
 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 https://cdimage.debian.org/cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
-https://mirrors.kernel.org/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
-https://mirror.rackspace.com/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
-https://mirror.leaseweb.net/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
+https://ftp.acc.umu.se/cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
+https://ftp.gwdg.de/pub/debian/debian-cloud-image/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
+https://mirror.nju.edu.cn/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
+https://mirrors.cernet.edu.cn/debian-cdimage/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
 "
 
 MIRROR_debian_11="
 https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 https://cdimage.debian.org/cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
-https://mirrors.kernel.org/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
-https://mirror.rackspace.com/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
-https://mirror.leaseweb.net/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
+https://ftp.acc.umu.se/cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
+https://ftp.gwdg.de/pub/debian/debian-cloud-image/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
+https://mirror.nju.edu.cn/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
+https://mirrors.cernet.edu.cn/debian-cdimage/cloud/bullseye/latest/debian-11-generic-amd64.qcow2
 "
 
 MIRROR_ubuntu_2404="
-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
-https://mirror.rackspace.com/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
-https://mirror.leaseweb.net/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
-https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
-https://mirror.hetzner.de/ubuntu/cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirror.nju.edu.cn/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+https://mirror.yandex.ru/ubuntu-cloud-images/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
 "
 
 MIRROR_ubuntu_2204="
 https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://releases.ubuntu.com/jammy/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirror.rackspace.com/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirror.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirror.hetzner.de/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirror.sjc01.us.leaseweb.net/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
-https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
+https://mirror.nju.edu.cn/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
+https://mirror.yandex.ru/ubuntu-cloud-images/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img
 "
 
 MIRROR_ubuntu_2004="
 https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
-https://releases.ubuntu.com/focal/ubuntu-20.04-server-cloudimg-amd64.img
-https://mirrors.edge.kernel.org/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
-https://mirror.hetzner.de/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
-https://mirror.frankfurt.linode.com/ubuntu/cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
+https://mirror.nju.edu.cn/ubuntu-cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
+https://mirror.yandex.ru/ubuntu-cloud-images/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img
 "
 
 MIRROR_arch="
 https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirror.rackspace.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirrors.kernel.org/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirror.leaseweb.net/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.alpix.eu/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirror.netcologne.de/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://cloud-images.archlinux.org/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.archlinux.org/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://ftp.acc.umu.se/mirror/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://ftp.gwdg.de/pub/linux/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirrors.ocf.berkeley.edu/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.hetzner.de/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.sjc01.us.leaseweb.net/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.frankfurt.linode.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-https://mirror.digitalocean.com/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://plug-mirror.rcac.purdue.edu/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirror.nju.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+https://mirrors.ustc.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 https://mirrors.tuna.tsinghua.edu.cn/archlinux/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 "
 
 KALI_VERSION="2026.3" # Update when there is a new Kali release
+# Only kali.download (a CDN, so served from near each client) carries the
+# cloud images; Kali's mirrors have the ISOs only. The release folder keeps
+# the URL working after the next release replaces current/.
 MIRROR_kali="
-https://kali.download/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
-https://cdimage.kali.org/cloud-images/current/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
+https://kali.download/cloud-images/kali-${KALI_VERSION}/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
 "
 SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2"
+
+# "Debian 13" for debian-13-genericcloud-amd64.qcow2 and so on.
+image_label() {
+  case "$1" in
+  debian-13-*) echo "Debian 13" ;;
+  debian-12-*) echo "Debian 12" ;;
+  debian-11-*) echo "Debian 11" ;;
+  ubuntu-24.04-*) echo "Ubuntu 24.04" ;;
+  ubuntu-22.04-*) echo "Ubuntu 22.04" ;;
+  ubuntu-20.04-*) echo "Ubuntu 20.04" ;;
+  Arch-Linux-*) echo "Arch Linux" ;;
+  kali-linux-*) echo "Kali Linux" ;;
+  *) echo "$1" ;;
+  esac
+}
 
 get_mirror_varname() {
   local filename="$1"
@@ -110,234 +123,61 @@ get_mirrors() {
   echo "$mirrors" | grep -v '^$' | sed 's/^[[:space:]]*//'
 }
 
-test_url() {
-  local url="$1"
-  local timeout="${2:-10}"
-
-  if command -v curl >/dev/null 2>&1; then
-    local err
-    err=$(curl -sS -o /dev/null --connect-timeout "$timeout" --max-time "$timeout" -I "$url" 2>&1)
-    local status=$?
-    if [ $status -ne 0 ]; then
-      echo "Error: curl failed to access $url: $err" >&2
-    fi
-    return $status
-  elif command -v wget >/dev/null 2>&1; then
-    local err
-    err=$(wget --spider --timeout="$timeout" -q "$url" 2>&1)
-    local status=$?
-    if [ $status -ne 0 ]; then
-      echo "Error: wget failed to access $url: $err" >&2
-    fi
-    return $status
-  fi
-  return 1
-}
-
-check_mirrors() {
-  local filename="${1:-}"
-
-  if [ -z "$filename" ]; then
-    echo "ERROR: filename required. Usage: $0 check <filename>"
-    echo "Available images:"
-    for img in $SUPPORTED_IMAGES; do
-      echo "  $img"
-    done
-    return 1
-  fi
-
-  local mirrors
-  mirrors=$(get_mirrors "$filename")
-  if [ -z "$mirrors" ]; then
-    echo "Unknown image: $filename"
-    return 1
-  fi
-
-  echo "Checking mirrors for $filename (parallel speed test)..."
-
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
-  local pids=()
-  local idx=0
-
-  while IFS= read -r url; do
-    [ -z "$url" ] && continue
-    test_mirror_speed "$url" "$tmp_dir" "$idx" &
-    pids+=($!)
-    idx=$((idx + 1))
-  done <<<"$mirrors"
-
-  for pid in "${pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
-  done
-
-  local count_ok=0
-  local count_fail=0
-
-  echo ""
-  echo "Results (sorted by speed):"
-
-  for f in "$tmp_dir"/result_*; do
-    [ -f "$f" ] || continue
-    cat "$f"
-  done | sort -t' ' -k3 -rn | while read -r line; do
-    local r_speed r_time r_url
-    r_time=$(awk '{print $2}' <<<"$line")
-    r_speed=$(awk '{print $3}' <<<"$line")
-    r_url=$(awk '{$1=$2=$3=""; print $0}' <<<"$line" | sed 's/^[[:space:]]*//')
-    printf "  [OK] %-65s %6.2f MB/s  (latency: %ss)\n" "$r_url" "$r_speed" "$r_time"
-  done
-
-  local total_mirrors
-  total_mirrors=$(echo "$mirrors" | grep -c .)
-  local ok_count
-  ok_count=$(ls -1 "$tmp_dir"/result_* 2>/dev/null | wc -l)
-  local fail_count=$((total_mirrors - ok_count))
-
-  if [ "$fail_count" -gt 0 ]; then
-    echo ""
-    echo "  $fail_count mirror(s) failed or timed out"
-  fi
-
-  rm -rf "$tmp_dir"
-  echo ""
-  echo "Summary: $ok_count/$total_mirrors mirrors OK"
-}
-
-ensure_aria2c() {
-  if command -v aria2c >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "NOTICE: aria2c not found. aria2c enables faster parallel downloads." >&2
-  if [[ "${DCVM_AUTO_INSTALL_ARIA2:-false}" == "true" ]] && [[ $(id -u) -eq 0 ]]; then
-    echo "INFO: Attempting to install aria2c automatically (DCVM_AUTO_INSTALL_ARIA2=true)" >&2
-    if command -v apt-get >/dev/null 2>&1; then
-      if apt-get update -y && apt-get install -y aria2; then
-        return 0
-      else
-        return 1
-      fi
-    elif command -v yum >/dev/null 2>&1; then
-      if yum install -y aria2; then
-        return 0
-      else
-        return 1
-      fi
-    elif command -v pacman >/dev/null 2>&1; then
-      if pacman -Sy --noconfirm aria2; then
-        return 0
-      else
-        return 1
-      fi
-    else
-      echo "No supported package manager found to install aria2c automatically." >&2
-      return 1
-    fi
-  fi
-  echo "Hint: install aria2 (e.g. 'sudo apt-get install aria2') for faster downloads." >&2
-  return 1
-}
-
+# Fetches the first MB of <url>; on success writes
+# "<idx> <latency s> <MB/s> <file size> <url>" to <tmp_dir>/result_<idx>.
+# The size (from Content-Range) tells mirrors with another build apart.
 test_mirror_speed() {
-  local url="$1"
-  local tmp_dir="$2"
-  local idx="$3"
-  local result
-  result=$(curl -sS -L --max-redirs 3 -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
-    --connect-timeout 3 --max-time 5 -r 0-1048575 "$url" 2>/dev/null) || return 1
-  local http_code time_s speed_bps
-  http_code=$(awk '{print $1}' <<<"$result")
-  time_s=$(awk '{print $2}' <<<"$result")
-  speed_bps=$(awk '{print $3}' <<<"$result")
-  case "$http_code" in
+  local url="$1" tmp_dir="$2" idx="$3" result size
+  result=$(curl -4 --http1.1 -sS -L --max-redirs 3 -o /dev/null -D "$tmp_dir/headers_$idx" \
+    -w '%{http_code} %{time_total} %{speed_download}' \
+    --connect-timeout 5 --max-time 10 -r 0-1048575 "$url" 2>/dev/null) || return 1
+  case "${result%% *}" in
   2* | 416) ;;
   *) return 1 ;;
   esac
-  local speed_mbs
-  speed_mbs=$(awk "BEGIN{printf \"%.2f\", $speed_bps/1048576}")
-  echo "$idx $time_s $speed_mbs $url" >"$tmp_dir/result_$idx"
+  size=$(tr -d '\r' <"$tmp_dir/headers_$idx" | awk 'tolower($1) == "content-range:" { n = split($0, a, "/"); s = a[n] } END { print s + 0 }')
+  awk -v i="$idx" -v u="$url" -v z="$size" '{ printf "%s %.2f %.2f %s %s\n", i, $2, $3 / 1048576, z, u }' <<<"$result" >"$tmp_dir/result_$idx"
 }
 export -f test_mirror_speed
 
-select_best_mirror() {
-  local filename="${1:-}"
-
+# Tests every mirror of image $1 in parallel, from wherever dcvm runs, and
+# prints the ones that answered, fastest first: "<url> <file size>" per
+# line. So the nearest good mirror wins without any location setting. The
+# test results go to stderr:
+#   Mirror: <url> -> 12.34 MB/s (latency: 0.12s)
+#   ★ Best mirror: <url> (12.34 MB/s, latency: 0.12s)
+rank_mirrors() {
+  local filename="${1:-}" mirrors tmp_dir url idx=0 ranked
   if [ -z "$filename" ]; then
     echo "ERROR: filename required" >&2
     return 1
   fi
-
-  local mirrors
   mirrors=$(get_mirrors "$filename") || {
     echo "ERROR: No mirrors for $filename" >&2
     return 1
   }
-
   echo "Testing mirrors (parallel)..." >&2
-
-  local tmp_dir
   tmp_dir=$(mktemp -d)
-  local pids=()
-  local idx=0
-
   while IFS= read -r url; do
-    [ -z "$url" ] && continue
-    (
-      result=$(curl -4 --http1.1 -sSL -o /dev/null -w '%{http_code} %{time_total} %{speed_download}' \
-        --connect-timeout 5 --max-time 10 -r 0-1048575 "$url" 2>/dev/null) || exit 1
-      http_code=$(awk '{print $1}' <<<"$result")
-      time_s=$(awk '{print $2}' <<<"$result")
-      speed_bps=$(awk '{print $3}' <<<"$result")
-      case "$http_code" in
-      2* | 416) ;;
-      *) exit 1 ;;
-      esac
-      speed_mbs=$(awk "BEGIN{printf \"%.2f\", $speed_bps/1048576}")
-      echo "$idx $time_s $speed_mbs $url" >"$tmp_dir/result_$idx"
-    ) &
-    pids+=($!)
+    [ -n "$url" ] || continue
+    test_mirror_speed "$url" "$tmp_dir" "$idx" &
     idx=$((idx + 1))
   done <<<"$mirrors"
-
-  for pid in "${pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
-  done
-
-  local best_url=""
-  local best_speed=0
-  local best_latency=9999
-
-  for f in "$tmp_dir"/result_*; do
-    [ -f "$f" ] || continue
-    local line
-    line=$(cat "$f")
-    local r_idx r_time r_speed r_url
-    r_idx=$(awk '{print $1}' <<<"$line")
-    r_time=$(awk '{print $2}' <<<"$line")
-    r_speed=$(awk '{print $3}' <<<"$line")
-    r_url=$(awk '{$1=$2=$3=""; print $0}' <<<"$line" | sed 's/^[[:space:]]*//')
-
-    printf "  Mirror: %s -> %.2f MB/s (latency: %ss)\n" "$r_url" "$r_speed" "$r_time" >&2
-    if awk -v s="$r_speed" -v bs="$best_speed" 'BEGIN{exit !(s>bs)}'; then
-      best_speed="$r_speed"
-      best_latency="$r_time"
-      best_url="$r_url"
-    elif awk -v s="$r_speed" -v bs="$best_speed" -v t="$r_time" -v bt="$best_latency" 'BEGIN{exit !(s==bs && t<bt)}'; then
-      best_latency="$r_time"
-      best_url="$r_url"
-    fi
-  done
-
+  wait
+  # result_N: "<idx> <latency> <MB/s> <size> <url>"; fastest first, then
+  # lowest latency.
+  ranked=$(cat "$tmp_dir"/result_* 2>/dev/null | sort -k3,3gr -k2,2g)
   rm -rf "$tmp_dir"
-
-  if [ -n "$best_url" ]; then
-    printf "\n★ Best mirror: %s (%.2f MB/s, latency: %ss)\n" "$best_url" "$best_speed" "$best_latency" >&2
-    echo "$best_url"
-    return 0
+  if [ -z "$ranked" ]; then
+    echo "ERROR: No working mirrors found" >&2
+    return 1
   fi
-  echo "ERROR: No working mirrors found" >&2
-  return 1
+  awk '{ printf "  Mirror: %s -> %s MB/s (latency: %ss)\n", $5, $3, $2 }' <<<"$ranked" >&2
+  awk 'NR == 1 { printf "\n★ Best mirror: %s (%s MB/s, latency: %ss)\n", $5, $3, $2 }' <<<"$ranked" >&2
+  awk '{ print $5, $4 }' <<<"$ranked"
 }
+
+select_best_mirror() { rank_mirrors "$@" | head -1 | cut -d' ' -f1; }
 
 # Prints the hash listed for file name $1 in a SHA256SUMS/SHA512SUMS-style
 # list on stdin ("<hash>  <name>" or "<hash> *<name>").
@@ -440,30 +280,33 @@ download_with_mirrors() {
   mkdir -p "$(dirname "$target_path")" 2>/dev/null
   local tmp_file="${target_path}.tmp.$$"
   echo "INFO: Finding best mirror for $filename..." >&2
-  local best
-  best=$(select_best_mirror "$filename") || best=""
+  local ranked best
+  ranked=$(rank_mirrors "$filename") || ranked=""
+  best=$(head -1 <<<"$ranked" | cut -d' ' -f1)
 
+  # Mirrors that answered, fastest first, then the ones that did not.
   local url_list=()
-  if [ -n "$best" ]; then
-    url_list+=("$best")
-  fi
   while IFS= read -r url; do
-    [ -z "$url" ] && continue
-    [ "$url" = "$best" ] && continue
-    url_list+=("$url")
-  done <<<"$mirrors"
+    [ -n "$url" ] && url_list+=("$url")
+  done < <(printf '%s\n%s\n' "$(cut -d' ' -f1 <<<"$ranked")" "$mirrors" | awk 'NF && !seen[$0]++')
 
   if command -v aria2c >/dev/null 2>&1 && [ -n "$best" ]; then
-    echo "INFO: Using aria2c with best mirror for fast download" >&2
-    echo "INFO: Downloading from: $best" >&2
-    local ARIA2_CONN=${DCVM_ARIA2_CONN:-16}
-    local ARIA2_SPLIT=${DCVM_ARIA2_SPLIT:-16}
-    local ARIA2_MIN_SPLIT_SIZE=${DCVM_ARIA2_MIN_SPLIT_SIZE:-1M}
-
-    local aria_args=(-c -x "$ARIA2_CONN" -s "$ARIA2_SPLIT" -k "$ARIA2_MIN_SPLIT_SIZE" --allow-overwrite=true --auto-file-renaming=false --summary-interval=1 --dir="$(dirname "$tmp_file")" --out="$(basename "$tmp_file")")
+    # aria2c splits the file into pieces and fetches them from the fastest
+    # mirrors at once (up to DCVM_ARIA2_MIRRORS of them), a few connections
+    # each, so one slow or throttled mirror does not hold the download up.
+    # Only mirrors serving the same file as the fastest one (same name and
+    # size): a mirror with an older build would mix two files.
+    local -a sources
+    mapfile -t sources < <(awk -v b="${best##*/}" -v z="$(head -1 <<<"$ranked" | cut -s -d' ' -f2)" \
+      '{ n = $1; sub(/.*\//, "", n) } n == b && $2 == z { print $1 }' <<<"$ranked" | head -n "${DCVM_ARIA2_MIRRORS:-4}")
+    echo "INFO: Using aria2c with ${#sources[@]} mirror(s): ${sources[*]}" >&2
+    local aria_args=(-c -s "${DCVM_ARIA2_SPLIT:-16}" -x "${DCVM_ARIA2_CONN:-4}" -k "${DCVM_ARIA2_MIN_SPLIT_SIZE:-4M}"
+      --file-allocation=none --allow-overwrite=true --auto-file-renaming=false
+      --summary-interval=1 --console-log-level=warn --download-result=hide
+      --dir="$(dirname "$tmp_file")" --out="$(basename "$tmp_file")")
     local start_time end_time elapsed_time
     start_time=$(date +%s)
-    aria2c "${aria_args[@]}" "$best"
+    aria2c "${aria_args[@]}" "${sources[@]}"
     local rc=$?
     end_time=$(date +%s)
     elapsed_time=$((end_time - start_time))
@@ -519,7 +362,7 @@ download_with_mirrors() {
     local start_time end_time
     start_time=$(date +%s)
     if command -v curl >/dev/null 2>&1; then
-      curl -4 --http1.1 -L --fail --progress-bar -o "$tmp_file" "$url"
+      curl -4 --http1.1 -L --fail -o "$tmp_file" "$url"
       rc=$?
     else
       wget --progress=bar:force -O "$tmp_file" "$url"
@@ -571,30 +414,132 @@ download_with_mirrors() {
   return 1
 }
 
-list_mirrors() {
-  local filename="${1:-}"
-  if [ -z "$filename" ]; then
-    echo "Available images:"
-    for img in $SUPPORTED_IMAGES; do
-      echo "  $img"
-    done
-    return 0
-  fi
+# The last progress readout of curl, aria2c or wget in log $1 as
+# "percent|done bytes|total bytes|bytes per second|seconds left"; fields the
+# tool does not report are empty, and so is the line before the first one.
+download_progress() {
+  tail -c 4096 "$1" 2>/dev/null | tr '\r' '\n' | awk '
+    function bytes(x, n, u) {
+      n = x + 0; sub(/i?B$/, "", x); u = substr(x, length(x))
+      return int(n * (u == "k" || u == "K" ? 1024 : u == "M" ? 1048576 : u == "G" ? 1073741824 : 1))
+    }
+    function secs(t, a, n) {
+      if (t ~ /:/) { n = split(t, a, ":"); return a[n] + 60 * a[n - 1] + (n > 2 ? 3600 * a[n - 2] : 0) }
+      n = 0; if (match(t, /[0-9]+h/)) n += 3600 * substr(t, RSTART, RLENGTH - 1)
+      if (match(t, /[0-9]+m/)) n += 60 * substr(t, RSTART, RLENGTH - 1)
+      if (match(t, /[0-9]+s/)) n += substr(t, RSTART, RLENGTH - 1)
+      return n
+    }
+    # curl: % Total % Received % Xferd Dload Upload Total Spent Left Speed
+    /^ *[0-9]+ +[0-9.]+[kMGT]? +[0-9]+ +[0-9.]+[kMGT]? / && NF >= 12 {
+      p = $1 "|" bytes($4) "|" bytes($2) "|" bytes($12) "|" ($11 ~ /-/ ? "" : secs($11)); next
+    }
+    # aria2c: [#2089b0 138MiB/327MiB(42%) CN:16 DL:11MiB ETA:16s]
+    /\[#[0-9a-f]+ / && match($0, /[0-9.]+[KMG]?i?B\/[0-9.]+[KMG]?i?B\([0-9]+%\)/) {
+      r = substr($0, RSTART, RLENGTH); split(r, a, /[\/(%]/); sp = ""; et = ""
+      if (match($0, /DL:[0-9.]+[KMG]?i?B/)) sp = bytes(substr($0, RSTART + 3, RLENGTH - 3))
+      if (match($0, /ETA:[0-9hms]+/)) et = secs(substr($0, RSTART + 4, RLENGTH - 4))
+      p = a[3] "|" bytes(a[1]) "|" bytes(a[2]) "|" sp "|" et; next
+    }
+    # wget: 42%[=====>     ] 138.12M  11.8MB/s    eta 16s
+    match($0, /[0-9]+%\[/) { p = substr($0, RSTART, RLENGTH - 2) "||||" }
+    END { print p }'
+}
 
-  local mirrors
-  mirrors=$(get_mirrors "$filename")
-  if [ -z "$mirrors" ]; then
-    echo "No mirrors found for: $filename"
-    return 1
+# Downloads an image like download_with_mirrors (same arguments and exit
+# code). On a terminal, a live block shows the image and below it the
+# chosen mirror, the downloader and a progress bar with size, speed and time
+# left; when it is done the block collapses into one summary line. Without a
+# terminal, or with DCVM_VERBOSE=1, the downloader's own output.
+download_image_ui() {
+  if ! ui_live; then
+    download_with_mirrors "$@" >/dev/null
+    return
   fi
+  local img="$1" label log rc=0 start=$SECONDS line summary=() sum_url host via
+  label=$(image_label "$img")
+  log=$(mktemp)
+  download_with_mirrors "$@" >"$log" 2>&1 &
+  ui_watch $! download_tick || rc=$?
 
-  echo "Mirrors for $filename:"
-  local i=1
-  while IFS= read -r url; do
-    [ -z "$url" ] && continue
-    echo "  $i) $url"
-    i=$((i + 1))
-  done <<<"$mirrors"
+  if [ "$rc" -ne 0 ]; then
+    if grep -q 'No working mirrors' "$log"; then
+      ui_step fail "$label" "download failed: no mirror answered from this host"
+    else
+      ui_step fail "$label" "download failed: every mirror failed"
+    fi
+    # The reasons, with each URL shortened to its host.
+    grep -E '^WARNING' "$log" | sed -E 's/^WARNING: //; s#https?://([^/ ]+)[^ ]*#\1#g' | awk '!seen[$0]++' |
+      tail -4 | while IFS= read -r line; do echo -e "      ${DIM}${line}${NC}"; done
+    echo -e "      ${DIM}dcvm template check $img shows which mirrors answer from here${NC}"
+    rm -f "$log"
+    return "$rc"
+  fi
+  # SUCCESS: Downloaded 327.0MB in 28s (avg: 11.68 MB/s) via aria2c | from <url>
+  line=$(grep '^SUCCESS: Downloaded' "$log" | tail -1)
+  summary+=("$(sed -E 's/^SUCCESS: Downloaded ([0-9.]+)MB in ([0-9]+s) \(avg: ([^)]*)\).*/\1 MB in \2, \3/; s/, N\/A MB\/s$//' <<<"$line")")
+  if via=$(sed -n 's/.*aria2c with \([0-9]*\) mirror.*/\1/p' "$log" | head -1) && [ -n "$via" ] && [[ $line == *"via aria2c" ]]; then
+    summary+=("$(plural "$via" mirror) via aria2c")
+  else
+    host=${line##* from } host=${host#*://} host=${host%%/*}
+    summary+=("$host via curl$(command -v aria2c >/dev/null 2>&1 || echo " (install aria2 for faster downloads)")")
+  fi
+  local kind=ok
+  if line=$(grep -o -m1 '^INFO: sha[0-9]* checksum verified' "$log"); then
+    summary+=("$(cut -d' ' -f2 <<<"$line") verified")
+  elif [ -n "${4:-}" ]; then
+    summary+=("SHA-256 verified")
+  else
+    summary+=("not verified: no mirror publishes a checksum")
+    kind=warn
+  fi
+  if line=$(grep -m1 'image converted to qcow2' "$log"); then
+    # Kali: SUCCESS: Kali Linux image converted to qcow2 (12G -> 3.1G)
+    line=${line##*(}
+    summary+=("converted to qcow2, ${line%)}")
+  fi
+  ui_step "$kind" "$label" "$(IFS='|' && echo "${summary[*]}" | sed "s/|/ $SYM_DOT /g")"
+  rm -f "$log"
+}
+
+# One redraw of download_image_ui's live block (runs in its scope).
+download_tick() {
+  local lines=() phase detail="" url host prog pct done total speed left sources warn
+  if grep -q 'Best mirror' "$log"; then
+    # ★ Best mirror: <url> (12.34 MB/s, latency: 0.12s)
+    url=$(sed -n 's/.*Best mirror: \([^ ]*\) .*/\1/p' "$log" | head -1)
+    host=${url#*://} host=${host%%/*}
+    detail="$host, fastest of $(grep -c '^  Mirror: ' "$log") that answered out of $(get_mirrors "$img" | grep -c .)"
+  elif grep -q 'No working mirrors' "$log"; then
+    detail="none answered the speed test; trying each in turn"
+  fi
+  sources=$(sed -n 's/.*aria2c with \([0-9]*\) mirror.*/\1/p' "$log" | head -1)
+  warn=$(grep '^WARNING' "$log" | grep -v 'No published checksum' | tail -1 | sed -E 's#https?://([^/ ]+)[^ ]*#\1#g')
+  prog=$(download_progress "$log")
+
+  if grep -q 'Extracting Kali' "$log"; then
+    phase="converting the raw disk to qcow2, $((SECONDS - start))s"
+  elif [ -z "$detail" ]; then
+    phase="testing $(plural "$(get_mirrors "$img" | grep -c .)" mirror), $((SECONDS - start))s"
+  else
+    phase="downloading $img"
+  fi
+  lines+=("$(ui_spin_line "$label" "$phase")")
+  [ -n "$detail" ] && lines+=("      ${DIM}mirror      $(ui_fit 18 "$detail")${NC}")
+  if [ -n "$sources" ] && ! grep -q 'aria2c download failed' "$log"; then
+    lines+=("      ${DIM}via         aria2c, from $(plural "$sources" mirror) at once${NC}")
+  elif [ -n "$detail" ]; then
+    lines+=("      ${DIM}via         curl, one mirror at a time${NC}")
+  fi
+  [ -n "$warn" ] && lines+=("      ${YELLOW}${SYM_WARN}${NC} ${DIM}$(ui_fit 8 "${warn#WARNING: }")${NC}")
+  if [ -n "$detail" ] && [ -n "$prog" ] && ! grep -q 'Extracting Kali' "$log"; then
+    IFS='|' read -r pct done total speed left <<<"$prog"
+  fi
+  # The bar once data arrives (curl reports 0 of 0 while it connects).
+  if [ "${pct:-0}" -gt 0 ] || [ "${done:-0}" -gt 0 ]; then
+    lines+=("      $(ui_bar "$pct" 20) $(printf '%3s' "$pct")%${DIM}$(ui_fit 32 "${done:+  $(format_bytes "$done") of $(format_bytes "$total")}${speed:+ $SYM_DOT $(format_bytes "$speed")/s}${left:+ $SYM_DOT $([ "$left" -ge 60 ] && echo "$((left / 60))m ")$((left % 60))s left}")${NC}")
+  fi
+  ui_region "${lines[@]}"
 }
 
 is_kali_image() {
@@ -689,265 +634,257 @@ extract_kali_image() {
   return 0
 }
 
+# IMAGE<tab>fastest mirror, for every supported image.
+best_mirror_rows() {
+  local img
+  for img in $SUPPORTED_IMAGES; do
+    printf '%s\t%s\n' "$img" "$(select_best_mirror "$img" 2>/dev/null || echo -)"
+  done
+}
+
+is_force() { [ "${1:-}" = --force ] || [ "${1:-}" = -f ]; }
+
+# Mirror speed table for one image (dcvm template check).
+mirror_table() {
+  local filename="$1" total ok
+  total=$(get_mirrors "$filename" | grep -c .)
+  if [ "$total" -eq 0 ]; then
+    print_error "Unknown image: $filename (dcvm template list)"
+    return 1
+  fi
+  ui_run "Testing $total mirrors" rank_mirrors "$filename" || true
+  ok=$(grep -c '^  Mirror: ' "$UI_RUN_LOG" || true)
+  if [ "$ok" -gt 0 ]; then
+    {
+      printf 'MIRROR\tSPEED\tLATENCY\n'
+      sed -n 's/^  Mirror: \(.*\) -> \(.*\) (latency: \(.*\)s)$/\1\t\2\t\3 s/p' "$UI_RUN_LOG"
+    } | ui_table
+  fi
+  echo -e "  ${DIM}$ok of $total mirrors answered$([ "$ok" -lt "$total" ] && echo "; the others failed or timed out")${NC}"
+}
+
+# Downloads one image into the template folder (dcvm template download).
+download_image() {
+  mkdir -p "$TEMPLATE_DIR"
+  download_image_ui "$1" "$TEMPLATE_DIR/$1" 100000000
+}
+
 main() {
   if [ -f /etc/dcvm-install.conf ]; then
     source /etc/dcvm-install.conf
   fi
   DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
   TEMPLATE_DIR="$DATACENTER_BASE/storage/templates"
+  local img target="${2:-}" n=0 failed=0
 
   case "${1:-}" in
   list)
-    list_mirrors "${2:-}"
+    if [ -n "$target" ]; then
+      local mirrors
+      mirrors=$(get_mirrors "$target")
+      [ -n "$mirrors" ] || {
+        print_error "Unknown image: $target"
+        return 1
+      }
+      ui_title "Mirrors" "$target"
+      {
+        printf '#\tURL\n'
+        grep . <<<"$mirrors" | awk '{ print NR "\t" $0 }'
+      } | ui_table
+      echo ""
+      return 0
+    fi
+    ui_title "Images" "cloud images dcvm can build VMs from"
+    {
+      printf 'OS\tIMAGE\tDOWNLOADED\n'
+      for img in $SUPPORTED_IMAGES; do
+        printf '%s\t%s\t%s\n' "$(image_label "$img")" "$img" "$([ -f "$TEMPLATE_DIR/$img" ] && format_bytes "$(file_bytes "$TEMPLATE_DIR/$img")" || echo -)"
+      done
+    } | ui_table
+    echo ""
     ;;
   check)
-    local target="${2:-}"
     if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
-      echo "Checking mirrors for all templates..."
-      echo ""
+      ui_section "Mirror check" "all images"
       for img in $SUPPORTED_IMAGES; do
-        echo "=== $img ==="
-        check_mirrors "$img"
-        echo ""
+        ui_section "$img"
+        mirror_table "$img"
       done
     elif [ -z "$target" ]; then
-      echo "ERROR: filename required. Usage: dcvm template check <filename>"
-      echo "       dcvm template check -a, --all  (check all templates)"
-      echo ""
-      list_mirrors ""
+      print_error "Image name required: dcvm template check <image> (or -a for all)"
+      echo -e "  ${DIM}Images: dcvm template list${NC}"
       exit 1
     else
-      check_mirrors "$target"
+      ui_title "Mirror check" "$target"
+      mirror_table "$target" || exit 1
     fi
+    echo ""
     ;;
   best)
-    local target="${2:-}"
     if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
-      echo "Finding best mirrors for all templates..."
+      ui_title "Fastest mirrors" "all images"
+      ui_run "Testing mirrors" best_mirror_rows || true
+      {
+        printf 'IMAGE\tFASTEST MIRROR\n'
+        cat "$UI_RUN_LOG"
+      } | ui_table
       echo ""
-      printf "%-50s %s\n" "Template" "Best Mirror"
-      printf "%-50s %s\n" "--------" "-----------"
-      for img in $SUPPORTED_IMAGES; do
-        local best=$(select_best_mirror "$img" 2>/dev/null)
-        if [ -n "$best" ]; then
-          printf "%-50s %s\n" "$img" "$best"
-        else
-          printf "%-50s %s\n" "$img" "(no working mirror)"
-        fi
-      done
     elif [ -z "$target" ]; then
-      echo "ERROR: filename required. Usage: dcvm template best <filename>"
-      echo "       dcvm template best -a, --all  (find best for all)"
-      echo ""
-      list_mirrors ""
+      print_error "Image name required: dcvm template best <image> (or -a for all)"
       exit 1
     else
-      select_best_mirror "$target"
+      local best
+      if ui_run "Testing mirrors" select_best_mirror "$target" && best=$(tail -1 "$UI_RUN_LOG") && [ -n "$best" ]; then
+        ui_done ok "Fastest mirror for $target" "$(grep -o '([0-9.]* MB/s' "$UI_RUN_LOG" | tail -1 | tr -d '(')"
+        echo "  $best"
+        echo ""
+      else
+        ui_done fail "No working mirror for $target"
+        echo ""
+        exit 1
+      fi
     fi
     ;;
   download)
-    local target="${2:-}"
     local force="${3:-}"
-
     if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
-      echo "Downloading all templates..."
-      echo ""
-      local success=0
-      local failed=0
+      ui_title "Downloading images" "into $TEMPLATE_DIR"
       for img in $SUPPORTED_IMAGES; do
-        local target_path="$TEMPLATE_DIR/$img"
-        if [ -f "$target_path" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
-          echo "✓ $img (already exists)"
-          ((success++))
+        n=$((n + 1))
+        if [ -f "$TEMPLATE_DIR/$img" ] && ! is_force "$force"; then
+          ui_step skip "$img" "already downloaded"
         else
-          echo "Downloading: $img"
-          if download_with_mirrors "$img" "$target_path" 100000000; then
-            echo "✓ $img downloaded"
-            ((success++))
-          else
-            echo "✗ $img FAILED"
-            ((failed++))
-          fi
+          rm -f "$TEMPLATE_DIR/$img"
+          download_image "$img" || failed=$((failed + 1))
         fi
       done
+      if [ "$failed" -eq 0 ]; then ui_done ok "All $n images ready"; else ui_done warn "$((n - failed)) of $n images ready" "$failed failed"; fi
       echo ""
-      echo "Summary: $success successful, $failed failed"
-      exit 0
+      [ "$failed" -eq 0 ]
+      exit
     fi
 
     if [ -z "$target" ]; then
-      echo "dcvm Template Download"
+      print_error "Image name required: dcvm template download <image> [--force]"
+      echo -e "  ${DIM}Images: dcvm template list${NC}"
+      exit 1
+    fi
+    if [ -z "$(get_mirrors "$target")" ]; then
+      print_error "Unknown image: $target (dcvm template list)"
+      exit 1
+    fi
+    if [ -f "$TEMPLATE_DIR/$target" ] && ! is_force "$force"; then
+      ui_done ok "$target is already downloaded" "--force downloads it again"
       echo ""
-      echo "Usage: dcvm template download <filename> [--force]"
-      echo "       dcvm template download -a, --all [-f]  (download all)"
-      echo ""
-      echo "Options:"
-      echo "  --force, -f    Force redownload even if template exists"
-      echo ""
-      echo "Available templates:"
-      for img in $SUPPORTED_IMAGES; do
-        local tpath="$TEMPLATE_DIR/$img"
-        if [ -f "$tpath" ]; then
-          local size=$(du -h "$tpath" 2>/dev/null | cut -f1)
-          echo "  $img  [installed: $size]"
-        else
-          echo "  $img"
-        fi
-      done
       exit 0
     fi
-
-    local target_path="$TEMPLATE_DIR/$target"
-
-    if [ -f "$target_path" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
-      echo "Template already exists: $target_path"
-      echo "Use --force to redownload: dcvm template download $target --force"
-      exit 0
-    fi
-
-    if [ -f "$target_path" ] && { [ "$force" = "--force" ] || [ "$force" = "-f" ]; }; then
-      echo "Removing existing template for redownload..."
-      rm -f "$target_path"
-    fi
-
-    mkdir -p "$TEMPLATE_DIR"
-    echo "Downloading template: $target"
-    echo "Target: $target_path"
-    echo ""
-
-    if download_with_mirrors "$target" "$target_path" 100000000; then
+    ui_title "Downloading $target" "into $TEMPLATE_DIR"
+    rm -f "$TEMPLATE_DIR/$target"
+    if download_image "$target"; then
+      ui_done ok "$target ready" "dcvm create uses it from now on"
       echo ""
-      echo "SUCCESS: Template downloaded successfully"
-      ls -lh "$target_path"
     else
+      ui_done fail "Could not download $target" "dcvm template check $target tests the mirrors"
       echo ""
-      echo "FAILED: Could not download template"
       exit 1
     fi
     ;;
   status)
-    echo "dcvm Template Status"
-    echo ""
-    echo "Template directory: $TEMPLATE_DIR"
-    echo ""
-    if [ -d "$TEMPLATE_DIR" ]; then
-      echo "Installed templates:"
-      local count=0
-      local corrupt=0
-      for img in $SUPPORTED_IMAGES; do
-        local target="$TEMPLATE_DIR/$img"
-        if [ -f "$target" ]; then
-          local size=$(du -h "$target" 2>/dev/null | cut -f1)
-          local vsize=$(qemu-img info "$target" 2>/dev/null | grep "virtual size" | awk -F': ' '{print $2}' | cut -d' ' -f1-2)
-          local integrity="OK"
-          if command -v qemu-img >/dev/null 2>&1; then
-            if ! qemu-img check "$target" >/dev/null 2>&1; then
-              integrity="CORRUPT"
-              ((corrupt++))
-            fi
-          fi
-
-          if [ "$integrity" = "OK" ]; then
-            echo "  ✓ $img ($size, virtual: ${vsize:-unknown})"
-          else
-            echo "  ✗ $img ($size) - CORRUPT! Use: dcvm template download $img --force"
-          fi
-          ((count++))
+    ui_title "Images" "$TEMPLATE_DIR"
+    local rows="" missing="" size vsize corrupt=0
+    for img in $SUPPORTED_IMAGES; do
+      if [ -f "$TEMPLATE_DIR/$img" ]; then
+        size=$(format_bytes "$(file_bytes "$TEMPLATE_DIR/$img")")
+        vsize=$(qemu-img info "$TEMPLATE_DIR/$img" 2>/dev/null | awk -F': ' '/^virtual size/ { split($2, a, " "); print a[1] " " a[2] }')
+        if qemu-img check "$TEMPLATE_DIR/$img" >/dev/null 2>&1; then
+          rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_OK"$'\n'
+        else
+          rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_FAIL CORRUPT"$'\n'
+          corrupt=$((corrupt + 1))
         fi
-      done
-      if [ $count -eq 0 ]; then
-        echo "  (none)"
+      else
+        missing+="$img "
       fi
-      if [ $corrupt -gt 0 ]; then
-        echo ""
-        echo "WARNING: $corrupt template(s) are corrupted and should be redownloaded"
-      fi
-      echo ""
-      echo "Available for download:"
-      for img in $SUPPORTED_IMAGES; do
-        local target="$TEMPLATE_DIR/$img"
-        if [ ! -f "$target" ]; then
-          echo "  • $img"
-        fi
-      done
+    done
+    if [ -n "$rows" ]; then
+      printf 'IMAGE\tSIZE\tDISK\tCHECK\n%s' "$rows" | ui_table
     else
-      echo "Template directory does not exist yet."
-      echo "Templates will be downloaded on first VM creation."
+      echo -e "  ${DIM}none yet; dcvm create downloads the image it needs${NC}"
     fi
+    if [ -n "$missing" ]; then
+      ui_section "Not downloaded"
+      for img in $missing; do echo -e "  ${DIM}${SYM_DOT} $img${NC}"; done
+    fi
+    if [ "$corrupt" -gt 0 ]; then
+      echo ""
+      print_warning "$corrupt image(s) are corrupt: dcvm template download <image> --force (VMs built on the old file break)"
+    fi
+    echo ""
     ;;
   verify)
-    local target="${2:-}"
-    echo "dcvm Template Verification"
-    echo ""
+    ui_title "Image check" "qemu-img check"
     if [ "$target" = "-a" ] || [ "$target" = "--all" ] || [ -z "$target" ]; then
-      echo "Verifying all installed templates..."
-      echo ""
-      local ok=0
-      local bad=0
       for img in $SUPPORTED_IMAGES; do
-        local tpath="$TEMPLATE_DIR/$img"
-        if [ -f "$tpath" ]; then
-          printf "  Checking %-50s " "$img"
-          if qemu-img check "$tpath" >/dev/null 2>&1; then
-            echo "[OK]"
-            ((ok++))
-          else
-            echo "[CORRUPT]"
-            ((bad++))
-          fi
+        [ -f "$TEMPLATE_DIR/$img" ] || continue
+        n=$((n + 1))
+        if qemu-img check "$TEMPLATE_DIR/$img" >/dev/null 2>&1; then
+          ui_step ok "$img" "no errors"
+        else
+          ui_step fail "$img" "corrupt"
+          failed=$((failed + 1))
         fi
       done
-      echo ""
-      echo "Summary: $ok OK, $bad corrupted"
-      [ $bad -gt 0 ] && echo "Redownload corrupted templates with: dcvm template download <name> --force"
+      [ "$n" -eq 0 ] && echo -e "  ${DIM}No images downloaded yet${NC}"
     else
-      local tpath="$TEMPLATE_DIR/$target"
-      if [ ! -f "$tpath" ]; then
-        echo "Template not found: $target"
+      [ -f "$TEMPLATE_DIR/$target" ] || {
+        print_error "Not downloaded: $target"
         exit 1
-      fi
-      echo "Verifying: $target"
-      if qemu-img check "$tpath" 2>&1; then
-        echo ""
-        echo "Template is OK"
+      }
+      n=1
+      if qemu-img check "$TEMPLATE_DIR/$target" >/dev/null 2>&1; then
+        ui_step ok "$target" "no errors"
       else
-        echo ""
-        echo "Template is CORRUPTED"
-        echo "Redownload with: dcvm template download $target --force"
-        exit 1
+        ui_step fail "$target" "corrupt"
+        failed=1
       fi
     fi
+    if [ "$failed" -gt 0 ]; then
+      ui_done warn "$failed of $n images corrupt" "dcvm template download <image> --force"
+      echo ""
+      exit 1
+    fi
+    [ "$n" -gt 0 ] && ui_done ok "$(plural "$n" image) OK"
+    echo ""
     ;;
   help | --help | -h | "")
-    echo "dcvm Template Management"
-    echo ""
-    echo "Usage: dcvm template <command> [args]"
-    echo ""
-    echo "Commands:"
-    echo "  list [filename]              List available images or mirrors for an image"
-    echo "  status                       Show installed templates with integrity check"
-    echo "  verify [filename|-a]         Verify template integrity"
-    echo "  download <filename> [-f]     Download or redownload a template"
-    echo "  download -a [--force]        Download all templates"
-    echo "  check <filename>             Check mirror availability for an image"
-    echo "  check -a, --all              Check mirrors for all images"
-    echo "  best <filename>              Find fastest mirror for an image"
-    echo "  best -a, --all               Find best mirrors for all images"
-    echo ""
-    echo "Available templates:"
-    for img in $SUPPORTED_IMAGES; do
-      echo "  $img"
-    done
-    echo ""
-    echo "Examples:"
-    echo "  dcvm template status"
-    echo "  dcvm template verify -a"
-    echo "  dcvm template download debian-12-generic-amd64.qcow2"
-    echo "  dcvm template download -a --force"
-    echo "  dcvm template check -a"
+    {
+      cat <<EOF
+dcvm template - the cloud images VMs are built from
+
+Usage: dcvm template <command> [image]
+
+Commands:
+  status                  Downloaded images, their size and an integrity check
+  list [image]            Supported images, or the mirrors of one
+  download <image> [-f]   Download an image (-f: again, even if present)
+  download -a [-f]        Download every image
+  verify [image|-a]       Check downloaded images with qemu-img
+  check <image|-a>        Test the mirrors of an image: speed and latency
+  best <image|-a>         The fastest mirror of an image
+
+Images:
+EOF
+      for img in $SUPPORTED_IMAGES; do echo "  $img"; done
+      cat <<EOF
+
+Examples:
+  dcvm template status
+  dcvm template download debian-13-genericcloud-amd64.qcow2
+EOF
+    } | ui_help
     ;;
   *)
-    echo "Unknown command: ${1:-}"
+    print_error "Unknown command: ${1:-}"
     echo "Use: dcvm template help"
     exit 1
     ;;
@@ -955,5 +892,6 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
   main "$@"
 fi

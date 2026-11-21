@@ -84,7 +84,9 @@ the version-bump check.
   `../utils/common.sh` and call `load_dcvm_config`.
 - Output goes through the helpers in `common.sh`, so every command looks the
   same: a `ui_title`, one `ui_step` per step (wrap slow commands in `ui_run`),
-  then a result line or `ui_box` and `ui_next`. Colour only on a terminal and
+  then `ui_done` or a `ui_box`, and `ui_next`. Listings are a `ui_title` and
+  a `ui_table` (or `ui_kv`), with `ui_section` between parts; help texts go
+  through `ui_help`. Colour only on a terminal and
   never without a symbol or word next to it; keep `ui_box` rows ASCII.
   Errors and warnings always print; detail lines go through `print_info`,
   which `ui_quiet` hides unless `DCVM_VERBOSE=1`.
@@ -96,17 +98,25 @@ the version-bump check.
 ## Shared helpers
 
 `lib/utils/common.sh` is the one place for logic used by more than one
-script. Reuse these before writing new code:
+script; the installer sources it too (from the checkout, or fetched from the
+same branch when it runs on its own). Reuse these before writing new code.
+Image downloads have one module, `lib/utils/mirror-manager.sh`
+(`rank_mirrors`, `download_with_mirrors`, `download_image_ui` with its
+progress view, `image_label`), sourced by `create`, `backup`, the installer
+and `dcvm template`.
 
 | Area | Functions |
 | :--- | :-------- |
 | Output and logs | `print_info`, `print_success`, `print_warning`, `print_error`, `print_status`, `log`, `log_to_file` |
-| Screens | `ui_title`, `ui_step` (one line per step), `ui_run` (spinner around a slow command), `ui_box` (key result), `ui_next` (next steps), `ui_table`, `ui_quiet` (hide info/success lines; `DCVM_VERBOSE=1` shows them) |
+| Screens | `ui_title`, `ui_section` (heading inside a screen), `ui_step` (one line per step), `ui_run` (spinner around a slow command), `ui_kv` (label and value lines), `ui_table` (tab-separated rows), `ui_box` (key result), `ui_done` (result line), `ui_next` (next steps), `ui_help` (colours a help text), `ui_quiet` (hide info/success lines; `DCVM_VERBOSE=1` shows them), `confirm_action` (y/N question) |
+| Live output | `ui_live` (can we draw?), `ui_watch` (redraw while a background job runs), `ui_spin` / `ui_spin_clear` (spinner line), `ui_bar` (progress bar) |
+| Formatting | `plural` (`3 VMs`), `format_bytes` (`6.9 GB`), `file_bytes` |
+| Repository | `fetch_repo_file`, `list_repo_files` (the installer and `self-update` download dcvm with them) |
 | Config and checks | `load_dcvm_config`, `require_root`, `command_exists`, `check_dependencies` |
 | Validation | `validate_vm_name`, `validate_vm_name_list`, `validate_username`, `validate_password`, `validate_package_list`, `validate_ip_in_subnet`, `validate_memory_size`, `validate_cpu_count`, `validate_disk_size`, `trim_whitespace` |
-| VMs | `check_vm_exists`, `get_vm_state`, `get_vm_ip`, `get_vm_mac`, `get_vm_disk_path`, `get_vm_username`, `default_username`, `list_datacenter_vms`, `is_vm_in_network`, `stop_vm_gracefully` |
-| Network | `get_port_mappings_file`, `read_port_mappings`, `check_port_forward`, `check_port_connectivity`, `check_ping`, `detect_host_ip` |
-| DHCP | `filter_lease_lines`, `cleanup_dhcp_lease` (locked), `cleanup_dhcp_lease_unlocked` |
+| VMs | `list_datacenter_vm_names`, `check_vm_exists`, `get_vm_state`, `get_vm_ip`, `get_vm_mac`, `get_vm_disk_path`, `get_vm_username`, `default_username`, `list_datacenter_vms`, `is_vm_in_network`, `stop_vm_gracefully` |
+| Network | `get_port_mappings_file`, `read_port_mappings`, `check_port_forward`, `check_port_connectivity`, `check_ping`, `get_host_ip`, `detect_host_ip`, `save_iptables_rules` |
+| DHCP | `leases_table`, `filter_lease_lines`, `cleanup_dhcp_lease` (locked), `cleanup_dhcp_lease_unlocked` |
 | Credentials | `read_password` (no echo), `generate_password_hash` (SHA-512 crypt), `generate_random_mac` |
 | Prompts | `interactive_prompt_memory_common`, `interactive_prompt_cpus_common`, `interactive_prompt_disk_common`, `interactive_prompt_static_ip_common`, `confirm_action`, `require_confirmation` |
 

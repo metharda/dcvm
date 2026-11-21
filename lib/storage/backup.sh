@@ -114,28 +114,14 @@ download_cloud_image() {
     print_error "Cannot create directory for backing image"
     return 1
   }
-
-  if type download_with_mirrors &>/dev/null; then
-    print_info "Downloading cloud image $filename using mirror-manager..."
-    if download_with_mirrors "$filename" "$target_path" 100000000; then
-      print_success "Downloaded backing image: $filename"
-      return 0
-    else
-      print_error "Failed to download backing image: $filename"
-      print_info "Hint: Check internet connection or run 'dcvm mirror check $filename' to verify mirrors"
-      return 1
-    fi
+  if ! type download_image_ui &>/dev/null; then
+    print_error "mirror-manager.sh not found; put $filename at $target_path by hand"
+    return 1
   fi
-
-  print_error "Mirror-manager not available for downloading $filename"
-  print_info "Please ensure mirror-manager.sh is properly installed:"
-  print_info "  Expected locations:"
-  print_info "    - $SCRIPT_DIR/../utils/mirror-manager.sh"
-  print_info "    - /usr/local/lib/dcvm/utils/mirror-manager.sh"
-  print_info ""
-  print_info "Alternatively, manually download and place the image at:"
-  print_info "  $target_path"
-  return 1
+  if ! download_image_ui "$filename" "$target_path" 100000000; then
+    print_error "Could not download $filename (dcvm template check $filename tests the mirrors)"
+    return 1
+  fi
 }
 
 ensure_backing_image() {
@@ -209,7 +195,7 @@ is_lock_error() {
   return 1
 }
 
-get_file_size() { [ -f "$1" ] && du -h "$1" | cut -f1 || echo "0"; }
+get_file_size() { format_bytes "$(file_bytes "$1")"; }
 
 normalize_backing_chain() {
   local vm_disk_path="$1"
@@ -274,7 +260,6 @@ remove_backup_artifacts() {
 cleanup_old_backups() {
   local vm_name="$1"
 
-  print_info "Cleaning up old backups (keeping $KEEP_BACKUPS most recent)..."
   mapfile -t all_ts < <(list_backup_timestamps_desc "$vm_name")
   if [ ${#all_ts[@]} -gt $KEEP_BACKUPS ]; then
     local to_delete=("${all_ts[@]:$KEEP_BACKUPS}")
@@ -283,80 +268,86 @@ cleanup_old_backups() {
       remove_backup_artifacts "$vm_name" "$dp" "old backup" || true
     done
   fi
+}
 
-  print_success "Cleanup completed"
+# 20261121_140322 -> 2026-11-21 14:03:22
+pretty_ts() { sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/' <<<"$1"; }
+
+# "5 min", "6 hours", "17 days" since backup timestamp $1.
+backup_age() {
+  local s
+  s=$(($(date +%s) - $(date -d "$(pretty_ts "$1")" +%s 2>/dev/null || date +%s)))
+  if [ "$s" -lt 3600 ]; then
+    echo "$((s / 60)) min"
+  elif [ "$s" -lt 86400 ]; then
+    plural "$((s / 3600))" hour
+  else
+    plural "$((s / 86400))" day
+  fi
+}
+
+# The VM's state, or "deleted": what a backup would restore over. ui_table
+# adds the ● / ○ glyphs.
+vm_state_label() {
+  if check_vm_exists "$1"; then get_vm_state "$1"; else echo deleted; fi
+}
+
+# One row per backup of VM $1, newest first, tab separated:
+# ID, taken, age, size, note, size in bytes. The ID numbers the backups of a
+# day in time order: <vm>-dd.mm.yyyy-N.
+backup_rows() {
+  local vm_name="$1" dp dmy disk_path bytes note first=true
+  local -A day_seq=() seq_for_dp=()
+  mapfile -t backups_ts < <(list_backup_timestamps_desc "$vm_name")
+  [ ${#backups_ts[@]} -gt 0 ] || return 1
+  while read -r dp; do
+    [ -n "$dp" ] || continue
+    dmy=$(sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/' <<<"$dp")
+    day_seq[$dmy]=$((${day_seq[$dmy]:-0} + 1))
+    seq_for_dp[$dp]=${day_seq[$dmy]}
+  done < <(printf '%s\n' "${backups_ts[@]}" | sort)
+  for dp in "${backups_ts[@]}"; do
+    [ -n "$dp" ] || continue
+    disk_path=$(get_backup_disk_path "$vm_name" "$dp")
+    bytes=$(file_bytes "$disk_path")
+    note=""
+    $first && [ ${#backups_ts[@]} -gt 1 ] && note="newest"
+    first=false
+    [[ "$disk_path" == *.gz ]] || note+="${note:+, }not compressed"
+    [ -f "$(get_backup_config_path "$vm_name" "$dp")" ] || note="$SYM_WARN no config, cannot be restored${note:+, $note}"
+    dmy=$(sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/' <<<"$dp")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${vm_name}-${dmy}-${seq_for_dp[$dp]:-?}" "$(pretty_ts "$dp" | cut -c1-16)" \
+      "$(backup_age "$dp")" "$(format_bytes "$bytes")" "${note:- }" "$bytes"
+  done
 }
 
 list_backups() {
-  local vm_name="$1"
-  local with_index="$2"
-
-  print_info "Backups for VM: $vm_name"
-  echo ""
-
-  mapfile -t backups_ts < <(list_backup_timestamps_desc "$vm_name")
-
-  if [ ${#backups_ts[@]} -eq 0 ]; then
+  local vm_name="$1" with_index="$2" rows n total
+  if ! rows=$(backup_rows "$vm_name"); then
     print_warning "No backups found for VM: $vm_name"
     return 1
   fi
-
-  declare -A __day_seq
-  declare -A __seq_for_dp
-  mapfile -t __chrono_dps < <(printf "%s\n" "${backups_ts[@]}" | sort)
-  for __dp in "${__chrono_dps[@]}"; do
-    [ -z "$__dp" ] && continue
-    __dmy=$(echo "$__dp" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/')
-    [ -z "$__dmy" ] && continue
-    local __cur=${__day_seq[$__dmy]:-0}
-    local __n=$((__cur + 1))
-    __day_seq[$__dmy]=$__n
-    __seq_for_dp[$__dp]=$__n
-  done
-
-  if [ "$with_index" = "true" ]; then
-    printf "%-3s %-24s %-19s %-9s %-10s %s\n" "#" "ID" "Date/Time" "Size" "Type" "Status"
-    printf "%-3s %-24s %-19s %-9s %-10s %s\n" "---" "------------------------" "-------------------" "---------" "----------" "--------"
+  n=$(grep -c . <<<"$rows")
+  total=$(awk -F'\t' '{ t += $6 } END { print t + 0 }' <<<"$rows")
+  ui_title "Backups of $vm_name" "$n of $KEEP_BACKUPS kept ${SYM_DOT} $(format_bytes "$total") ${SYM_DOT} VM $(vm_state_label "$vm_name")"
+  # The NOTE column only when a backup has one.
+  local cols=1-5 head=$'ID\tTAKEN\tAGE\tSIZE\tNOTE'
+  awk -F'\t' '$5 != " "' <<<"$rows" | grep -q . || cols=1-4 head=${head%$'\t'NOTE}
+  if [ "$with_index" = true ]; then
+    printf '#\t%s\n%s\n' "$head" "$(cut -f"$cols" <<<"$rows" | awk '{ print NR "\t" $0 }')" | ui_table
+    echo ""
   else
-    printf "%-24s %-19s %-9s %-10s %s\n" "ID" "Date/Time" "Size" "Type" "Status"
-    printf "%-24s %-19s %-9s %-10s %s\n" "------------------------" "-------------------" "---------" "----------" "--------"
+    printf '%s\n%s\n' "$head" "$(cut -f"$cols" <<<"$rows")" | ui_table
+    ui_next "dcvm backup restore $vm_name" "put the newest backup back" \
+      "dcvm backup restore $vm_name <id> <new-name>" "restore one as a new VM" \
+      "dcvm backup delete $vm_name" "pick backups to delete"
   fi
-
-  local idx=0
-  for date_part in "${backups_ts[@]}"; do
-    [ -z "$date_part" ] && continue
-    local disk_path
-    disk_path=$(get_backup_disk_path "$vm_name" "$date_part")
-    local cfg_path
-    cfg_path=$(get_backup_config_path "$vm_name" "$date_part")
-    local size=$(get_file_size "$disk_path")
-    local type="qcow2"
-    [[ "$disk_path" == *.gz ]] && type="qcow2+gz"
-    local status="✓"
-    [ ! -f "$cfg_path" ] && status="⚠ No config"
-
-    local pretty_dt=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
-    local dmy=$(echo "$date_part" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_.*/\3.\2.\1/')
-    local seq=${__seq_for_dp[$date_part]:-?}
-    local date_id="${vm_name}-${dmy}-${seq}"
-
-    if [ "$with_index" = "true" ]; then
-      idx=$((idx + 1))
-      printf "%-3s %-24s %-19s %-9s %-10s %s\n" "$idx" "$date_id" "$pretty_dt" "$size" "$type" "$status"
-    else
-      printf "%-24s %-19s %-9s %-10s %s\n" "$date_id" "$pretty_dt" "$size" "$type" "$status"
-    fi
-  done
-
-  echo ""
   return 0
 }
 
 list_all_backups() {
-  print_info "Available backups (grouped by VM)"
-  echo ""
-
   local -a vms=()
+  local vm rows all="" n=0 total
   while IFS= read -r f; do vms+=("$(basename "$f" | awk -F"-disk-" '{print $1}')"); done < <(ls -1 "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
   while IFS= read -r d; do vms+=("$(basename "$d" | sed -E 's/-[0-9]{8}_[0-9]{6}$//')"); done < <(ls -1 -d "$BACKUP_DIR"/*-????????_?????? 2>/dev/null)
   if [ ${#vms[@]} -eq 0 ]; then
@@ -365,11 +356,20 @@ list_all_backups() {
   fi
   mapfile -t vms < <(printf "%s\n" "${vms[@]}" | sort -u)
 
+  # VM and state on the first row of each VM only.
   for vm in "${vms[@]}"; do
-    echo "VM: $vm"
-    list_backups "$vm" false || true
+    rows=$(backup_rows "$vm") || continue
+    all+=$(awk -F'\t' -v vm="$vm" -v st="$(vm_state_label "$vm")" 'BEGIN { OFS = "\t" } { print (NR == 1 ? vm : " "), (NR == 1 ? st : " "), $0 }' <<<"$rows")$'\n'
   done
-
+  n=$(grep -c . <<<"$all")
+  total=$(awk -F'\t' '{ t += $8 } END { print t + 0 }' <<<"$all")
+  ui_title "Backups" "$(plural "$n" backup) of $(plural "${#vms[@]}" VM) ${SYM_DOT} $(format_bytes "$total") in $BACKUP_DIR"
+  local cols=1-7 head=$'VM\tSTATE\tID\tTAKEN\tAGE\tSIZE\tNOTE'
+  awk -F'\t' 'NF && $7 != " "' <<<"$all" | grep -q . || cols=1-6 head=${head%$'\t'NOTE}
+  printf '%s\n%s\n' "$head" "$(grep . <<<"$all" | cut -f"$cols")" | ui_table
+  ui_next "dcvm backup restore <vm>" "put a VM's newest backup back" \
+    "dcvm backup restore <vm> <id> <new-name>" "restore one as a new VM" \
+    "dcvm backup list <vm>" "one VM's backups"
   return 0
 }
 
@@ -394,14 +394,11 @@ delete_backups() {
       return 0
     fi
 
-    echo "This will permanently delete $total backup(s):"
-    [ "$count_folders" -gt 0 ] && echo "  - $count_folders folder backup(s)"
-    [ "$count_legacy" -gt 0 ] && echo "  - $count_legacy legacy file backup(s)"
-    read -p "Proceed? (y/N): " yn
-    if [[ ! "$yn" =~ ^[Yy]$ ]]; then
-      print_info "Cancelled."
-      return 0
-    fi
+    ui_title "Delete all backups" "$total in $BACKUP_DIR"
+    [ "$count_folders" -gt 0 ] && ui_kv "Backups" "$count_folders"
+    [ "$count_legacy" -gt 0 ] && ui_kv "Old format" "$count_legacy (single files from before 0.9)"
+    echo ""
+    confirm_action "Delete them permanently?" || return 0
 
     local removed=0
     for d in "${__folders[@]}"; do
@@ -418,7 +415,8 @@ delete_backups() {
       [ -f "$legacy_cfg" ] && rm -f "$legacy_cfg" || true
     done
 
-    print_success "$removed backup artifact(s) deleted."
+    ui_done ok "$(plural "$removed" backup) deleted"
+    echo ""
     return 0
   fi
 
@@ -451,10 +449,10 @@ delete_backups() {
       print_warning "No backups to delete for VM: $vm_name"
       return 0
     fi
-    read -p "Enter number(s) to delete (e.g., 1 or 1,2,3): " selection
+    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection
     selection=$(echo "$selection" | tr -d ' ')
     if [ -z "$selection" ]; then
-      print_info "Cancelled."
+      echo "  Cancelled."
       return 0
     fi
 
@@ -474,16 +472,13 @@ delete_backups() {
       to_delete_dates+=("$date_part")
     done
 
-    echo "Backups to delete:"
+    echo ""
     for d in "${to_delete_dates[@]}"; do
       [ -z "$d" ] && continue
-      echo "  ${vm_name}-${d}"
+      ui_step skip "$(pretty_ts "$d")" "$(get_file_size "$(get_backup_disk_path "$vm_name" "$d")")"
     done
-    read -p "Proceed? (y/N): " yn
-    if [[ ! "$yn" =~ ^[Yy]$ ]]; then
-      print_info "Cancelled."
-      return 0
-    fi
+    echo ""
+    confirm_action "Delete $(plural "${#to_delete_dates[@]}" backup) of $vm_name?" || return 0
 
     local del_ok=0
     for date_part in "${to_delete_dates[@]}"; do
@@ -492,7 +487,8 @@ delete_backups() {
         del_ok=$((del_ok + 1))
       fi
     done
-    print_success "$del_ok backup(s) deleted."
+    ui_done ok "$(plural "$del_ok" backup) of $vm_name deleted"
+    echo ""
     return 0
   fi
 
@@ -519,11 +515,14 @@ delete_backups() {
     return 1
   fi
 
-  local removed=0
   if remove_backup_artifacts "$vm_name" "$resolved_ts" "backup"; then
-    removed=1
+    ui_done ok "Backup $arg deleted" "taken $(pretty_ts "$resolved_ts")"
+  else
+    ui_done fail "Backup $arg could not be deleted" "check the permissions on $BACKUP_DIR"
+    echo ""
+    return 1
   fi
-  print_success "$removed backup(s) deleted."
+  echo ""
   return 0
 }
 
@@ -535,7 +534,6 @@ troubleshoot_vm() {
     return 1
   fi
 
-  print_info "Troubleshooting VM (delegated to fix-lock.sh): $vm_name"
   if [ -x "$FIX_LOCK_SCRIPT" ]; then
     "$FIX_LOCK_SCRIPT" "$vm_name" --verbose
     return $?
@@ -641,12 +639,12 @@ export_backup() {
   local config_backup=""
   disk_backup=$(get_backup_disk_path "$vm_name" "$backup_date")
   config_backup=$(get_backup_config_path "$vm_name" "$backup_date")
-  local is_compressed=false
   if [ -z "$disk_backup" ] || [ -z "$config_backup" ]; then
     print_error "Backup files not found for date: $backup_date"
     return 1
   fi
-  [[ "$disk_backup" == *.gz ]] && is_compressed=true
+  ui_quiet
+  ui_title "Exporting $vm_name" "backup $(pretty_ts "$backup_date") ${SYM_DOT} $(get_file_size "$disk_backup")"
 
   local export_base="$BACKUP_DIR/exports"
   [ -n "$output_dir" ] && export_base="$output_dir"
@@ -666,14 +664,15 @@ export_backup() {
   local pkg_name="${vm_name}-${backup_date}.tar.gz"
   local pkg_path="$export_base/$pkg_name"
 
-  print_info "Creating export package: $pkg_path"
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp "$disk_backup" "$tmpdir/" || {
+  ui_run "Copying disk" cp "$disk_backup" "$tmpdir/" || {
     rm -rf "$tmpdir"
+    ui_step fail "Disk" "copy failed"
     print_error "Failed to copy disk backup"
     return 1
   }
+  ui_step ok "Disk" "$(basename "$disk_backup") (${UI_RUN_SECS}s)"
   cp "$config_backup" "$tmpdir/" || {
     rm -rf "$tmpdir"
     print_error "Failed to copy config backup"
@@ -683,7 +682,6 @@ export_backup() {
   local work_disk="$tmpdir/$(basename "$disk_backup")"
   local ssh_cleaned=false
   if command -v guestfish >/dev/null 2>&1; then
-    print_info "Cleaning authorized_keys from disk image for secure export..."
     set +e
     if [[ "$work_disk" == *.gz ]]; then
       local tmp_img="${work_disk%.gz}.tmp.$$"
@@ -707,12 +705,12 @@ GFSCMDS
     fi
     set -e
     if [ "$ssh_cleaned" = true ]; then
-      print_success "authorized_keys removed from export image."
+      ui_step ok "SSH keys" "authorized_keys removed from the disk"
     else
-      print_warning "Could not clean authorized_keys from disk image (guestfish failed)."
+      ui_step warn "SSH keys" "still on the disk (guestfish could not open it)"
     fi
   else
-    print_warning "guestfish not installed; authorized_keys NOT removed from export. Install libguestfs-tools for secure exports."
+    ui_step warn "SSH keys" "still on the disk (install libguestfs-tools to remove them)"
   fi
 
   local vm_cloud_dir="${DATACENTER_BASE}/vms/${vm_name}/cloud-init"
@@ -739,18 +737,20 @@ created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 dcvm_version=portable
 EOF
 
-  print_info "authorized_keys sanitized from export for security"
+  [ -d "$tmpdir/cloud-init" ] && ui_step ok "cloud-init" "seed files, without ssh_authorized_keys"
 
-  (cd "$tmpdir" && tar -czf "$pkg_path" .) || {
+  ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" . || {
     rm -rf "$tmpdir"
+    ui_step fail "Archive" "tar failed"
     print_error "Failed to create export archive"
     return 1
   }
   rm -rf "$tmpdir"
+  ui_step ok "Archive" "$(get_file_size "$pkg_path") (${UI_RUN_SECS}s)"
 
-  print_success "Export created: $pkg_path"
-  print_info "After importing on another host, run 'dcvm backup ssh-setup <vm_name>' to configure SSH keys"
-  echo "$pkg_path"
+  ui_done ok "Exported to $pkg_path"
+  ui_next "dcvm backup import $pkg_name" "on the other host: restore it there" \
+    "dcvm backup ssh-setup $vm_name" "then put that host's SSH key on it"
   return 0
 }
 
@@ -823,7 +823,8 @@ import_backup() {
     tgt_disk+=".gz"
   fi
 
-  print_info "Importing to: $tgt_disk and $tgt_cfg"
+  ui_quiet
+  ui_title "Importing $vm_target" "$(basename "$pkg_path")"
   cp "$disk_file" "$tgt_disk" || {
     rm -rf "$workdir"
     print_error "Failed to import disk file"
@@ -836,8 +837,8 @@ import_backup() {
   }
 
   rm -rf "$workdir"
+  ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
 
-  print_success "Import completed. Proceeding to restore..."
   restore_vm "$vm_target" "$date_part" "" "from_import"
   return $?
 }
@@ -1588,9 +1589,8 @@ ssh_setup_vm() {
     return 1
   fi
 
-  echo ""
-  print_info "Which user should the SSH key be added for?"
-  read -r -p "Username (e.g., root, ubuntu, debian, admin): " target_user
+  ui_title "SSH key for $vm_name" "copies this host's public key with ssh-copy-id"
+  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user
   target_user=${target_user:-root}
 
   if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
@@ -1725,19 +1725,17 @@ ssh_setup_vm() {
   fi
 
   if [ $scp_rc -eq 0 ]; then
-    print_success "SSH key copied successfully!"
-    print_info "You can now connect with: ssh $target_user@$vm_ip"
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${target_user}@${vm_ip}" "echo 'Connection test successful'" 2>/dev/null; then
-      print_success "SSH connection verified - key-based authentication works!"
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${target_user}@${vm_ip}" true 2>/dev/null; then
+      ui_done ok "SSH key installed for $target_user" "key login tested"
+    else
+      ui_done warn "SSH key copied for $target_user" "but a key login did not work yet"
     fi
+    ui_next "ssh $target_user@$vm_ip" "log in with the key"
   else
-    print_warning "ssh-copy-id exited with code $scp_rc"
-    print_error "Failed to copy SSH key"
-    print_info "Manual steps:"
-    echo "  1. Connect to VM console: virsh console $vm_name"
-    echo "  2. Ensure the user '$target_user' exists and has a password set"
-    echo "  3. Check that SSH password authentication is enabled in /etc/ssh/sshd_config"
-    echo "  4. Run manually: ssh-copy-id $target_user@$vm_ip"
+    ui_done fail "SSH key not copied" "ssh-copy-id exited with $scp_rc"
+    echo "  Check that '$target_user' exists on the VM with a password, and that"
+    echo "  sshd allows password logins (dcvm console $vm_name), then retry:"
+    ui_next "ssh-copy-id $target_user@$vm_ip" "copy the key by hand"
     return 1
   fi
 
@@ -1745,77 +1743,39 @@ ssh_setup_vm() {
 }
 
 show_help() {
-  cat <<EOF
-dcvm Backup & Restore Management
+  ui_help <<EOF
+dcvm backup - back up, restore and move VMs
 
-Usage: dcvm backup <subcommand> [options]
+Usage: dcvm backup <command> [args]
 
-SUBCOMMANDS:
-  create <vm_name>                                  Create a new backup of VM
-  restore <vm_name> [backup_date [new_vm_name]]     Restore VM from backup (optionally as a new VM)
-  list [vm_name]                                    List all or specific VM backups
-  delete <selector>                                 Delete backups (see selectors below)
-  export <vm_name> [backup_date] [output_dir]       Export backup as portable package
-  import <package_path|directory> [new_vm_name]     Import and restore backup package
-  ssh-setup <vm_name>                               Configure SSH keys on imported VM
-  troubleshoot <vm_name>                            Diagnose and fix VM startup issues
+Commands:
+  create <vm>                         Back up a VM (shuts it down meanwhile, then starts it again)
+  list [vm]                           Backups of every VM, or of one
+  restore <vm> [id] [new-name]        Put a backup back (newest by default), or restore it as a new VM
+  delete <vm>                         Pick backups to delete from a numbered list
+  delete <id>                         Delete one backup: <vm>-dd.mm.yyyy[-N] or <vm>-dd.mm.yyyy-HH:MM:SS
+  delete --all                        Delete every backup (asks first)
+  export <vm> [id] [dir]              Pack a backup as a .tar.gz for another host (default dir: $BACKUP_DIR/exports)
+  import <file|dir> [new-name]        Unpack an exported backup and restore it
+  ssh-setup <vm>                      Put this host's SSH key on an imported VM
+  troubleshoot <vm>                   Fix a VM that does not start (runs dcvm fix-lock)
 
-RESTORE DATES:
-  backup_date is YYYYMMDD_HHMMSS, dd.mm.yyyy[-N] or <vm>-dd.mm.yyyy[-N]
-  (as 'backup list' shows it), latest or '' (latest)
+Backup IDs:
+  As backup list shows them: <vm>-dd.mm.yyyy-N (the Nth backup of that day),
+  dd.mm.yyyy[-N], YYYYMMDD_HHMMSS, or latest.
 
-DELETE SELECTORS:
-  <vm_name>                      Interactive numbered selection
-  <vm_name-dd.mm.yyyy>          Latest backup of specific day
-  <vm_name-dd.mm.yyyy-N>        Nth backup of specific day (1-based index)
-  <vm_name-dd.mm.yyyy-HH:MM:SS> Precise backup by timestamp
-  --all | all                    Delete ALL backups (requires confirmation)
+Settings:
+  Location    $BACKUP_DIR
+  Kept        last $KEEP_BACKUPS per VM, older ones are deleted
+  Compressed  $([ "$COMPRESSION_ENABLED" = true ] && echo "yes (gzip)" || echo "no")
+  Shutdown    waits up to ${SHUTDOWN_TIMEOUT}s, then forces it
 
-CONFIGURATION:
-  Backup Location:    $BACKUP_DIR
-  Retention Policy:   Keep last $KEEP_BACKUPS backups per VM
-  Compression:        $([ "$COMPRESSION_ENABLED" = true ] && echo "Enabled (gzip)" || echo "Disabled")
-  Shutdown Timeout:   ${SHUTDOWN_TIMEOUT}s
-
-EXAMPLES:
-  # Create backups
-  dcvm backup create myvm
-
-  # Restore backups
-  dcvm backup restore myvm                               # Restore from latest
-  dcvm backup restore myvm 20250722_143052               # Restore from specific backup
-  dcvm backup restore myvm 20250722_143052 vm1-copy      # Restore as a new VM named vm1-copy
-  dcvm backup restore myvm latest vm1-copy               # Latest backup as a new VM
-
-  # List backups
-  dcvm backup list                                       # List all backups
-  dcvm backup list myvm                                  # List backups of specific VM
-
-  # Delete backups
-  dcvm backup delete vm1                                 # Interactive delete (numbered menu)
-  dcvm backup delete vm1-10.01.2025                      # Delete latest backup of Jan 10, 2025
-  dcvm backup delete vm1-10.01.2025-2                    # Delete 2nd backup of Jan 10, 2025
-  dcvm backup delete vm1-10.01.2025-14:30:00             # Delete backup at 14:30:00
-  dcvm backup delete --all                               # Delete ALL backups (confirmation required)
-
-  # Export/Import backups
-  dcvm backup export vm1 /tmp                            # Export latest backup to /tmp
-  dcvm backup export vm1 20250722_143052 /tmp            # Export specific backup by timestamp
-  dcvm backup export vm1 28.09.2025-1 /tmp               # Export using day+index selector
-  dcvm backup import /tmp/vm1-20250722_143052.tar.gz     # Import and restore backup package
-
-  # Troubleshoot
-  dcvm backup troubleshoot vm1                           # Diagnose VM startup problems
-
-NOTES:
-  - Backups include VM disk (qcow2) and configuration (XML)
-  - Export creates portable .tar.gz packages for transfer between hosts
-  - Import automatically detects and restores VM from package
-  - Restore will COMPLETELY REPLACE existing VM (confirmation required)
-  - Old backups are auto-cleaned based on retention policy
-  - VM is gracefully shut down before backup (timeout: ${SHUTDOWN_TIMEOUT}s)
-
-For more information: https://github.com/metharda/dcvm
+Examples:
+  dcvm backup create web
+  dcvm backup list web
+  dcvm backup restore web
+  dcvm backup restore web web-21.11.2026-1 web-copy
+  dcvm backup export web /tmp
 EOF
 }
 

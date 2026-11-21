@@ -16,12 +16,12 @@ dumb:*) UI_UNICODE=false ;;
 esac
 if [ "$UI_UNICODE" = true ]; then
   SYM_OK='✓' SYM_FAIL='✗' SYM_WARN='!' SYM_INFO='›' SYM_DOT='·' SYM_ARROW='→'
-  SYM_RUN='●' SYM_STOP='○' SYM_DASH='—'
+  SYM_RUN='●' SYM_STOP='○' SYM_DASH='—' SYM_BAR='━'
   BOX_TL='╭' BOX_TR='╮' BOX_BL='╰' BOX_BR='╯' BOX_H='─' BOX_V='│'
   SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 else
   SYM_OK='+' SYM_FAIL='x' SYM_WARN='!' SYM_INFO='>' SYM_DOT='-' SYM_ARROW='->'
-  SYM_RUN='*' SYM_STOP='o' SYM_DASH='-'
+  SYM_RUN='*' SYM_STOP='o' SYM_DASH='-' SYM_BAR='#'
   BOX_TL='+' BOX_TR='+' BOX_BL='+' BOX_BR='+' BOX_H='-' BOX_V='|'
   SPIN_FRAMES='|/-\'
 fi
@@ -58,31 +58,90 @@ ui_step() {
   printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
 }
 
+# True when live output (spinners, progress bars) can be drawn on stderr.
+ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; }
+
+# A live block of lines on stderr, redrawn in place on each call:
+# ui_region <line>... ; without arguments it erases the block. Keep each
+# line within the terminal width (ui_fit), or the redraw goes wrong.
+UI_REGION_LINES=0
+ui_region() {
+  local out="\r" first=true line
+  [ "$UI_REGION_LINES" -gt 1 ] && out+="\033[$((UI_REGION_LINES - 1))A"
+  out+="\033[J"
+  for line in "$@"; do
+    $first || out+="\n"
+    out+="$line"
+    first=false
+  done
+  printf '%b' "$out" >&2
+  UI_REGION_LINES=$#
+}
+
+# Cuts text to the room left on a line that already holds <used> columns:
+# ui_fit <used> <text>
+ui_fit() {
+  : "${UI_COLS:=$(tput cols 2>/dev/null || echo 80)}"
+  local room=$((UI_COLS - $1 - 1))
+  if [ "${#2}" -gt "$room" ] && [ "$room" -gt 1 ]; then echo "${2:0:room-1}…"; else echo "$2"; fi
+}
+
+# The first line of a live block: spinner, label, detail.
+UI_SPIN_I=0
+ui_spin_line() {
+  printf '  %b%s%b %-15s %b%s%b' "$CYAN" "${SPIN_FRAMES:UI_SPIN_I++%${#SPIN_FRAMES}:1}" "$NC" "$1" "$DIM" "$(ui_fit 20 "${2:-}")" "$NC"
+}
+# One frame of a spinner line: ui_spin <label> [detail]
+ui_spin() { ui_region "$(ui_spin_line "$1" "${2:-}")"; }
+ui_spin_clear() { ui_region; }
+
+# A progress bar of <width> characters: ui_bar <percent> [width]
+ui_bar() {
+  local w=${2:-20} fill on off
+  fill=$((${1:-0} * w / 100))
+  printf -v on '%*s' "$fill" ''
+  printf -v off '%*s' $((w - fill)) ''
+  printf '%b%s%b%b%s%b' "$CYAN" "${on// /$SYM_BAR}" "$NC" "$DIM" "${off// /$BOX_H}" "$NC"
+}
+
+# Calls <tick> every 0.1 s while background job <pid> runs, cursor hidden;
+# Ctrl+C stops the job. Returns the job's exit status. <tick> sees the
+# caller's local variables.
+ui_watch() {
+  local _w_pid=$1 _w_tick=$2 _w_rc=0
+  trap 'ui_spin_clear; printf "\033[?25h" >&2; pkill -P "$_w_pid" 2>/dev/null; kill "$_w_pid" 2>/dev/null; exit 130' INT TERM
+  printf '\033[?25l' >&2
+  while kill -0 "$_w_pid" 2>/dev/null; do
+    "$_w_tick"
+    sleep 0.1
+  done
+  wait "$_w_pid" || _w_rc=$?
+  ui_spin_clear
+  printf '\033[?25h' >&2
+  trap - INT TERM
+  return "$_w_rc"
+}
+
 # Runs a command behind a spinner (on a terminal) and returns its status. The
 # caller prints the final ui_step line; UI_RUN_SECS holds the duration and
 # UI_RUN_LOG the command's output, to show when it failed.
 ui_run() {
-  local label="$1" start=$SECONDS rc=0 pid i=0
+  local label="$1" start=$SECONDS rc=0
   shift
   UI_RUN_LOG=$(mktemp)
-  if [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; then
+  if ui_live; then
     "$@" >"$UI_RUN_LOG" 2>&1 &
-    pid=$!
-    trap 'printf "\r\033[K\033[?25h" >&2; kill "$pid" 2>/dev/null; exit 130' INT TERM
-    printf '\033[?25l' >&2
-    while kill -0 "$pid" 2>/dev/null; do
-      printf '\r  %b%s%b %-15s %b%ss%b' "$CYAN" "${SPIN_FRAMES:i++%${#SPIN_FRAMES}:1}" "$NC" "$label" "$DIM" "$((SECONDS - start))" "$NC" >&2
-      sleep 0.1
-    done
-    wait "$pid" || rc=$?
-    printf '\r\033[K\033[?25h' >&2
-    trap - INT TERM
+    ui_watch $! ui_run_tick || rc=$?
   else
     "$@" >"$UI_RUN_LOG" 2>&1 || rc=$?
   fi
   UI_RUN_SECS=$((SECONDS - start))
   return "$rc"
 }
+ui_run_tick() { ui_spin "$label" "$((SECONDS - start))s"; }
+
+# "1 VM", "3 VMs": plural <count> <word>
+plural() { echo "$1 $2$([ "$1" = 1 ] || echo s)"; }
 
 # A box around the key result, title in the top border. Rows are ASCII, so
 # the width is exact; keep copyable commands outside the box (ui_next).
@@ -105,23 +164,88 @@ ui_box() {
 }
 
 # "Next steps" with one command per line: ui_next <command> [what it does] ...
+# The command column is as wide as the longest command.
 ui_next() {
-  echo ""
-  echo -e "  ${BOLD}Next steps${NC}"
-  while [ $# -gt 0 ]; do
-    printf '    %b%-30s%b %b%s%b\n' "$CYAN" "$1" "$NC" "$DIM" "${2:-}" "$NC"
-    shift 2 || shift
+  local -a args=("$@")
+  local i w=24
+  for ((i = 0; i < ${#args[@]}; i += 2)); do
+    [ "${#args[i]}" -gt "$w" ] && w=${#args[i]}
   done
   echo ""
+  echo -e "  ${BOLD}Next steps${NC}"
+  for ((i = 0; i < ${#args[@]}; i += 2)); do
+    printf '    %b%-*s%b  %b%s%b\n' "$CYAN" "$w" "${args[i]}" "$NC" "$DIM" "${args[i + 1]:-}" "$NC"
+  done
+  echo ""
+}
+
+# Section heading inside a screen: ui_section <title> [detail]
+ui_section() {
+  echo ""
+  echo -e "${BOLD}$1${NC}${2:+  ${DIM}$2${NC}}"
+}
+
+# Label and value lines: ui_kv <label> <value> [<label> <value> ...]
+#   Bridge      virbr-dc, 10.10.10.1/24
+ui_kv() {
+  while [ $# -gt 0 ]; do
+    printf '  %b%-12s%b %s\n' "$DIM" "$1" "$NC" "${2:-}"
+    shift 2 || shift
+  done
+}
+
+# Final result line of a command: ui_done ok|warn|fail|skip <message> [detail]
+#   ✓ web deleted  No DHCP leases found
+ui_done() {
+  local sym=$SYM_OK col=$GREEN
+  case "$1" in
+  warn) sym=$SYM_WARN col=$YELLOW ;;
+  fail) sym=$SYM_FAIL col=$RED ;;
+  skip) sym=$SYM_DOT col=$DIM ;;
+  esac
+  echo ""
+  echo -e "${col}${sym}${NC} ${BOLD}$2${NC}${3:+  ${DIM}$3${NC}}"
+}
+
+# Help text on stdin, coloured on a terminal: the first line and section
+# headings ("Usage:", "Commands:") bold, the first column of indented
+# "  command   description" lines cyan, "# comments" dim.
+ui_help() {
+  local line first=true
+  if [ -z "$BOLD" ]; then
+    cat
+    return
+  fi
+  while IFS= read -r line; do
+    if $first; then
+      echo -e "${BOLD}${line}${NC}"
+      first=false
+    elif [[ $line =~ ^[A-Za-z][A-Za-z\ /\&-]*:(\ .*)?$ ]]; then
+      echo -e "${BOLD}${line%%:*}:${NC}${line#*:}"
+    elif [[ $line =~ ^(\ +)([^ ]+(\ [^ ]+)*)(\ {2,})(.*)$ ]]; then
+      local desc=${BASH_REMATCH[5]}
+      [[ $desc == "#"* ]] && desc="${DIM}${desc}${NC}"
+      echo -e "${BASH_REMATCH[1]}${CYAN}${BASH_REMATCH[2]}${NC}${BASH_REMATCH[4]}${desc}"
+    elif [[ $line =~ ^(\ +)(dcvm\ .*)$ ]]; then
+      echo -e "${BASH_REMATCH[1]}${CYAN}${BASH_REMATCH[2]}${NC}"
+    else
+      echo "$line"
+    fi
+  done
 }
 
 # Table from tab-separated lines on stdin; the first line is the header (dim).
 # A state cell gets a glyph and colour (● running, ○ shut off, ◐ paused), ✓/✗
 # cells are green/red, and an empty cell shows a dim dash.
 ui_table() {
-  local -a rows widths cells
+  local -a rows=() widths=() cells=()
   local row cell i out col pad
   while IFS= read -r row; do
+    # Tabs are IFS whitespace, so read would merge "a<tab><tab>b": mark
+    # empty cells first.
+    row=-$'\t'$row$'\t'-
+    while [[ $row == *$'\t\t'* ]]; do row=${row//$'\t\t'/$'\t'-$'\t'}; done
+    row=${row#-$'\t'} row=${row%$'\t'-}
     # Glyphs first, so the column widths include them.
     if [ ${#rows[@]} -gt 0 ]; then
       IFS=$'\t' read -r -a cells <<<"$row"
@@ -152,15 +276,17 @@ ui_table() {
     out="  "
     for col in "${!cells[@]}"; do
       # Pad by characters: printf pads by bytes, which breaks on ✓ and ✗.
-      printf -v pad '%*s' $((widths[col] - ${#cells[col]})) ''
+      pad=""
+      [ "$col" -lt $((${#cells[@]} - 1)) ] && printf -v pad '%*s' $((widths[col] - ${#cells[col]})) ''
       cell=${cells[col]}$pad
       if [ "$i" -eq 0 ]; then
         cell="${DIM}${cell}${NC}"
       else
         case "${cells[col]}" in
         "$SYM_RUN running" | "$SYM_OK") cell="${GREEN}${cell}${NC}" ;;
-        "$SYM_FAIL") cell="${RED}${cell}${NC}" ;;
-        "$SYM_STOP shut off" | "$SYM_DASH") cell="${DIM}${cell}${NC}" ;;
+        "$SYM_FAIL" | "$SYM_FAIL "*) cell="${RED}${cell}${NC}" ;;
+        "$SYM_WARN "*) cell="${YELLOW}${cell}${NC}" ;;
+        "$SYM_STOP shut off" | "$SYM_DASH" | deleted) cell="${DIM}${cell}${NC}" ;;
         "$SYM_STOP paused") cell="${YELLOW}${cell}${NC}" ;;
         esac
       fi
@@ -230,6 +356,76 @@ check_permissions() {
     print_warning "Script should be run as root for best results"
     print_info "Some operations may fail without root privileges"
   fi
+}
+
+# virsh net-dhcp-leases as a table (VM, IP, MAC, expires).
+leases_table() {
+  local leases
+  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); print $6 "\t" ip "\t" $3 "\t" $1 " " $2 }')
+  if [ -z "$leases" ]; then
+    echo -e "  ${DIM}none${NC}"
+    return
+  fi
+  {
+    printf 'VM\tIP\tMAC\tEXPIRES\n'
+    echo "$leases"
+  } | ui_table
+}
+
+# Downloads <path> of the dcvm repository (DCVM_REPO_SLUG@DCVM_REPO_BRANCH)
+# to <dest>; used by the installer and self-update.
+fetch_repo_file() {
+  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_BRANCH:-main}"
+  mkdir -p "$(dirname "$2")" 2>/dev/null || true
+  if command_exists curl; then
+    curl -fsSL -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+  else
+    wget -q -O "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+  fi
+}
+
+# Paths of the files dcvm installs (dcvm, lib/**/*.sh) in the repository,
+# from the GitHub API; fails when the API is unreachable or rate limited.
+list_repo_files() {
+  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_BRANCH:-main}?recursive=1"
+  local response files
+  if command_exists curl; then
+    response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+  elif command_exists wget; then
+    response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+  else
+    print_error "Neither curl nor wget is available"
+    return 1
+  fi
+  if [[ -z "$response" || "$response" != *'"tree"'* ]]; then
+    print_warning "GitHub API request failed or rate limited"
+    echo "$response" >>"${LOG_FILE:-/dev/null}" 2>/dev/null
+    return 1
+  fi
+  if command_exists jq; then
+    files=$(jq -r '.tree[]? | select(.path == "dcvm" or (.path | startswith("lib/") and endswith(".sh"))) | .path' <<<"$response" 2>/dev/null)
+  elif command_exists python3; then
+    files=$(python3 -c '
+import sys, json
+for item in json.load(sys.stdin).get("tree", []):
+    p = item.get("path", "")
+    if p == "dcvm" or (p.startswith("lib/") and p.endswith(".sh")):
+        print(p)' <<<"$response" 2>/dev/null)
+  else
+    files=$(grep -o '"path": *"[^"]*"' <<<"$response" | sed 's/"path": *"//;s/"$//' | grep -E '^(dcvm$|lib/.+\.sh$)')
+  fi
+  [[ -n "$files" ]] || return 1
+  echo "$files"
+}
+
+# Saves the live iptables rules for iptables-persistent, if it is set up
+# (/etc/iptables exists); otherwise there is nothing to keep in sync.
+IPTABLES_RULES_FILE="${IPTABLES_RULES_FILE:-/etc/iptables/rules.v4}"
+save_iptables_rules() {
+  if command_exists iptables-save && [ -d "${IPTABLES_RULES_FILE%/*}" ]; then
+    iptables-save >"$IPTABLES_RULES_FILE" 2>/dev/null || true
+  fi
+  return 0
 }
 
 command_exists() {
@@ -481,15 +677,15 @@ generate_random_mac() {
   printf "52:54:00:%02x:%02x:%02x\n" $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256))
 }
 
+file_bytes() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+# 7408779264 -> "6.9 GB", 154000000 -> "147 MB"
 format_bytes() {
-  local bytes=$1
-  local units=("B" "KB" "MB" "GB" "TB")
-  local unit=0
-  while [ $bytes -ge 1024 ] && [ $unit -lt 4 ]; do
-    bytes=$((bytes / 1024))
-    unit=$((unit + 1))
-  done
-  echo "${bytes}${units[$unit]}"
+  awk -v b="${1:-0}" 'BEGIN {
+    split("B KB MB GB TB", u); i = 1
+    while (b >= 1024 && i < 5) { b /= 1024; i++ }
+    printf (b < 10 && b != int(b) ? "%.1f %s\n" : "%.0f %s\n"), b, u[i]
+  }'
 }
 
 create_dir_safe() {
@@ -514,18 +710,14 @@ backup_file() {
   fi
 }
 
+# Asks a yes/no question: confirm_action <question> [default: n|y]. Returns 0
+# for yes; otherwise prints "Cancelled." and returns 1.
 confirm_action() {
-  local prompt="${1:-Are you sure?}"
-  local default="${2:-n}"
-  while true; do
-    read -p "$prompt (y/n) [${default}]: " response
-    response=${response:-$default}
-    case "$response" in
-    [Yy]*) return 0 ;;
-    [Nn]*) return 1 ;;
-    *) print_error "Please answer y or n" ;;
-    esac
-  done
+  local default="${2:-n}" answer
+  read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=""
+  [[ "${answer:-$default}" =~ ^[Yy] ]] && return 0
+  echo "  Cancelled."
+  return 1
 }
 
 get_system_info() {
@@ -600,6 +792,11 @@ list_all_vms() {
   done
 }
 
+# Names of the VMs on the dcvm network, one per line.
+list_datacenter_vm_names() {
+  list_datacenter_vms | awk -F': ' '{ gsub(/^ +| +$/, "", $1); print $1 }'
+}
+
 list_datacenter_vms() {
   virsh list --all | grep -E "(running|shut off)" | while read line; do
     vm=$(echo "$line" | awk '{print $2}')
@@ -610,13 +807,12 @@ list_datacenter_vms() {
   done
 }
 
+# The host's address for other machines: DATACENTER_IP from the config if
+# set, otherwise detected.
 get_host_ip() {
-  local config_file="${1:-/etc/dcvm-install.conf}"
-  if [ -f "$config_file" ]; then
-    grep "^DATACENTER_IP=" "$config_file" | cut -d'=' -f2 | tr -d '"'
-  else
-    echo "10.8.8.223"
-  fi
+  local ip
+  ip=$(grep "^DATACENTER_IP=" "${1:-/etc/dcvm-install.conf}" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+  echo "${ip:-$(detect_host_ip)}"
 }
 
 check_ping() {
@@ -626,13 +822,8 @@ check_ping() {
 
 require_confirmation() {
   local message="$1"
-  echo "$message"
-  read -p "Are you sure? (y/N): " CONFIRM
-  CONFIRM=${CONFIRM:-n}
-  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    print_info "Operation cancelled"
-    exit 0
-  fi
+  print_warning "$message"
+  confirm_action "Are you sure?" || exit 0
 }
 
 validate_memory_size() {

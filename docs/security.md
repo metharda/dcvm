@@ -120,8 +120,8 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   same repository and branch over HTTPS.
 - **`dcvm self-update`** downloads the files from GitHub (`metharda/dcvm`,
   `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, with no
-  signature check, and keeps a copy of the previous version in
-  `/var/lib/dcvm/backups` for `--revert`.
+  signature check, and keeps the version it replaced in
+  `/var/lib/dcvm/backups` for `--revert` (the last 3).
 
 ## Backups and exports
 

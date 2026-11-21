@@ -4,14 +4,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
 show_current_leases() {
-  echo "Current DHCP leases:"
-  virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
+  ui_title "DHCP leases" "$NETWORK_NAME"
+  leases_table
   echo ""
 }
 
 restart_network() {
-  print_info "Restarting network to refresh libvirt cache..."
-  virsh net-destroy "$NETWORK_NAME" 2>/dev/null && sleep 1 && virsh net-start "$NETWORK_NAME" 2>/dev/null && print_success "Network restarted" || print_warning "Network restart failed"
+  if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1 && sleep 1 && virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+    ui_step ok "Network" "$NETWORK_NAME restarted"
+  else
+    ui_step warn "Network" "restart failed (dcvm network start)"
+  fi
+}
+
+# Result line for clearing one lease, from cleanup_dhcp_lease's exit code:
+# 0 released, 1 nothing matched (still exit 0), 2 failed (reason printed).
+lease_cleared() {
+  case "$1" in
+  0) ui_done ok "DHCP lease of $2 released" ;;
+  1) ui_done skip "No matching DHCP lease found" "for $2; nothing to release" ;;
+  *) return 1 ;;
+  esac
+  echo ""
 }
 
 is_mac_address() {
@@ -22,30 +36,29 @@ is_mac_address() {
 clear_lease_by_mac() {
   local mac_address="$1"
   [ -z "$mac_address" ] && print_error "MAC address required" && return 1
-  # Command exit code: 0 when cleared or nothing matched (1), 1 on failure (2).
-  cleanup_dhcp_lease "$mac_address" "" || [ $? -ne 2 ]
+  ui_quiet
+  local rc=0
+  cleanup_dhcp_lease "$mac_address" "" || rc=$?
+  lease_cleared "$rc" "$mac_address"
 }
 
 clear_all_leases() {
   if [ -t 0 ]; then
-    read -p "Clear ALL DHCP leases for $NETWORK_NAME? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-      print_info "Cancelled"
-      return 0
-    fi
+    confirm_action "Release every DHCP lease on $NETWORK_NAME and restart it?" || return 0
   else
     print_error "Cannot prompt for confirmation: stdin is not a terminal (non-interactive mode)"
     return 1
   fi
 
-  print_info "Clearing ALL DHCP leases for $NETWORK_NAME"
-
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
+  echo ""
   # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
-  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && echo "Cleared status file"
+  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && ui_step ok "Leases" "cleared $status_file"
 
   restart_network
+  ui_done ok "All DHCP leases cleared" "VMs get an address again on their next DHCP request"
+  echo ""
 }
 
 clear_vm_lease() {
@@ -57,21 +70,21 @@ clear_vm_lease() {
     return 1
   fi
 
-  print_info "Clearing leases for VM: $vm_name"
-
+  ui_quiet
   local mac_address=$(get_vm_mac "$vm_name" 2>/dev/null)
   if [ -z "$mac_address" ]; then
     mac_address=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $3}' | head -1)
   fi
 
   # A static reservation for this MAC is kept; only VM delete removes it.
-  [ -n "$mac_address" ] && print_info "Found MAC address: $mac_address"
-  # Command exit code: 0 when cleared or nothing matched (1), 1 on failure (2).
-  cleanup_dhcp_lease "$mac_address" "$vm_name" || [ $? -ne 2 ]
+  local rc=0
+  cleanup_dhcp_lease "$mac_address" "$vm_name" || rc=$?
+  lease_cleared "$rc" "$vm_name"
 }
 
 clear_stale_leases() {
-  print_info "Cleaning up stale/expired leases and orphaned VM leases"
+  ui_quiet
+  ui_title "Stale DHCP leases" "$NETWORK_NAME"
   local current_time=$(date +%s)
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   local removed_count=0
@@ -112,9 +125,9 @@ clear_stale_leases() {
       fi
 
       if [ "$keep_lease" != true ]; then
-        print_info "Removing $reason lease: $ip (${hostname:-unknown}, $mac)"
+        ui_step ok "$ip" "$reason, ${hostname:-no hostname}, $mac"
         macs_to_remove+=("$mac")
-        ((removed_count++))
+        removed_count=$((removed_count + 1))
       fi
     done < <(jq -r '.[] | [(."expiry-time" // 0 | tostring), (."mac-address" // ""), (."ip-address" // ""), (.hostname // "")] | @tsv' "$status_file" 2>/dev/null)
   fi
@@ -125,10 +138,11 @@ clear_stale_leases() {
   done
 
   if [ $removed_count -gt 0 ]; then
-    print_success "Removed $removed_count stale/orphaned lease(s)"
+    ui_done ok "Removed $(plural "$removed_count" "stale lease")"
   else
-    print_info "No stale leases found"
+    echo -e "  ${DIM}No stale leases found${NC}"
   fi
+  echo ""
 }
 
 clear_lease() {
@@ -171,75 +185,71 @@ clear_lease() {
       clear_vm_lease "$target"
     fi
   else
-    print_error "Usage: dcvm network dhcp clear <vm-name|mac-address>"
-    print_info "       dcvm network dhcp clear -a, --all    (clear all leases)"
-    print_info "       dcvm network dhcp clear -s, --stale  (clear stale/orphaned leases)"
+    print_error "Usage: dcvm network dhcp clear <vm-name|mac-address|--all|--stale>"
     return 1
   fi
 }
 
 force_renew_all() {
-  print_info "Forcing DHCP renewal for all running VMs"
-  local running_vms=$(virsh list | grep running | awk '{print $2}' | while read vm; do is_vm_in_network "$vm" && echo "$vm"; done)
-  if [ -n "$running_vms" ]; then
-    echo "Found running VMs: $running_vms"
-    clear_all_leases
-    sleep 5
-    echo "$running_vms" | while read vm; do
-      if [ -n "$vm" ]; then
-        print_info "Forcing DHCP renewal on $vm"
-        local ssh_port=$(read_port_mappings | grep "^$vm " | awk '{print $3}')
-        if [ -n "$ssh_port" ]; then
-          timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" 2>/dev/null &
-        fi
-      fi
-    done
-    print_success "DHCP renewal initiated. Wait 30 seconds and check leases"
-  else
-    print_info "No running VMs found using $NETWORK_NAME"
+  local running_vms vm ssh_port
+  running_vms=$(virsh list --name 2>/dev/null | while read -r vm; do [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"; done)
+  if [ -z "$running_vms" ]; then
+    echo ""
+    echo -e "  ${DIM}No running VMs on $NETWORK_NAME${NC}"
+    echo ""
+    return 0
   fi
+  ui_title "DHCP renewal" "$(echo $running_vms)"
+  clear_all_leases || return 1
+  sleep 5
+  while read -r vm; do
+    [ -n "$vm" ] || continue
+    ssh_port=$(read_port_mappings | awk -v v="$vm" '$1 == v { print $3 }')
+    if [ -n "$ssh_port" ]; then
+      timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" >/dev/null 2>&1 &
+      ui_step ok "$vm" "asked to renew over SSH"
+    else
+      ui_step skip "$vm" "no port forward; it renews on its own"
+    fi
+  done <<<"$running_vms"
+  echo -e "  ${DIM}Check the new leases in about 30 seconds: dcvm network dhcp show${NC}"
+  echo ""
 }
 
 show_lease_files() {
-  echo "DHCP lease files location:"
-  echo "${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
-  echo "${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+  local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}" f
+  ui_section "DHCP lease files" "$dir"
+  for f in "$dir/${BRIDGE_NAME}.leases" "$dir/${BRIDGE_NAME}.status"; do
+    ui_section "${f##*/}"
+    if [ -s "$f" ]; then
+      sed 's/^/  /' "$f"
+    else
+      echo -e "  ${DIM}$([ -f "$f" ] && echo empty || echo "not found")${NC}"
+    fi
+  done
   echo ""
-  echo "Lease file contents:"
-  local lease_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.leases"
-  [ -f "$lease_file" ] && cat "$lease_file" || echo "Lease file not found"
-  echo ""
-  echo "Status file contents:"
-  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  [ -f "$status_file" ] && cat "$status_file" || echo "Status file not found"
 }
 
 dhcp_help() {
-  cat <<EOF
-dcvm DHCP Management
+  ui_help <<EOF
+dcvm network dhcp - DHCP leases on the dcvm network
 
-Usage: dcvm network dhcp <command> [options]
+Usage: dcvm network dhcp <command>
 
 Commands:
-  show                         Show current DHCP leases
-  clear <vm-name|mac>          Clear the lease whose hostname is exactly the VM
-                               name (any case) or whose MAC matches; the
-                               network keeps running
-  clear -a, --all              Clear ALL DHCP leases and restart the network
-                               (requires confirmation)
-  clear -s, --stale            Clear stale/expired/orphaned leases (no restart)
-  cleanup                      Same as 'clear --stale'
-  renew                        Force DHCP renewal for all running VMs
-  files                        Show DHCP lease file contents and locations
-  help                         Show this help
+  show                 Current leases
+  clear <vm|mac>       Release one lease (exact VM name or MAC); the network keeps running
+  clear --stale, -s    Release expired leases and leases of VMs that no longer exist
+  cleanup              Same as clear --stale
+  clear --all, -a      Release every lease and restart the network (asks first)
+  renew                Clear all leases and ask running VMs to renew
+  files                Lease file locations and contents
+  help                 Show this help
 
 Examples:
   dcvm network dhcp show
-  dcvm network dhcp clear kali-test
-  dcvm network dhcp clear 52:54:00:ab:cd:ef
-  dcvm network dhcp clear -s
-  dcvm network dhcp clear -a
-  dcvm network dhcp renew
+  dcvm network dhcp clear web
+  dcvm network dhcp cleanup
 EOF
 }
 

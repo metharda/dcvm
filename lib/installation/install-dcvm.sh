@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Same output style as lib/utils/common.sh; the installer runs on its own
-# (curl | bash), so it can't source it. Colour only on a terminal, not with
-# NO_COLOR or TERM=dumb; ASCII symbols outside UTF-8 locales.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
-  RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' BLUE='\033[34m'
-  CYAN='\033[36m' BOLD='\033[1m' DIM='\033[2m' NC='\033[0m'
-else
-  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
-fi
-case "${TERM:-}:${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-dumb:*) UI_UNICODE=false ;;
-*[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UI_UNICODE=true ;;
-*) UI_UNICODE=false ;;
-esac
-if [ "$UI_UNICODE" = true ]; then
-  SYM_OK='✓' SYM_FAIL='✗' SYM_WARN='!' SYM_INFO='›' SYM_DOT='·' SYM_SKIP='·'
-  BOX_TL='╭' BOX_TR='╮' BOX_BL='╰' BOX_BR='╯' BOX_H='─' BOX_V='│' SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-else
-  SYM_OK='+' SYM_FAIL='x' SYM_WARN='!' SYM_INFO='>' SYM_DOT='-' SYM_SKIP='-'
-  BOX_TL='+' BOX_TR='+' BOX_BL='+' BOX_BR='+' BOX_H='-' BOX_V='|' SPIN_FRAMES='|/-\\'
-fi
+DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
+DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
+
+# The output helpers are lib/utils/common.sh: next to this script in a
+# checkout, or fetched from the same repository and branch as the rest of
+# dcvm when the installer runs on its own (curl | bash).
+load_common() {
+  local dir tmp url="https://raw.githubusercontent.com/$DCVM_REPO_SLUG/$DCVM_REPO_BRANCH/lib/utils/common.sh"
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || dir=""
+  if [ -n "$dir" ] && [ -f "$dir/../utils/common.sh" ]; then
+    source "$dir/../utils/common.sh"
+    return
+  fi
+  tmp=$(mktemp)
+  if ! { curl -fsSL -o "$tmp" "$url" 2>/dev/null || wget -q -O "$tmp" "$url" 2>/dev/null; }; then
+    rm -f "$tmp"
+    echo "error: could not download $url; check the network connection" >&2
+    exit 1
+  fi
+  source "$tmp"
+  rm -f "$tmp"
+}
+load_common
 
 DEFAULT_DATACENTER_BASE="/srv/datacenter"
 CONFIG_FILE="/etc/dcvm-install.conf"
@@ -30,8 +32,6 @@ NETWORK_NAME="datacenter-net"
 BRIDGE_NAME="virbr-dc"
 NETWORK_ONLY=0
 NETWORK_NAME_ARG=""
-DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
-DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
 SOURCE_DIR=""
 TMP_WORKDIR=""
 STARTED_VMS=()
@@ -55,48 +55,25 @@ print_status() {
 }
 print_status_log() { print_status "$@"; }
 
-# One finished install step: step ok|warn|fail|skip <label> [detail]
+# ui_step, also written to the log.
 step() {
-  local sym col
-  case "$1" in
-  ok) sym=$SYM_OK col=$GREEN ;;
-  warn) sym=$SYM_WARN col=$YELLOW ;;
-  fail) sym=$SYM_FAIL col=$RED ;;
-  *) sym=$SYM_SKIP col=$DIM ;;
-  esac
-  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
+  ui_step "$@"
   echo "[STEP] $2: ${3:-}" >>"$LOG_FILE" 2>/dev/null || true
 }
 
-# Runs a command with its output in the log, behind a spinner on a terminal.
-# Sets STEP_SECS; prints the output's last lines when it fails.
+# ui_run with the command's output added to the log, and its last lines
+# printed when it fails. Sets STEP_SECS.
 run_step() {
-  local label="$1" start=$SECONDS rc=0 pid i=0 out
-  shift
-  out=$(mktemp)
-  if [ -t 1 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; then
-    "$@" >"$out" 2>&1 &
-    pid=$!
-    trap 'printf "\r\033[K\033[?25h"; kill "$pid" 2>/dev/null; exit 130' INT TERM
-    printf '\033[?25l'
-    while kill -0 "$pid" 2>/dev/null; do
-      printf '\r  %b%s%b %-15s %b%ss%b' "$CYAN" "${SPIN_FRAMES:i++%${#SPIN_FRAMES}:1}" "$NC" "$label" "$DIM" "$((SECONDS - start))" "$NC"
-      sleep 0.1
-    done
-    wait "$pid" || rc=$?
-    printf '\r\033[K\033[?25h'
-    trap - INT TERM
-  else
-    "$@" >"$out" 2>&1 || rc=$?
-  fi
-  STEP_SECS=$((SECONDS - start))
-  cat "$out" >>"$LOG_FILE" 2>/dev/null || true
+  local rc=0
+  ui_run "$@" || rc=$?
+  STEP_SECS=$UI_RUN_SECS
+  cat "$UI_RUN_LOG" >>"$LOG_FILE" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     echo -e "${DIM}"
-    tail -n 25 "$out"
+    tail -n 25 "$UI_RUN_LOG"
     echo -e "${NC}"
   fi
-  rm -f "$out"
+  rm -f "$UI_RUN_LOG"
   return "$rc"
 }
 
@@ -142,86 +119,6 @@ ensure_source_dir() {
   return 1
 }
 
-fetch_file() {
-  local rel_path="$1"
-  local dest_path="$2"
-  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG}/${DCVM_REPO_BRANCH}"
-
-  mkdir -p "$(dirname "$dest_path")" 2>/dev/null || true
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
-  else
-    wget -q -O "$dest_path" "$base_url/$rel_path" 2>>"$LOG_FILE"
-  fi
-}
-
-discover_repo_files() {
-  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG}/git/trees/${DCVM_REPO_BRANCH}?recursive=1"
-  local response
-
-  if command -v curl >/dev/null 2>&1; then
-    response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"$LOG_FILE")
-  elif command -v wget >/dev/null 2>&1; then
-    response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"$LOG_FILE")
-  else
-    print_status_log "ERROR" "Neither curl nor wget is available"
-    return 1
-  fi
-
-  local has_error
-  if [[ -z "$response" ]]; then
-    has_error=1
-  else
-    if command -v python3 >/dev/null 2>&1; then
-      has_error=$(echo "$response" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(1 if 'message' in data else 0)
-except Exception:
-    print(1)
-")
-    else
-      if [[ "$response" == *'"message"'* ]]; then
-        has_error=1
-      else
-        has_error=0
-      fi
-    fi
-  fi
-  if [[ "$has_error" -eq 1 ]]; then
-    print_status_log "WARNING" "GitHub API request failed or rate limited"
-    echo "$response" >>"$LOG_FILE" 2>/dev/null
-    return 1
-  fi
-
-  local files
-  if command -v python3 >/dev/null 2>&1; then
-    files=$(echo "$response" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if 'tree' in data:
-        for item in data['tree']:
-            path = item.get('path', '')
-            if path == 'dcvm' or (path.startswith('lib/') and path.endswith('.sh')):
-                print(path)
-except:
-    pass
-" 2>/dev/null)
-  elif command -v jq >/dev/null 2>&1; then
-    files=$(echo "$response" | jq -r '.tree[]? | select(.path == "dcvm" or (.path | startswith("lib/") and endswith(".sh"))) | .path' 2>/dev/null)
-  else
-    print_status_log "WARNING" "Using basic JSON parsing; install python3 or jq for better reliability"
-    files=$(echo "$response" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//' | grep -E '^(dcvm$|lib/.+\.sh$)')
-  fi
-  if [[ -z "$files" ]]; then
-    return 1
-  fi
-  echo "$files"
-}
-
 install_by_fetch() {
   local install_bin="$1"
   local install_lib="$2"
@@ -253,7 +150,7 @@ install_by_fetch() {
   print_status_log "INFO" "Discovering repository files from ${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}"
 
   local discovered_files
-  discovered_files=$(discover_repo_files)
+  discovered_files=$(list_repo_files)
 
   if [[ -z "$discovered_files" ]]; then
     print_status_log "WARNING" "Could not discover files via GitHub API"
@@ -290,10 +187,10 @@ install_by_fetch() {
 
     if [[ "$file_path" == "dcvm" ]]; then
       local dest="$install_bin/dcvm"
-      if fetch_file "$file_path" "$dest"; then
+      if fetch_repo_file "$file_path" "$dest"; then
         chmod +x "$dest" 2>/dev/null || true
         print_status_log "SUCCESS" "Fetched dcvm"
-        ((fetched_count++))
+        fetched_count=$((fetched_count + 1))
       else
         print_status_log "ERROR" "Failed to fetch $file_path"
         ok=false
@@ -301,10 +198,10 @@ install_by_fetch() {
 
     elif [[ "$file_path" == bin/* ]]; then
       local dest="$install_bin/$(basename "$file_path")"
-      if fetch_file "$file_path" "$dest"; then
+      if fetch_repo_file "$file_path" "$dest"; then
         chmod +x "$dest" 2>/dev/null || true
         print_status_log "SUCCESS" "Fetched $(basename "$file_path")"
-        ((fetched_count++))
+        fetched_count=$((fetched_count + 1))
       else
         print_status_log "ERROR" "Failed to fetch $file_path"
         ok=false
@@ -313,10 +210,10 @@ install_by_fetch() {
     elif [[ "$file_path" == lib/* ]]; then
       local rel_no_lib="${file_path#lib/}"
       local dest="$install_lib/$rel_no_lib"
-      if fetch_file "$file_path" "$dest"; then
+      if fetch_repo_file "$file_path" "$dest"; then
         [[ "$dest" == *.sh ]] && chmod +x "$dest" 2>/dev/null || true
         print_status_log "SUCCESS" "Fetched $rel_no_lib"
-        ((fetched_count++))
+        fetched_count=$((fetched_count + 1))
       else
         print_status_log "ERROR" "Failed to fetch $file_path"
         ok=false
@@ -381,8 +278,8 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils)
-  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq)
+  local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2)
+  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2)
 
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
@@ -615,27 +512,6 @@ source_mirror_manager() {
   return 0
 }
 
-declare -A IMAGE_LABELS
-IMAGE_LABELS["debian-13-genericcloud-amd64.qcow2"]="Debian 13"
-IMAGE_LABELS["debian-12-generic-amd64.qcow2"]="Debian 12"
-IMAGE_LABELS["debian-11-generic-amd64.qcow2"]="Debian 11"
-IMAGE_LABELS["ubuntu-24.04-server-cloudimg-amd64.img"]="Ubuntu 24.04"
-IMAGE_LABELS["ubuntu-22.04-server-cloudimg-amd64.img"]="Ubuntu 22.04"
-IMAGE_LABELS["ubuntu-20.04-server-cloudimg-amd64.img"]="Ubuntu 20.04"
-IMAGE_LABELS["Arch-Linux-x86_64-cloudimg.qcow2"]="Arch Linux"
-IMAGE_LABELS["kali-linux-cloud-genericcloud-amd64.qcow2"]="Kali Linux"
-
-IMAGE_ORDER=(
-  "debian-13-genericcloud-amd64.qcow2"
-  "debian-12-generic-amd64.qcow2"
-  "debian-11-generic-amd64.qcow2"
-  "ubuntu-24.04-server-cloudimg-amd64.img"
-  "ubuntu-22.04-server-cloudimg-amd64.img"
-  "ubuntu-20.04-server-cloudimg-amd64.img"
-  "Arch-Linux-x86_64-cloudimg.qcow2"
-  "kali-linux-cloud-genericcloud-amd64.qcow2"
-)
-
 check_cloud_images() {
   print_status_log "INFO" "Checking for cloud images..."
 
@@ -644,10 +520,9 @@ check_cloud_images() {
     return 0
   fi
 
-  local images=()
-  for filename in "${IMAGE_ORDER[@]}"; do
-    local label="${IMAGE_LABELS[$filename]:-Unknown}"
-    images+=("$filename|$label")
+  local images=() filename
+  for filename in $SUPPORTED_IMAGES; do
+    images+=("$filename|$(image_label "$filename")")
   done
 
   local missing_images=()
@@ -656,7 +531,8 @@ check_cloud_images() {
     IFS='|' read -r filename label <<<"$entry"
     local image_path="$DATACENTER_BASE/storage/templates/$filename"
     if [[ -f "$image_path" ]]; then
-      local size=$(du -h "$image_path" 2>/dev/null | cut -f1 || echo "unknown")
+      local size
+      size=$(format_bytes "$(file_bytes "$image_path")")
       print_status_log "SUCCESS" "$label cloud image found ($size)"
     else
       print_status_log "INFO" "$label cloud image not found"
@@ -670,20 +546,18 @@ check_cloud_images() {
 
     if [[ -t 0 && -t 1 ]]; then
       echo ""
-      echo -e "${BOLD}${#missing_images[@]} of ${#IMAGE_ORDER[@]} cloud images are not downloaded yet.${NC} Download them now?"
+      echo -e "${BOLD}${#missing_images[@]} of ${#images[@]} cloud images are not downloaded yet.${NC} Download them now?"
       select yn in "Yes, download now" "No, download when creating a VM"; do
         case $yn in
         "Yes, download now")
           for entry in "${missing_images[@]}"; do
             IFS='|' read -r filename label <<<"$entry"
             local image_path="$DATACENTER_BASE/storage/templates/$filename"
-            print_status_log "INFO" "Downloading $label cloud image..."
-            if download_with_mirrors "$filename" "$image_path" 104857600; then
+            if download_image_ui "$filename" "$image_path" 104857600; then
               print_status_log "SUCCESS" "$label cloud image downloaded successfully"
             else
               print_status_log "WARNING" "Failed to download $label - will attempt later when creating VM"
             fi
-            echo ""
           done
           break
           ;;
@@ -852,27 +726,14 @@ start_existing_vms() {
 }
 
 show_datacenter_summary() {
-  local version rows=() line w=0 top bottom
+  local version
   version=$(/usr/local/bin/dcvm version 2>/dev/null | sed -n 's/^Version: //p')
-  rows+=("$(printf '%-10s%s' Data "$DATACENTER_BASE")")
-  rows+=("$(printf '%-10s%s' Network "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, bridge $BRIDGE_NAME")")
-  rows+=("$(printf '%-10s%s' Log "$LOG_FILE")")
-  local title="dcvm ${version:-} is installed"
-  w=$((${#title} + 3))
-  for line in "${rows[@]}"; do [ $((${#line} + 2)) -gt "$w" ] && w=$((${#line} + 2)); done
-  printf -v top '%*s' $((w - ${#title} - 3)) ''
-  printf -v bottom '%*s' "$w" ''
-  echo ""
-  echo -e "  ${DIM}${BOX_TL}${BOX_H}${NC} ${BOLD}${title}${NC} ${DIM}${top// /$BOX_H}${BOX_TR}${NC}"
-  for line in "${rows[@]}"; do
-    printf '  %b%s%b %-*s %b%s%b\n' "$DIM" "$BOX_V" "$NC" $((w - 2)) "$line" "$DIM" "$BOX_V" "$NC"
-  done
-  echo -e "  ${DIM}${BOX_BL}${bottom// /$BOX_H}${BOX_BR}${NC}"
-  echo ""
-  echo -e "  ${BOLD}Next steps${NC}"
-  printf '    %b%-30s%b %b%s%b\n' "$CYAN" "dcvm create myvm" "$NC" "$DIM" "create your first VM (asks a few questions)" "$NC"
-  printf '    %b%-30s%b %b%s%b\n' "$CYAN" "dcvm help" "$NC" "$DIM" "all commands" "$NC"
-  echo ""
+  ui_box "dcvm ${version:-} is installed" \
+    "$(printf '%-10s%s' Data "$DATACENTER_BASE")" \
+    "$(printf '%-10s%s' Network "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, bridge $BRIDGE_NAME")" \
+    "$(printf '%-10s%s' Log "$LOG_FILE")"
+  ui_next "dcvm create myvm" "create your first VM (asks a few questions)" \
+    "dcvm help" "all commands"
   print_status_log "SUCCESS" "dcvm is ready to use!"
 }
 
@@ -1036,11 +897,9 @@ main() {
     exit 0
   fi
 
-  echo ""
-  echo -e "${BOLD}Installing dcvm${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} $DATACENTER_BASE${NC}"
-  echo ""
+  ui_title "Installing dcvm" "${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} $DATACENTER_BASE"
   if run_step "Packages" install_required_packages; then
-    step ok "Packages" "QEMU/KVM, libvirt and image tools in ${STEP_SECS}s"
+    step ok "Packages" "QEMU/KVM, libvirt, aria2 and image tools in ${STEP_SECS}s"
   else
     step fail "Packages" "installing them failed (output above, full log: $LOG_FILE)"
     exit 1
@@ -1054,12 +913,15 @@ main() {
   check_directory_structure
   step ok "Directories" "$DATACENTER_BASE"
   check_cloud_images
-  local have=0 img
-  for img in "${IMAGE_ORDER[@]}"; do [ -f "$DATACENTER_BASE/storage/templates/$img" ] && have=$((have + 1)); done
-  if [ "$have" -eq "${#IMAGE_ORDER[@]}" ]; then
-    step ok "Cloud images" "all ${#IMAGE_ORDER[@]} downloaded"
+  local have=0 total=0 img
+  for img in ${SUPPORTED_IMAGES:-}; do
+    total=$((total + 1))
+    [ -f "$DATACENTER_BASE/storage/templates/$img" ] && have=$((have + 1))
+  done
+  if [ "$have" -eq "$total" ]; then
+    step ok "Cloud images" "all $total downloaded"
   else
-    step skip "Cloud images" "$have of ${#IMAGE_ORDER[@]} downloaded; the rest download on first use"
+    step skip "Cloud images" "$have of $total downloaded; the rest download on first use"
   fi
   enable_ip_forwarding
   step ok "IP forwarding" "on, persisted in /etc/sysctl.conf"
@@ -1079,9 +941,7 @@ main() {
 
 dcvm_init() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo ""
-    echo -e "${BOLD}dcvm installer${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}${NC}"
-    echo ""
+    ui_title "dcvm installer" "${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH}"
 
     if [[ -t 0 && -t 1 ]]; then
       echo "Please choose the installation directory for dcvm."
@@ -1128,8 +988,7 @@ dcvm_init() {
     print_status_log "INFO" "Installation directory: $DATACENTER_BASE, network: $NETWORK_NAME, bridge: $BRIDGE_NAME, subnet: $NETWORK_SUBNET.0/24"
   else
     source "$CONFIG_FILE"
-    echo ""
-    echo -e "${BOLD}dcvm installer${NC}  ${DIM}${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} using $CONFIG_FILE${NC}"
+    ui_title "dcvm installer" "${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} using $CONFIG_FILE"
   fi
 
   NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"

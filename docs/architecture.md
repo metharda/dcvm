@@ -96,8 +96,9 @@ sequenceDiagram
    several VMs in force mode, with incrementing static IPs if `--ip` is given.
 2. **Template.** Each OS choice maps to one cloud image under
    `$DATACENTER_BASE/storage/templates`. If it is missing,
-   `mirror-manager.sh` tests the mirrors for that image, picks the fastest,
-   downloads to a temporary file and keeps it only if it is at least 100 MB
+   `mirror-manager.sh` tests the mirrors for that image and downloads it to a
+   temporary file with aria2c from the fastest four at once (curl, one
+   mirror at a time, without aria2). It keeps the file only if it is at least 100 MB
    and matches the checksum published next to it (`SHA256SUMS`,
    `SHA512SUMS` or `<file>.SHA256`); otherwise it tries the next mirror. Kali
    ships as a `.tar.xz`, which is checked and then unpacked.
@@ -207,7 +208,7 @@ See [backups.md](backups.md) for the selectors and every restore option.
 | `$DATACENTER_BASE/port-mappings.txt` | `VM_NAME VM_IP SSH_PORT HTTP_PORT`, one line per forward |
 | `$DATACENTER_BASE/backups/` | Backups and `exports/` |
 | `$DATACENTER_BASE/nfs-share/` | Optional NFS share, mounted in guests at `/mnt/shared` |
-| `/var/lib/dcvm/backups/` | Copies of the previous install, made by `dcvm self-update` |
+| `/var/lib/dcvm/backups/` | The versions `dcvm self-update` replaced (last 3), for `--revert` |
 | `/var/log/datacenter-startup.log`, `/var/log/dcvm-backup.log`, `/var/log/datacenter-storage.log` | Logs |
 
 libvirt holds the rest: domain definitions, the network, and the DHCP leases

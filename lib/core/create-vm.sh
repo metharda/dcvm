@@ -54,60 +54,44 @@ TEMPLATE_SHA256["Arch-Linux-x86_64-cloudimg.qcow2"]=""
 TEMPLATE_SHA256["kali-linux-cloud-genericcloud-amd64.qcow2"]=""
 
 show_usage() {
-  cat <<EOF
-VM Creation Script
-Usage: dcvm create <vm_name> [options]
+  ui_help <<EOF
+dcvm create - a VM from a cloud image, set up by cloud-init
+
+Usage: dcvm create <name>[,<name>...] [options]
 
 Options:
-  -u, --username <username>      		# Set VM username (default: depends on OS, e.g., ubuntu; 'root' logs in as root)
-  -p, --password <password>  # Set VM password (4-128 chars, no line breaks; required in force mode)
-  --enable-root                  		# Enable root login (uses same password as user)
-  --disable-root                 		# Disable root login (force mode enables it otherwise)
-  -r, --root-password <password> 		# Set root password (enables root access)
-  -m, --memory <memory_mb>       		# Set memory in MB (default: 2048)
-  -c, --cpus <cpu_count>         		# Set CPU count (default: 2)
-  -d, --disk <size>              		# Set disk size (default: 30G)
-  -o, --os <os_choice|iso_path>  		# Set OS: 1-8 or path to ISO file
-  -k, --packages <packages>     		# Comma-separated package list (includes 'tailscale' for VPN)
-  --tailscale-authkey <key>      		# Tailscale auth key for auto-connect (auto-installs tailscale)
-  --ip <address>                 		# Set static IP (e.g., 10.10.10.50) - DHCP if not specified
-  --with-ssh-key                 		# Add SSH key for passwordless authentication
-  --without-ssh-key              		# Disable SSH key setup (password-only)
-  --graphics <mode>              		# Set graphics: vnc, vnc,listen=127.0.0.1, or none (default: auto)
-  -f, --force                    		# Force mode - uses defaults for unspecified options (no prompts)
-  -h, --help                     		# Show this help
+  -f, --force                    No questions: defaults for everything not given (needs -p)
+  -p, --password <password>      Password of the VM user (4-128 characters)
+  -u, --username <name>          VM user (default: the OS name, e.g. ubuntu; root logs in as root)
+  -o, --os <1-8|file.iso>        OS (default 4, Ubuntu 24.04), or an installer ISO
+  -m, --memory <MB>              Memory (default 2048)
+  -c, --cpus <N>                 vCPUs (default 2)
+  -d, --disk <size>              Disk size (default 30G)
+  -k, --packages <list>          Packages to install on first boot, comma separated
+  --ip <address>                 Static IP on the dcvm network (default: DHCP)
+  --enable-root                  Root login with the same password
+  -r, --root-password <pass>     Root login with its own password
+  --disable-root                 No root login (-f turns it on otherwise)
+  --with-ssh-key                 Add this host's SSH key (default)
+  --without-ssh-key              Password login only
+  --tailscale-authkey <key>      Install Tailscale and join the tailnet
+  --graphics <none|vnc|spice>    Display (default: none, VNC for OSes that need it)
+  -h, --help                     Show this help
 
-OS Options:
-  1 = Debian 13      2 = Debian 12      3 = Debian 11
-  4 = Ubuntu 24.04   5 = Ubuntu 22.04   6 = Ubuntu 20.04
-  7 = Arch Linux     8 = Kali Linux     /path/to/file.iso = Custom ISO
+OS:
+  1 Debian 13    2 Debian 12      3 Debian 11      4 Ubuntu 24.04
+  5 Ubuntu 22.04 6 Ubuntu 20.04   7 Arch Linux     8 Kali Linux
 
-Modes:
-  Interactive Mode (default)     		# Prompts for unspecified options
-  Force Mode (-f)                		# Uses default values for unspecified options
+Without -f, dcvm asks for every option you did not give.
+Packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale, or any other.
 
-Interactive Mode Examples:
-  dcvm create myvm                       								          # Prompts for all options
-  dcvm create web-server -p mypass        								        # Prompts for username, memory, CPU, disk, root
-  dcvm create db-server -u dbadmin -m 4096 -k mysql-server  			# Prompts for password, CPU, disk, root
-
-Force Mode Examples (uses defaults for unspecified options):
-  dcvm create web-server -f -p mypass123                    			      # Uses all defaults
-  dcvm create db-server -f -p secret -m 4096 -c 4 -k mysql-server,php		# Custom memory/CPU, default disk/OS
-  dcvm create test-vm -f -p mypass -o 1 --enable-root       			      # Custom OS, root enabled
-  dcvm create admin-vm -f -p mypass -r rootpass123          			      # Different root password
-  dcvm create lab-vm -f -p mypass --disable-root            			      # No root login
-
-ISO Installation Examples:
-  dcvm create custom-vm -f -o /path/to/ubuntu.iso -m 4096   			# Install from ISO file
-  dcvm create win-vm -f -o /isos/windows.iso -d 100G -m 8192 			# Windows from ISO
-
-Available packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale
-
-Tailscale VPN Examples:
-  dcvm create vpn-vm -k tailscale                                    # Interactive: prompts for auth key
-  dcvm create vpn-vm -f -p mypass -k tailscale                       # Force: install only (manual connect)
-  dcvm create vpn-vm -f -p mypass -k tailscale --tailscale-authkey tskey-auth-xxx  # Force: auto-connect
+Examples:
+  dcvm create web -f -p "\$VM_PASSWORD"
+  dcvm create db -f -p "\$VM_PASSWORD" -m 4096 -c 4 -k mysql-server
+  dcvm create ctf -f -p "\$VM_PASSWORD" -o 1 --ip 10.10.10.50
+  dcvm create node1,node2,node3 -f -p "\$VM_PASSWORD"
+  dcvm create lab
+  dcvm create win -o /srv/iso/windows.iso -d 100G -m 8192
 EOF
 }
 
@@ -272,18 +256,13 @@ select_os() {
 
   if [ "$FORCE_MODE" != true ]; then
     while true; do
+      ui_section "Operating system"
       cat <<-EOF
-			Supported OS options:
-			  1) Debian 13
-			  2) Debian 12
-			  3) Debian 11
-			  4) Ubuntu 24.04 (default)
-			  5) Ubuntu 22.04
-			  6) Ubuntu 20.04
-			  7) Arch Linux
-			  8) Kali Linux
+			  1  Debian 13       4  Ubuntu 24.04 (default)   7  Arch Linux
+			  2  Debian 12       5  Ubuntu 22.04             8  Kali Linux
+			  3  Debian 11       6  Ubuntu 20.04             or the path to an ISO file
 			EOF
-      read -p "Select the operating system for the VM [4]: " VM_OS_CHOICE
+      read -r -p "Choose [4]: " VM_OS_CHOICE
       VM_OS_CHOICE=${VM_OS_CHOICE:-4}
       break
     done
@@ -353,17 +332,16 @@ select_os() {
     ;;
   esac
   if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "Base template for $VM_OS not found. Downloading..."
     mkdir -p "$DATACENTER_BASE/storage/templates"
     local tmpl_key
     tmpl_key="$(basename "$TEMPLATE_FILE")"
     local expected_sha
     expected_sha="${TEMPLATE_SHA256[$tmpl_key]:-}"
-    if download_with_mirrors "$tmpl_key" "$TEMPLATE_FILE" 104857600 "$expected_sha"; then
+    ui_title "Downloading the $(image_label "${TEMPLATE_FILE##*/}") image" "$tmpl_key, shared by every $(image_label "${TEMPLATE_FILE##*/}") VM"
+    if download_image_ui "$tmpl_key" "$TEMPLATE_FILE" 104857600 "$expected_sha"; then
       TEMPLATE_DOWNLOADED=true
-      echo "$VM_OS template downloaded successfully."
     else
-      print_error "Failed to download $VM_OS template. Please check your internet connection or mirrors."
+      print_error "Could not download the $(image_label "${TEMPLATE_FILE##*/}") image. dcvm template check $tmpl_key tests the mirrors."
       exit 1
     fi
   fi
@@ -378,10 +356,7 @@ os_requires_vnc() {
 }
 
 setup_user_account() {
-  [ "$FORCE_MODE" = true ] && print_info "User account setup" || {
-    echo ""
-    print_info "Setting up user account..."
-  }
+  [ "$FORCE_MODE" = true ] && print_info "User account setup" || ui_section "User"
 
   if [ -n "$FLAG_USERNAME" ]; then
     VM_USERNAME="$FLAG_USERNAME"
@@ -409,7 +384,7 @@ setup_user_account() {
   [ "$FORCE_MODE" != true ] && echo ""
 
   if [ -n "$FLAG_PASSWORD" ]; then
-    [ "$FORCE_MODE" = true ] && print_info "Password setup" || print_info "Setting password for user '$VM_USERNAME'..."
+    [ "$FORCE_MODE" = true ] && print_info "Password setup" || ui_section "Password" "for $VM_USERNAME"
     VM_PASSWORD="$FLAG_PASSWORD"
     validation_result=$(validate_password "$VM_PASSWORD")
     [ $? -ne 0 ] && {
@@ -471,7 +446,7 @@ setup_root_access() {
     fi
   else
     if [ -n "$FLAG_ENABLE_ROOT" ]; then
-      print_info "Root access configuration..."
+      ui_section "Root login"
       ENABLE_ROOT="$FLAG_ENABLE_ROOT"
       ROOT_PASSWORD=""
       if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
@@ -506,7 +481,7 @@ setup_ssh_key() {
   [ "$FLAG_WITH_SSH_KEY" = true ] && SETUP_SSH_KEY=true
 
   if [ "$SETUP_SSH_KEY" = true ]; then
-    [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || print_info "Setting up SSH Key Authentication (RSA)..."
+    [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || ui_section "SSH key"
     if [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       [ "$FORCE_MODE" = true ] && print_success "SSH key configured" || print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
@@ -594,7 +569,7 @@ setup_tailscale() {
   fi
 
   if [ "$FORCE_MODE" = true ]; then
-    print_info "Tailscale VPN configuration"
+    [ "$FORCE_MODE" = true ] && print_info "Tailscale VPN configuration" || ui_section "Tailscale"
     if [ -n "$FLAG_TAILSCALE_AUTHKEY" ]; then
       TAILSCALE_AUTHKEY="$FLAG_TAILSCALE_AUTHKEY"
       print_success "Tailscale will auto-connect with provided auth key"
@@ -656,7 +631,7 @@ interactive_prompt_username() {
 }
 
 interactive_prompt_password() {
-  print_info "Setting password for user '$VM_USERNAME'..."
+  ui_section "Password" "for $VM_USERNAME"
   while true; do
     read_password "Password: " VM_PASSWORD
     [ -z "$VM_PASSWORD" ] && {
@@ -737,7 +712,7 @@ interactive_prompt_disk() {
 }
 
 interactive_prompt_root() {
-  print_info "Root access configuration..."
+  ui_section "Root login"
   while true; do
     read -p "Enable root login? (Y/n): " ENABLE_ROOT
     ENABLE_ROOT=${ENABLE_ROOT:-y}
@@ -798,7 +773,7 @@ interactive_prompt_ssh_key() {
     print_error "Please enter 'y' for yes or 'n' for no"
   done
   if [ "$SETUP_SSH_KEY" = true ]; then
-    print_info "Setting up SSH Key Authentication (RSA)..."
+    ui_section "SSH key"
     if [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
@@ -908,10 +883,7 @@ get_default_disk_size() {
 }
 
 setup_vm_resources() {
-  [ "$FORCE_MODE" = true ] && print_info "Resource configuration" || {
-    echo ""
-    print_info "VM Resource Configuration..."
-  }
+  [ "$FORCE_MODE" = true ] && print_info "Resource configuration" || ui_section "Resources"
 
   if [ "$FORCE_MODE" = true ]; then
     VM_MEMORY="${FLAG_MEMORY:-$DEFAULT_MEMORY}"
@@ -980,45 +952,24 @@ show_vm_summary() {
   if [ "$FORCE_MODE" = true ]; then
     print_info "Starting VM creation"
   else
-    echo ""
-    echo "=================================================="
-    print_info "VM Configuration Summary"
-    echo "=================================================="
-    echo "VM Name: $VM_NAME"
-    echo "Username: $VM_USERNAME"
-    echo "Password: ****"
-    [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && {
-      echo "Root Access: Enabled"
-      echo "Root Password: ****"
-    } || echo "Root Access: Disabled"
-    [ -n "$SSH_KEY" ] && echo "SSH Key: Configured"
-    echo "Memory: ${VM_MEMORY}MB"
-    echo "CPUs: $VM_CPUS"
-    echo "Disk: $VM_DISK_SIZE"
+    local rows=(
+      "$(printf '%-11s%s' OS "$(image_label "${TEMPLATE_FILE##*/}")")"
+      "$(printf '%-11s%s' Login "$VM_USERNAME, password$([ -n "$SSH_KEY" ] && echo " or SSH key")")"
+      "$(printf '%-11s%s' Root "$([[ "$ENABLE_ROOT" =~ ^[Yy]$ ]] && echo "login on" || echo "login off")")"
+      "$(printf '%-11s%s' Resources "$VM_CPUS vCPU, $VM_MEMORY MB RAM, $VM_DISK_SIZE disk")"
+      "$(printf '%-11s%s' Network "${FLAG_STATIC_IP:-DHCP} on $NETWORK_NAME")"
+    )
+    [ -n "$ADDITIONAL_PACKAGES" ] && rows+=("$(printf '%-11s%s' Packages "${ADDITIONAL_PACKAGES//,/, }")")
     if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
-      echo "Tailscale VPN: Enabled"
-      [ -n "$TAILSCALE_AUTHKEY" ] && echo "Tailscale Auth: Auto-connect" || echo "Tailscale Auth: Manual"
+      rows+=("$(printf '%-11s%s' Tailscale "$([ -n "$TAILSCALE_AUTHKEY" ] && echo "joins with the auth key" || echo "connect by hand")")")
     fi
-    echo ""
+    ui_box "$VM_NAME" "${rows[@]}"
     echo ""
   fi
 }
 
 confirm_vm_creation() {
-  if [ "$FORCE_MODE" = true ]; then
-    CONFIRM="y"
-  else
-    while true; do
-      read -p "Proceed with VM creation? (Y/n): " CONFIRM
-      CONFIRM=${CONFIRM:-y}
-      [[ "$CONFIRM" =~ ^[Yy]$ ]] && break
-      [[ "$CONFIRM" =~ ^[Nn]$ ]] && {
-        print_info "VM creation cancelled by user."
-        exit 0
-      }
-      print_error "Please enter 'y' to proceed or 'n' to cancel"
-    done
-  fi
+  [ "$FORCE_MODE" = true ] || confirm_action "Create it?" y || exit 0
 }
 
 prepare_vm_directory() {
@@ -1462,20 +1413,10 @@ install_vm() {
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || VM_AUTOSTART_OK=false
 }
 
-os_label() {
-  case "$1" in
-  debian*) echo "Debian ${1#debian}" ;;
-  ubuntu*) echo "Ubuntu ${1#ubuntu}" ;;
-  archlinux) echo "Arch Linux" ;;
-  kali) echo "Kali Linux" ;;
-  *) echo "$1" ;;
-  esac
-}
-
 # Title and what is about to be built, one step per line.
 show_create_plan() {
   local detail
-  ui_title "Creating $VM_NAME" "$(os_label "$VM_OS") ${SYM_DOT} ${VM_CPUS} vCPU ${SYM_DOT} ${VM_MEMORY} MB ${SYM_DOT} ${VM_DISK_SIZE} disk"
+  ui_title "Creating $VM_NAME" "$(image_label "${TEMPLATE_FILE##*/}") ${SYM_DOT} ${VM_CPUS} vCPU ${SYM_DOT} ${VM_MEMORY} MB ${SYM_DOT} ${VM_DISK_SIZE} disk"
   [ "$FORCE_MODE" = true ] || return 0
   ui_step ok "Image" "$(basename "$TEMPLATE_FILE")$([ "${TEMPLATE_DOWNLOADED:-}" = true ] && echo " (downloaded)")"
   detail="$VM_USERNAME with password"
@@ -1638,28 +1579,14 @@ main() {
     fi
 
     [ "$FORCE_MODE" = true ] && ui_quiet
-    [ "$FORCE_MODE" = true ] || cat <<EOF
-====================
- VM Creation Wizard
-====================
-
-Host System Information:
-  CPU: $HOST_CPU_MODEL
-  Total CPUs: $HOST_CPUS
-  Total Memory: ${HOST_MEMORY_MB}MB ($(echo "scale=1; $HOST_MEMORY_MB/1024" | bc -l)GB)
-  Recommended VM Limits: ${MAX_VM_CPUS} CPUs, ${MAX_VM_MEMORY}MB RAM
-
-EOF
-    print_info "Creating VM: $VM_NAME"
+    if [ "$FORCE_MODE" != true ]; then
+      ui_title "New VM: $VM_NAME" "answer each question, or press Enter for the default"
+      ui_kv "Host" "$HOST_CPU_MODEL, $HOST_CPUS CPUs, $((HOST_MEMORY_MB / 1024)) GB RAM" \
+        "Per VM" "up to ${MAX_VM_CPUS} vCPUs and ${MAX_VM_MEMORY} MB suggested"
+    fi
     [ -n "$FLAG_OS" ] && VM_OS_CHOICE="$FLAG_OS" || VM_OS_CHOICE="${VM_OS_CHOICE:-$DEFAULT_OS}"
     select_os
-    [ "$FORCE_MODE" = true ] && {
-      print_info "OS configuration"
-      print_success "Operating system set to: $VM_OS"
-    } || {
-      echo ""
-      print_info "Setting up operating system for the VM..."
-    }
+    [ "$FORCE_MODE" = true ] && print_success "Operating system set to: $VM_OS"
     setup_user_account
     setup_root_access
     setup_ssh_key

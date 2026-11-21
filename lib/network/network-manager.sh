@@ -5,119 +5,131 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-print_header() { echo -e "\n=== $1 ===\n"; }
+network_state() {
+  virsh net-list 2>/dev/null | grep -q " $NETWORK_NAME .*active" && echo active || echo inactive
+}
+
+network_kv() {
+  local subnet="${NETWORK_SUBNET:-10.10.10}" autostart fwd
+  autostart=$(virsh net-info "$NETWORK_NAME" 2>/dev/null | awk -F': *' '/^Autostart/ { print tolower($2) }')
+  fwd=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)
+  ui_kv "Subnet" "$subnet.0/24, gateway $subnet.1, DHCP $subnet.10-$subnet.200" \
+    "Bridge" "$BRIDGE_NAME$(ip -br link show "$BRIDGE_NAME" >/dev/null 2>&1 || echo " (missing)")" \
+    "Autostart" "${autostart:-unknown}" \
+    "Forwarding" "$([ "$fwd" = 1 ] && echo on || echo "off (dcvm network ip-forwarding on)")"
+}
+
+network_title() {
+  local state
+  state=$(network_state)
+  if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
+    ui_title "Network" "$NETWORK_NAME not found"
+    print_error "$NETWORK_NAME does not exist; re-run the installer with --network-only"
+    return 1
+  fi
+  ui_title "Network" "$NETWORK_NAME ${SYM_DOT} $([ "$state" = active ] && echo "${SYM_RUN} active" || echo "${SYM_STOP} inactive")"
+}
 
 cmd_show() {
-  print_header "Network Information"
-  echo "Virtual Networks:" && virsh net-list || true
-  echo ""
-  echo "dcvm Network Details:" && virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
+  network_title || return 1
+  network_kv
 
-  echo ""
-  echo "Active DHCP Leases (via virsh):"
-  local dhcp_leases
-  dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || true)
-  [ -n "${dhcp_leases:-}" ] && echo "$dhcp_leases" || echo "No active DHCP leases found via virsh"
+  ui_section "DHCP leases"
+  leases_table
 
-  echo ""
-  echo "Static IP assignments (host-recorded):"
-  local static_dir="${DATACENTER_BASE:-/srv/datacenter}/config/network"
-  if [ -d "$static_dir" ]; then
-    local any=false
-    printf "  %-20s %-15s %-25s %-8s\n" "VM_NAME" "IP" "ASSIGNED_AT" "SOURCE"
-    echo "---------------------------------------------------------------------------"
-    for f in "$static_dir"/*.conf; do
-      [ -f "$f" ] || continue
-      any=true
-      vmname=$(basename "$f" .conf)
-      ip=$(awk -F'=' '/^IP=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "")
-      at=$(awk -F'=' '/^ASSIGNED_AT=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "")
-      src=$(awk -F'=' '/^SOURCE=/ {gsub(/"/,"",$2); print $2}' "$f" 2>/dev/null || echo "static")
-      printf "  %-20s %-15s %-25s %-8s\n" "$vmname" "$ip" "$at" "$src"
-    done
-    $any || echo "  (no host-recorded static IPs)"
+  local static_dir="${DATACENTER_BASE:-/srv/datacenter}/config/network" f rows=""
+  for f in "$static_dir"/*.conf; do
+    [ -f "$f" ] || continue
+    rows+=$(awk -F= -v vm="$(basename "$f" .conf)" '{ gsub(/"/, "", $2); v[$1] = $2 } END { printf "%s\t%s\t%s\t%s\n", vm, v["IP"], v["ASSIGNED_AT"], (v["SOURCE"] ? v["SOURCE"] : "static") }' "$f")$'\n'
+  done
+  ui_section "Static IPs"
+  if [ -n "$rows" ]; then
+    printf 'VM\tIP\tASSIGNED\tSOURCE\n%s' "$rows" | ui_table
   else
-    echo "  (no host-recorded static IPs)"
+    echo -e "  ${DIM}none${NC}"
   fi
 
-  echo ""
-  echo "Port mappings (saved):"
-  local port_file=$(get_port_mappings_file)
-  if [ -f "$port_file" ]; then
-    printf "%-15s  %-15s %-8s  %-8s\n" "VM_NAME" "VM_IP" "SSH" "HTTP"
-    echo "------------------------------------------------"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && printf "%-15s  %-15s %-8s  %-8s\n" "$vm" "$ip" "$ssh_port" "$http_port"
-    done
+  local port_file rules
+  port_file=$(get_port_mappings_file)
+  rules=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -cE -- '--dport (22[2-9][0-9]|8[01][0-9][0-9]) .*-j DNAT' || true)
+  ui_section "Port forwards" "$([ "$rules" -gt 0 ] && echo "$(plural "$rules" "DNAT rule") active")"
+  if [ -f "$port_file" ] && [ -n "$(read_port_mappings)" ]; then
+    {
+      printf 'VM\tIP\tSSH PORT\tHTTP PORT\tPING\tSSH\tHTTP\n'
+      read_port_mappings | while read -r vm ip ssh_port http_port; do
+        [ -n "$vm" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port" \
+          "$(check_ping "$ip" && echo "$SYM_OK" || echo "$SYM_FAIL")" \
+          "$(check_port_forward "$ssh_port" "$ip" 22 && echo "$SYM_OK" || echo "$SYM_FAIL")" \
+          "$(check_port_forward "$http_port" "$ip" 80 && echo "$SYM_OK" || echo "$SYM_FAIL")"
+      done
+    } | ui_table
+    echo -e "  ${DIM}$SYM_OK rules in place and the VM port answers ${SYM_DOT} saved in $port_file${NC}"
   else
-    echo "No saved mappings. Run: dcvm network ports setup"
+    echo -e "  ${DIM}none (dcvm network ports setup)${NC}"
   fi
-
   echo ""
-  echo "Active port forwarding rules (iptables):"
-  local nat_rules
-  nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" || true)
-  [ -n "${nat_rules:-}" ] && echo "$nat_rules" || echo "No dcvm port forwarding rules found"
-
-  echo ""
-  echo "Connectivity test:"
-  printf "%-15s: %-4s  %-4s  %-4s\n" "VM_NAME" "Ping" "SSH" "HTTP"
-  echo "-------------------------------------"
-  if [ -f "$port_file" ]; then
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      if [ -n "$vm" ]; then
-        local ping_status ssh_status http_status
-        ping_status=$(check_ping "$ip" && echo "✓" || echo "✗")
-        ssh_status=$(check_port_forward "$ssh_port" "$ip" 22 && echo "✓" || echo "✗")
-        http_status=$(check_port_forward "$http_port" "$ip" 80 && echo "✓" || echo "✗")
-        printf "%-15s: %-4s  %-4s  %-4s\n" "$vm" "$ping_status" "$ssh_status" "$http_status"
-      fi
-    done
-    echo ""
-    echo "Legend: ✓ = accessible, ✗ = not accessible"
-  else
-    echo "No port mappings available for testing"
-  fi
 }
 
 cmd_status() {
-  print_header "Network Status"
-  local is_active is_autostart ipfwd
-  is_active=$(virsh net-list | grep -q "^.* $NETWORK_NAME .* active" && echo active || echo inactive)
-  is_autostart=$(virsh net-info "$NETWORK_NAME" 2>/dev/null | awk -F": *" '/Autostart/ {print tolower($2)}' || echo unknown)
-  ipfwd=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)
-  echo "Network: $NETWORK_NAME ($is_active), Autostart: $is_autostart, IP forwarding: $ipfwd"
-  echo "Bridge: $BRIDGE_NAME"
-  ip addr show "$BRIDGE_NAME" 2>/dev/null | sed 's/^/  /' || echo "  Bridge not found"
+  network_title || return 1
+  network_kv
+  local addr
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }')
+  ui_kv "Address" "${addr:-none}"
+  echo ""
 }
 
-cmd_start() { virsh net-start "$NETWORK_NAME" && print_success "Started $NETWORK_NAME" || print_error "Failed to start $NETWORK_NAME"; }
-cmd_stop() { virsh net-destroy "$NETWORK_NAME" && print_success "Stopped $NETWORK_NAME" || print_error "Failed to stop $NETWORK_NAME"; }
+cmd_start() {
+  if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+    ui_done ok "$NETWORK_NAME started"
+  else
+    ui_done fail "$NETWORK_NAME did not start" "$(network_state)"
+    return 1
+  fi
+  echo ""
+}
+cmd_stop() {
+  if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1; then
+    ui_done ok "$NETWORK_NAME stopped" "VMs on it have no network until it starts again"
+  else
+    ui_done fail "$NETWORK_NAME did not stop" "$(network_state)"
+    return 1
+  fi
+  echo ""
+}
 cmd_restart() {
-  cmd_stop || true
+  virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1 || true
   sleep 1
-  cmd_start
+  if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+    ui_done ok "$NETWORK_NAME restarted" "running VMs reconnect on their next DHCP renewal"
+  else
+    ui_done fail "$NETWORK_NAME did not start again" "dcvm network start"
+    return 1
+  fi
+  echo ""
 }
 
 cmd_leases() {
-  print_header "DHCP Leases"
-  virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null || echo "No leases found"
-  echo ""
-  echo "Lease Files:"
+  ui_title "DHCP leases" "$NETWORK_NAME"
+  leases_table
+  ui_section "Lease files"
+  local f
   for f in "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"; do
-    [ -f "$f" ] && echo "  $f ($(wc -l <"$f") lines)" || echo "  $f (not found)"
+    ui_kv "${f##*.}" "$f $([ -f "$f" ] && echo "($(wc -l <"$f") lines)" || echo "(not found)")"
   done
+  echo ""
 }
 
 cmd_bridge() {
-  print_header "Bridge Details ($BRIDGE_NAME)"
-  ip addr show "$BRIDGE_NAME" 2>/dev/null || echo "Bridge not found"
-  echo ""
-  echo "Routes:"
+  ui_title "Bridge" "$BRIDGE_NAME"
+  local addr pid
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; sub(/^ +/, ""); print }')
+  pid=$(pgrep -f "dnsmasq.*/${NETWORK_NAME}.conf" | head -1 || true)
+  ui_kv "Address" "${addr:-bridge not found}" "dnsmasq" "${pid:+running, pid $pid}${pid:-not running}"
+  ui_section "Routes"
   ip route show | sed 's/^/  /'
   echo ""
-  echo "dnsmasq:"
-  ps aux | grep "dnsmasq.*${BRIDGE_NAME}" | grep -v grep || echo "No dnsmasq process for bridge"
 }
 
 cmd_ip_forwarding() {
@@ -128,41 +140,56 @@ cmd_ip_forwarding() {
       print_error "Failed to enable ip_forward"
       exit 1
     }
-    print_success "Enabled net.ipv4.ip_forward (not persisted)"
+    ui_done ok "IP forwarding on" "until reboot; the installer persists it in /etc/sysctl.conf"
     ;;
   off | disable)
     echo 0 >/proc/sys/net/ipv4/ip_forward || {
       print_error "Failed to disable ip_forward"
       exit 1
     }
-    print_success "Disabled net.ipv4.ip_forward"
+    ui_done warn "IP forwarding off" "VMs lose internet access and port forwards stop working"
     ;;
   show | *)
-    local v=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)
-    echo "net.ipv4.ip_forward = $v"
+    local v
+    v=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)
+    echo ""
+    ui_kv "Forwarding" "$([ "$v" = 1 ] && echo on || echo off) (net.ipv4.ip_forward = $v)"
     ;;
   esac
+  echo ""
 }
 
 cmd_config() {
-  print_header "Effective Config"
-  echo "DATACENTER_BASE: ${DATACENTER_BASE}"
-  echo "NETWORK_NAME:    ${NETWORK_NAME}"
-  echo "BRIDGE_NAME:     ${BRIDGE_NAME}"
-  echo "HOST_IP:         $(get_host_ip)"
+  ui_title "Configuration" "/etc/dcvm-install.conf"
+  ui_kv "Base" "$DATACENTER_BASE" "Network" "$NETWORK_NAME" "Bridge" "$BRIDGE_NAME" \
+    "Subnet" "${NETWORK_SUBNET:-10.10.10}.0/24" "Host IP" "$(get_host_ip)"
+  echo ""
+}
+
+# Stops a running VM before its graphics are changed (asks first).
+stop_for_vnc_change() {
+  local vm_name="$1" confirm count=0
+  virsh list | grep -q " $vm_name .*running" || return 0
+  if [ ! -t 0 ]; then
+    print_error "$vm_name is running; stop it first (dcvm stop $vm_name)"
+    return 1
+  fi
+  confirm_action "$vm_name is running and has to stop for this. Stop it now?" || return 1
+  virsh shutdown "$vm_name" >/dev/null 2>&1 || true
+  while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
+    sleep 2
+    count=$((count + 1))
+  done
+  virsh list | grep -q " $vm_name .*running" && virsh destroy "$vm_name" >/dev/null 2>&1
+  ui_step ok "Stopped" "$vm_name"
 }
 
 cmd_vnc() {
   local action="${1:-}"
   local vm_name="${2:-}"
 
-  if [ -z "$action" ]; then
-    print_error "Action required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
-    exit 1
-  fi
-
-  if [ -z "$vm_name" ]; then
-    print_error "VM name required. Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+  if [ -z "$action" ] || [ -z "$vm_name" ]; then
+    print_error "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
     exit 1
   fi
 
@@ -171,49 +198,23 @@ cmd_vnc() {
     return 1
   fi
 
+  local has_vnc tmp_xml
+  has_vnc=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=" || true)
   case "$action" in
   disable)
-    local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
-    if [ "$current_graphics" -eq 0 ]; then
-      print_info "VNC is already disabled on '$vm_name'"
+    if [ "$has_vnc" -eq 0 ]; then
+      ui_done ok "VNC is already off on $vm_name"
+      echo ""
       return 0
     fi
-
-    local is_running=$(virsh list | grep -c " $vm_name .*running" || true)
-    if [ "$is_running" -gt 0 ]; then
-      print_warning "VM '$vm_name' is running. It needs to be stopped to disable VNC."
-      if [ -t 0 ]; then
-        read -r -p "Stop VM now? (y/N): " confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-          print_info "Stopping VM..."
-          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
-          local count=0
-          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
-            sleep 2
-            count=$((count + 1))
-          done
-          if virsh list | grep -q " $vm_name .*running"; then
-            virsh destroy "$vm_name" >/dev/null 2>&1 || true
-          fi
-        else
-          print_info "Cancelled. Stop VM first, then run this command again."
-          return 1
-        fi
-      else
-        print_error "Non-interactive session. Please stop VM '$vm_name' first."
-        return 1
-      fi
-    fi
-
-    local tmp_xml
+    echo ""
+    stop_for_vnc_change "$vm_name" || return 1
     tmp_xml="$(mktemp /tmp/remove-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
-
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
-      print_success "VNC disabled for '$vm_name'"
-      print_info "VNC port is now free. Start VM with: dcvm start $vm_name"
-      print_info "Access VM via: virsh console $vm_name"
+      ui_done ok "VNC off on $vm_name" "its VNC port is free"
+      ui_next "dcvm start $vm_name" "start it again" "dcvm console $vm_name" "serial console"
     else
       rm -f "$tmp_xml"
       print_error "Failed to disable VNC"
@@ -222,52 +223,22 @@ cmd_vnc() {
     ;;
 
   enable)
-    local current_graphics=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=")
-    if [ "$current_graphics" -gt 0 ]; then
-      print_info "VNC is already enabled on '$vm_name'"
-      virsh vncdisplay "$vm_name" 2>/dev/null || true
+    if [ "$has_vnc" -gt 0 ]; then
+      ui_done ok "VNC is already on on $vm_name" "$(virsh vncdisplay "$vm_name" 2>/dev/null || echo "display assigned on start")"
+      echo ""
       return 0
     fi
-
-    local is_running=$(virsh list | grep -c " $vm_name .*running" || true)
-    if [ "$is_running" -gt 0 ]; then
-      print_warning "VM '$vm_name' is running. It needs to be stopped to enable VNC."
-      if [ -t 0 ]; then
-        read -r -p "Stop VM now? (y/N): " confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-          print_info "Stopping VM..."
-          virsh shutdown "$vm_name" >/dev/null 2>&1 || true
-          local count=0
-          while virsh list | grep -q " $vm_name .*running" && [ $count -lt 30 ]; do
-            sleep 2
-            count=$((count + 1))
-          done
-          if virsh list | grep -q " $vm_name .*running"; then
-            virsh destroy "$vm_name" >/dev/null 2>&1 || true
-          fi
-        else
-          print_info "Cancelled. Stop VM first, then run this command again."
-          return 1
-        fi
-      else
-        print_error "Non-interactive session. Please stop VM '$vm_name' first."
-        return 1
-      fi
-    fi
-
+    echo ""
+    stop_for_vnc_change "$vm_name" || return 1
     local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
-
-    local tmp_xml
     tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" >"$tmp_xml"
     sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
-
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
-      print_success "VNC enabled for '$vm_name'"
-      print_info "Start VM with: dcvm start $vm_name"
-      print_info "Then access VNC with: virsh vncdisplay $vm_name"
+      ui_done ok "VNC on for $vm_name" "listens on 127.0.0.1 of this host"
+      ui_next "dcvm start $vm_name" "start it" "dcvm network vnc status $vm_name" "its VNC port, once running"
     else
       rm -f "$tmp_xml"
       print_error "Failed to enable VNC"
@@ -276,26 +247,21 @@ cmd_vnc() {
     ;;
 
   status)
-    local graphics_info=$(virsh dumpxml "$vm_name" 2>/dev/null | grep "<graphics")
-    if [ -n "$graphics_info" ]; then
-      print_success "VNC is ENABLED on '$vm_name'"
-      local vnc_display=$(virsh vncdisplay "$vm_name" 2>/dev/null || true)
-      if [ -n "$vnc_display" ]; then
-        echo "  VNC Display: $vnc_display"
-        if [[ "$vnc_display" =~ :([0-9]+)$ ]]; then
-          local vnc_display_index="${BASH_REMATCH[1]}"
-          local vnc_port=$((5900 + vnc_display_index))
-          echo "  VNC Port: $vnc_port"
-          echo "  Connect: vncviewer $(hostname -I | awk '{print $1}'):$vnc_port"
-        else
-          echo "  (Unable to determine VNC port from display string: '$vnc_display')"
-        fi
+    ui_title "VNC" "$vm_name"
+    if [ "$has_vnc" -gt 0 ]; then
+      local vnc_display
+      vnc_display=$(virsh vncdisplay "$vm_name" 2>/dev/null || true)
+      if [[ "$vnc_display" =~ :([0-9]+)$ ]]; then
+        local vnc_port=$((5900 + BASH_REMATCH[1]))
+        ui_kv "VNC" "on, display $vnc_display, port $vnc_port"
+        ui_next "ssh -L $vnc_port:127.0.0.1:$vnc_port root@<host>" "then point a VNC viewer at localhost:$vnc_port"
       else
-        echo "  (VM is not running, VNC port will be assigned on start)"
+        ui_kv "VNC" "on; the port is assigned when the VM starts"
+        echo ""
       fi
     else
-      print_info "VNC is DISABLED on '$vm_name'"
-      echo "  Access via: virsh console $vm_name"
+      ui_kv "VNC" "off" "Console" "dcvm console $vm_name"
+      echo ""
     fi
     ;;
 
@@ -308,32 +274,27 @@ cmd_vnc() {
 }
 
 cmd_help() {
-  cat <<EOF
-dcvm Network Manager
+  ui_help <<EOF
+dcvm network - the libvirt network, DHCP and port forwards
 
-Usage: dcvm network <subcommand> [options]
+Usage: dcvm network [command]
 
-Subcommands:
-  show                 Show network overview (default)
-  status               Show concise network/bridge status
-  start|stop|restart   Control the libvirt network: ${NETWORK_NAME:-datacenter-net}
-  leases               List current DHCP leases and files
-  bridge               Show bridge details, routes, dnsmasq
-  ip-forwarding [on|off|show]
-                       Get or toggle net.ipv4.ip_forward
-  config               Show effective dcvm network config
-  ports <cmd>          Manage port forwarding (delegates)
-  dhcp <cmd>           Manage DHCP leases (delegates)
-  help                 Show this help
+Commands:
+  show                    Overview: network, leases, static IPs, port forwards (default)
+  status                  Network state, bridge and address
+  start | stop | restart  Control ${NETWORK_NAME:-datacenter-net}
+  leases                  DHCP leases and lease files
+  bridge                  Bridge address, dnsmasq and routes
+  ip-forwarding [on|off]  Show or set net.ipv4.ip_forward
+  config                  Settings from /etc/dcvm-install.conf
+  ports <command>         Port forwarding (dcvm network ports help)
+  dhcp <command>          DHCP leases (dcvm network dhcp help)
+  vnc <action> <vm>       VNC on a VM: enable, disable, status
 
 Examples:
-  dcvm network                 # same as 'dcvm network show'
-  dcvm network status
-  dcvm network start
-  dcvm network leases
-  dcvm network ip-forwarding on
+  dcvm network
   dcvm network ports setup
-  dcvm network dhcp cleanup
+  dcvm network vnc status web
 EOF
 }
 
