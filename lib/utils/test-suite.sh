@@ -2188,7 +2188,7 @@ test_backup_list_columns() {
   local out
   out=$(
     TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1
-    source "$SCRIPT_DIR/../storage/backup.sh" >/dev/null 2>&1
+    load_backup_sh_for_test /nonexistent >/dev/null 2>&1
     list_backup_timestamps_desc() { printf '20261104_100133\n20261103_090000\n'; }
     get_backup_disk_path() { echo "/b/$1-disk-$2.qcow2.gz"; }
     get_backup_config_path() { echo "/b/$1-config-$2.xml"; }
