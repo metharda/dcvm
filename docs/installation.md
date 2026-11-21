@@ -100,7 +100,8 @@ The installer will:
 
 1. Install the packages with `apt` (Debian, Ubuntu and derivatives) or
    `pacman` (Arch and derivatives): QEMU/KVM, libvirt, virt-install,
-   genisoimage/cdrtools, libguestfs-tools, NFS utilities, `jq`, dnsmasq tools
+   genisoimage/cdrtools, libguestfs-tools, NFS utilities, `jq`, dnsmasq tools,
+   `aria2` (fast image downloads)
 2. Check that the CPU supports KVM and `/dev/kvm` exists
 3. Install `dcvm` to `/usr/local/bin` and its libraries to `/usr/local/lib/dcvm`
 4. Start libvirtd
@@ -202,11 +203,11 @@ Manually install dependencies:
 # Ubuntu/Debian
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients \
-    bridge-utils virt-manager nfs-kernel-server jq dnsmasq-utils
+    bridge-utils virt-manager nfs-kernel-server jq dnsmasq-utils aria2
 
 # Arch Linux
 sudo pacman -S qemu-full libvirt virt-install virt-viewer \
-    bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode jq
+    bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode jq aria2
 ```
 
 ## Uninstallation
@@ -247,6 +248,13 @@ To check for updates without installing:
 ```bash
 dcvm self-update --check
 ```
+
+### aria2 (0.9.8)
+
+Since 0.9.8 the installer installs `aria2`, and image downloads use it to
+fetch each image from the fastest mirrors at once. On a host installed
+earlier, install it once (`sudo apt install aria2`, or `sudo pacman -S aria2`);
+without it, downloads use curl, one mirror at a time, as before.
 
 ### Dependencies added in 0.9.6
 

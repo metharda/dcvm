@@ -16,7 +16,9 @@ history, so the commit or PR is listed for each release.
 
 Security and correctness fixes found while rewriting the documentation.
 
-**Upgrading:** `dcvm self-update` does not touch `/etc/exports`. If you
+**Upgrading:** install `aria2` once (`sudo apt install aria2`, or
+`sudo pacman -S aria2`) for faster image downloads; self-update does not
+install packages. `dcvm self-update` does not touch `/etc/exports`. If you
 enabled the NFS share on a host installed before 0.9.8, it is exported to
 every host (`*`); re-run the installer and answer `y` to the NFS question to
 limit it to the dcvm subnet and make it writable for VM users.
@@ -32,6 +34,14 @@ limit it to the dcvm subnet and make it writable for VM users.
   that matches no published checksum is discarded and the next mirror is
   tried; if no mirror publishes one, the file is kept with a warning. Only
   the size was checked before.
+- Image downloads use aria2c, which the installer now installs, fetching
+  each image from the four fastest mirrors at once. aria2c support existed
+  but never ran: the installer didn't install it. Without aria2, downloads
+  use curl, one mirror at a time, as before.
+- New cloud image mirrors in Europe, Asia and the Americas (GWDG,
+  ftp.acc.umu.se, Yandex, NJU, CERNET and more), so the speed test picks a
+  nearby one wherever dcvm runs. aria2c only combines mirrors that serve the
+  same file as the fastest one (same name and size).
 
 ### Security
 
@@ -52,6 +62,25 @@ limit it to the dcvm subnet and make it writable for VM users.
   `DCVM_VERBOSE=1` shows everything. Colour is off when the output is not a
   terminal, with `NO_COLOR` or `TERM=dumb`, and symbols fall back to ASCII
   outside UTF-8 locales.
+- The same design on every other screen: `dcvm network` (one overview of the
+  network, DHCP leases, static IPs and port forwards with their checks) and
+  its `status`, `leases`, `bridge`, `config`, `ip-forwarding` and `vnc`
+  commands; `network ports rules/apply/clear`; `network dhcp`; `backup list`,
+  `delete`, `export`, `import` and `ssh-setup`; `template`; `fix-lock` (one
+  line per phase instead of `[N/9]` headers); `self-update`; `uninstall`;
+  `storage`; `delete --all`; `start/stop/restart` without a VM name;
+  `console` without a VM name; the interactive `dcvm create` wizard and
+  `create-iso`. Help texts are reorganized and coloured on a terminal.
+  `backup list` is one table for all VMs (VM state, ID, time taken, age,
+  size, notes) with the total size. Image downloads (`dcvm template
+  download`, `dcvm create` when the image is missing, backup restore and
+  the installer) show the image with the chosen mirror, the downloader and
+  a progress bar with size, speed and time left underneath, then collapse
+  into one summary line.
+- `dcvm self-update` keeps the version it replaced in `/var/lib/dcvm/backups`
+  (the last 3), so `--revert` can undo an update that installed fine but
+  broke something ([#55](https://github.com/metharda/dcvm/issues/55)). It
+  deleted the copy after every successful update.
 - `dcvm console <vm>` attaches to the VM's serial console, as `dcvm help`
   says. Without a name it still prints access hints, but no longer the
   incorrect `Default login: admin / admin123` line.
@@ -64,6 +93,27 @@ limit it to the dcvm subnet and make it writable for VM users.
 
 ### Fixed
 
+- `dcvm delete` printed `/etc/iptables/rules.v4: No such file or directory`
+  on hosts without iptables-persistent. Rules are saved there only when
+  `/etc/iptables` exists ([#54](https://github.com/metharda/dcvm/issues/54)).
+- Long VM names pushed the columns of `backup list` and the `Next steps`
+  lines together; both size their columns to the content now
+  ([#56](https://github.com/metharda/dcvm/issues/56)).
+- Tables dropped empty cells, so `dcvm list` showed a stopped VM's vCPU count
+  under IP.
+- `dcvm console` (without a VM name), `dcvm network config` and `dhcp renew`
+  used `DATACENTER_IP` from the config for the host address, which the
+  installer never sets, and printed an empty address. They detect it now,
+  like `network ports setup`.
+- `dcvm network bridge` always reported dnsmasq as not running.
+- Most fallback mirrors were dead (404 or unreachable): Debian had 2 working
+  of 5, Ubuntu 22.04 and 20.04 one each, Kali's second entry served 404.
+  They are removed. Ubuntu 24.04 no longer mixes the daily `noble/current`
+  build with the release build.
+- The Kali image URL pointed to `cloud-images/current/` with the version in
+  the file name, so it broke at every Kali release; it uses the release
+  folder (`cloud-images/kali-2026.3/`) now. The second Kali URL
+  (cdimage.kali.org) never worked: only kali.download has the cloud images.
 - The installer started every stopped libvirt VM on the host, not only dcvm
   VMs, and stopped with an error right after starting the first one
   (`((n++))` at 0 fails under `set -e`). It now starts only VMs on the dcvm

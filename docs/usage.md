@@ -308,7 +308,7 @@ ssh ubuntu@<vm-ip>
 ### Finding VM IP Address
 
 ```bash
-dcvm status            # "VM IP addresses" at the end
+dcvm status            # IP column of the VM table
 dcvm network           # DHCP leases, static IPs and port mappings
 ```
 
@@ -547,12 +547,13 @@ dcvm self-update
 dcvm self-update --force
 ```
 
-The self-update command will:
-- Check the current installed version
-- Compare with the latest version on GitHub
-- Backup current installation
-- Download and install new files
-- Restore backup if update fails
+The self-update command:
+- compares the installed version with the latest one on GitHub
+- saves the installed version in `/var/lib/dcvm/backups` (the last 3 are kept)
+- downloads and installs the new files
+
+`dcvm self-update --revert` lists the saved versions and puts the one you pick
+back.
 
 ## Uninstalling DCVM
 

@@ -103,11 +103,11 @@ which breaks VMs built on the old file).
 dcvm self-update --check    # compare the installed version with GitHub
 dcvm self-update            # download and install the new files
 dcvm self-update --force    # reinstall even if the version is the same
-dcvm self-update --revert   # go back to the copy saved before the last update
+dcvm self-update --revert   # go back to a version saved by an earlier update
 ```
 
 Self-update replaces the files in `/usr/local/bin` and `/usr/local/lib/dcvm`
-and keeps the previous version in `/var/lib/dcvm/backups`. It does not install
+and keeps the version it replaced in `/var/lib/dcvm/backups` (the last 3). It does not install
 packages: when a release needs a new dependency, its
 [CHANGELOG](../CHANGELOG.md) entry says so (0.9.6 added `jq` and
 `dnsmasq-utils`; see [Installation](installation.md#updating-dcvm)). VMs,
@@ -140,7 +140,7 @@ connects over SSH to the VM's IP with the host root's key (never prompting
 for a password) and prints and logs the root file system usage:
 
 ```
-web: root file system 7% used
+  ✓ web             root file system 7% used
 ```
 
 When a VM is more than 85% full, it gzips logs older than 7 days and, if the
