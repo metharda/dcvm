@@ -18,6 +18,7 @@ LOG_FILE="/var/log/dcvm-backup.log"
 DATE=$(date +%Y%m%d_%H%M%S)
 KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
+BOOT_GRACE=90
 COMPRESSION_ENABLED=true
 
 log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
@@ -104,69 +105,6 @@ get_backup_config_path() {
   fi
   echo ""
   return 1
-}
-
-download_cloud_image() {
-  local filename="$1"
-  local target_path="$2"
-
-  mkdir -p "$(dirname "$target_path")" || {
-    print_error "Cannot create directory for backing image"
-    return 1
-  }
-  if ! type download_image_ui &>/dev/null; then
-    print_error "mirror-manager.sh not found; put $filename at $target_path by hand"
-    return 1
-  fi
-  if ! download_image_ui "$filename" "$target_path" 100000000; then
-    print_error "Could not download $filename (dcvm template check $filename tests the mirrors)"
-    return 1
-  fi
-}
-
-ensure_backing_image() {
-  local vm_disk_path="$1"
-  if ! command -v qemu-img >/dev/null 2>&1; then
-    print_warning "qemu-img not found; skipping backing file check"
-    return 0
-  fi
-  local info
-  info=$(qemu-img info "$vm_disk_path" 2>/dev/null) || return 0
-  local backing_file
-  backing_file=$(echo "$info" | awk -F': ' '/backing file:/ {print $2; exit}')
-  if [ -z "$backing_file" ]; then
-    return 0
-  fi
-  if [[ "$backing_file" != /* ]]; then
-    local base_dir="$(dirname "$vm_disk_path")"
-    backing_file="${base_dir}/${backing_file}"
-  fi
-  if [ -f "$backing_file" ]; then
-    return 0
-  fi
-  print_warning "Backing file missing: $backing_file"
-  local filename="$(basename "$backing_file")"
-  local canonical_path="$DATACENTER_BASE/storage/templates/$filename"
-  if [ "$backing_file" = "$canonical_path" ]; then
-    if download_cloud_image "$filename" "$canonical_path"; then
-      return 0
-    else
-      return 1
-    fi
-  else
-    if download_cloud_image "$filename" "$canonical_path"; then
-      print_info "Rebasing restored disk to use canonical backing file path"
-      if qemu-img rebase -u -b "$canonical_path" "$vm_disk_path"; then
-        print_success "Rebase completed"
-        return 0
-      else
-        print_error "Failed to rebase disk backing file"
-        return 1
-      fi
-    else
-      return 1
-    fi
-  fi
 }
 
 wait_for_vm_state() {
@@ -267,13 +205,12 @@ cleanup_old_backups() {
       [ -z "$dp" ] && continue
       remove_backup_artifacts "$vm_name" "$dp" "old backup" || true
     done
+    prune_builds >/dev/null
   fi
 }
 
-# 20261121_140322 -> 2026-11-21 14:03:22
 pretty_ts() { sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/' <<<"$1"; }
 
-# "5 min", "6 hours", "17 days" since backup timestamp $1.
 backup_age() {
   local s
   s=$(($(date +%s) - $(date -d "$(pretty_ts "$1")" +%s 2>/dev/null || date +%s)))
@@ -286,15 +223,10 @@ backup_age() {
   fi
 }
 
-# The VM's state, or "deleted": what a backup would restore over. ui_table
-# adds the ● / ○ glyphs.
 vm_state_label() {
   if check_vm_exists "$1"; then get_vm_state "$1"; else echo deleted; fi
 }
 
-# One row per backup of VM $1, newest first, tab separated:
-# ID, taken, age, size, note, size in bytes. The ID numbers the backups of a
-# day in time order: <vm>-dd.mm.yyyy-N.
 backup_rows() {
   local vm_name="$1" dp dmy disk_path bytes note first=true
   local -A day_seq=() seq_for_dp=()
@@ -330,7 +262,6 @@ list_backups() {
   n=$(grep -c . <<<"$rows")
   total=$(awk -F'\t' '{ t += $6 } END { print t + 0 }' <<<"$rows")
   ui_title "Backups of $vm_name" "$n of $KEEP_BACKUPS kept ${SYM_DOT} $(format_bytes "$total") ${SYM_DOT} VM $(vm_state_label "$vm_name")"
-  # The NOTE column only when a backup has one.
   local cols=1-5 head=$'ID\tTAKEN\tAGE\tSIZE\tNOTE'
   awk -F'\t' '$5 != " "' <<<"$rows" | grep -q . || cols=1-4 head=${head%$'\t'NOTE}
   if [ "$with_index" = true ]; then
@@ -356,7 +287,6 @@ list_all_backups() {
   fi
   mapfile -t vms < <(printf "%s\n" "${vms[@]}" | sort -u)
 
-  # VM and state on the first row of each VM only.
   for vm in "${vms[@]}"; do
     rows=$(backup_rows "$vm") || continue
     all+=$(awk -F'\t' -v vm="$vm" -v st="$(vm_state_label "$vm")" 'BEGIN { OFS = "\t" } { print (NR == 1 ? vm : " "), (NR == 1 ? st : " "), $0 }' <<<"$rows")$'\n'
@@ -666,13 +596,35 @@ export_backup() {
 
   local tmpdir
   tmpdir=$(mktemp -d)
-  ui_run "Copying disk" cp "$disk_backup" "$tmpdir/" || {
-    rm -rf "$tmpdir"
-    ui_step fail "Disk" "copy failed"
-    print_error "Failed to copy disk backup"
-    return 1
-  }
-  ui_step ok "Disk" "$(basename "$disk_backup") (${UI_RUN_SECS}s)"
+  if [ "${EXPORT_FULL:-false}" = true ]; then
+    local full_disk="$tmpdir/$(basename "${disk_backup%.gz}")"
+    stage_backup_disk "$disk_backup" "$tmpdir/staged.qcow2" "$(dirname "$disk_backup")/base" || {
+      rm -rf "$tmpdir"
+      return 1
+    }
+    if ! ui_run "Flattening disk" qemu-img convert -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
+      rm -rf "$tmpdir"
+      ui_step fail "Disk" "flattening failed"
+      return 1
+    fi
+    rm -f "$tmpdir/staged.qcow2"
+    disk_backup=$full_disk
+    ui_step ok "Disk" "standalone, $(get_file_size "$full_disk") (${UI_RUN_SECS}s)"
+  else
+    ui_run "Copying disk" cp "$disk_backup" "$tmpdir/" || {
+      rm -rf "$tmpdir"
+      ui_step fail "Disk" "copy failed"
+      print_error "Failed to copy disk backup"
+      return 1
+    }
+    ui_step ok "Disk" "$(basename "$disk_backup") (${UI_RUN_SECS}s)"
+    if [ -f "$(dirname "$disk_backup")/base" ]; then
+      cp "$(dirname "$disk_backup")/base" "$tmpdir/base"
+      ui_step ok "Base image" "recorded: $(sed -n 's/^build=//p' "$tmpdir/base" | sed 's#.*/##') (not included; --full makes the package standalone)"
+    else
+      ui_step warn "Base image" "not recorded (backup from before 0.9.9): the target needs the same build, or use --full"
+    fi
+  fi
   cp "$config_backup" "$tmpdir/" || {
     rm -rf "$tmpdir"
     print_error "Failed to copy config backup"
@@ -732,6 +684,7 @@ GFSCMDS
 vm_name=$vm_name
 backup_date=$backup_date
 disk_file=$(basename "$disk_backup")
+disk=$([ "${EXPORT_FULL:-false}" = true ] && echo full || echo thin)
 config_file=$(basename "$config_backup")
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 dcvm_version=portable
@@ -835,6 +788,7 @@ import_backup() {
     print_error "Failed to import config file"
     return 1
   }
+  [ -f "$workdir/base" ] && cp "$workdir/base" "$backup_folder/base"
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
@@ -865,8 +819,22 @@ backup_vm() {
 
   ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
+  mkdir -p "$BACKUP_DIR"
+  if [ "$(free_bytes "$BACKUP_DIR")" -lt "$(file_bytes "$vm_disk_path")" ]; then
+    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the copy needs $(get_file_size "$vm_disk_path")"
+    echo -e "      ${DIM}$vm_name was not stopped. Free some space (dcvm backup delete <vm>), then try again.${NC}"
+    return 1
+  fi
+
   if [ "$(get_vm_state "$vm_name")" = "running" ]; then
     was_running=true
+    # A VM that is still booting ignores the shutdown request; let it boot.
+    local age
+    age=$(ps -o etimes= -p "$(pgrep -f "[g]uest=$vm_name," | head -1)" 2>/dev/null | tr -d ' ')
+    if [ "${age:-999}" -lt "$BOOT_GRACE" ]; then
+      ui_run "Waiting for boot" sleep $((BOOT_GRACE - age))
+      ui_step ok "Booted" "$vm_name started ${age}s ago; waited until it finished booting"
+    fi
     if ! virsh shutdown "$vm_name" >/dev/null 2>&1; then
       print_error "Failed to send shutdown command"
       log "ERROR" "Failed to send shutdown command to VM $vm_name"
@@ -876,11 +844,21 @@ backup_vm() {
       ui_step ok "Shut down" "cleanly in ${UI_RUN_SECS}s"
       log "INFO" "VM $vm_name shut down gracefully"
     else
+      if [ -t 0 ] && ! confirm_action "$vm_name did not shut down in ${SHUTDOWN_TIMEOUT}s. Force it off (like pulling the plug)?"; then
+        log "INFO" "Backup of $vm_name cancelled: it did not shut down"
+        return 1
+      fi
       virsh destroy "$vm_name" >/dev/null 2>&1
       sleep 5
       ui_step warn "Shut down" "forced after ${SHUTDOWN_TIMEOUT}s"
       log "WARNING" "Forced shutdown of VM $vm_name"
     fi
+  fi
+
+  if ! prepare_vm_disk "$vm_name"; then
+    [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1
+    log "ERROR" "Backup of $vm_name stopped: its base image could not be identified"
+    return 1
   fi
 
   if ! mkdir -p "$BACKUP_DIR"; then
@@ -923,6 +901,7 @@ backup_vm() {
     fi
   fi
 
+  write_base_record "$vm_disk_path" "$backup_folder_path"
   if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
     ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
@@ -982,8 +961,6 @@ compress_backup() {
   fi
 }
 
-# Offline guest changes for a backup restored or imported under a different VM
-# name (see customize_restored_guest).
 hosts_rename_sed_expr() {
   # sed -E expression that renames host name $1 to $2 in /etc/hosts. Callers
   # apply it twice: one pass cannot rename adjacent matches ("vm1 vm1") that
@@ -992,8 +969,6 @@ hosts_rename_sed_expr() {
 }
 
 customize_restored_guest() {
-  # Offline changes on a disk restored under a new name, in one virt-customize
-  # run: hostname, /etc/hosts, a fresh machine-id and new SSH host keys.
   local disk_path="$1"
   local new_name="$2"
   local old_name="$3"
@@ -1031,9 +1006,95 @@ customize_restored_guest() {
   return 1
 }
 
+restore_disk_base() {
+  local disk="$1" record="$2" backing img="" build="" how="" sha256 sha512 cur
+  backing=$(disk_backing "$disk")
+  if [ -z "$backing" ]; then
+    ui_step ok "Base image" "none needed (standalone disk)"
+    return 0
+  fi
+  [ -f "$record" ] && img=$(sed -n 's/^image=//p' "$record")
+  if [ -z "$img" ]; then
+    case "$backing" in
+    "$(builds_dir)"/*) img=$(build_image "$backing") ;;
+    *) img=${backing##*/} ;;
+    esac
+  fi
+  if [ -n "${RESTORE_BASE:-}" ]; then
+    if [ ! -f "$RESTORE_BASE" ]; then
+      print_error "--base: no such file: $RESTORE_BASE"
+      return 1
+    fi
+    build=$(register_build "$RESTORE_BASE" "$img") && how="given with --base"
+  elif [ -f "$record" ]; then
+    sha256=$(sed -n 's/^sha256=//p' "$record")
+    sha512=$(sed -n 's/^sha512=//p' "$record")
+    if build=$(find_build "$sha256"); then
+      how="on this host"
+    elif cur=$(current_build "$img" 2>/dev/null) && [ "$(build_sum "$cur" sha256)" = "$sha256" ]; then
+      build=$cur how="the current template"
+    elif build=$(fetch_archived_build "$img" "$sha256" "$sha512"); then
+      how="fetched from the archive"
+    fi
+  elif [[ "$backing" == "$(builds_dir)"/* ]] && [ -f "$backing" ]; then
+    build=$backing how="on this host"
+  else
+    if ui_run "Checking base" legacy_disk_build "$disk" "$img" && [ -n "$(tail -1 "$UI_RUN_LOG")" ]; then
+      build=$(tail -1 "$UI_RUN_LOG")
+      how="matched by a file system check (backup from before 0.9.9)"
+    fi
+  fi
+  if [ -z "$build" ]; then
+    ui_step fail "Base image" "the $(image_label "$img") build this disk was made on is not on this host or in the archive"
+    echo -e "      ${DIM}Restore on the host it came from, or copy that build here and use --base <file>.${NC}"
+    return 1
+  fi
+  qemu-img rebase -u -f qcow2 -b "$build" -F qcow2 "$disk" || return 1
+  ui_step ok "Base image" "${build##*/}, $how"
+
+  if ! cur=$(current_build "$img" 2>/dev/null); then
+    if download_image_ui "$img" "$(templates_dir)/$img" 100000000; then
+      cur=$(current_build "$img")
+    else
+      ui_step warn "Base image" "stays on ${build##*/}: no $(image_label "$img") template could be downloaded"
+      return 0
+    fi
+  fi
+  if [ "$cur" != "$build" ]; then
+    if ui_run "Base image" rebase_disk "$disk" "$cur"; then
+      ui_step ok "Base image" "moved to the current build ${cur##*/} (${UI_RUN_SECS}s)"
+    else
+      ui_step warn "Base image" "could not move to ${cur##*/}; stays on ${build##*/}"
+    fi
+  fi
+  return 0
+}
+
+stage_backup_disk() {
+  local disk="$1" staged="$2" record="$3"
+  rm -f "$staged"
+  if [[ "$disk" == *.gz ]]; then
+    if ! gunzip -t "$disk" >/dev/null 2>&1; then
+      print_error "Compressed backup file is corrupted: $disk"
+      return 1
+    fi
+    ui_run "Unpacking disk" sh -c 'gunzip -c "$1" >"$2"' _ "$disk" "$staged"
+  else
+    ui_run "Copying disk" cp --sparse=always "$disk" "$staged"
+  fi || {
+    rm -f "$staged"
+    print_error "Could not unpack the backup disk"
+    return 1
+  }
+  ui_step ok "Unpacked disk" "$(get_file_size "$staged") in ${UI_RUN_SECS}s"
+  restore_disk_base "$staged" "$record" || {
+    rm -f "$staged"
+    return 1
+  }
+}
+
 restore_vm() {
   ui_quiet
-  # $1 = VM whose backup is restored; $5 (optional) = name of the restored VM.
   local source_name="$1"
   local vm_name="${5:-$1}"
   local backup_date="$2"
@@ -1060,7 +1121,6 @@ restore_vm() {
   fi
 
   [ "$backup_date" = "latest" ] && backup_date=""
-  # Accept the ID as `backup list` prints it (<vm>-dd.mm.yyyy[-N]): literal prefix.
   [[ "$backup_date" == "$source_name-"* ]] && backup_date="${backup_date#"$source_name-"}"
 
   if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
@@ -1107,6 +1167,8 @@ restore_vm() {
     ui_title "Restoring $vm_name" "backup $backup_date ${SYM_DOT} $(get_file_size "$disk_backup")"
   fi
 
+  local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
+  rm -f "$staged"
   if check_vm_exists "$vm_name"; then
     local vm_state=$(get_vm_state "$vm_name")
     print_warning "VM '$vm_name' already exists (state: $vm_state)"
@@ -1122,6 +1184,8 @@ restore_vm() {
         return 0
       fi
     fi
+
+    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
 
     if [ "$vm_state" = "running" ]; then
       print_info "Stopping existing VM..."
@@ -1149,6 +1213,10 @@ restore_vm() {
     fi
   fi
 
+  if [ ! -f "$staged" ]; then
+    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
+  fi
+
   local vm_dir="$DATACENTER_BASE/vms/$vm_name"
   local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
 
@@ -1167,41 +1235,12 @@ restore_vm() {
     }
   fi
 
-  if [ "$is_compressed" = true ]; then
-    print_info "Decompressing backup directly to destination..."
-
-    if ! gunzip -t "$disk_backup" >/dev/null 2>&1; then
-      print_error "Compressed backup file is corrupted: $disk_backup"
-      return 1
-    fi
-
-    local original_size=$(stat -f%z "$disk_backup" 2>/dev/null || stat -c%s "$disk_backup" 2>/dev/null || echo "unknown")
-    print_info "Decompressing $original_size bytes..."
-
-    if ui_run "Restoring disk" sh -c 'gunzip -c "$1" >"$2"' _ "$disk_backup" "$vm_disk_path"; then
-      if [ -f "$vm_disk_path" ] && [ -s "$vm_disk_path" ]; then
-        local restored_size=$(get_file_size "$vm_disk_path")
-        ui_step ok "Restored disk" "$restored_size in ${UI_RUN_SECS}s"
-      else
-        print_error "Decompressed file is empty or missing"
-        rm -f "$vm_disk_path"
-        return 1
-      fi
-    else
-      print_error "Failed to decompress backup"
-      rm -f "$vm_disk_path"
-      return 1
-    fi
+  if mv -f "$staged" "$vm_disk_path"; then
+    ui_step ok "Restored disk" "$(get_file_size "$vm_disk_path")"
   else
-    print_info "Copying uncompressed backup..."
-
-    if cp "$disk_backup" "$vm_disk_path"; then
-      local restored_size=$(get_file_size "$vm_disk_path")
-      ui_step ok "Restored disk" "$restored_size"
-    else
-      print_error "Failed to copy backup file"
-      return 1
-    fi
+    rm -f "$staged"
+    print_error "Could not move the restored disk into place: $vm_disk_path"
+    return 1
   fi
 
   if [ ! -f "$vm_disk_path" ] || [ ! -s "$vm_disk_path" ]; then
@@ -1360,8 +1399,6 @@ restore_vm() {
       sed -i -e '/<nvram[^>]*\/>/d' -e '/<nvram[^>]*>.*<\/nvram>/d' "$temp_config" 2>/dev/null || true
     fi
   fi
-
-  ensure_backing_image "$vm_disk_path" || true
 
   if [ "$renamed" = true ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
@@ -1528,24 +1565,7 @@ restore_vm() {
 
   if [ "$need_manual_help" = true ] && [ "$final_state" != "running" ]; then
     print_warning "VM restored but failed to start automatically after $max_attempts attempts"
-    echo ""
-    echo "Manual troubleshooting steps:"
-    echo "  1. Check for conflicting domains using the same disk:"
-    echo "     virsh list --all --name | while read n; do [ \"$vm_name\" = \"$n\" ] || virsh domblklist \"$n\" --details | awk '{print $4}' | grep -Fxq \"$vm_disk_path\" && echo \"$n\"; done"
-    echo "     If any are listed, detach/change their disk or undefine them."
-    echo ""
-    echo "  2. Run fix-lock.sh with verbose:"
-    echo "     sudo $FIX_LOCK_SCRIPT $vm_name --verbose"
-    echo ""
-    echo "  3. Ensure no cdrom/ide remains in XML:"
-    echo "     sudo grep -iE 'cdrom|controller type=\"ide\"' /etc/libvirt/qemu/$vm_name.xml || echo OK"
-    echo ""
-    echo "  4. Manual start:"
-    echo "     virsh start $vm_name"
-    echo ""
-    echo "  5. Check detailed logs:"
-    echo "     tail -f /var/log/libvirt/qemu/$vm_name.log"
-    echo ""
+    "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,vms --vm "$vm_name" || true
     [ -z "$start_error" ] && start_error="Auto-start skipped."
     echo "Last error was: $start_error"
   fi
@@ -1790,6 +1810,29 @@ main() {
     exit 0
   fi
 
+  local -a args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --base)
+      RESTORE_BASE="${2:-}"
+      shift 2 || shift
+      ;;
+    --base=*)
+      RESTORE_BASE="${1#*=}"
+      shift
+      ;;
+    --full)
+      EXPORT_FULL=true
+      shift
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  set -- "${args[@]}"
+
   local SUBCOMMAND="$1"
   local VM_NAME="$2"
   local BACKUP_DATE="$3"
@@ -1842,7 +1885,9 @@ main() {
       exit 1
     fi
     delete_backups "$VM_NAME"
-    exit $?
+    local rc=$?
+    prune_builds >/dev/null
+    exit $rc
     ;;
   "export")
     if [ -z "$VM_NAME" ]; then

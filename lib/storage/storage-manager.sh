@@ -6,7 +6,6 @@ source "$SCRIPT_DIR/../utils/common.sh"
 THRESHOLD=85
 LOG_FILE="/var/log/datacenter-storage.log"
 
-# Logs "<vm>: <message>" and prints it as a step: report ok|warn|fail <vm> <message>
 report() {
   log_to_file "$LOG_FILE" "$2: $3"
   ui_step "$1" "$2" "$3"
@@ -40,9 +39,6 @@ check_vm_storage() {
   fi
 }
 
-# Inside the guest, as root: gzip logs older than 7 days, and move /tmp files
-# older than 30 days and compressed logs older than 30 days to the NFS share
-# (leaving symlinks). Without the share mounted, only the gzip step runs.
 cleanup_old_files() {
   local vm_name="$1" ip="$2"
   ssh_vm "$vm_name" "$ip" 'sudo -n bash -s' <<'EOSSH'
@@ -74,11 +70,12 @@ main() {
   log_to_file "$LOG_FILE" "Starting storage management check"
   ui_title "Disk usage" "root file system of each running VM, over SSH"
   local vm_name checked=0
-  while read -r vm_name; do
+  # ssh reads stdin, so the VM list comes in on fd 3.
+  while read -r vm_name <&3; do
     [ -n "$vm_name" ] && is_vm_in_network "$vm_name" || continue
     check_vm_storage "$vm_name"
     checked=$((checked + 1))
-  done < <(virsh list --name 2>/dev/null)
+  done 3< <(virsh list --name 2>/dev/null)
   [ "$checked" -gt 0 ] || echo -e "  ${DIM}No running dcvm VMs to check${NC}"
   echo -e "\n  ${DIM}Over ${THRESHOLD}%, old logs are compressed and moved to the NFS share. Log: $LOG_FILE${NC}\n"
   log_to_file "$LOG_FILE" "Storage management check completed"

@@ -17,8 +17,6 @@ restart_network() {
   fi
 }
 
-# Result line for clearing one lease, from cleanup_dhcp_lease's exit code:
-# 0 released, 1 nothing matched (still exit 0), 2 failed (reason printed).
 lease_cleared() {
   case "$1" in
   0) ui_done ok "DHCP lease of $2 released" ;;
@@ -206,7 +204,7 @@ force_renew_all() {
     [ -n "$vm" ] || continue
     ssh_port=$(read_port_mappings | awk -v v="$vm" '$1 == v { print $3 }')
     if [ -n "$ssh_port" ]; then
-      timeout 10 ssh -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" >/dev/null 2>&1 &
+      timeout 10 ssh -n -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" >/dev/null 2>&1 &
       ui_step ok "$vm" "asked to renew over SSH"
     else
       ui_step skip "$vm" "no port forward; it renews on its own"

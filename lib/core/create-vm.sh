@@ -4,7 +4,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 source "$SCRIPT_DIR/../utils/mirror-manager.sh"
 
-#DEFAULT_USERNAME is handled by default_username() function in common.sh
 DEFAULT_PASSWORD=""
 DEFAULT_MEMORY="2048"
 DEFAULT_CPUS="2"
@@ -342,6 +341,7 @@ select_os() {
       TEMPLATE_DOWNLOADED=true
     else
       print_error "Could not download the $(image_label "${TEMPLATE_FILE##*/}") image. dcvm template check $tmpl_key tests the mirrors."
+      "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,storage || true
       exit 1
     fi
   fi
@@ -411,8 +411,6 @@ setup_root_access() {
     FLAG_ENABLE_ROOT="n"
   fi
 
-  # Username root is the root account itself: root access is on and root has
-  # one password (the -p / prompted password).
   if [ "$VM_USERNAME" = "root" ]; then
     if [ -n "$FLAG_ROOT_PASSWORD" ] && [ "$FLAG_ROOT_PASSWORD" != "$VM_PASSWORD" ]; then
       print_error "Username is root: use only -p for root's password (--root-password differs)"
@@ -994,8 +992,6 @@ prepare_vm_directory() {
   fi
 }
 
-# The per-OS names are used only inside the user-data heredoc, where the
-# linter does not look for uses.
 # shellcheck disable=SC2034
 generate_cloud_init_userdata() {
   [ "$FORCE_MODE" = true ] && print_info "Generating password hash" || print_info "Generating secure password hash..."
@@ -1021,6 +1017,7 @@ generate_cloud_init_userdata() {
     nginx_root=/usr/share/nginx/html apache_root=/srv/http web_owner=http:http apache_service=httpd
   fi
   base_packages="$base_packages htop curl wget net-tools rsync nano vim tree unzip"
+  case "$VM_OS" in debian*) base_packages="$base_packages unattended-upgrades" ;; esac
 
   # -k packages are installed one by one in runcmd, so one unavailable
   # package does not abort the install of the others (cloud-init installs
@@ -1107,11 +1104,9 @@ PACKAGES_EOF
   if [ "$MYSQL_REQUESTED" = true ]; then
     local sql_password=${VM_PASSWORD//\\/\\\\}
     sql_password=${sql_password//\'/\'\'}
-    # MariaDB root keeps its unix_socket login and also gets the password.
     local root_auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password')"
     [ "$mysql_service" = mysql ] && root_auth="IDENTIFIED WITH mysql_native_password BY '$sql_password'"
     mysql_sql="ALTER USER 'root'@'localhost' $root_auth;"
-    # Username root: the ALTER USER above already covers root@localhost.
     if [ "$VM_USERNAME" != "root" ]; then
       mysql_sql+="
 CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
@@ -1140,6 +1135,8 @@ chpasswd:
     root:$root_hash
   expire: False"; fi)
 package_update: true
+# Install the updates published since the base image was built.
+package_upgrade: true
 packages:
 $(
     # shellcheck disable=SC2086 # one package per word
@@ -1360,8 +1357,9 @@ create_cloud_init_iso() {
 
 create_vm_disk() {
   [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
-  local disk_error
-  disk_error=$(qemu-img create -f qcow2 -F qcow2 -b "$TEMPLATE_FILE" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
+  local disk_error base
+  base=$(current_build "$(basename "$TEMPLATE_FILE")") || base="$TEMPLATE_FILE"
+  disk_error=$(qemu-img create -f qcow2 -F qcow2 -b "$base" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
   if [ $? -ne 0 ]; then
     print_error "Failed to create VM disk"
     echo "  Error: $disk_error"
@@ -1397,6 +1395,7 @@ install_vm() {
 
   if [ $? -ne 0 ]; then
     print_error "Failed to create VM"
+    "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,storage || true
     echo ""
     echo "  virt-install error:"
     echo "$virt_error" | sed 's/^/    /'
@@ -1413,7 +1412,6 @@ install_vm() {
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || VM_AUTOSTART_OK=false
 }
 
-# Title and what is about to be built, one step per line.
 show_create_plan() {
   local detail
   ui_title "Creating $VM_NAME" "$(image_label "${TEMPLATE_FILE##*/}") ${SYM_DOT} ${VM_CPUS} vCPU ${SYM_DOT} ${VM_MEMORY} MB ${SYM_DOT} ${VM_DISK_SIZE} disk"

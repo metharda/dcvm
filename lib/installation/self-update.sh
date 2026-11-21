@@ -85,8 +85,6 @@ get_remote_version() {
   echo "${version:-error}"
 }
 
-# Downloads and installs every file in $1 (one repository path per line).
-# Writes "<installed> <ok>" to $2, as it runs behind ui_run.
 install_files() {
   local files="$1" result="$2" ok=true updated_count=0 file_path dest tmp_dest dest_root tmp_abs root_abs
   while IFS= read -r file_path; do
@@ -133,7 +131,6 @@ install_files() {
   echo "$updated_count $ok" >"$result"
 }
 
-# Deletes all but the newest $KEEP_UPDATE_BACKUPS update backups.
 prune_update_backups() {
   find "$BACKUP_DIR" -maxdepth 1 -type d -name 'dcvm-backup-*' 2>/dev/null | sort -r |
     tail -n +$((KEEP_UPDATE_BACKUPS + 1)) | while IFS= read -r old; do rm -rf "$old"; done
@@ -185,6 +182,7 @@ do_update() {
     prune_update_backups
     ui_done ok "dcvm updated to $remote_version" "dcvm self-update --revert goes back to $current_version"
     echo ""
+    "$INSTALL_LIB/utils/doctor.sh" --quiet --fast --only host,vms || true
   else
     ui_step fail "Files" "${updated_count:-0} installed, some failed"
     sed 's/^/  /' "$UI_RUN_LOG"

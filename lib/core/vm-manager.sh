@@ -3,7 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-# Access hints for every VM with a port mapping.
 show_enhanced_console() {
   local host
   host=$(get_host_ip)
@@ -22,7 +21,6 @@ show_enhanced_console() {
   echo ""
 }
 
-# dcvm VMs in the given states, one per line.
 vms_in_state() {
   virsh list --all --name 2>/dev/null | while read -r vm; do
     [ -n "$vm" ] && is_vm_in_network "$vm" || continue
@@ -30,22 +28,51 @@ vms_in_state() {
   done
 }
 
-# Runs "virsh <action>" on each VM with one step line each: run_on_vms
-# <title> <action> <done-label> <vms>
 run_on_vms() {
   local title="$1" action="$2" label="$3" vms="$4" vm ok=0 n
   n=$(grep -c . <<<"$vms" || true)
   ui_title "$title" "$(plural "$n" VM)"
   while read -r vm; do
     [ -n "$vm" ] || continue
+    if [ "$action" = start ] && ! prepare_vm_disk "$vm" "$vm"; then
+      ui_step fail "$vm" "not started (base image, see above)"
+      continue
+    fi
     if virsh "$action" "$vm" >/dev/null 2>&1; then
       ui_step ok "$vm" "$label"
       ok=$((ok + 1))
     else
       ui_step fail "$vm" "virsh $action failed"
+      [ "$action" = start ] && explain_failure "$vm"
     fi
   done <<<"$vms"
   return $((n - ok > 0))
+}
+
+# Restarts a running VM. When its disk has to change (see prepare_vm_disk),
+# it shuts down and starts again instead of rebooting in place, as the disk
+# only changes while the VM is off; if it does not shut down within 90 s, it
+# reboots in place and keeps its disk as it is.
+restart_vm() {
+  local vm="$1" i
+  if vm_disk_outdated "$vm"; then
+    virsh shutdown "$vm" >/dev/null 2>&1
+    for ((i = 0; i < 45; i++)); do
+      [ "$(get_vm_state "$vm")" = "shut off" ] && break
+      sleep 2
+    done
+    if [ "$(get_vm_state "$vm")" = "shut off" ]; then
+      prepare_vm_disk "$vm" "$vm" || return 1
+      virsh start "$vm" >/dev/null 2>&1
+      return
+    fi
+    ui_step warn "$vm" "did not shut down in 90s; rebooting without moving its base image"
+  fi
+  virsh reboot "$vm" >/dev/null 2>&1
+}
+
+explain_failure() {
+  "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,vms --vm "$1" || true
 }
 
 not_found() {
@@ -79,11 +106,14 @@ start_vms() {
     if virsh list | grep -q " $target .*running"; then
       echo -e "${DIM}${SYM_DOT}${NC} $target is already running"
     elif virsh list --all | grep -q " $target .*shut"; then
+      prepare_vm_disk "$target" || return 1
       if virsh start "$target" >/dev/null; then
         print_success "$target started"
         echo -e "  ${DIM}It boots in under a minute; then dcvm network ports setup makes it reachable from other machines.${NC}"
       else
         print_error "Failed to start VM '$target'"
+        explain_failure "$target"
+        return 1
       fi
     else
       print_warning "VM '$target' is in unknown state"
@@ -141,11 +171,11 @@ restart_vms() {
     local vm
     while read -r vm; do
       [ -n "$vm" ] || continue
-      if virsh reboot "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "restarting"; else ui_step fail "$vm" "virsh reboot failed" && rc=1; fi
+      if restart_vm "$vm"; then ui_step ok "$vm" "restarting"; else ui_step fail "$vm" "restart failed" && rc=1; fi
     done <<<"$running"
     while read -r vm; do
       [ -n "$vm" ] || continue
-      if virsh start "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "was off, started"; else ui_step fail "$vm" "virsh start failed" && rc=1; fi
+      if prepare_vm_disk "$vm" "$vm" && virsh start "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "was off, started"; else ui_step fail "$vm" "not started" && rc=1; fi
     done <<<"$stopped"
     echo -e "  ${DIM}They boot in under a minute; then dcvm network ports setup makes them reachable from other machines.${NC}"
     echo ""
@@ -157,12 +187,14 @@ restart_vms() {
     fi
 
     if virsh list | grep -q " $target .*running"; then
-      if virsh reboot "$target" >/dev/null; then
+      if restart_vm "$target"; then
         print_success "$target is restarting"
       else
         print_error "Failed to restart VM '$target'"
+        explain_failure "$target"
       fi
     elif virsh list --all | grep -q " $target .*shut"; then
+      prepare_vm_disk "$target" || return 1
       if virsh start "$target" >/dev/null; then
         print_success "$target was stopped; started it"
       else
@@ -174,7 +206,6 @@ restart_vms() {
   fi
 }
 
-# dcvm VMs as a table, then a count line.
 show_vm_table() {
   local vm state ip vcpu mem total=0 running=0 others=0
   local rows
@@ -219,6 +250,7 @@ show_enhanced_status() {
   else
     ui_step skip "Port forwards" "none (dcvm network ports setup)"
   fi
+  [ "$(id -u)" -eq 0 ] && "$SCRIPT_DIR/../utils/doctor.sh" --summary
   echo ""
 }
 

@@ -38,8 +38,6 @@ STARTED_VMS=()
 
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/dcvm-install.log"
 
-# Every message goes to the log. On screen: warnings and errors, and the
-# step lines below; INFO/SUCCESS details only with DCVM_VERBOSE=1.
 print_status() {
   local status=$1
   local message=$2
@@ -55,15 +53,11 @@ print_status() {
 }
 print_status_log() { print_status "$@"; }
 
-# ui_step, also written to the log.
 step() {
   ui_step "$@"
   echo "[STEP] $2: ${3:-}" >>"$LOG_FILE" 2>/dev/null || true
 }
 
-# ui_run with the command's output added to the log. Sets STEP_SECS, and
-# STEP_ERRORS to the lines worth showing when it fails (the tool's error
-# lines, else its last lines); print them with step_errors.
 run_step() {
   local rc=0
   ui_run "$@" || rc=$?
@@ -82,8 +76,6 @@ step_errors() {
   echo -e "      ${DIM}full log: $LOG_FILE${NC}"
 }
 
-# One install step behind the live block, then its line: install_step
-# <label> <detail> <command...>. A failed step stops the installer.
 install_step() {
   local label="$1" detail="$2"
   shift 2
@@ -96,12 +88,8 @@ install_step() {
   fi
 }
 
-# Live detail for the Packages step: a bar over apt-get's three phases
-# (downloading, unpacking, setting up N packages) and its latest line;
-# pacman shows the latest line only.
 package_progress() {
   local counts n got unpacked setup phase pct last
-  # Counted after "N newly installed", so the index downloads don't count.
   counts=$(awk '/[0-9]+ newly installed/ { match($0, /[0-9]+ newly installed/); n = substr($0, RSTART, RLENGTH) + 0; g = u = s = 0; next }
     n && /^Get:/ { g++ } n && /^Unpacking / { u++ } n && /^Setting up / { s++ }
     END { print n + 0, g, u, s }' "$UI_RUN_LOG")
@@ -472,7 +460,6 @@ start_nfs_server() {
     local old_line="$NFS_EXPORT_PATH *(rw,sync,no_subtree_check,no_root_squash)"
     local export_line="$NFS_EXPORT_PATH ${subnet}.0/24(rw,sync,no_subtree_check,no_root_squash)"
     if grep -qxF "$old_line" /etc/exports 2>/dev/null; then
-      # Installers before 0.9.8 exported the share to every host.
       local tmp_exports
       tmp_exports=$(mktemp) &&
         awk -v old="$old_line" -v new="$export_line" '$0 == old { $0 = new } { print }' /etc/exports >"$tmp_exports" &&
@@ -715,27 +702,6 @@ show_network_info() {
   echo "    NAT rules active: $nat_count"
 }
 
-enable_ip_forwarding() {
-  print_status_log "INFO" "Checking IP forwarding..."
-  local current_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "0")
-
-  if [[ "$current_forward" != "1" ]]; then
-    print_status_log "INFO" "Enabling IP forwarding..."
-    echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || {
-      print_status_log "WARNING" "Could not enable IP forwarding"
-      return 0
-    }
-
-    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
-      echo "net.ipv4.ip_forward=1" >>/etc/sysctl.conf 2>/dev/null || print_status_log "WARNING" "Could not persist IP forwarding setting"
-    fi
-
-    print_status_log "SUCCESS" "IP forwarding enabled"
-  else
-    print_status_log "INFO" "IP forwarding already enabled"
-  fi
-}
-
 start_existing_vms() {
   print_status_log "INFO" "Checking for existing dcvm VMs to start..."
 
@@ -748,7 +714,6 @@ start_existing_vms() {
   fi
 
   while IFS= read -r vm_name; do
-    # Only VMs on the dcvm network; other VMs on the host are left as they are.
     if [[ -n "$vm_name" ]] && virsh domiflist "$vm_name" 2>/dev/null | awk -v n="$NETWORK_NAME" '$3 == n { f = 1 } END { exit !f }'; then
       if ! virsh list 2>/dev/null | grep -q "$vm_name.*running"; then
         print_status_log "INFO" "Starting VM: $vm_name"
@@ -784,8 +749,6 @@ show_datacenter_summary() {
   print_status_log "SUCCESS" "dcvm is ready to use!"
 }
 
-# Old installs (before 0.9) aliased dcvm to $DATACENTER_BASE/scripts, and
-# such an alias shadows /usr/local/bin/dcvm; remove it.
 setup_aliases() {
   local cleaned
   cleaned=$(remove_shell_lines "$DCVM_ALIAS_LINE" | tr '\n' ' ')
@@ -849,52 +812,7 @@ install_completion() {
 }
 
 setup_service() {
-  print_status_log "INFO" "Setting up dcvm storage service..."
-
-  if ! command -v systemctl >/dev/null 2>&1; then
-    print_status_log "WARNING" "systemd not available - skipping service setup"
-    return 0
-  fi
-
-  cat >/etc/systemd/system/datacenter-storage.service 2>/dev/null <<EOF || {
-[Unit]
-Description=dcvm Storage Management
-After=libvirtd.service
-Requires=libvirtd.service
-
-[Service]
-Type=oneshot
-User=root
-ExecStart=/usr/local/bin/dcvm storage-cleanup
-EOF
-    print_status_log "WARNING" "Could not create systemd service"
-    return 0
-  }
-
-  cat >/etc/systemd/system/datacenter-storage.timer 2>/dev/null <<'EOF' || {
-[Unit]
-Description=Run dcvm storage management hourly
-Requires=datacenter-storage.service
-
-[Timer]
-OnCalendar=hourly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-    print_status_log "WARNING" "Could not create systemd timer"
-    return 0
-  }
-
-  systemctl daemon-reload 2>/dev/null || {
-    print_status_log "WARNING" "Could not reload systemd"
-    return 0
-  }
-  systemctl enable datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not enable timer"
-  systemctl start datacenter-storage.timer 2>/dev/null || print_status_log "WARNING" "Could not start timer"
-
-  print_status_log "SUCCESS" "dcvm storage service configured"
+  install_dcvm_services
 }
 
 install_dcvm_command() {
@@ -972,7 +890,7 @@ main() {
   else
     step skip "Cloud images" "$have of $total downloaded; the rest download on first use"
   fi
-  install_step "IP forwarding" "on, persisted in /etc/sysctl.conf" enable_ip_forwarding
+  install_step "IP forwarding" "on, persisted in /etc/sysctl.d/90-dcvm.conf" enable_ip_forwarding
   install_step "Network" "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, DHCP .10-.200" create_datacenter_network
   install_completion
   [ -n "${COMPLETION_RESULT:-}" ] && step "${COMPLETION_RESULT%%|*}" "Tab completion" "${COMPLETION_RESULT#*|}"
@@ -982,7 +900,7 @@ main() {
   [ ${#STARTED_VMS[@]} -gt 0 ] && step ok "dcvm VMs" "started ${STARTED_VMS[*]}"
   setup_aliases
   [ -n "${ALIAS_RESULT:-}" ] && step "${ALIAS_RESULT%%|*}" "Shell alias" "${ALIAS_RESULT#*|}"
-  install_step "Storage check" "hourly systemd timer" setup_service
+  install_step "Services" "hourly storage check, network and port forwards back after reboot" setup_service
   show_datacenter_summary
 }
 

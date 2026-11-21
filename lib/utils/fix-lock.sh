@@ -11,7 +11,6 @@ print_verbose() {
   [ "$VERBOSE" = true ] && echo -e "  ${DIM}${SYM_INFO} $1${NC}"
 }
 
-# Step line for the phase that just ended: warn if it added errors.
 phase_done() {
   if [ "$step_errors" -gt "$PHASE_ERRORS" ]; then
     ui_step warn "$1" "$2 ($((step_errors - PHASE_ERRORS)) problem(s) above)"
