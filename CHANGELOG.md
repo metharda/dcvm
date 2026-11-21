@@ -154,6 +154,12 @@ limit it to the dcvm subnet and make it writable for VM users.
   providers. It installs `qemu-system-x86` and `qemu-utils` directly, which
   works on every supported Debian and Ubuntu release, and uses `apt-get`
   instead of `apt` (no "unstable CLI" warning).
+- Run through `curl … | bash` on a terminal narrower than 80 columns, the
+  installer left a copy of a step's spinner line behind on every redraw
+  (`Packages 14s`, `Packages 19s`, …): `tput` reported 80 columns there, so
+  long output lines wrapped and the live block miscounted its height. The
+  width now comes from the terminal itself, the block counts wrapped rows,
+  and backslashes in tool output are printed as they are.
 
 ## [0.9.7] - 2026-11-16
 
