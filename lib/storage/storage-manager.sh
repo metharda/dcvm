@@ -6,9 +6,10 @@ source "$SCRIPT_DIR/../utils/common.sh"
 THRESHOLD=85
 LOG_FILE="/var/log/datacenter-storage.log"
 
+# Logs "<vm>: <message>" and prints it as a step: report ok|warn|fail <vm> <message>
 report() {
-  log_to_file "$LOG_FILE" "$1"
-  echo "$1"
+  log_to_file "$LOG_FILE" "$2: $3"
+  ui_step "$1" "$2" "$3"
 }
 
 # SSH straight to the VM on the dcvm network with the host's key. BatchMode:
@@ -23,18 +24,19 @@ ssh_vm() {
 check_vm_storage() {
   local vm_name="$1" ip usage
   if ! ip=$(get_vm_ip "$vm_name"); then
-    report "$vm_name: no IP address, skipped"
+    report skip "$vm_name" "no IP address yet, skipped"
     return 1
   fi
   usage=$(ssh_vm "$vm_name" "$ip" "df / | awk 'NR==2 {print \$5}' | tr -d %" 2>/dev/null)
   if [[ ! "$usage" =~ ^[0-9]+$ ]]; then
-    report "$vm_name: could not check disk usage over SSH ($ip)"
+    report fail "$vm_name" "could not check disk usage over SSH ($ip)"
     return 1
   fi
-  report "$vm_name: root file system ${usage}% used"
   if [ "$usage" -gt "$THRESHOLD" ]; then
-    report "$vm_name: over ${THRESHOLD}%, archiving old files"
+    report warn "$vm_name" "root file system ${usage}% used, over ${THRESHOLD}%: archiving old files"
     cleanup_old_files "$vm_name" "$ip"
+  else
+    report ok "$vm_name" "root file system ${usage}% used"
   fi
 }
 
@@ -64,19 +66,21 @@ cleanup_old_files() {
             done
         ' sh {} +
 EOSSH
-  report "$vm_name: cleanup finished"
+  report ok "$vm_name" "old logs compressed and archived"
 }
 
 main() {
   load_dcvm_config
   log_to_file "$LOG_FILE" "Starting storage management check"
+  ui_title "Disk usage" "root file system of each running VM, over SSH"
   local vm_name checked=0
   while read -r vm_name; do
     [ -n "$vm_name" ] && is_vm_in_network "$vm_name" || continue
     check_vm_storage "$vm_name"
     checked=$((checked + 1))
   done < <(virsh list --name 2>/dev/null)
-  [ "$checked" -gt 0 ] || report "No running dcvm VMs to check"
+  [ "$checked" -gt 0 ] || echo -e "  ${DIM}No running dcvm VMs to check${NC}"
+  echo -e "\n  ${DIM}Over ${THRESHOLD}%, old logs are compressed and moved to the NFS share. Log: $LOG_FILE${NC}\n"
   log_to_file "$LOG_FILE" "Storage management check completed"
 }
 

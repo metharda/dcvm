@@ -4,19 +4,6 @@
 
 set -euo pipefail
 
-# Colour only on a terminal (and not with NO_COLOR or TERM=dumb), like
-# lib/utils/common.sh.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
-  RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' BLUE='\033[34m' NC='\033[0m'
-else
-  RED='' GREEN='' YELLOW='' BLUE='' NC=''
-fi
-
-print_info() { echo -e "${BLUE}>${NC} $1"; }
-print_success() { echo -e "${GREEN}+${NC} $1"; }
-print_warning() { echo -e "${YELLOW}!${NC} $1"; }
-print_error() { echo -e "${RED}error:${NC} $1"; }
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="/etc/dcvm-install.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -25,11 +12,12 @@ if [ -f "$CONFIG_FILE" ]; then
 else
   LIB_DIR="$SCRIPT_DIR/lib"
 fi
-if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
-  print_error "dcvm is not installed. Please run the installer first."
-  echo "Visit: https://github.com/metharda/dcvm"
+if [ ! -f "$LIB_DIR/utils/common.sh" ]; then
+  echo "error: dcvm is not installed. Please run the installer first." >&2
+  echo "Visit: https://github.com/metharda/dcvm" >&2
   exit 1
 fi
+source "$LIB_DIR/utils/common.sh"
 
 show_version() {
   echo "dcvm - a VM manager"
@@ -38,53 +26,43 @@ show_version() {
 }
 
 show_usage() {
-  cat <<EOF
-dcvm - a VM manager
+  ui_help <<EOF
+dcvm - KVM virtual machines from cloud images, on one host
 
-Usage: dcvm <command> [options]
+Usage: dcvm <command> [args]       dcvm <command> --help for its options
 
-COMMANDS:
-  VM Management:
-    create <vm_name> [opts]        Create a new virtual machine
-    delete <vm_name>               Delete a virtual machine
-    list                           List all virtual machines
-    status [vm_name]               Show VM status
-    start <vm_name>                Start a virtual machine
-    stop <vm_name>                 Stop a virtual machine
-    restart <vm_name>              Restart a virtual machine
-    console <vm_name>              Connect to VM console
+VMs:
+  create <name> [options]       Create a VM from a cloud image (or an ISO with -o)
+  list                          VMs with state, IP, vCPU and memory
+  status                        The same, plus the network and port forwards
+  start | stop | restart [vm]   One VM, or every dcvm VM
+  console [vm]                  Serial console of a VM; without a name, access hints
+  delete <vm> | --all           Delete a VM with its disk, leases and forwards
 
-  Network Management:
-    network                        Show network information
-    network ports <cmd>            Port forwarding mgmt (setup, show, rules, apply, clear, test)
-    network dhcp <cmd>             DHCP mgmt (show, clear, cleanup, renew, files)
-    network vnc <action> <vm>      VNC management (enable, disable, status)
+Network:
+  network                       Network, DHCP leases, static IPs and port forwards
+  network ports <command>       Forward host ports to VMs: setup, show, test, apply, clear
+  network dhcp <command>        DHCP leases: show, clear, cleanup, renew
+  network vnc <action> <vm>     VNC on a VM: enable, disable, status
 
-  Storage & Backup:
-    backup <subcommand>            Backup management (create, restore, list, delete, export, import)
-    storage                        Show storage information
-    storage-cleanup                Clean up storage
-    template <cmd>                 Template management (list, download, check)
+Backups and images:
+  backup <command>              create, list, restore, delete, export, import
+  template <command>            Cloud images: status, list, download, verify
+  storage                       Disk usage inside running VMs
 
-  System:
-    self-update                    Update dcvm to the latest version
-    uninstall                      Uninstall dcvm completely
-    version                        Show version information
-    help                           Show this help message
-    fix-lock                       Fix locked resources
+System:
+  self-update [--check]         Update dcvm from GitHub (--revert goes back)
+  fix-lock <vm> | --all         Clear stale disk locks when a VM will not start
+  uninstall                     Remove dcvm, its VMs and data
+  version                       Show the version
 
-OPTIONS:
-    -h, --help                     Show help for specific command
-    -v, --version                  Show version information
+Examples:
+  dcvm create web -f -p "\$VM_PASSWORD"
+  dcvm list
+  dcvm network ports setup
+  dcvm backup create web
 
-EXAMPLES:
-    dcvm create myvm -p password123 -m 2048 -c 2
-    dcvm list
-    dcvm network
-    dcvm backup create myvm
-    dcvm backup list
-
-For more information, visit: https://github.com/metharda/dcvm
+Docs: https://github.com/metharda/dcvm
 EOF
 }
 

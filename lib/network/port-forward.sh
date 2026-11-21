@@ -6,20 +6,6 @@ source "$SCRIPT_DIR/../utils/common.sh"
 SSH_PORT_START=${SSH_PORT_START:-2221}
 HTTP_PORT_START=${HTTP_PORT_START:-8081}
 
-if ! command -v detect_host_ip &>/dev/null; then
-  detect_host_ip() {
-    local host_ip=""
-    local subnet="${NETWORK_SUBNET:-10.10.10}"
-    for interface in eth0 ens3 ens18 enp0s3 wlan0; do
-      host_ip=$(ip addr show "$interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -1)
-      [ -n "$host_ip" ] && [[ ! "$host_ip" =~ ^127\. ]] && [[ ! "$host_ip" =~ ^${subnet}\. ]] && break
-    done
-    [ -z "$host_ip" ] && host_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}')
-    [ -z "$host_ip" ] && host_ip="YOUR_HOST_IP"
-    echo "$host_ip"
-  }
-fi
-
 cleanup_port_forwarding() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
@@ -171,10 +157,8 @@ cmd_setup() {
   done 3<<<"$VM_LIST"
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_mappings_tmp_to_file
-  if command_exists iptables-save; then
-    create_dir_safe /etc/iptables
-    iptables-save >/etc/iptables/rules.v4 2>/dev/null
-  fi
+  command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
+  save_iptables_rules
   if [ "$count" -gt 0 ]; then
     {
       printf 'VM\tIP\tSSH\tHTTP\n'
@@ -187,61 +171,81 @@ cmd_setup() {
   for item in "${skipped[@]}"; do
     ui_step skip "${item%%|*}" "${item#*|}"
   done
-  echo ""
   if [ "$count" -gt 0 ]; then
-    echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}$count VM$([ "$count" -gt 1 ] && echo s) forwarded${NC}  ${DIM}saved to $DATACENTER_BASE/port-mappings.txt${NC}"
+    ui_done ok "$(plural "$count" VM) forwarded" "saved to $DATACENTER_BASE/port-mappings.txt"
     echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$((ssh_port - 1)) and $HTTP_PORT_START-$((http_port - 1)) in the host firewall.${NC}"
   else
-    print_warning "No VMs were forwarded"
+    ui_done warn "No VMs were forwarded"
   fi
   echo ""
 }
 
 cmd_show() {
   local map_file=$(get_port_mappings_file)
-  if [ -f "$map_file" ]; then
+  if [ -n "$(read_port_mappings 2>/dev/null)" ]; then
+    ui_title "Port forwards" "saved in $map_file"
     {
       printf 'VM\tIP\tSSH PORT\tHTTP PORT\n'
       read_port_mappings | while read -r vm ip ssh_port http_port; do
         [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
       done
     } | ui_table
-    echo -e "  ${DIM}from $map_file${NC}"
+    echo ""
   else
     print_warning "No saved port mappings. Run: dcvm network ports setup"
   fi
 }
 
 cmd_rules() {
-  echo "Active port forwarding rules (iptables):"
-  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
-  [ -n "$nat_rules" ] && echo "$nat_rules" || echo "No dcvm port forwarding rules found"
+  local rules
+  rules=$(iptables -t nat -S PREROUTING 2>/dev/null | awk '/-j DNAT/ { for (i = 1; i <= NF; i++) { if ($i == "--dport") p = $(i + 1); if ($i == "--to-destination") d = $(i + 1) } print p "\t" d }')
+  ui_title "Port forward rules" "iptables nat PREROUTING"
+  if [ -n "$rules" ]; then
+    printf 'HOST PORT\tDESTINATION\n%s\n' "$rules" | ui_table
+  else
+    echo -e "  ${DIM}none (dcvm network ports setup or apply)${NC}"
+  fi
+  echo ""
 }
 
 cmd_clear() {
+  ui_quiet
   cleanup_port_forwarding
+  save_iptables_rules
+  ui_done ok "Port forward rules removed" "the saved mappings stay; dcvm network ports apply restores them"
+  echo ""
 }
 
 cmd_apply() {
+  ui_quiet
   local map_file=$(get_port_mappings_file)
   if [ ! -f "$map_file" ]; then
-    print_error "Mappings file not found: $map_file"
+    print_error "No saved mappings ($map_file). Run: dcvm network ports setup"
     exit 1
   fi
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
   cleanup_port_forwarding
-  local HOST_IP=$(detect_host_ip)
-  while read vm ip ssh_port http_port; do
+  local HOST_IP=$(detect_host_ip) count=0
+  ui_title "Port forwarding" "from $map_file"
+  while read -r vm ip ssh_port http_port; do
     [[ "$vm" =~ ^#|^$ ]] && continue
-    setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$HOST_IP"
+    if setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$HOST_IP"; then
+      ui_step ok "$vm" "$ssh_port $SYM_ARROW $ip:22, $http_port $SYM_ARROW $ip:80"
+      count=$((count + 1))
+    else
+      ui_step fail "$vm" "could not add the rules"
+    fi
   done <"$map_file"
+  rm -f /tmp/dcvm_port_mappings.tmp
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-  print_success "Applied port mappings from $map_file"
+  save_iptables_rules
+  ui_done ok "$(plural "$count" VM) forwarded" "dcvm network ports test checks them"
+  echo ""
 }
 
 cmd_test() {
-  local map_file=$(get_port_mappings_file)
-  if [ -f "$map_file" ]; then
+  if [ -n "$(read_port_mappings 2>/dev/null)" ]; then
+    ui_title "Port forward check"
     {
       printf 'VM\tPING\tSSH\tHTTP\n'
       read_port_mappings | while read -r vm ip ssh_port http_port; do
@@ -254,31 +258,29 @@ cmd_test() {
       done
     } | ui_table
     echo -e "  ${DIM}$SYM_OK forward rules in place and the VM port answers, $SYM_FAIL not reachable${NC}"
+    echo ""
   else
     print_warning "No port mappings to test. Run: dcvm network ports setup"
   fi
 }
 
 cmd_help() {
-  cat <<EOF
-dcvm Port Forwarding
+  ui_help <<EOF
+dcvm network ports - forward host ports to VMs
 
 Usage: dcvm network ports <command>
 
 Commands:
-  setup        Discover VMs and create iptables port forwarding + save mapping
-  show         Show saved port mappings table
-  rules        Show active iptables NAT rules for forwarding
-  apply        Apply saved mappings file to iptables rules
-  clear        Remove existing iptables rules for forwarding
-  test         Check each forward: the DNAT and FORWARD rules, and that the VM port is open
-  help         Show this help
+  setup   Find running VMs, forward SSH ($SSH_PORT_START+) and HTTP ($HTTP_PORT_START+), save the mapping
+  show    Saved mappings
+  test    Check each forward: rules in place and the VM port answers
+  rules   Active DNAT rules
+  apply   Recreate the rules from the saved mappings (after a reboot)
+  clear   Remove the rules; the saved mappings stay
+  help    Show this help
 
 Examples:
   dcvm network ports setup
-  dcvm network ports show
-  dcvm network ports apply
-  dcvm network ports clear
   dcvm network ports test
 EOF
 }

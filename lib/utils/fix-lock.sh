@@ -8,7 +8,17 @@ VERBOSE=false
 EXIT_CODE=0
 
 print_verbose() {
-  [ "$VERBOSE" = true ] && echo -e "${BLUE}[DEBUG]${NC} $1"
+  [ "$VERBOSE" = true ] && echo -e "  ${DIM}${SYM_INFO} $1${NC}"
+}
+
+# Step line for the phase that just ended: warn if it added errors.
+phase_done() {
+  if [ "$step_errors" -gt "$PHASE_ERRORS" ]; then
+    ui_step warn "$1" "$2 ($((step_errors - PHASE_ERRORS)) problem(s) above)"
+  else
+    ui_step ok "$1" "$2"
+  fi
+  PHASE_ERRORS=$step_errors
 }
 
 check_permissions
@@ -18,9 +28,9 @@ fix_vm_locks() {
   local vm_name="$1"
   local step_errors=0
 
-  echo "=== QEMU Lock Fix for $vm_name ==="
-
-  print_info "[1/9] Validating VM configuration"
+  PHASE_ERRORS=0
+  [ "$VERBOSE" = true ] || ui_quiet
+  ui_title "Fixing locks on $vm_name" "stops the VM, clears stale locks, restarts libvirtd"
 
   if ! check_vm_exists "$vm_name"; then
     print_error "VM '$vm_name' not found in libvirt"
@@ -53,10 +63,8 @@ fix_vm_locks() {
 
   if [ ${#conflicts[@]} -gt 0 ]; then
     print_error "The disk image is referenced by other VM(s): ${conflicts[*]}"
-    print_info "This will cause write-lock failures. Options:"
-    print_info "  - Detach or change disk paths for the listed VMs"
-    print_info "  - Clone the image and update one VM to use the clone"
-    print_info "  - Or stop/undefine conflicting VMs before retry"
+    echo "  Two VMs on one disk cause write-lock failures. Give one of them its own"
+    echo "  disk (clone the image), or stop and undefine the other VM, then retry."
     return 1
   fi
 
@@ -65,7 +73,7 @@ fix_vm_locks() {
   print_info "VM disk path: $VM_DISK_PATH"
   print_verbose "VM disk size: $(du -h "$VM_DISK_PATH" 2>/dev/null | cut -f1 || echo "unknown")"
 
-  print_info "[2/9] Force stopping VM and related processes"
+  ui_step ok "Disk" "$VM_DISK_PATH, not used by another VM"
 
   local vm_state=$(get_vm_state "$vm_name")
   print_verbose "Current VM state: $vm_state"
@@ -113,7 +121,7 @@ fix_vm_locks() {
     fuser -k "$VM_DISK_PATH" 2>/dev/null && print_verbose "fuser killed additional processes" && sleep 1
   fi
 
-  print_info "[3/9] Clearing libvirt lock files"
+  phase_done "Stopped" "VM and its QEMU processes"
 
   local lock_dirs=("/var/lib/libvirt/qemu" "/run/libvirt/qemu" "/var/run/libvirt/qemu" "/tmp" "/var/tmp")
   local locks_found=false
@@ -139,7 +147,7 @@ fix_vm_locks() {
 
   [ "$locks_found" = false ] && print_verbose "No libvirt lock files found"
 
-  print_info "[4/9] Clearing QEMU image locks and shared memory"
+  phase_done "libvirt locks" "$([ "$locks_found" = true ] && echo "lock and pid files removed" || echo "none found")"
 
   local disk_dir=$(dirname "$VM_DISK_PATH")
   print_verbose "Checking disk directory: $disk_dir"
@@ -217,7 +225,7 @@ except Exception as e:
     print_warning "Python3 not available for lock clearing"
   fi
 
-  print_info "[5/9] Fixing file permissions and ownership"
+  phase_done "Image locks" "released, shared memory cleared"
 
   if [ -f "$VM_DISK_PATH" ]; then
     local current_owner=$(stat -c '%U:%G' "$VM_DISK_PATH" 2>/dev/null || stat -f '%Su:%Sg' "$VM_DISK_PATH" 2>/dev/null || echo "unknown")
@@ -272,7 +280,7 @@ except Exception as e:
     return 1
   fi
 
-  print_info "[6/9] Cleaning and validating VM configuration"
+  phase_done "Permissions" "${target_owner:-unchanged}, mode 660"
 
   local temp_xml=$(mktemp)
   if virsh dumpxml "$vm_name" >"$temp_xml" 2>/dev/null; then
@@ -305,7 +313,7 @@ except Exception as e:
   fi
   rm -f "$temp_xml"
 
-  print_info "[7/9] Restarting libvirtd service"
+  phase_done "Definition" "CD-ROM and IDE removed, disk on virtio, redefined"
 
   local restart_success=false
   if systemctl restart libvirtd 2>/dev/null; then
@@ -333,7 +341,7 @@ except Exception as e:
     [ $wait_count -ge $max_wait ] && print_error "libvirtd not responding after ${max_wait}s" && step_errors=$((step_errors + 1))
   fi
 
-  print_info "[8/9] Additional system cleanup"
+  phase_done "libvirtd" "restarted and responding"
 
   [ -d /var/lock ] && find /var/lock -name "*${vm_name}*" -delete 2>/dev/null || true
 
@@ -341,8 +349,6 @@ except Exception as e:
 
   local vm_interfaces=$(virsh domiflist "$vm_name" 2>/dev/null | awk 'NR>2 {print $1}' || true)
   [ -n "$vm_interfaces" ] && print_verbose "VM has network interfaces: $vm_interfaces"
-
-  print_info "[9/9] Final verification and testing"
 
   check_vm_exists "$vm_name" && print_verbose "VM is properly defined in libvirt" || {
     print_error "VM not found in libvirt after cleanup"
@@ -372,19 +378,14 @@ except Exception as e:
     print_verbose "No processes using VM disk file"
   fi
 
-  echo ""
-  [ $step_errors -eq 0 ] && print_success "=== Lock Fix Complete for $vm_name (No Errors) ===" || {
-    print_warning "=== Lock Fix Complete for $vm_name ($step_errors warnings/errors) ==="
-    print_info "Some operations had issues but basic functionality should work"
-  }
-
-  echo ""
-  print_info "Next steps:"
-  echo "  1. Try starting VM: virsh start $vm_name"
-  echo "  2. Or use dcvm:     dcvm start $vm_name"
-  echo "  3. Check status:    virsh list --all"
-  echo "  4. View logs:       tail -f /var/log/libvirt/qemu/$vm_name.log"
-  echo ""
+  phase_done "Checked" "defined, disk readable, no process holds it"
+  if [ $step_errors -eq 0 ]; then
+    ui_done ok "Locks cleared on $vm_name"
+  else
+    ui_done warn "Locks cleared on $vm_name with $step_errors problem(s)" "the VM may still start"
+  fi
+  ui_next "dcvm start $vm_name" "start it" \
+    "tail /var/log/libvirt/qemu/$vm_name.log" "QEMU's log if it fails again"
 
   [ $step_errors -gt 0 ] && return 1 || return 0
 }
@@ -392,12 +393,11 @@ except Exception as e:
 main() {
   VM_NAME="$1"
 
-  [ -z "$VM_NAME" ] && print_error "VM name required. Usage: $0 <vm_name|--all> [--verbose]" && exit 1
+  [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1
 
   [ "$2" = "--verbose" ] || [ "$VM_NAME" = "--verbose" ] && VERBOSE=true
 
   if [ "$VM_NAME" = "--all" ]; then
-    print_info "Fixing locks for all VMs"
 
     VM_LIST=$(virsh list --all --name 2>/dev/null | grep -v "^$" || true)
 
@@ -408,32 +408,19 @@ main() {
 
     for vm in $VM_LIST; do
       total_vms=$((total_vms + 1))
-      echo "Processing VM $total_vms: $vm"
-      echo "----------------------------------------"
-
-      fix_vm_locks "$vm" || {
-        failed_vms=$((failed_vms + 1))
-        print_error "Failed to fix locks for $vm"
-      }
-      echo ""
+      fix_vm_locks "$vm" || failed_vms=$((failed_vms + 1))
     done
 
-    echo "=========================================="
-    echo "Summary:"
-    echo "  Total VMs processed: $total_vms"
-    echo "  Successful: $((total_vms - failed_vms))"
-    echo "  Failed: $failed_vms"
-    echo "=========================================="
-
-    [ $failed_vms -gt 0 ] && print_warning "Some VMs had issues during lock fix" && exit 1 || {
-      print_success "Lock fix completed successfully for all VMs"
-      exit 0
-    }
-  else
-    fix_vm_locks "$VM_NAME" && exit 0 || {
-      print_error "Lock fix failed for $VM_NAME"
+    if [ $failed_vms -gt 0 ]; then
+      ui_done warn "$((total_vms - failed_vms)) of $total_vms VMs fixed" "$failed_vms had problems; see above"
+      echo ""
       exit 1
-    }
+    fi
+    ui_done ok "Locks cleared on all $total_vms VMs"
+    echo ""
+    exit 0
+  else
+    fix_vm_locks "$VM_NAME" && exit 0 || exit 1
   fi
 }
 

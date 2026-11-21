@@ -28,7 +28,7 @@ cleanup_port_forwarding_for_vm() {
     done
   fi
 
-  command_exists iptables-save && iptables-save >/etc/iptables/rules.v4 2>/dev/null
+  save_iptables_rules
 }
 
 # Destroy and undefine the libvirt storage pool whose target is this VM's
@@ -137,10 +137,10 @@ delete_single_vm() {
   [ -n "$dhcp_check" ] && left+=("DHCP leases still exist")
   [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && left+=("Disk file still exists")
 
-  echo ""
   if [ ${#left[@]} -eq 0 ]; then
-    echo -e "${GREEN}${SYM_OK}${NC} ${BOLD}$VM_NAME deleted${NC}  ${DIM}No DHCP leases found, no VM or disk left${NC}"
+    ui_done ok "$VM_NAME deleted" "No DHCP leases found, no VM or disk left"
   else
+    echo ""
     local item
     for item in "${left[@]}"; do print_warning "$item"; done
     if [ -n "$dhcp_check" ]; then
@@ -153,99 +153,58 @@ delete_single_vm() {
   return 0
 }
 delete_all_vms() {
-  print_warning "======================================="
-  print_warning "        DANGER: DELETE ALL VMs"
-  print_warning "======================================="
-  echo ""
-
-  local datacenter_vms=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
-    local vm=$(echo "$line" | awk '{print $2}')
-    [ -n "$vm" ] && [ "$vm" != "Name" ] && is_vm_in_network "$vm" && echo "$vm"
-  done)
-
-  if [ -z "$datacenter_vms" ]; then
-    print_info "No dcvm VMs found to delete"
+  local vms vm count failed=0
+  vms=$(list_datacenter_vm_names)
+  if [ -z "$vms" ]; then
+    echo ""
+    echo "  No dcvm VMs to delete."
     return 0
   fi
+  count=$(grep -c . <<<"$vms")
 
-  echo "The following VMs will be PERMANENTLY DELETED:"
-  echo "$datacenter_vms" | while read vm; do
-    [ -n "$vm" ] && printf "  %-20s [%s]\n" "$vm" "$(get_vm_state "$vm")"
-  done
+  ui_title "Delete all dcvm VMs" "$(plural "$count" VM) on $NETWORK_NAME"
+  {
+    printf 'NAME\tSTATE\n'
+    while read -r vm; do printf '%s\t%s\n' "$vm" "$(get_vm_state "$vm")"; done <<<"$vms"
+  } | ui_table
   echo ""
-
-  print_warning "This action will:"
-  echo "  - Stop and delete ALL dcvm VMs"
-  echo "  - Remove ALL VM disk files"
-  echo "  - Clear ALL DHCP leases"
-  echo "  - Remove ALL port forwarding rules"
-  echo "  - Delete ALL VM directories"
-  echo "  - Remove ALL SSH configurations"
+  print_warning "Deletes these VMs with their disks, DHCP leases, port forwards and static IPs. Backups are kept."
   echo ""
+  local confirm code
+  read -r -p "  Type 'yes' to continue: " confirm
+  [ "$confirm" != "yes" ] && echo "  Cancelled." && return 0
+  code=$(shuf -i 1000-9999 -n 1)
+  read -r -p "  Type $code to confirm: " confirm
+  [ "$confirm" != "$code" ] && echo "  Cancelled." && return 0
 
-  local vm_count=$(echo "$datacenter_vms" | wc -l)
-
-  echo -n "Are you absolutely sure you want to delete ALL VMs? (type 'yes' to continue): "
-  read -r confirm1
-  [ "$confirm1" != "yes" ] && print_info "Operation cancelled" && return 0
-
-  local random_num=$(shuf -i 1000-9999 -n 1)
-  echo ""
-  print_warning "Final confirmation required"
-  echo -n "Type the number '$random_num' to proceed: "
-  read -r confirm3
-  [ "$confirm3" != "$random_num" ] && print_info "Operation cancelled" && return 0
-
-  echo ""
-  print_info "Starting mass deletion of $vm_count VMs"
-
-  local count=0
-  echo "$datacenter_vms" | while read vm; do
-    if [ -n "$vm" ]; then
-      count=$((count + 1))
-      echo ""
-      print_info "Deleting VM $count/$vm_count: $vm"
-      delete_single_vm "$vm" && print_success "Successfully deleted: $vm" || print_error "Failed to delete: $vm"
-      echo "----------------------------------------"
+  while read -r vm <&3; do
+    if ! (delete_single_vm "$vm"); then
+      failed=$((failed + 1))
+      print_error "Failed to delete $vm"
     fi
-  done
+  done 3<<<"$vms"
 
-  print_info "Performing final cleanup"
-
+  # Whatever the single deletes left: leases, the mappings file and rules.
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-
   # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
-  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && print_info "Cleared DHCP status file"
-
-  local port_file=$(get_port_mappings_file)
-  [ -f "$port_file" ] && >"$port_file" && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
-
-  print_info "Removing all port forwarding rules"
-  local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" | awk '{print $1}' | tac)
-  for rule_num in $nat_rules; do
+  [ -f "$status_file" ] && printf '[]\n' >"$status_file"
+  local port_file rule_num
+  port_file=$(get_port_mappings_file)
+  [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
+  for rule_num in $(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" | awk '{print $1}' | tac); do
     iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null || true
   done
-
-  local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac)
-  for rule_num in $forward_rules; do
+  for rule_num in $(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac); do
     iptables -D FORWARD "$rule_num" 2>/dev/null || true
   done
-
-  command_exists iptables-save && iptables-save >/etc/iptables/rules.v4 2>/dev/null
-
+  save_iptables_rules
   [ -d "$DATACENTER_BASE/vms" ] && find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null
 
-  echo ""
-  print_success "MASS DELETION COMPLETED"
-  echo ""
-  print_info "Final verification:"
-
-  local remaining=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
-    local vm=$(echo "$line" | awk '{print $2}')
-    [ -n "$vm" ] && [ "$vm" != "Name" ] && is_vm_in_network "$vm" && echo "$vm"
-  done)
-
-  [ -z "$remaining" ] && print_success "✓ All dcvm VMs successfully removed" || { print_warning "✗ Some VMs may still exist:" && echo "$remaining"; }
+  if [ "$failed" -eq 0 ] && [ -z "$(list_datacenter_vms)" ]; then
+    ui_done ok "All $(plural "$count" VM) deleted" "DHCP status, port mappings and forward rules cleared"
+  else
+    ui_done warn "$((count - failed)) of $count VMs deleted" "dcvm list shows what is left"
+  fi
 }
 
 main() {

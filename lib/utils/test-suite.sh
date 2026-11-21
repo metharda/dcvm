@@ -2162,6 +2162,152 @@ test_ui_output() {
   fi
 }
 
+# ui_table keeps empty cells in place (tabs are IFS whitespace, so read
+# merges them), and ui_next leaves room after long commands (#56).
+test_ui_columns() {
+  local out
+  out=$(TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1 bash -c 'source "$1" >/dev/null 2>&1
+    printf "NAME\tIP\tVCPU\nweb\t\t2\nctf\t10.10.10.5\t\n" | ui_table
+    ui_next "dcvm backup restore dcvm-selftest-long" "put it back" "dcvm list" "all VMs"' _ "$SCRIPT_DIR/common.sh")
+  if [ "$(sed -n 2p <<<"$out")" = "  web   —           2" ] && [ "$(sed -n 3p <<<"$out")" = "  ctf   10.10.10.5  —" ]; then
+    log_test "PASS" "ui_table keeps empty cells in their column"
+  else
+    log_test "FAIL" "ui_table keeps empty cells in their column" "$(sed -n 1,3p <<<"$out" | tr '\n' '|')"
+  fi
+  if grep -qx '    dcvm backup restore dcvm-selftest-long  put it back' <<<"$out" &&
+    grep -qx '    dcvm list                               all VMs' <<<"$out"; then
+    log_test "PASS" "ui_next sizes the command column to the longest command (#56)"
+  else
+    log_test "FAIL" "ui_next sizes the command column to the longest command (#56)" "$(grep 'dcvm ' <<<"$out" | tr '\n' '|')"
+  fi
+}
+
+# backup list aligns its columns whatever the length of the ID (#56).
+# shellcheck disable=SC2317 # stubs
+test_backup_list_columns() {
+  local out
+  out=$(
+    TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1
+    source "$SCRIPT_DIR/../storage/backup.sh" >/dev/null 2>&1
+    list_backup_timestamps_desc() { printf '20261104_100133\n20261103_090000\n'; }
+    get_backup_disk_path() { echo "/b/$1-disk-$2.qcow2.gz"; }
+    get_backup_config_path() { echo "/b/$1-config-$2.xml"; }
+    file_bytes() { echo 7408779264; }
+    check_vm_exists() { return 1; }
+    list_backups maintainer-peer-long-name
+  )
+  local h r
+  h=$(grep -m1 'TAKEN' <<<"$out" | awk '{ print index($0, "TAKEN") }')
+  r=$(grep -m1 'maintainer-peer-long-name-04.11.2026-1 ' <<<"$out" | awk '{ print index($0, "2026-11-04 10:01") }')
+  if [ -n "$h" ] && [ "$h" -gt 0 ] && [ "$h" = "$r" ] && grep -q 'newest' <<<"$out" && grep -q '6.9 GB' <<<"$out" && grep -q '14 GB' <<<"$out"; then
+    log_test "PASS" "backup list columns line up with long IDs (#56)"
+  else
+    log_test "FAIL" "backup list columns line up with long IDs (#56)" "$(tr '\n' '|' <<<"$out")"
+  fi
+}
+
+# Deleting a VM on a host without /etc/iptables prints no shell error (#54).
+# shellcheck disable=SC2317 # stubs
+test_delete_without_iptables_dir() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+    IPTABLES_RULES_FILE="$t/missing/rules.v4"
+    command_exists() { return 0; }
+    iptables() { return 0; }
+    iptables-save() { echo "# rules"; }
+    cleanup_port_forwarding_for_vm 10.10.10.50 2221 8081 2>&1
+    IPTABLES_RULES_FILE="$t/rules.v4"
+    cleanup_port_forwarding_for_vm 10.10.10.50 2221 8081 2>&1
+  )
+  if ! grep -q 'No such file' <<<"$out" && [ ! -e "$t/missing" ] && [ "$(cat "$t/rules.v4" 2>/dev/null)" = "# rules" ]; then
+    log_test "PASS" "delete saves iptables rules only where iptables-persistent keeps them (#54)"
+  else
+    log_test "FAIL" "delete saves iptables rules only where iptables-persistent keeps them (#54)" "$(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# A successful self-update keeps the version it replaced for --revert and
+# prunes the older saved versions (#55).
+# shellcheck disable=SC2317,SC2034 # stubs; globals read by do_update
+test_self_update_keeps_backup() {
+  local t
+  t=$(mktemp -d)
+  mkdir -p "$t/bin" "$t/lib/core" "$t/backups"
+  printf 'echo "Version: 0.9.7"\n' >"$t/bin/dcvm"
+  echo old >"$t/lib/core/x.sh"
+  local d
+  for d in 20260101000001 20260101000002 20260101000003 20260101000004; do mkdir "$t/backups/dcvm-backup-$d"; done
+  (
+    eval "$(sed -n '/^install_files()/,/^}/p; /^prune_update_backups()/,/^}/p; /^do_update()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
+    INSTALL_BIN="$t/bin" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups" KEEP_UPDATE_BACKUPS=3
+    get_current_version() { echo 0.9.7; }
+    get_remote_version() { echo 0.9.8; }
+    create_backup_dir() { :; }
+    list_repo_files() { printf 'dcvm\nlib/core/x.sh\n'; }
+    fetch_repo_file() { echo "new $1" >"$2"; }
+    do_update false
+  ) >/dev/null 2>&1
+  local kept newest
+  kept=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | wc -l)
+  newest=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | sort -r | head -1)
+  if [ "$(cat "$t/lib/core/x.sh")" = "new lib/core/x.sh" ] && [ "$kept" -eq 3 ] &&
+    grep -q 'Version: 0.9.7' "$newest/dcvm" 2>/dev/null && [ "$(cat "$newest/lib/core/x.sh" 2>/dev/null)" = old ] &&
+    [ ! -d "$t/backups/dcvm-backup-20260101000001" ]; then
+    log_test "PASS" "self-update keeps the replaced version for --revert and prunes to 3 (#55)"
+  else
+    log_test "FAIL" "self-update keeps the replaced version for --revert and prunes to 3 (#55)" "kept $kept; newest $newest; x.sh: $(cat "$t/lib/core/x.sh")"
+  fi
+  rm -rf "$t"
+}
+
+# With aria2c installed, downloads go through it, from the fastest mirrors
+# at once; the progress readouts of curl and aria2c are understood.
+# shellcheck disable=SC2317 # stubs
+test_aria2c_download() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    rank_mirrors() { printf 'https://m%s/img.qcow2\n' 1 2 3 4 5; }
+    check_download() { return 0; }
+    aria2c() {
+      printf '%s\n' "$@" >"$t/args"
+      local dir out a
+      for a in "$@"; do
+        case "$a" in --dir=*) dir=${a#--dir=} ;; --out=*) out=${a#--out=} ;; esac
+      done
+      head -c 2048 /dev/zero >"$dir/$out"
+    }
+    curl() {
+      echo curl >>"$t/curl"
+      return 1
+    }
+    download_with_mirrors debian-13-genericcloud-amd64.qcow2 "$t/img.qcow2" 1024 2>/dev/null
+  )
+  if [ -f "$t/img.qcow2" ] && [ ! -f "$t/curl" ] && [ "$out" = https://m1/img.qcow2 ] &&
+    [ "$(grep -c '^https://m' "$t/args" 2>/dev/null)" = 4 ] && ! grep -q m5 "$t/args"; then
+    log_test "PASS" "downloads use aria2c with the 4 fastest mirrors when it is installed"
+  else
+    log_test "FAIL" "downloads use aria2c with the 4 fastest mirrors when it is installed" "out=$out; $(tr '\n' ' ' <"$t/args" 2>/dev/null)"
+  fi
+  printf '  %% Total    %% Received\r 42  327M   42  138M    0     0  10.0M      0  0:00:32  0:00:13  0:00:19 11.0M\r' >"$t/curl.log"
+  printf '*** Download Progress Summary ***\n[#2089b0 138MiB/327MiB(42%%) CN:16 DL:11MiB ETA:1m16s]\n' >"$t/aria.log"
+  out=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    download_progress "$t/curl.log"
+    download_progress "$t/aria.log"
+  )
+  if [ "$out" = $'42|144703488|342884352|11534336|19\n42|144703488|342884352|11534336|76' ]; then
+    log_test "PASS" "download progress is read from curl and aria2c output"
+  else
+    log_test "FAIL" "download progress is read from curl and aria2c output" "$(tr '\n' ' ' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2171,6 +2317,11 @@ test_installer_packages() {
       log_test "FAIL" "installer installs jq on $fam hosts"
     fi
   done
+  if installer_packages debian | grep -qx aria2 && installer_packages arch | grep -qx aria2; then
+    log_test "PASS" "installer installs aria2 for image downloads"
+  else
+    log_test "FAIL" "installer installs aria2 for image downloads"
+  fi
   if installer_packages debian | grep -qx dnsmasq-utils && installer_packages arch | grep -qx dnsmasq; then
     log_test "PASS" "installer installs dhcp_release (dnsmasq-utils on debian, dnsmasq on arch)"
   else
@@ -2280,9 +2431,9 @@ test_common_functions() {
     log_test "SKIP" "validate_ip_in_subnet tests" "Function not available"
   fi
 
-  run_test "format_bytes (1KB)" "[ \"\$(format_bytes 1024)\" = '1KB' ]"
-  run_test "format_bytes (1MB)" "[ \"\$(format_bytes 1048576)\" = '1MB' ]"
-  run_test "format_bytes (1GB)" "[ \"\$(format_bytes 1073741824)\" = '1GB' ]"
+  run_test "format_bytes (1 KB)" "[ \"\$(format_bytes 1024)\" = '1 KB' ]"
+  run_test "format_bytes (147 MB)" "[ \"\$(format_bytes 154000000)\" = '147 MB' ]"
+  run_test "format_bytes (6.9 GB)" "[ \"\$(format_bytes 7408779264)\" = '6.9 GB' ]"
   run_test "generate_random_mac format" "[[ \$(generate_random_mac) =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]"
   run_test "generate_random_mac uniqueness" "[ \"\$(generate_random_mac)\" != \"\$(generate_random_mac)\" ]"
   run_test "command_exists (bash)" "command_exists bash"
@@ -2326,6 +2477,11 @@ test_common_functions() {
   test_dhcp_release
   test_installer_packages
   test_ui_output
+  test_ui_columns
+  test_backup_list_columns
+  test_delete_without_iptables_dir
+  test_self_update_keeps_backup
+  test_aria2c_download
   test_published_checksum
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only

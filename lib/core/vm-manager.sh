@@ -3,127 +3,81 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-show_port_status() {
-  echo "=== dcvm VM Port Status ==="
-  echo ""
-
-  local port_file=$(get_port_mappings_file)
-  if [ -f "$port_file" ]; then
-    echo "Current port mappings:"
-    printf "%-15s  %-15s %-8s  %-8s\n" "VM_NAME" "VM_IP" "SSH_PORT" "HTTP_PORT"
-    echo "------------------------------------------------"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && printf "%-15s  %-15s %-8s  %-8s\n" "$vm" "$ip" "$ssh_port" "$http_port"
-    done
-    echo ""
-  else
-    print_warning "No port mappings file found"
-    print_info "Run: dcvm network ports setup"
-    echo ""
+# Access hints for every VM with a port mapping.
+show_enhanced_console() {
+  local host
+  host=$(get_host_ip)
+  if [ -z "$(read_port_mappings 2>/dev/null)" ]; then
+    print_warning "No port mappings yet. Run: dcvm network ports setup"
+    return 0
   fi
-
-  echo "VM Status:"
-  printf "%-15s: %s\n" "VM_NAME" "STATE"
-  echo "-------------------------"
-  virsh list --all | grep -E "(running|shut off)" | while read line; do
-    vm=$(echo "$line" | awk '{print $2}')
-    state=$(echo "$line" | awk '{print $3" "$4}' | sed 's/ *$//')
-    if [ -n "$vm" ] && [ "$vm" != "Name" ]; then
-      if is_vm_in_network "$vm"; then
-        printf "%-15s: %s\n" "$vm" "$state"
-      fi
-    fi
-  done
-  echo ""
-
-  echo "Active port forwarding rules:"
-  nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])")
-  if [ -n "$nat_rules" ]; then
-    echo "$nat_rules" | while read line; do
-      echo "  $line"
+  ui_title "Access" "from other machines, through host $host"
+  {
+    printf 'VM\tSSH\tHTTP\tCONSOLE\n'
+    read_port_mappings | while read -r vm ip ssh_port http_port; do
+      [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "ssh -p $ssh_port $(get_vm_username "$vm")@$host" "http://$host:$http_port" "dcvm console $vm"
     done
-  else
-    echo "  No dcvm port forwarding rules found"
-  fi
+  } | ui_table
+  echo -e "  ${DIM}Exit a console with Ctrl+]${NC}"
   echo ""
-
-  echo "Connectivity test:"
-  printf "%-15s: %-4s  %-4s  %-4s\n" "VM_NAME" "Ping" "SSH" "HTTP"
-  echo "-------------------------------------"
-  if [ -f "$port_file" ]; then
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      if [ -n "$vm" ]; then
-        ping_status=$(check_ping "$ip" && echo "✓" || echo "✗")
-        ssh_status=$(check_port_forward "$ssh_port" "$ip" 22 && echo "✓" || echo "✗")
-        http_status=$(check_port_forward "$http_port" "$ip" 80 && echo "✓" || echo "✗")
-        printf "%-15s: %-4s  %-4s  %-4s\n" "$vm" "$ping_status" "$ssh_status" "$http_status"
-      fi
-    done
-  else
-    echo "No port mappings available for testing"
-  fi
-  echo ""
-  echo "Legend: ✓ = accessible, ✗ = not accessible"
 }
 
-show_enhanced_console() {
-  echo "=== VM Access Information ==="
-  echo ""
+# dcvm VMs in the given states, one per line.
+vms_in_state() {
+  virsh list --all --name 2>/dev/null | while read -r vm; do
+    [ -n "$vm" ] && is_vm_in_network "$vm" || continue
+    case " $* " in *" $(get_vm_state "$vm") "*) echo "$vm" ;; esac
+  done
+}
 
-  local port_file=$(get_port_mappings_file)
-  if [ -f "$port_file" ]; then
-    echo "SSH Access:"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "  ssh $vm" && echo "    or: ssh -p $ssh_port $(get_vm_username "$vm")@$(get_host_ip)"
-    done
-    echo ""
+# Runs "virsh <action>" on each VM with one step line each: run_on_vms
+# <title> <action> <done-label> <vms>
+run_on_vms() {
+  local title="$1" action="$2" label="$3" vms="$4" vm ok=0 n
+  n=$(grep -c . <<<"$vms" || true)
+  ui_title "$title" "$(plural "$n" VM)"
+  while read -r vm; do
+    [ -n "$vm" ] || continue
+    if virsh "$action" "$vm" >/dev/null 2>&1; then
+      ui_step ok "$vm" "$label"
+      ok=$((ok + 1))
+    else
+      ui_step fail "$vm" "virsh $action failed"
+    fi
+  done <<<"$vms"
+  return $((n - ok > 0))
+}
 
-    echo "HTTP Access:"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "  $vm: http://$(get_host_ip):$http_port"
-    done
-    echo ""
-
-    echo "Console Access:"
-    read_port_mappings | while read vm ip ssh_port http_port; do
-      [ -n "$vm" ] && echo "  virsh console $vm  (Press Ctrl+] to exit)"
-    done
-  else
-    print_warning "No port mappings found. Run: dcvm network ports setup"
-  fi
+not_found() {
+  print_error "VM '$1' does not exist"
+  local vms
+  vms=$(list_datacenter_vm_names | paste -sd, - | sed 's/,/, /g')
+  echo -e "  ${DIM}dcvm VMs: ${vms:-none}${NC}"
 }
 
 start_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Starting all dcvm VMs..."
-
-    stopped_vms=$(virsh list --all | grep -E "shut off" | while read line; do
-      vm=$(echo "$line" | awk '{print $2}')
-      [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"
-    done)
-
-    if [ -n "$stopped_vms" ]; then
-      echo "$stopped_vms" | while read vm; do
-        [ -n "$vm" ] && echo "Starting $vm..." && virsh start "$vm"
-      done
-      print_success "VM startup completed"
-      print_info "Wait 30-60 seconds, then run: dcvm network ports setup"
-    else
-      print_info "No stopped VMs found or all VMs already running"
+    local vms
+    vms=$(vms_in_state "shut off")
+    if [ -z "$vms" ]; then
+      echo ""
+      echo -e "  ${DIM}All dcvm VMs are already running.${NC}"
+      echo ""
+      return 0
     fi
+    run_on_vms "Starting VMs" start "started" "$vms"
+    echo -e "  ${DIM}They boot in under a minute; then dcvm network ports setup makes them reachable from other machines.${NC}"
+    echo ""
   else
     if ! check_vm_exists "$target"; then
-      print_error "VM '$target' does not exist"
-      echo ""
-      echo "Available VMs:"
-      list_all_vms
+      not_found "$target"
       return 1
     fi
 
     if virsh list | grep -q " $target .*running"; then
-      print_info "VM '$target' is already running"
+      echo -e "${DIM}${SYM_DOT}${NC} $target is already running"
     elif virsh list --all | grep -q " $target .*shut"; then
       if virsh start "$target" >/dev/null; then
         print_success "$target started"
@@ -141,27 +95,20 @@ stop_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Stopping all dcvm VMs..."
-
-    running_vms=$(virsh list | grep -E "running" | while read line; do
-      vm=$(echo "$line" | awk '{print $2}')
-      [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"
-    done)
-
-    if [ -n "$running_vms" ]; then
-      echo "$running_vms" | while read vm; do
-        [ -n "$vm" ] && echo "Stopping $vm..." && virsh shutdown "$vm"
-      done
-      print_success "Shutdown initiated for all VMs"
-    else
-      print_info "No running VMs found"
+    local vms
+    vms=$(vms_in_state running)
+    if [ -z "$vms" ]; then
+      echo ""
+      echo -e "  ${DIM}No dcvm VMs are running.${NC}"
+      echo ""
+      return 0
     fi
+    run_on_vms "Stopping VMs" shutdown "shutting down" "$vms"
+    echo -e "  ${DIM}A clean shutdown takes a few seconds; dcvm list shows when they are off.${NC}"
+    echo ""
   else
     if ! check_vm_exists "$target"; then
-      print_error "VM '$target' does not exist"
-      echo ""
-      echo "Available VMs:"
-      list_all_vms
+      not_found "$target"
       return 1
     fi
 
@@ -172,7 +119,7 @@ stop_vms() {
         print_error "Failed to stop VM '$target'"
       fi
     else
-      print_info "VM '$target' is not running"
+      echo -e "${DIM}${SYM_DOT}${NC} $target is not running"
     fi
   fi
 }
@@ -181,41 +128,31 @@ restart_vms() {
   local target="$1"
 
   if [ "$target" = "all" ] || [ -z "$target" ]; then
-    echo "Restarting all dcvm VMs..."
-
-    all_vms=$(virsh list --all | grep -E "(running|shut off)" | while read line; do
-      vm=$(echo "$line" | awk '{print $2}')
-      if [ -n "$vm" ] && [ "$vm" != "Name" ] && is_vm_in_network "$vm"; then
-        state=$(echo "$line" | awk '{print $3}')
-        echo "$vm:$state"
-      fi
-    done)
-
-    if [ -n "$all_vms" ]; then
-      echo "$all_vms" | while read vm_info; do
-        vm=$(echo "$vm_info" | cut -d':' -f1)
-        state=$(echo "$vm_info" | cut -d':' -f2)
-        if [ -n "$vm" ]; then
-          if [ "$state" = "running" ]; then
-            echo "Restarting $vm..."
-            virsh reboot "$vm"
-          else
-            echo "Starting $vm..."
-            virsh start "$vm"
-          fi
-        fi
-      done
-      print_success "Restart completed"
-      print_info "Wait 30-60 seconds, then run: dcvm network ports setup"
-    else
-      print_info "No VMs found"
+    local running stopped rc=0
+    running=$(vms_in_state running)
+    stopped=$(vms_in_state "shut off")
+    if [ -z "$running$stopped" ]; then
+      echo ""
+      echo -e "  No dcvm VMs yet. Create one: ${CYAN}dcvm create myvm${NC}"
+      echo ""
+      return 0
     fi
+    ui_title "Restarting VMs"
+    local vm
+    while read -r vm; do
+      [ -n "$vm" ] || continue
+      if virsh reboot "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "restarting"; else ui_step fail "$vm" "virsh reboot failed" && rc=1; fi
+    done <<<"$running"
+    while read -r vm; do
+      [ -n "$vm" ] || continue
+      if virsh start "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "was off, started"; else ui_step fail "$vm" "virsh start failed" && rc=1; fi
+    done <<<"$stopped"
+    echo -e "  ${DIM}They boot in under a minute; then dcvm network ports setup makes them reachable from other machines.${NC}"
+    echo ""
+    return $rc
   else
     if ! check_vm_exists "$target"; then
-      print_error "VM '$target' does not exist"
-      echo ""
-      echo "Available VMs:"
-      list_all_vms
+      not_found "$target"
       return 1
     fi
 
@@ -234,8 +171,6 @@ restart_vms() {
     else
       print_warning "VM '$target' is in unknown state"
     fi
-
-    print_info "Wait 30-60 seconds for full boot, then run: dcvm network ports setup"
   fi
 }
 
@@ -265,7 +200,7 @@ show_vm_table() {
   else
     echo "$rows" | ui_table
     echo ""
-    echo -e "  ${DIM}$total VM$([ "$total" -gt 1 ] && echo s) on $NETWORK_NAME ${SYM_DOT} $running running$([ "$others" -gt 0 ] && echo " ${SYM_DOT} $others other libvirt VM$([ "$others" -gt 1 ] && echo s) not shown (virsh list --all)")${NC}"
+    echo -e "  ${DIM}$(plural "$total" VM) on $NETWORK_NAME ${SYM_DOT} $running running$([ "$others" -gt 0 ] && echo " ${SYM_DOT} $(plural "$others" "other libvirt VM") not shown (virsh list --all)")${NC}"
   fi
   echo ""
 }
@@ -280,7 +215,7 @@ show_enhanced_status() {
   local n
   n=$(read_port_mappings 2>/dev/null | grep -c . || true)
   if [ "${n:-0}" -gt 0 ]; then
-    ui_step ok "Port forwards" "$n VM$([ "$n" -gt 1 ] && echo s) (dcvm network ports show)"
+    ui_step ok "Port forwards" "$(plural "$n" VM) (dcvm network ports show)"
   else
     ui_step skip "Port forwards" "none (dcvm network ports setup)"
   fi
@@ -291,117 +226,25 @@ main() {
   load_dcvm_config
 
   case $1 in
-  "start")
-    start_vms "$2"
-    ;;
-  "stop")
-    stop_vms "$2"
-    ;;
-  "restart")
-    restart_vms "$2"
-    ;;
-  "create")
-    [ -z "$2" ] && print_error "VM name required. Usage: dcvm create <vm_name>" && exit 1
-    shift
-    "$SCRIPTS_PATH/create-vm.sh" "$@"
-    ;;
-  "delete")
-    [ -z "$2" ] && print_error "VM name required. Usage: dcvm delete <vm_name>" && exit 1
-    "$SCRIPTS_PATH/delete-vm.sh" "$2"
-    ;;
-  "backup")
-    [ -z "$2" ] && print_error "Backup action required. Usage: dcvm backup {create|restore|list|delete|export|import|troubleshoot}" && exit 1
-    shift
-    "$SCRIPTS_PATH/backup.sh" "$@"
-    ;;
-  "status")
-    show_enhanced_status
-    ;;
-  "ports")
-    show_port_status
-    ;;
-  "console")
+  start) start_vms "$2" ;;
+  stop) stop_vms "$2" ;;
+  restart) restart_vms "$2" ;;
+  status) show_enhanced_status ;;
+  list) show_vm_table ;;
+  console)
     if [ -z "${2:-}" ]; then
       show_enhanced_console
     elif check_vm_exists "$2"; then
-      echo "Connecting to $2 (press Ctrl+] to exit)"
+      echo -e "${DIM}Connected to $2's serial console. Exit with Ctrl+]${NC}"
       exec virsh console "$2"
     else
-      print_error "VM '$2' does not exist"
+      not_found "$2"
       exit 1
     fi
     ;;
-  "list")
-    show_vm_table
-    ;;
-  "setup-forwarding")
-    echo "Setting up port forwarding... (deprecated: use 'dcvm network ports setup')"
-    "$SCRIPTS_PATH/../network/port-forward.sh" setup
-    ;;
-  "network")
-    echo "=== Network Information ==="
-    echo ""
-    echo "Virtual Networks:"
-    virsh net-list
-    echo ""
-    echo "dcvm Network Details:"
-    virsh net-info "$NETWORK_NAME" 2>/dev/null || echo "$NETWORK_NAME not found"
-    echo ""
-    echo "=== ALL DHCP LEASES ==="
-    echo ""
-    echo "Active DHCP Leases (via virsh):"
-    dhcp_leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)
-    [ -n "$dhcp_leases" ] && echo "$dhcp_leases" || echo "No active DHCP leases found via virsh"
-    echo ""
-    echo "Raw DHCP Lease Files:"
-    if [ -f /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases ]; then
-      lease_count=$(wc -l </var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases)
-      echo "Lease file entries: $lease_count"
-      if [ "$lease_count" -gt 0 ]; then
-        echo "Raw lease file content:"
-        cat /var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases | while read line; do
-          echo "  $line"
-        done
-      else
-        echo "Lease file is empty"
-      fi
-    else
-      echo "Lease file not found: /var/lib/libvirt/dnsmasq/virbr-dc.leases"
-    fi
-    echo ""
-    if [ -f /var/lib/libvirt/dnsmasq/virbr-dc.status ]; then
-      status_count=$(wc -l </var/lib/libvirt/dnsmasq/virbr-dc.status)
-      echo "Status file entries: $status_count"
-      if [ "$status_count" -gt 0 ]; then
-        echo "Status file content:"
-        cat /var/lib/libvirt/dnsmasq/virbr-dc.status | while read line; do
-          echo "  $line"
-        done
-      else
-        echo "Status file is empty"
-      fi
-    else
-      echo "Status file not found: /var/lib/libvirt/dnsmasq/virbr-dc.status"
-    fi
-    echo ""
-    echo "Additional DHCP lease locations:"
-    for lease_file in /var/lib/dhcp/dhcpd.leases /var/lib/libvirt/dnsmasq/*.leases; do
-      if [ -f "$lease_file" ]; then
-        echo "Found: $lease_file"
-        [ -s "$lease_file" ] && echo "  (Contains data - $(wc -l <"$lease_file") lines)" || echo "  (Empty file)"
-      fi
-    done
-    ;;
-  "clear-leases")
-    "$SCRIPTS_PATH/../network/dhcp.sh" clear --all
-    ;;
-  "uninstall")
-    require_confirmation "This will completely remove all dcvm files, VMs, networks, and this script."
-    "$SCRIPTS_PATH/uninstall-dcvm.sh"
-    ;;
   *)
     print_error "Unknown command: $1"
-    print_info "Run 'dcvm' without arguments for help"
+    echo "Run 'dcvm help' for the list of commands"
     exit 1
     ;;
   esac
