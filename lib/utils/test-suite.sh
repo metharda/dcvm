@@ -2308,6 +2308,25 @@ test_aria2c_download() {
   rm -rf "$t"
 }
 
+# The live block counts the rows a wrapped line takes, so the next redraw
+# moves up far enough (otherwise the spinner line stays behind), and tool
+# output is not read as escape sequences.
+test_ui_region_rows() {
+  local out
+  out=$(TERM=xterm-256color LANG=C.UTF-8 bash -c 'source "$1" >/dev/null 2>&1
+    UI_COLS=20
+    ui_region "  spinner" "      $(printf "%030d" 0)" 2>/dev/null
+    echo "rows=$UI_REGION_ROWS"
+    ui_region "next" 2>&1 >/dev/null | od -An -c | tr -d " \n"
+    echo
+    echo "fit=$(ui_fit 0 "a\\nb")"' _ "$SCRIPT_DIR/common.sh")
+  if grep -qx 'rows=3' <<<"$out" && grep -q '^\\r033\[2A' <<<"$out" && grep -qx 'fit=a\\\\nb' <<<"$out"; then
+    log_test "PASS" "live block counts wrapped rows and keeps tool output literal"
+  else
+    log_test "FAIL" "live block counts wrapped rows and keeps tool output literal" "$(tr '\n' '|' <<<"$out")"
+  fi
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2483,6 +2502,7 @@ test_common_functions() {
   test_installer_packages
   test_ui_output
   test_ui_columns
+  test_ui_region_rows
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
