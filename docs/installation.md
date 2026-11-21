@@ -202,7 +202,7 @@ Manually install dependencies:
 ```bash
 # Ubuntu/Debian
 sudo apt update
-sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients \
+sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
     bridge-utils virt-manager nfs-kernel-server jq dnsmasq-utils aria2
 
 # Arch Linux

@@ -122,8 +122,11 @@ ui_watch() {
   return "$_w_rc"
 }
 
-# Runs a command behind a spinner (on a terminal) and returns its status. The
-# caller prints the final ui_step line; UI_RUN_SECS holds the duration and
+# Runs a command behind a live block (on a terminal) and returns its status:
+# a spinner with the elapsed time, and under it the command's latest output
+# line, or the lines printed by the function named in UI_RUN_DETAIL (it can
+# read UI_RUN_LOG). The block disappears when the command ends; the caller
+# prints the final ui_step line. UI_RUN_SECS holds the duration and
 # UI_RUN_LOG the command's output, to show when it failed.
 ui_run() {
   local label="$1" start=$SECONDS rc=0
@@ -138,7 +141,22 @@ ui_run() {
   UI_RUN_SECS=$((SECONDS - start))
   return "$rc"
 }
-ui_run_tick() { ui_spin "$label" "$((SECONDS - start))s"; }
+ui_run_tick() {
+  local -a lines=("$(ui_spin_line "$label" "$((SECONDS - start))s")")
+  local line
+  if [ -n "${UI_RUN_DETAIL:-}" ]; then
+    while IFS= read -r line; do lines+=("$line"); done < <("$UI_RUN_DETAIL")
+  elif line=$(ui_last_line "$UI_RUN_LOG") && [ -n "$line" ]; then
+    lines+=("      ${DIM}$(ui_fit 6 "$line")${NC}")
+  fi
+  ui_region "${lines[@]}"
+}
+
+# The last non-empty line a command wrote to <log>, without colour codes or
+# carriage-return progress.
+ui_last_line() {
+  tail -c 4096 "$1" 2>/dev/null | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[[:space:]]*$//' | grep -v '^$' | tail -1
+}
 
 # "1 VM", "3 VMs": plural <count> <word>
 plural() { echo "$1 $2$([ "$1" = 1 ] || echo s)"; }
