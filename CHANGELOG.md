@@ -160,6 +160,12 @@ limit it to the dcvm subnet and make it writable for VM users.
   long output lines wrapped and the live block miscounted its height. The
   width now comes from the terminal itself, the block counts wrapped rows,
   and backslashes in tool output are printed as they are.
+- On a host with an `alias dcvm=…/scripts/vm-manager.sh` line left in a shell
+  startup file by an install before 0.9, every `dcvm` command failed with
+  `no such file or directory: /srv/datacenter/scripts/vm-manager.sh`: the
+  alias shadows `/usr/local/bin/dcvm`. The installer now removes such lines
+  for root and the user who ran `sudo` (keeping a `.bak` copy), as the
+  uninstaller already did.
 
 ## [0.9.7] - 2026-11-16
 

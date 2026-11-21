@@ -458,6 +458,27 @@ for item in json.load(sys.stdin).get("tree", []):
   echo "$files"
 }
 
+# Removes dcvm lines matching the extended regex <pattern> from the shell
+# startup files of root and of the user who ran sudo (a .bak copy is kept),
+# and prints each file it changed: remove_shell_lines <pattern>
+remove_shell_lines() {
+  local home f
+  while IFS= read -r home; do
+    for f in "$home/.bashrc" "$home/.zshrc" "$home/.bash_profile" "$home/.profile" "$home/.zprofile" "$home/.zshenv"; do
+      [ -f "$f" ] && grep -qE "$1" "$f" 2>/dev/null || continue
+      if sed -i.bak -E "\#$1#d" "$f"; then echo "$f"; else print_warning "Could not update $f"; fi
+    done
+  done < <({
+    echo "$HOME"
+    [ -n "${SUDO_USER:-}" ] && getent passwd "$SUDO_USER" | cut -d: -f6
+  } | awk 'NF && !seen[$0]++')
+}
+
+# "alias dcvm=..." lines, written by installs before 0.9 (they pointed at
+# $DATACENTER_BASE/scripts/vm-manager.sh); in an interactive shell such an
+# alias shadows /usr/local/bin/dcvm.
+DCVM_ALIAS_LINE='^[[:space:]]*alias[[:space:]]+dcvm='
+
 # Saves the live iptables rules for iptables-persistent, if it is set up
 # (/etc/iptables exists); otherwise there is nothing to keep in sync.
 IPTABLES_RULES_FILE="${IPTABLES_RULES_FILE:-/etc/iptables/rules.v4}"

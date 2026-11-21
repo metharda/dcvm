@@ -784,16 +784,14 @@ show_datacenter_summary() {
   print_status_log "SUCCESS" "dcvm is ready to use!"
 }
 
+# Old installs (before 0.9) aliased dcvm to $DATACENTER_BASE/scripts, and
+# such an alias shadows /usr/local/bin/dcvm; remove it.
 setup_aliases() {
-  print_status_log "INFO" "Checking dcvm command availability..."
-
-  if command -v dcvm >/dev/null 2>&1; then
-    print_status_log "SUCCESS" "dcvm command is available in PATH"
-    print_status_log "INFO" "You can use 'dcvm' command directly"
-  else
-    print_status_log "WARNING" "dcvm command not found in PATH"
-    print_status_log "INFO" "Please add /usr/local/bin to your PATH or restart your shell"
-  fi
+  local cleaned
+  cleaned=$(remove_shell_lines "$DCVM_ALIAS_LINE" | tr '\n' ' ')
+  ALIAS_RESULT=""
+  [ -n "$cleaned" ] && ALIAS_RESULT="ok|old dcvm alias removed from ${cleaned% } (open a new shell, or: unalias dcvm)"
+  return 0
 }
 
 install_completion() {
@@ -983,6 +981,7 @@ main() {
   start_existing_vms
   [ ${#STARTED_VMS[@]} -gt 0 ] && step ok "dcvm VMs" "started ${STARTED_VMS[*]}"
   setup_aliases
+  [ -n "${ALIAS_RESULT:-}" ] && step "${ALIAS_RESULT%%|*}" "Shell alias" "${ALIAS_RESULT#*|}"
   install_step "Storage check" "hourly systemd timer" setup_service
   show_datacenter_summary
 }

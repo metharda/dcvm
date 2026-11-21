@@ -76,18 +76,9 @@ main() {
   rmdir /usr/local/share/dcvm 2>/dev/null || true
   ui_step ok "dcvm" "command, libraries, settings, completion and log removed"
 
-  local config_file cleaned=""
-  for config_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
-    [[ -f "$config_file" ]] || continue
-    if grep -qE 'alias dcvm|dcvm-completion\.sh' "$config_file" 2>/dev/null; then
-      if sed -i.bak -e '/alias dcvm/d' -e '/dcvm-completion\.sh/d' "$config_file"; then
-        cleaned+=" ${config_file##*/}"
-      else
-        print_warning "Could not update $config_file"
-      fi
-    fi
-  done
-  [[ -n "$cleaned" ]] && ui_step ok "Shell config" "old dcvm lines removed from$cleaned (backup: .bak)"
+  local cleaned
+  cleaned=$(remove_shell_lines "$DCVM_ALIAS_LINE|dcvm-completion\.sh" | sort -u | tr '\n' ' ')
+  [[ -n "$cleaned" ]] && ui_step ok "Shell config" "dcvm lines removed from ${cleaned% } (backup: .bak)"
 
   ui_done ok "dcvm uninstalled" "the installer's one-liner installs it again"
   echo ""
