@@ -2327,6 +2327,27 @@ test_ui_region_rows() {
   fi
 }
 
+# An "alias dcvm=" line from an install before 0.9 shadows /usr/local/bin/dcvm;
+# the installer removes it for root and the sudo user, keeping other lines.
+test_remove_old_alias() {
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/root" "$t/user"
+  printf 'export A=1\nalias dcvm="/srv/datacenter/scripts/vm-manager.sh"\nalias ll="ls -l"\n' >"$t/root/.zshrc"
+  printf '  alias dcvm=/srv/datacenter/scripts/vm-manager.sh\nsource /usr/local/share/dcvm/dcvm-completion.sh\n' >"$t/user/.bashrc"
+  out=$(
+    getent() { echo "user:x:1000:1000::$t/user:/bin/bash"; }
+    HOME="$t/root" SUDO_USER=user remove_shell_lines "$DCVM_ALIAS_LINE"
+  )
+  if [ "$(grep -c . <<<"$out")" = 2 ] && ! grep -q 'alias dcvm' "$t/root/.zshrc" "$t/user/.bashrc" &&
+    grep -q 'alias ll=' "$t/root/.zshrc" && grep -q 'dcvm-completion' "$t/user/.bashrc" && [ -f "$t/root/.zshrc.bak" ]; then
+    log_test "PASS" "installer removes old 'alias dcvm=' lines (root and sudo user), keeps the rest"
+  else
+    log_test "FAIL" "installer removes old 'alias dcvm=' lines (root and sudo user), keeps the rest" "$(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -2503,6 +2524,7 @@ test_common_functions() {
   test_ui_output
   test_ui_columns
   test_ui_region_rows
+  test_remove_old_alias
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
