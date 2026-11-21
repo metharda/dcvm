@@ -61,29 +61,45 @@ ui_step() {
 # True when live output (spinners, progress bars) can be drawn on stderr.
 ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; }
 
+# The terminal's width in columns, read once from the terminal itself (tput
+# in a command substitution has no terminal to ask and says 80).
+ui_cols() {
+  if [ -z "${UI_COLS:-}" ]; then
+    UI_COLS=$(stty size </dev/tty 2>/dev/null | awk '{ print $2 }')
+    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=${COLUMNS:-80}
+  fi
+  echo "$UI_COLS"
+}
+
 # A live block of lines on stderr, redrawn in place on each call:
-# ui_region <line>... ; without arguments it erases the block. Keep each
-# line within the terminal width (ui_fit), or the redraw goes wrong.
-UI_REGION_LINES=0
+# ui_region <line>... ; without arguments it erases the block. It counts
+# the screen rows each line takes, so a line that wraps does not leave the
+# lines above it behind on the next redraw.
+UI_REGION_ROWS=0
 ui_region() {
-  local out="\r" first=true line
-  [ "$UI_REGION_LINES" -gt 1 ] && out+="\033[$((UI_REGION_LINES - 1))A"
+  local out="\r" first=true line plain cols rows=0
+  ui_cols >/dev/null
+  cols=$UI_COLS
+  [ "$UI_REGION_ROWS" -gt 1 ] && out+="\033[$((UI_REGION_ROWS - 1))A"
   out+="\033[J"
   for line in "$@"; do
     $first || out+="\n"
     out+="$line"
     first=false
+    plain=$(printf '%b' "$line" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+    rows=$((rows + (${#plain} > 0 ? (${#plain} - 1) / cols + 1 : 1)))
   done
   printf '%b' "$out" >&2
-  UI_REGION_LINES=$#
+  UI_REGION_ROWS=$rows
 }
 
 # Cuts text to the room left on a line that already holds <used> columns:
-# ui_fit <used> <text>
+# ui_fit <used> <text>. Backslashes are doubled, as ui_region prints lines
+# with %b and a tool's "\n" would otherwise start a new row.
 ui_fit() {
-  : "${UI_COLS:=$(tput cols 2>/dev/null || echo 80)}"
-  local room=$((UI_COLS - $1 - 1))
-  if [ "${#2}" -gt "$room" ] && [ "$room" -gt 1 ]; then echo "${2:0:room-1}…"; else echo "$2"; fi
+  local room=$(($(ui_cols) - $1 - 1)) text="$2"
+  [ "${#text}" -gt "$room" ] && [ "$room" -gt 1 ] && text="${text:0:room-1}…"
+  echo "${text//\\/\\\\}"
 }
 
 # The first line of a live block: spinner, label, detail.
@@ -152,10 +168,16 @@ ui_run_tick() {
   ui_region "${lines[@]}"
 }
 
-# The last non-empty line a command wrote to <log>, without colour codes or
-# carriage-return progress.
+# The last non-empty line a command wrote to <log>, without colour codes,
+# carriage-return progress or tabs; outside UTF-8 also without non-ASCII
+# bytes, so ui_region can count its width.
 ui_last_line() {
-  tail -c 4096 "$1" 2>/dev/null | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[[:space:]]*$//' | grep -v '^$' | tail -1
+  local line
+  line=$(tail -c 4096 "$1" 2>/dev/null | tr '\r\t' '\n ' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[[:space:]]*$//' | grep -v '^$' | tail -1)
+  if [ "$UI_UNICODE" = true ]; then echo "$line"; else
+    LC_ALL=C tr -cd '\40-\176' <<<"$line"
+    echo
+  fi
 }
 
 # "1 VM", "3 VMs": plural <count> <word>
