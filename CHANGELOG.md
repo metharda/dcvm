@@ -90,6 +90,12 @@ limit it to the dcvm subnet and make it writable for VM users.
   set, so every check failed silently; they also no longer wait 30 seconds or
   prompt for a password, run the cleanup with `sudo`, and archive to
   `/mnt/shared` only when the NFS share is mounted.
+- The installer's slow steps use the same live block as downloads: a
+  spinner with the step's latest output line underneath (Packages: a bar
+  over downloading, unpacking and setting up), collapsing into the step's
+  line when done; a failed step lists the tool's error lines under it. Every
+  `ui_run` spinner (backups, exports, template checks) shows the latest
+  output line the same way.
 
 ### Fixed
 
@@ -143,6 +149,11 @@ limit it to the dcvm subnet and make it writable for VM users.
   controllers; every restore of a dcvm VM needed two failed `virsh define`
   attempts and printed PCI controller warnings. Restore now uses plain `q35`,
   which also works on a host with a different QEMU version.
+- The installer failed on Ubuntu 26.04 with `Package 'qemu-kvm' has no
+  installation candidate`: `qemu-kvm` became a virtual package there with two
+  providers. It installs `qemu-system-x86` and `qemu-utils` directly, which
+  works on every supported Debian and Ubuntu release, and uses `apt-get`
+  instead of `apt` (no "unstable CLI" warning).
 
 ## [0.9.7] - 2026-11-16
 
