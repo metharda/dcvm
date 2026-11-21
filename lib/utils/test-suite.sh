@@ -2317,6 +2317,11 @@ test_installer_packages() {
       log_test "FAIL" "installer installs jq on $fam hosts"
     fi
   done
+  if installer_packages debian | grep -qx qemu-system-x86 && ! installer_packages debian | grep -qx qemu-kvm; then
+    log_test "PASS" "installer installs qemu-system-x86, not the virtual qemu-kvm (no candidate on Ubuntu 26.04)"
+  else
+    log_test "FAIL" "installer installs qemu-system-x86, not the virtual qemu-kvm (no candidate on Ubuntu 26.04)"
+  fi
   if installer_packages debian | grep -qx aria2 && installer_packages arch | grep -qx aria2; then
     log_test "PASS" "installer installs aria2 for image downloads"
   else

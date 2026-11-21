@@ -61,20 +61,67 @@ step() {
   echo "[STEP] $2: ${3:-}" >>"$LOG_FILE" 2>/dev/null || true
 }
 
-# ui_run with the command's output added to the log, and its last lines
-# printed when it fails. Sets STEP_SECS.
+# ui_run with the command's output added to the log. Sets STEP_SECS, and
+# STEP_ERRORS to the lines worth showing when it fails (the tool's error
+# lines, else its last lines); print them with step_errors.
 run_step() {
   local rc=0
   ui_run "$@" || rc=$?
   STEP_SECS=$UI_RUN_SECS
+  STEP_ERRORS=""
   cat "$UI_RUN_LOG" >>"$LOG_FILE" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
-    echo -e "${DIM}"
-    tail -n 25 "$UI_RUN_LOG"
-    echo -e "${NC}"
+    STEP_ERRORS=$({ grep -E '^(E|Error|error):' "$UI_RUN_LOG" || tail -n 10 "$UI_RUN_LOG"; } | tail -n 10)
   fi
   rm -f "$UI_RUN_LOG"
   return "$rc"
+}
+step_errors() {
+  [ -n "${STEP_ERRORS:-}" ] || return 0
+  while IFS= read -r line; do echo -e "      ${DIM}${line}${NC}"; done <<<"$STEP_ERRORS"
+  echo -e "      ${DIM}full log: $LOG_FILE${NC}"
+}
+
+# One install step behind the live block, then its line: install_step
+# <label> <detail> <command...>. A failed step stops the installer.
+install_step() {
+  local label="$1" detail="$2"
+  shift 2
+  if run_step "$label" "$@"; then
+    step ok "$label" "$detail"
+  else
+    step fail "$label" "failed"
+    step_errors
+    exit 1
+  fi
+}
+
+# Live detail for the Packages step: a bar over apt-get's three phases
+# (downloading, unpacking, setting up N packages) and its latest line;
+# pacman shows the latest line only.
+package_progress() {
+  local counts n got unpacked setup phase pct last
+  # Counted after "N newly installed", so the index downloads don't count.
+  counts=$(awk '/[0-9]+ newly installed/ { match($0, /[0-9]+ newly installed/); n = substr($0, RSTART, RLENGTH) + 0; g = u = s = 0; next }
+    n && /^Get:/ { g++ } n && /^Unpacking / { u++ } n && /^Setting up / { s++ }
+    END { print n + 0, g, u, s }' "$UI_RUN_LOG")
+  read -r n got unpacked setup <<<"$counts"
+  last=$(ui_last_line "$UI_RUN_LOG")
+  if [ "$n" -gt 0 ]; then
+    [ "$got" -gt "$n" ] && got=$n
+    [ "$unpacked" -gt "$n" ] && unpacked=$n
+    [ "$setup" -gt "$n" ] && setup=$n
+    pct=$(((got + unpacked + setup) * 100 / (3 * n)))
+    if [ "$unpacked" -eq 0 ]; then
+      phase="downloading $got of $n"
+    elif [ "$setup" -eq 0 ]; then
+      phase="unpacking $unpacked of $n"
+    else
+      phase="setting up $setup of $n"
+    fi
+    echo "      $(ui_bar "$pct" 20) $(printf '%3s' "$pct")%  ${DIM}${phase}${NC}"
+  fi
+  [ -n "$last" ] && echo "      ${DIM}$(ui_fit 6 "$last")${NC}"
 }
 
 cleanup_tmp_dir() {
@@ -278,7 +325,7 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2)
+  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2)
   local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2)
 
   if [[ -f /etc/os-release ]]; then
@@ -295,13 +342,13 @@ install_required_packages() {
     fi
 
     if [[ "$is_debian_based" == true ]]; then
-      command -v apt >/dev/null 2>&1 || {
-        print_status "ERROR" "apt not found. Cannot install packages."
+      command -v apt-get >/dev/null 2>&1 || {
+        print_status "ERROR" "apt-get not found. Cannot install packages."
         exit 1
       }
-      print_status "INFO" "Detected Debian-based distro ($ID). Installing packages with apt..."
+      print_status "INFO" "Detected Debian-based distro ($ID). Installing packages with apt-get..."
       export DEBIAN_FRONTEND=noninteractive
-      apt update -y && apt install -y "${debian_packages[@]}"
+      apt-get update && apt-get install -y "${debian_packages[@]}"
     elif [[ "$is_arch_based" == true ]]; then
       command -v pacman >/dev/null 2>&1 || {
         print_status "ERROR" "pacman not found. Cannot install packages."
@@ -898,20 +945,24 @@ main() {
   fi
 
   ui_title "Installing dcvm" "${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} $DATACENTER_BASE"
-  if run_step "Packages" install_required_packages; then
-    step ok "Packages" "QEMU/KVM, libvirt, aria2 and image tools in ${STEP_SECS}s"
+  if UI_RUN_DETAIL=package_progress run_step "Packages" install_required_packages; then
+    local installed
+    installed=$(grep -oE '[0-9]+ newly installed' "$LOG_FILE" 2>/dev/null | tail -1 | grep -oE '^[0-9]+')
+    if [ "${installed:-0}" -gt 0 ]; then
+      step ok "Packages" "$installed installed in ${STEP_SECS}s (QEMU/KVM, libvirt, aria2, image tools)"
+    else
+      step ok "Packages" "QEMU/KVM, libvirt, aria2 and image tools already installed"
+    fi
   else
-    step fail "Packages" "installing them failed (output above, full log: $LOG_FILE)"
+    step fail "Packages" "installing them failed"
+    step_errors
     exit 1
   fi
   check_kvm_support
   step ok "KVM" "/dev/kvm available"
-  install_dcvm_command
-  step ok "dcvm" "/usr/local/bin/dcvm and /usr/local/lib/dcvm"
-  start_libvirtd
-  step ok "libvirt" "libvirtd running"
-  check_directory_structure
-  step ok "Directories" "$DATACENTER_BASE"
+  install_step "dcvm" "/usr/local/bin/dcvm and /usr/local/lib/dcvm" install_dcvm_command
+  install_step "libvirt" "libvirtd running" start_libvirtd
+  install_step "Directories" "$DATACENTER_BASE" check_directory_structure
   check_cloud_images
   local have=0 total=0 img
   for img in ${SUPPORTED_IMAGES:-}; do
@@ -923,10 +974,8 @@ main() {
   else
     step skip "Cloud images" "$have of $total downloaded; the rest download on first use"
   fi
-  enable_ip_forwarding
-  step ok "IP forwarding" "on, persisted in /etc/sysctl.conf"
-  create_datacenter_network
-  step ok "Network" "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, DHCP .10-.200"
+  install_step "IP forwarding" "on, persisted in /etc/sysctl.conf" enable_ip_forwarding
+  install_step "Network" "$NETWORK_NAME, ${NETWORK_SUBNET:-10.10.10}.0/24, DHCP .10-.200" create_datacenter_network
   install_completion
   [ -n "${COMPLETION_RESULT:-}" ] && step "${COMPLETION_RESULT%%|*}" "Tab completion" "${COMPLETION_RESULT#*|}"
   start_nfs_server
@@ -934,8 +983,7 @@ main() {
   start_existing_vms
   [ ${#STARTED_VMS[@]} -gt 0 ] && step ok "dcvm VMs" "started ${STARTED_VMS[*]}"
   setup_aliases
-  setup_service
-  step ok "Storage check" "hourly systemd timer"
+  install_step "Storage check" "hourly systemd timer" setup_service
   show_datacenter_summary
 }
 
