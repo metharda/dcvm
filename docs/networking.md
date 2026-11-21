@@ -118,10 +118,10 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
 
 4.  **Persistence:**
     The table is saved to `$DATACENTER_BASE/port-mappings.txt`, one line per
-    VM: `VM_NAME VM_IP SSH_PORT HTTP_PORT`. The iptables rules themselves are
-    not reloaded at boot unless your system restores `/etc/iptables/rules.v4`
-    (dcvm writes it when `iptables-save` exists). Re-apply the saved table
-    after a reboot or after editing it:
+    VM: `VM_NAME VM_IP SSH_PORT HTTP_PORT`. `dcvm-boot.service` rebuilds the
+    iptables rules from it after a reboot (dcvm also writes
+    `/etc/iptables/rules.v4` when `iptables-save` exists). Re-apply it by hand
+    after editing it:
     ```bash
     dcvm network ports apply
     ```

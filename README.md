@@ -125,12 +125,12 @@ backup puts the VM back exactly as it was.
   host.
 - The 5 most recent backups of each VM are kept.
 
-> [!IMPORTANT]
-> Backups store the VM's overlay disk, not a full disk image. Restoring needs
-> the same cloud image file in `storage/templates`; restore downloads it if it
-> is missing, but an overlay on a newer upstream image is not reliable. Keep
-> your templates, and copy them along with exports. See
-> [Backups](docs/backups.md).
+> [!NOTE]
+> Backups store the VM's overlay disk, not a full disk image, and record the
+> exact base build it sits on. dcvm keeps that build while anything needs it,
+> moves VMs onto newer builds by itself, and restore and import find the
+> right build on their own (`--full` exports need none). See
+> [Base images](docs/base-images.md).
 
 ## Day to day
 
@@ -152,6 +152,7 @@ backup puts the VM back exactly as it was.
 | Network, DHCP, VNC | `dcvm network` · `dcvm network dhcp show` · `dcvm network vnc enable web` |
 | Back up and restore | `dcvm backup create web` · `dcvm backup list` · `dcvm backup restore web` |
 | Cloud images | `dcvm template status` · `dcvm template download -a` |
+| Health check | `dcvm doctor` · `dcvm doctor --fix` |
 | Delete | `dcvm delete web` |
 | Update dcvm | `dcvm self-update --check` · `dcvm self-update` |
 
@@ -209,9 +210,8 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 - Backups are cold (the VM is shut down) and depend on the VM's cloud image
   file (see above). There are no live snapshots.
 - Port forwarding covers SSH (22) and HTTP (80) for each running VM, uses
-  host ports 2220-2299 and 8080-8179, and is not reapplied after a host
-  reboot unless your system restores `/etc/iptables/rules.v4`
-  (`dcvm network ports apply` does it by hand).
+  host ports 2220-2299 and 8080-8179, and is reapplied after a host reboot
+  by `dcvm-boot.service` (`dcvm network ports apply` does it by hand).
 - VMs share one bridge and can reach each other.
 - Cloud images are checked against the checksum files their publishers put
   next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
@@ -240,6 +240,8 @@ control over libvirt options.
 | [Usage](docs/usage.md) | Every command and flag, packages, ISO installs |
 | [Networking](docs/networking.md) | NAT network, static IPs, port forwarding, DHCP, VNC |
 | [Backups](docs/backups.md) | Backup, restore, copies, export and import |
+| [Base images](docs/base-images.md) | How VM disks sit on cloud image builds, automatic moves to newer builds, restore on any host |
+| [dcvm doctor](docs/doctor.md) | Every check, what `--fix` repairs, and when dcvm runs it by itself |
 | [Operations](docs/operations.md) | Reading the checks, reboots, updates, logs, settings, troubleshooting |
 | [Security](docs/security.md) | Threat model, credentials, network exposure, hardening |
 | [Architecture](docs/architecture.md) | Components, the create flow, design decisions |

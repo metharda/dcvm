@@ -107,11 +107,13 @@ The installer will:
 4. Start libvirtd
 5. Create the directories under the installation directory
 6. Offer to download the cloud images
-7. Enable IP forwarding (and persist it in `/etc/sysctl.conf`)
+7. Enable IP forwarding (and persist it in `/etc/sysctl.d/90-dcvm.conf`)
 8. Create the NAT network (DHCP `.10`-`.200`, autostart on)
 9. Offer tab completion and the NFS share
 10. Start stopped VMs on the dcvm network (other VMs on the host are left alone)
-11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` hourly
+11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` and a
+    quiet `dcvm doctor` hourly, and `dcvm-boot.service`, which brings the dcvm
+    network and port forwards back after a reboot
 
 On a fresh Ubuntu 24.04 host (a GitHub runner, when recording the README
 demo) the package install took 47 seconds and the rest a few more.
@@ -242,6 +244,10 @@ To update to the latest version:
 ```bash
 dcvm self-update
 ```
+
+After an update, dcvm runs a short `dcvm doctor --quiet` that lists anything
+the new version needs from you (tools to install, services, VMs to pin).
+`sudo dcvm doctor --fix` repairs the safe ones; see [dcvm doctor](doctor.md).
 
 To check for updates without installing:
 

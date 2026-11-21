@@ -32,7 +32,8 @@ All commands need root.
 | Access summary | `dcvm console` | Without a VM name: SSH, HTTP and console hints for VMs with port mappings |
 | Back up / restore | `dcvm backup create web`, `dcvm backup restore web` | The VM is shut down during the backup; see [Backups](backups.md) |
 | Delete | `dcvm delete web` | No confirmation prompt; removes the disk, leases, port forwards and static IP record |
-| Images | `dcvm template status`, `dcvm template download <file>` | Installed images with an integrity check |
+| Images | `dcvm template status`, `dcvm template download <file>` | Installed images with an integrity check; `-f` gets the newest build and moves VMs onto it |
+| Health | `dcvm doctor`, `dcvm doctor --fix` | Base images of VMs and backups, kept builds, leftover downloads |
 
 ## Output
 
@@ -78,24 +79,34 @@ what remains as warnings. `! DHCP leases still exist` is harmless (the lease
 expires); run `dcvm network dhcp cleanup` to drop it now.
 
 **`dcvm template status`** marks each installed image `✓` (readable qcow2) or
-`✗ ... CORRUPT` (redownload it with `dcvm template download <file> --force`,
-which breaks VMs built on the old file).
+`✗ ... CORRUPT` (redownload it with `dcvm template download <file> --force`;
+VMs move onto the new build by themselves, see
+[Base images](architecture.md#base-images)).
+
+**`dcvm doctor`** checks the host, the dcvm network, VMs and their base
+images, backups and storage, says how to fix each problem, and repairs what
+is safe with `--fix`. dcvm also runs it by itself: after `self-update`, at
+boot (to bring port forwards back), when `start`, `restart`, restore or
+`create` fail, as one line in `dcvm status`, and hourly. Every check and
+repair is described in [dcvm doctor](doctor.md).
 
 ## After a host reboot
 
 - The dcvm network and every VM created by dcvm have autostart on, so they
   come back with libvirt.
-- IP forwarding is persisted in `/etc/sysctl.conf` by the installer.
-- Port-forward rules live in iptables only. They come back only if your
-  system restores `/etc/iptables/rules.v4` at boot (for example the
-  `iptables-persistent` package). Otherwise run:
+- IP forwarding is persisted in `/etc/sysctl.d/90-dcvm.conf` by the installer
+  (`dcvm doctor` checks that it is applied at boot).
+- Port-forward rules live in iptables only. `dcvm-boot.service` (installed by
+  the installer, or by `dcvm doctor --fix` on hosts set up earlier) runs
+  `dcvm doctor --fix --quiet --only network` after libvirt starts: it starts
+  the dcvm network if needed and rebuilds the saved port forwards. By hand:
 
   ```bash
   dcvm network ports apply   # rebuild rules from $DATACENTER_BASE/port-mappings.txt
   ```
 
   If VMs got new DHCP addresses, use `dcvm network ports setup` instead,
-  which rediscovers them.
+  which rediscovers them (`dcvm doctor` reports changed addresses).
 
 ## Updating dcvm
 
@@ -185,7 +196,8 @@ and `HTTP_PORT_START=8081`, which can be set in the environment of
 | VM has no IP in `dcvm status` | Still booting, or a stale lease | `dcvm network dhcp show`; `dcvm network dhcp cleanup` |
 | `dcvm network dhcp clear` names a missing package | Host installed before 0.9.6 | Install `jq` and `dnsmasq-utils` (Arch: `jq`) |
 | `Failed to get "write" lock` / VM won't start because its disk is locked | Stale QEMU process or libvirt lock, or two VMs using one disk | `dcvm fix-lock <vm>` (force-stops the VM, clears its locks and reports other VMs on the same disk); `--all` for every VM |
-| Backup restore says the backing file is missing | The VM's cloud image was removed from `storage/templates` | Restore downloads it again; it must be the same image file the VM was built on |
+| Restore says the base build is not on this host or in the archive | The backup's build is gone (a daily build, Kali, or deleted by hand) | Restore on the host it came from, or pass the original build with `--base <file>` |
+| A VM hangs at boot after a template was re-downloaded (before 0.9.9) | The template was replaced under the VM's disk | `dcvm doctor --fix`; if the old base is gone, `dcvm backup restore <vm>` (restore finds the build a backup fits) |
 | VNC port in use | Several VMs with VNC | `dcvm network vnc disable <vm>` on VMs that don't need it |
 | `dcvm self-update` fails | GitHub unreachable or rate-limited | Retry later, `--force`, or re-run the installer |
 | Out of disk space | Backups and images | `du -sh $DATACENTER_BASE/*`; delete old backups with `dcvm backup delete <vm>` |

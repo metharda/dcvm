@@ -275,6 +275,21 @@ dcvm backup restore myvm latest myvm-copy
 
 Restores a backup as a new VM named `myvm-copy` and leaves `myvm` as is. `backup_date` is `YYYYMMDD_HHMMSS`, `dd.mm.yyyy[-N]`, the `<vm>-dd.mm.yyyy[-N]` ID from `backup list`, `latest` or `''`. See [backups.md](backups.md#restore) for what changes in the copy.
 
+### Base images and `dcvm doctor`
+
+```bash
+dcvm template download ubuntu-24.04-server-cloudimg-amd64.img -f   # newest build; VMs move onto it
+dcvm template download -a -f --restart   # all images; restart running VMs to move them now
+dcvm doctor                              # host, network, VMs, base images, backups, storage
+dcvm doctor --fix                        # repair what is safe
+dcvm doctor --quiet                      # only problems; exit 1 if any
+```
+
+A re-download never breaks VMs: each VM disk refers to an immutable build in
+`storage/templates/builds/`. Stopped VMs move onto the new build right away,
+running ones the next time dcvm stops, restarts or backs them up. See
+[Base images](base-images.md) and [dcvm doctor](doctor.md).
+
 ### Storage check
 
 ```bash
