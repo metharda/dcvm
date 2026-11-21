@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 
-# Terminal output. Colour and the spinner only on a terminal; NO_COLOR or
-# TERM=dumb turn colour off (https://no-color.org). Symbols fall back to ASCII
-# when the locale isn't UTF-8.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
   RED='\033[31m' GREEN='\033[32m' YELLOW='\033[33m' BLUE='\033[34m'
   CYAN='\033[36m' BOLD='\033[1m' DIM='\033[2m' NC='\033[0m'
@@ -26,9 +23,6 @@ else
   SPIN_FRAMES='|/-\'
 fi
 
-# UI_QUIET=true hides print_info/print_success (the step lines of a command
-# say it all); warnings and errors always print. DCVM_VERBOSE=1 shows
-# everything.
 UI_QUIET=false
 ui_quiet() { [ "${DCVM_VERBOSE:-0}" = 1 ] || UI_QUIET=true; }
 
@@ -37,16 +31,12 @@ print_success() { [ "$UI_QUIET" = true ] || echo -e "${GREEN}${SYM_OK}${NC} $1";
 print_warning() { echo -e "${YELLOW}${SYM_WARN}${NC} $1"; }
 print_error() { echo -e "${RED}${SYM_FAIL} error:${NC} $1"; }
 
-# Title of a command's output: bold subject, dim details.
-#   dcvm create web   Ubuntu 24.04 · 2 vCPU · 2048 MB · 30G
 ui_title() {
   echo ""
   echo -e "${BOLD}$1${NC}${2:+  ${DIM}$2${NC}}"
   echo ""
 }
 
-# One finished step: ui_step ok|warn|fail|skip <label> [detail]
-#   ✓ Disk           30G overlay on ubuntu-24.04-server-cloudimg-amd64.img
 ui_step() {
   local sym col
   case "$1" in
@@ -58,7 +48,6 @@ ui_step() {
   printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
 }
 
-# True when live output (spinners, progress bars) can be drawn on stderr.
 ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; }
 
 # The terminal's width in columns, read once from the terminal itself (tput
@@ -71,10 +60,6 @@ ui_cols() {
   echo "$UI_COLS"
 }
 
-# A live block of lines on stderr, redrawn in place on each call:
-# ui_region <line>... ; without arguments it erases the block. It counts
-# the screen rows each line takes, so a line that wraps does not leave the
-# lines above it behind on the next redraw.
 UI_REGION_ROWS=0
 ui_region() {
   local out="\r" first=true line plain cols rows=0
@@ -102,16 +87,13 @@ ui_fit() {
   echo "${text//\\/\\\\}"
 }
 
-# The first line of a live block: spinner, label, detail.
 UI_SPIN_I=0
 ui_spin_line() {
   printf '  %b%s%b %-15s %b%s%b' "$CYAN" "${SPIN_FRAMES:UI_SPIN_I++%${#SPIN_FRAMES}:1}" "$NC" "$1" "$DIM" "$(ui_fit 20 "${2:-}")" "$NC"
 }
-# One frame of a spinner line: ui_spin <label> [detail]
 ui_spin() { ui_region "$(ui_spin_line "$1" "${2:-}")"; }
 ui_spin_clear() { ui_region; }
 
-# A progress bar of <width> characters: ui_bar <percent> [width]
 ui_bar() {
   local w=${2:-20} fill on off
   fill=$((${1:-0} * w / 100))
@@ -120,9 +102,6 @@ ui_bar() {
   printf '%b%s%b%b%s%b' "$CYAN" "${on// /$SYM_BAR}" "$NC" "$DIM" "${off// /$BOX_H}" "$NC"
 }
 
-# Calls <tick> every 0.1 s while background job <pid> runs, cursor hidden;
-# Ctrl+C stops the job. Returns the job's exit status. <tick> sees the
-# caller's local variables.
 ui_watch() {
   local _w_pid=$1 _w_tick=$2 _w_rc=0
   trap 'ui_spin_clear; printf "\033[?25h" >&2; pkill -P "$_w_pid" 2>/dev/null; kill "$_w_pid" 2>/dev/null; exit 130' INT TERM
@@ -138,12 +117,6 @@ ui_watch() {
   return "$_w_rc"
 }
 
-# Runs a command behind a live block (on a terminal) and returns its status:
-# a spinner with the elapsed time, and under it the command's latest output
-# line, or the lines printed by the function named in UI_RUN_DETAIL (it can
-# read UI_RUN_LOG). The block disappears when the command ends; the caller
-# prints the final ui_step line. UI_RUN_SECS holds the duration and
-# UI_RUN_LOG the command's output, to show when it failed.
 ui_run() {
   local label="$1" start=$SECONDS rc=0
   shift
@@ -168,9 +141,6 @@ ui_run_tick() {
   ui_region "${lines[@]}"
 }
 
-# The last non-empty line a command wrote to <log>, without colour codes,
-# carriage-return progress or tabs; outside UTF-8 also without non-ASCII
-# bytes, so ui_region can count its width.
 ui_last_line() {
   local line
   line=$(tail -c 4096 "$1" 2>/dev/null | tr '\r\t' '\n ' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[[:space:]]*$//' | grep -v '^$' | tail -1)
@@ -180,14 +150,8 @@ ui_last_line() {
   fi
 }
 
-# "1 VM", "3 VMs": plural <count> <word>
 plural() { echo "$1 $2$([ "$1" = 1 ] || echo s)"; }
 
-# A box around the key result, title in the top border. Rows are ASCII, so
-# the width is exact; keep copyable commands outside the box (ui_next).
-#   ╭─ web is booting ───────────────────╮
-#   │ Address    10.10.10.50 (static)    │
-#   ╰────────────────────────────────────╯
 ui_box() {
   local title="$1" line w top bottom
   shift
@@ -203,8 +167,6 @@ ui_box() {
   echo -e "  ${DIM}${BOX_BL}${bottom// /$BOX_H}${BOX_BR}${NC}"
 }
 
-# "Next steps" with one command per line: ui_next <command> [what it does] ...
-# The command column is as wide as the longest command.
 ui_next() {
   local -a args=("$@")
   local i w=24
@@ -219,14 +181,11 @@ ui_next() {
   echo ""
 }
 
-# Section heading inside a screen: ui_section <title> [detail]
 ui_section() {
   echo ""
   echo -e "${BOLD}$1${NC}${2:+  ${DIM}$2${NC}}"
 }
 
-# Label and value lines: ui_kv <label> <value> [<label> <value> ...]
-#   Bridge      virbr-dc, 10.10.10.1/24
 ui_kv() {
   while [ $# -gt 0 ]; do
     printf '  %b%-12s%b %s\n' "$DIM" "$1" "$NC" "${2:-}"
@@ -234,8 +193,6 @@ ui_kv() {
   done
 }
 
-# Final result line of a command: ui_done ok|warn|fail|skip <message> [detail]
-#   ✓ web deleted  No DHCP leases found
 ui_done() {
   local sym=$SYM_OK col=$GREEN
   case "$1" in
@@ -247,9 +204,6 @@ ui_done() {
   echo -e "${col}${sym}${NC} ${BOLD}$2${NC}${3:+  ${DIM}$3${NC}}"
 }
 
-# Help text on stdin, coloured on a terminal: the first line and section
-# headings ("Usage:", "Commands:") bold, the first column of indented
-# "  command   description" lines cyan, "# comments" dim.
 ui_help() {
   local line first=true
   if [ -z "$BOLD" ]; then
@@ -274,9 +228,6 @@ ui_help() {
   done
 }
 
-# Table from tab-separated lines on stdin; the first line is the header (dim).
-# A state cell gets a glyph and colour (● running, ○ shut off, ◐ paused), ✓/✗
-# cells are green/red, and an empty cell shows a dim dash.
 ui_table() {
   local -a rows=() widths=() cells=()
   local row cell i out col pad
@@ -286,7 +237,6 @@ ui_table() {
     row=-$'\t'$row$'\t'-
     while [[ $row == *$'\t\t'* ]]; do row=${row//$'\t\t'/$'\t'-$'\t'}; done
     row=${row#-$'\t'} row=${row%$'\t'-}
-    # Glyphs first, so the column widths include them.
     if [ ${#rows[@]} -gt 0 ]; then
       IFS=$'\t' read -r -a cells <<<"$row"
       for i in "${!cells[@]}"; do
@@ -398,7 +348,6 @@ check_permissions() {
   fi
 }
 
-# virsh net-dhcp-leases as a table (VM, IP, MAC, expires).
 leases_table() {
   local leases
   leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); print $6 "\t" ip "\t" $3 "\t" $1 " " $2 }')
@@ -412,8 +361,6 @@ leases_table() {
   } | ui_table
 }
 
-# Downloads <path> of the dcvm repository (DCVM_REPO_SLUG@DCVM_REPO_BRANCH)
-# to <dest>; used by the installer and self-update.
 fetch_repo_file() {
   local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_BRANCH:-main}"
   mkdir -p "$(dirname "$2")" 2>/dev/null || true
@@ -424,8 +371,6 @@ fetch_repo_file() {
   fi
 }
 
-# Paths of the files dcvm installs (dcvm, lib/**/*.sh) in the repository,
-# from the GitHub API; fails when the API is unreachable or rate limited.
 list_repo_files() {
   local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_BRANCH:-main}?recursive=1"
   local response files
@@ -458,20 +403,309 @@ for item in json.load(sys.stdin).get("tree", []):
   echo "$files"
 }
 
-# Removes dcvm lines matching the extended regex <pattern> from the shell
-# startup files of root and of the user who ran sudo (a .bak copy is kept),
-# and prints each file it changed: remove_shell_lines <pattern>
-remove_shell_lines() {
+templates_dir() { echo "${DATACENTER_BASE:-/srv/datacenter}/storage/templates"; }
+builds_dir() { echo "$(templates_dir)/builds"; }
+
+disk_backing() {
+  qemu-img info -U "$1" 2>/dev/null | sed -n 's/^backing file: //p' | sed 's/ (actual path: .*)$//' | head -1
+}
+
+build_image() {
+  local b=${1##*/}
+  local stem=${b%.*}
+  echo "${stem%-*}.${b##*.}"
+}
+
+build_sum() { sed -n "s/^$2=//p" "${1%.*}.sums" 2>/dev/null | head -1; }
+
+register_build() {
+  local file="$1" img="$2" dir sha b
+  dir=$(builds_dir)
+  mkdir -p "$dir" || return 1
+  sha=$(sha256sum "$file" | cut -d' ' -f1) || return 1
+  b="$dir/${img%.*}-${sha:0:12}.${img##*.}"
+  if [ ! -e "$b" ]; then
+    ln "$file" "$b" 2>/dev/null || cp -p --sparse=always "$file" "$b" || return 1
+  fi
+  [ -f "${b%.*}.sums" ] || printf 'image=%s\nsha256=%s\nsha512=%s\nadded=%s\n' \
+    "$img" "$sha" "$(sha512sum "$file" | cut -d' ' -f1)" "$(date -Is)" >"${b%.*}.sums"
+  echo "$b"
+}
+
+current_build() {
+  local img="$1" file b
+  file="$(templates_dir)/$img"
+  [ -f "$file" ] || return 1
+  for b in "$(builds_dir)/${img%.*}"-*."${img##*.}"; do
+    [ -f "$b" ] && [ "$b" -ef "$file" ] && echo "$b" && return 0
+  done
+  b=$(register_build "$file" "$img") || return 1
+  [ "$b" -ef "$file" ] || ln -f "$b" "$file"
+  echo "$b"
+}
+
+find_build() {
+  local f b
+  for f in "$(builds_dir)"/*.sums; do
+    [ -f "$f" ] && grep -qx "sha256=$1" "$f" || continue
+    for b in "${f%.sums}".*; do [ "${b##*.}" != sums ] && [ -f "$b" ] && echo "$b" && return 0; done
+  done
+  return 1
+}
+
+vm_disks() {
+  local vm disk
+  while read -r vm; do
+    [ -n "$vm" ] || continue
+    disk=$(get_vm_disk_path "$vm")
+    [ -n "$disk" ] && printf '%s\t%s\t%s\n' "$vm" "$disk" "$(disk_backing "$disk")"
+  done < <(virsh list --all --name 2>/dev/null)
+}
+
+backup_builds() {
+  sed -n 's/^build=//p' "${DATACENTER_BASE:-/srv/datacenter}"/backups/*/base 2>/dev/null
+}
+
+# Whether a disk or backup from before 0.9.9 exists: they do not record the
+# build they need, so no build may be deleted while one does.
+legacy_references() {
+  local base="${DATACENTER_BASE:-/srv/datacenter}" f
+  vm_disks | cut -f3 | grep -q "^$(templates_dir)/[^/]*$" && return 0
+  for f in "$base"/backups/*-????????_?????? "$base"/backups/*-disk-*.qcow2*; do
+    [ -d "$f" ] && [ ! -f "$f/base" ] && return 0
+    [ -f "$f" ] && return 0
+  done
+  return 1
+}
+
+prune_builds() {
+  local b used
+  legacy_references && return 0
+  used=$({
+    vm_disks | cut -f3
+    backup_builds
+    cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
+  } | sed 's#.*/##')
+  for b in "$(builds_dir)"/*; do
+    [ -f "$b" ] && [ "${b##*.}" != sums ] || continue
+    [ "$b" -ef "$(templates_dir)/$(build_image "$b")" ] && continue
+    grep -qxF "${b##*/}" <<<"$used" && continue
+    rm -f "$b" "${b%.*}.sums" && echo "${b##*/}"
+  done
+}
+
+# Moves a stopped VM's disk onto <build> without changing what the VM sees:
+# qemu-img's safe rebase reads both bases and copies the blocks that differ
+# into the disk. It works on a copy, which replaces the disk only after the
+# rebase and a check succeed, so an interruption cannot damage the disk.
+rebase_disk() {
+  local disk="$1" build="$2" tmp="$1.rebase"
+  rm -f "$tmp"
+  if cp -p --sparse=always "$disk" "$tmp" && qemu-img rebase -f qcow2 -b "$build" -F qcow2 "$tmp" &&
+    qemu-img check -q "$tmp" && mv -f "$tmp" "$disk"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Whether <disk> reads as clean file systems on top of <build>: every ext*
+# file system passes fsck in preen mode (status 0 or 1) and every btrfs one
+# btrfs check. Runs on a throwaway copy, so the check cannot change the disk.
+# Used for disks from before 0.9.9, which do not record their build; a disk
+# on the wrong build typically fails on /boot even when / still passes.
+disk_fits_build() {
+  local disk="$1" build="$2" tmp fs type rc ok=1
+  tmp=$(mktemp --suffix=.qcow2) || return 1
+  if ! cp --sparse=always "$disk" "$tmp" || ! qemu-img rebase -u -f qcow2 -b "$build" -F qcow2 "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  while read -r fs type; do
+    case "$type" in
+    ext2 | ext3 | ext4)
+      rc=$(guestfish -a "$tmp" run : fsck "$type" "$fs" 2>/dev/null | tail -1)
+      case "$rc" in 0 | 1 | 0x0 | 0x1) ok=0 ;; *)
+        ok=1
+        break
+        ;;
+      esac
+      ;;
+    btrfs)
+      guestfish -a "$tmp" run : btrfs-check "$fs" >/dev/null 2>&1 && ok=0 || {
+        ok=1
+        break
+      }
+      ;;
+    esac
+  done < <(guestfish --ro -a "$tmp" run : list-filesystems 2>/dev/null | sed 's/: / /')
+  rm -f "$tmp"
+  return "$ok"
+}
+
+legacy_disk_build() {
+  local disk="$1" img="$2" b fits=()
+  for b in "$(builds_dir)/${img%.*}"-*."${img##*.}" "$(current_build "$img" 2>/dev/null)"; do
+    [ -f "$b" ] || continue
+    printf '%s\n' "${fits[@]}" | grep -qxF "$b" && continue
+    disk_fits_build "$disk" "$b" && fits+=("$b")
+  done
+  [ ${#fits[@]} -eq 1 ] && echo "${fits[0]}"
+}
+
+pin_vm_disk() {
+  local vm="$1" disk="$2" backing="$3" img build pending="${DATACENTER_BASE:-/srv/datacenter}/vms/$1/base.pending"
+  img=${backing##*/}
+  if [ -f "$pending" ] && [ -f "$(cat "$pending")" ]; then
+    build=$(cat "$pending")
+  elif [ "$(stat -c %W "$disk" 2>/dev/null || echo 0)" -gt "$(stat -c %Y "$(templates_dir)/$img" 2>/dev/null || echo 0)" ]; then
+    # The template was saved before the disk was created, so it is still
+    # the build the disk was made on.
+    build=$(current_build "$img")
+  else
+    build=$(legacy_disk_build "$disk" "$img")
+  fi
+  if [ -z "$build" ]; then
+    print_error "$vm's base image ($img) was replaced after $vm was created, and no build on this host fits its disk. Restore a backup (dcvm backup restore $vm) or see dcvm doctor."
+    return 1
+  fi
+  qemu-img rebase -u -f qcow2 -b "$build" -F qcow2 "$disk" || return 1
+  rm -f "$pending"
+  echo "$build"
+}
+
+prepare_vm_disk() {
+  local vm="$1" label="${2:-Base image}" disk backing img cur
+  disk=$(get_vm_disk_path "$vm")
+  [ -n "$disk" ] && [ -f "$disk" ] || return 0
+  backing=$(disk_backing "$disk")
+  case "$backing" in
+  "$(builds_dir)"/*) img=$(build_image "$backing") ;;
+  "$(templates_dir)"/*)
+    img=${backing##*/}
+    backing=$(pin_vm_disk "$vm" "$disk" "$backing") || return 1
+    ;;
+  *) return 0 ;;
+  esac
+  if [ ! -f "$backing" ]; then
+    print_error "$vm's base image is missing: $backing (see dcvm doctor)"
+    return 1
+  fi
+  cur=$(current_build "$img" 2>/dev/null) || return 0
+  [ "$cur" = "$backing" ] && return 0
+  if ui_run "$label" rebase_disk "$disk" "$cur"; then
+    ui_step ok "$label" "moved to the current build ${cur##*/} (${UI_RUN_SECS}s)"
+    prune_builds >/dev/null
+  else
+    ui_step warn "$label" "could not move to ${cur##*/}; $vm stays on ${backing##*/}"
+  fi
+  return 0
+}
+
+vm_disk_outdated() {
+  local disk backing
+  disk=$(get_vm_disk_path "$1")
+  [ -n "$disk" ] && [ -f "$disk" ] || return 1
+  backing=$(disk_backing "$disk")
+  case "$backing" in
+  "$(templates_dir)"/*) return 0 ;;
+  "$(builds_dir)"/*) [ "$(current_build "$(build_image "$backing")" 2>/dev/null)" != "$backing" ] && [ -f "$(templates_dir)/$(build_image "$backing")" ] ;;
+  *) return 1 ;;
+  esac
+}
+
+write_base_record() {
+  local disk="$1" folder="$2" backing
+  backing=$(disk_backing "$disk")
+  [ -n "$backing" ] || return 0
+  printf 'image=%s\nbuild=%s\nsha256=%s\nsha512=%s\n' "$(build_image "$backing")" "$backing" \
+    "$(build_sum "$backing" sha256)" "$(build_sum "$backing" sha512)" >"$folder/base"
+}
+
+shell_files_matching() {
   local home f
   while IFS= read -r home; do
     for f in "$home/.bashrc" "$home/.zshrc" "$home/.bash_profile" "$home/.profile" "$home/.zprofile" "$home/.zshenv"; do
-      [ -f "$f" ] && grep -qE "$1" "$f" 2>/dev/null || continue
-      if sed -i.bak -E "\#$1#d" "$f"; then echo "$f"; else print_warning "Could not update $f"; fi
+      [ -f "$f" ] && grep -qE "$1" "$f" 2>/dev/null && echo "$f"
     done
   done < <({
     echo "$HOME"
     [ -n "${SUDO_USER:-}" ] && getent passwd "$SUDO_USER" | cut -d: -f6
   } | awk 'NF && !seen[$0]++')
+}
+
+remove_shell_lines() {
+  local f
+  while IFS= read -r f; do
+    if sed -i.bak -E "\#$1#d" "$f"; then echo "$f"; else print_warning "Could not update $f"; fi
+  done < <(shell_files_matching "$1")
+}
+
+free_bytes() { echo $(($(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024)); }
+
+DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service"
+
+install_dcvm_services() {
+  command_exists systemctl || return 1
+  cat >/etc/systemd/system/datacenter-storage.service <<'EOF' || return 1
+[Unit]
+Description=dcvm storage check and health report
+After=libvirtd.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/dcvm storage-cleanup
+ExecStartPost=-/usr/local/bin/dcvm doctor --quiet --fast
+EOF
+  cat >/etc/systemd/system/datacenter-storage.timer <<'EOF' || return 1
+[Unit]
+Description=Run the dcvm storage check hourly
+Requires=datacenter-storage.service
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  cat >/etc/systemd/system/dcvm-boot.service <<'EOF' || return 1
+[Unit]
+Description=dcvm: bring back the dcvm network and port forwards after boot
+After=libvirtd.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/local/bin/dcvm doctor --fix --quiet --only network
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload &&
+    systemctl enable --now datacenter-storage.timer >/dev/null 2>&1 &&
+    systemctl enable dcvm-boot.service >/dev/null 2>&1
+}
+
+dcvm_services_ok() {
+  command_exists systemctl || return 0
+  grep -qs 'dcvm doctor' /etc/systemd/system/datacenter-storage.service &&
+    systemctl is-enabled datacenter-storage.timer >/dev/null 2>&1 &&
+    systemctl is-enabled dcvm-boot.service >/dev/null 2>&1
+}
+
+# Whether net.ipv4.ip_forward=1 is applied at boot. Asks systemd which
+# files it loads: Debian 13 no longer reads /etc/sysctl.conf.
+ip_forwarding_persisted() {
+  local conf
+  conf=$(systemd-analyze cat-config sysctl.d 2>/dev/null) || conf=$(cat /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null)
+  grep -qE '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1' <<<"$conf"
+}
+
+enable_ip_forwarding() {
+  echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || return 1
+  ip_forwarding_persisted || echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-dcvm.conf
 }
 
 # "alias dcvm=..." lines, written by installs before 0.9 (they pointed at
@@ -553,8 +787,6 @@ validate_package_list() {
   return 0
 }
 
-# Trim and validate each non-empty name in a comma-separated list.
-# Same gate create-vm uses before any disk/libvirt work.
 validate_vm_name_list() {
   local raw="$1"
   local -a names
@@ -679,9 +911,6 @@ get_vm_disk_path() {
   echo "$disk_path"
 }
 
-# Login name recorded at create time in cloud-init user-data
-# ($DATACENTER_BASE/vms/<name>/cloud-init/user-data). Uses the users
-# list name, then VM_USERNAME=, and "admin" only when neither is recorded.
 get_vm_username() {
   local vm_name="$1"
   local base="${DATACENTER_BASE:-/srv/datacenter}"
@@ -740,7 +969,6 @@ generate_random_mac() {
 
 file_bytes() { stat -c %s "$1" 2>/dev/null || echo 0; }
 
-# 7408779264 -> "6.9 GB", 154000000 -> "147 MB"
 format_bytes() {
   awk -v b="${1:-0}" 'BEGIN {
     split("B KB MB GB TB", u); i = 1
@@ -771,8 +999,6 @@ backup_file() {
   fi
 }
 
-# Asks a yes/no question: confirm_action <question> [default: n|y]. Returns 0
-# for yes; otherwise prints "Cancelled." and returns 1.
 confirm_action() {
   local default="${2:-n}" answer
   read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=""
@@ -817,7 +1043,6 @@ check_port_forward() {
   local host_port="$1"
   local vm_ip="$2"
   local vm_port="$3"
-  # Same two rules setup_vm_forwarding inserts: the DNAT and the FORWARD accept.
   iptables -t nat -C PREROUTING -p tcp --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
   iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -j ACCEPT 2>/dev/null || return 1
   check_port_connectivity "$vm_ip" "$vm_port"
@@ -853,7 +1078,6 @@ list_all_vms() {
   done
 }
 
-# Names of the VMs on the dcvm network, one per line.
 list_datacenter_vm_names() {
   list_datacenter_vms | awk -F': ' '{ gsub(/^ +| +$/, "", $1); print $1 }'
 }
@@ -868,8 +1092,6 @@ list_datacenter_vms() {
   done
 }
 
-# The host's address for other machines: DATACENTER_IP from the config if
-# set, otherwise detected.
 get_host_ip() {
   local ip
   ip=$(grep "^DATACENTER_IP=" "${1:-/etc/dcvm-install.conf}" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
@@ -946,10 +1168,6 @@ stop_vm_gracefully() {
   return 0
 }
 
-# Print the stdin lines whose field $2 equals $1 (case-insensitive). Only
-# lines whose MAC column (3) holds a MAC address can match, so headers never
-# do, and an empty $1 matches nothing. Used for virsh net-dhcp-leases output
-# (MAC 3, hostname 6).
 filter_lease_lines() {
   awk -v v="$1" -v f="$2" '
     function has_mac(h) {

@@ -74,7 +74,6 @@ https://kali.download/cloud-images/kali-${KALI_VERSION}/kali-linux-${KALI_VERSIO
 "
 SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2"
 
-# "Debian 13" for debian-13-genericcloud-amd64.qcow2 and so on.
 image_label() {
   case "$1" in
   debian-13-*) echo "Debian 13" ;;
@@ -123,8 +122,6 @@ get_mirrors() {
   echo "$mirrors" | grep -v '^$' | sed 's/^[[:space:]]*//'
 }
 
-# Fetches the first MB of <url>; on success writes
-# "<idx> <latency s> <MB/s> <file size> <url>" to <tmp_dir>/result_<idx>.
 # The size (from Content-Range) tells mirrors with another build apart.
 test_mirror_speed() {
   local url="$1" tmp_dir="$2" idx="$3" result size
@@ -140,12 +137,6 @@ test_mirror_speed() {
 }
 export -f test_mirror_speed
 
-# Tests every mirror of image $1 in parallel, from wherever dcvm runs, and
-# prints the ones that answered, fastest first: "<url> <file size>" per
-# line. So the nearest good mirror wins without any location setting. The
-# test results go to stderr:
-#   Mirror: <url> -> 12.34 MB/s (latency: 0.12s)
-#   ★ Best mirror: <url> (12.34 MB/s, latency: 0.12s)
 rank_mirrors() {
   local filename="${1:-}" mirrors tmp_dir url idx=0 ranked
   if [ -z "$filename" ]; then
@@ -164,8 +155,6 @@ rank_mirrors() {
     idx=$((idx + 1))
   done <<<"$mirrors"
   wait
-  # result_N: "<idx> <latency> <MB/s> <size> <url>"; fastest first, then
-  # lowest latency.
   ranked=$(cat "$tmp_dir"/result_* 2>/dev/null | sort -k3,3gr -k2,2g)
   rm -rf "$tmp_dir"
   if [ -z "$ranked" ]; then
@@ -179,8 +168,6 @@ rank_mirrors() {
 
 select_best_mirror() { rank_mirrors "$@" | head -1 | cut -d' ' -f1; }
 
-# Prints the hash listed for file name $1 in a SHA256SUMS/SHA512SUMS-style
-# list on stdin ("<hash>  <name>" or "<hash> *<name>").
 checksum_for_file() {
   awk -v f="$1" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print tolower($1); exit } }'
 }
@@ -229,8 +216,6 @@ verify_published_checksum() {
   return 2
 }
 
-# Accepts or rejects a finished download. A pinned SHA-256 must match;
-# otherwise a published checksum must match if any mirror publishes one.
 check_download() {
   local filename="$1" url="$2" file="$3" expected_sha256="$4" actual rc
   if [ -n "$expected_sha256" ]; then
@@ -284,16 +269,12 @@ download_with_mirrors() {
   ranked=$(rank_mirrors "$filename") || ranked=""
   best=$(head -1 <<<"$ranked" | cut -d' ' -f1)
 
-  # Mirrors that answered, fastest first, then the ones that did not.
   local url_list=()
   while IFS= read -r url; do
     [ -n "$url" ] && url_list+=("$url")
   done < <(printf '%s\n%s\n' "$(cut -d' ' -f1 <<<"$ranked")" "$mirrors" | awk 'NF && !seen[$0]++')
 
   if command -v aria2c >/dev/null 2>&1 && [ -n "$best" ]; then
-    # aria2c splits the file into pieces and fetches them from the fastest
-    # mirrors at once (up to DCVM_ARIA2_MIRRORS of them), a few connections
-    # each, so one slow or throttled mirror does not hold the download up.
     # Only mirrors serving the same file as the fastest one (same name and
     # size): a mirror with an older build would mix two files.
     local -a sources
@@ -414,9 +395,47 @@ download_with_mirrors() {
   return 1
 }
 
-# The last progress readout of curl, aria2c or wget in log $1 as
-# "percent|done bytes|total bytes|bytes per second|seconds left"; fields the
-# tool does not report are empty, and so is the line before the first one.
+# checksum (Ubuntu keeps release-<date>/ folders, Debian dated folders, Arch
+# v<version>/ folders; daily builds are not kept) and prints its URL. Looks
+# at the newest 60 folders; fails when the build is not there.
+find_archived_build() {
+  local img="$1" sha256="$2" sha512="$3" url archive dir sums line name
+  url=$(get_mirrors "$img" | head -1)
+  case "$url" in
+  *kali.download*) return 1 ;; # converted locally: no published checksum of the qcow2
+  esac
+  archive=${url%/*}
+  archive=${archive%/*}
+  while IFS= read -r dir; do
+    for sums in SHA256SUMS SHA512SUMS $(fetch_text "$archive/$dir/" | grep -oE 'href="[^"]+\.SHA256"' | sed 's/href="//;s/"$//'); do
+      line=$(fetch_text "$archive/$dir/$sums" | grep -iE "^($sha256|$sha512)[[:space:]]" | head -1)
+      [ -n "$line" ] || continue
+      name=$(awk '{ print $2 }' <<<"$line")
+      echo "$archive/$dir/${name#\*}"
+      return 0
+    done
+  done < <(fetch_text "$archive/" | grep -oE 'href="[A-Za-z-]*[0-9][0-9.-]*/"' | sed 's/href="//;s/\/"$//' | sort -ru | head -60)
+  return 1
+}
+
+fetch_archived_build() {
+  local img="$1" sha256="$2" sha512="$3" url tmp b
+  if ! url=$(find_archived_build "$img" "$sha256" "$sha512"); then
+    return 1
+  fi
+  mkdir -p "$(builds_dir)"
+  tmp="$(builds_dir)/.fetch.$$"
+  if ! ui_run "Fetching base" curl -fsSL -o "$tmp" "$url" || [ "$(sha256sum "$tmp" | cut -d' ' -f1)" != "$sha256" ]; then
+    rm -f "$tmp"
+    ui_step fail "Base image" "could not fetch the original build from ${url%/*}" >&2
+    return 1
+  fi
+  b=$(register_build "$tmp" "$img")
+  rm -f "$tmp"
+  ui_step ok "Base image" "fetched the original build from ${url#*://} (${UI_RUN_SECS}s)" >&2
+  echo "$b"
+}
+
 download_progress() {
   tail -c 4096 "$1" 2>/dev/null | tr '\r' '\n' | awk '
     function bytes(x, n, u) {
@@ -446,11 +465,6 @@ download_progress() {
     END { print p }'
 }
 
-# Downloads an image like download_with_mirrors (same arguments and exit
-# code). On a terminal, a live block shows the image and below it the
-# chosen mirror, the downloader and a progress bar with size, speed and time
-# left; when it is done the block collapses into one summary line. Without a
-# terminal, or with DCVM_VERBOSE=1, the downloader's own output.
 download_image_ui() {
   if ! ui_live; then
     download_with_mirrors "$@" >/dev/null
@@ -468,7 +482,6 @@ download_image_ui() {
     else
       ui_step fail "$label" "download failed: every mirror failed"
     fi
-    # The reasons, with each URL shortened to its host.
     grep -E '^WARNING' "$log" | sed -E 's/^WARNING: //; s#https?://([^/ ]+)[^ ]*#\1#g' | awk '!seen[$0]++' |
       tail -4 | while IFS= read -r line; do echo -e "      ${DIM}${line}${NC}"; done
     echo -e "      ${DIM}dcvm template check $img shows which mirrors answer from here${NC}"
@@ -502,7 +515,6 @@ download_image_ui() {
   rm -f "$log"
 }
 
-# One redraw of download_image_ui's live block (runs in its scope).
 download_tick() {
   local lines=() phase detail="" url host prog pct done total speed left sources warn
   if grep -q 'Best mirror' "$log"; then
@@ -634,7 +646,6 @@ extract_kali_image() {
   return 0
 }
 
-# IMAGE<tab>fastest mirror, for every supported image.
 best_mirror_rows() {
   local img
   for img in $SUPPORTED_IMAGES; do
@@ -644,7 +655,6 @@ best_mirror_rows() {
 
 is_force() { [ "${1:-}" = --force ] || [ "${1:-}" = -f ]; }
 
-# Mirror speed table for one image (dcvm template check).
 mirror_table() {
   local filename="$1" total ok
   total=$(get_mirrors "$filename" | grep -c .)
@@ -663,10 +673,58 @@ mirror_table() {
   echo -e "  ${DIM}$ok of $total mirrors answered$([ "$ok" -lt "$total" ] && echo "; the others failed or timed out")${NC}"
 }
 
-# Downloads one image into the template folder (dcvm template download).
 download_image() {
+  local img="$1" path="$TEMPLATE_DIR/$1" old="" new vm disk base running="" pinned
   mkdir -p "$TEMPLATE_DIR"
-  download_image_ui "$1" "$TEMPLATE_DIR/$1" 100000000
+  if [ -f "$path" ]; then
+    old=$(current_build "$img") || return 1
+    # Disks from before 0.9.9 refer to templates/<image> itself: pin the
+    # stopped ones to the build being replaced; running ones cannot change
+    # while they run.
+    while IFS=$'\t' read -r vm disk base; do
+      [ "$base" = "$path" ] || continue
+      if [ "$(get_vm_state "$vm")" = running ]; then
+        running+="${running:+, }$vm"
+      elif pinned=$(pin_vm_disk "$vm" "$disk" "$base"); then
+        ui_step ok "$vm" "pinned to ${pinned##*/} before the download"
+      else
+        return 1
+      fi
+    done < <(vm_disks)
+    if [ -n "$running" ]; then
+      ui_step fail "$(image_label "$img")" "not replaced: running VMs use this file directly ($running)"
+      echo -e "      ${DIM}They were created before 0.9.9. Stop them (dcvm stop), then download again.${NC}"
+      return 1
+    fi
+  fi
+  download_image_ui "$img" "$path" 100000000 || return 1
+  [ -n "$old" ] || return 0
+  new=$(current_build "$img") || return 1
+  if [ "$new" = "$old" ]; then
+    ui_step skip "VMs" "the mirror has no newer build; nothing to move"
+    return 0
+  fi
+  update_vms_to_build "$img" "$new"
+}
+
+update_vms_to_build() {
+  local img="$1" new="$2" vm disk base removed
+  while IFS=$'\t' read -r vm disk base <&3; do
+    [[ "$base" == "$(builds_dir)/${img%.*}-"* ]] && [ "$base" != "$new" ] || continue
+    if [ "$(get_vm_state "$vm")" = running ]; then
+      if [ "${RESTART_RUNNING:-false}" = true ] && confirm_action "Restart $vm to move it onto the new build now?"; then
+        stop_vm_gracefully "$vm" 60 >/dev/null 2>&1
+        prepare_vm_disk "$vm" "$vm" && virsh start "$vm" >/dev/null 2>&1
+      else
+        ui_step skip "$vm" "running; moves to the new build at its next start (or: dcvm restart $vm)"
+      fi
+    else
+      prepare_vm_disk "$vm" "$vm"
+    fi
+  done 3< <(vm_disks)
+  removed=$(prune_builds)
+  [ -n "$removed" ] && ui_step ok "Old builds" "removed $(echo $removed)"
+  return 0
 }
 
 main() {
@@ -746,7 +804,8 @@ main() {
     fi
     ;;
   download)
-    local force="${3:-}"
+    local force="${3:-}" arg
+    for arg in "$@"; do [ "$arg" = --restart ] && RESTART_RUNNING=true; done
     if [ "$target" = "-a" ] || [ "$target" = "--all" ]; then
       ui_title "Downloading images" "into $TEMPLATE_DIR"
       for img in $SUPPORTED_IMAGES; do
@@ -754,7 +813,6 @@ main() {
         if [ -f "$TEMPLATE_DIR/$img" ] && ! is_force "$force"; then
           ui_step skip "$img" "already downloaded"
         else
-          rm -f "$TEMPLATE_DIR/$img"
           download_image "$img" || failed=$((failed + 1))
         fi
       done
@@ -779,7 +837,6 @@ main() {
       exit 0
     fi
     ui_title "Downloading $target" "into $TEMPLATE_DIR"
-    rm -f "$TEMPLATE_DIR/$target"
     if download_image "$target"; then
       ui_done ok "$target ready" "dcvm create uses it from now on"
       echo ""

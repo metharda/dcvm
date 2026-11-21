@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
 
-# dcvm Comprehensive Test Suite
-# This script tests all dcvm commands and validates functionality.
-# Run with: ./test-suite.sh [options]
-#
-# Options:
-#   --quick       Run quick tests only (no VM creation)
-#   --full        Run full tests including VM creation/deletion
-#   --syntax      Run syntax checks only
-#   --unit        Run unit tests only (common.sh functions)
-#   --integration Run integration tests only
-#   --help        Show this help
-
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -256,6 +244,7 @@ test_syntax_all_scripts() {
     "$lib_dir/storage/storage-manager.sh"
     "$lib_dir/utils/common.sh"
     "$lib_dir/utils/fix-lock.sh"
+    "$lib_dir/utils/doctor.sh"
     "$lib_dir/utils/mirror-manager.sh"
     "$lib_dir/utils/dcvm-completion.sh"
     "$lib_dir/utils/test-suite.sh"
@@ -306,9 +295,6 @@ test_shellcheck() {
   done < <(find "$lib_dir" -type f -name '*.sh' -print0)
 }
 
-# `grep -c` prints 0 and exits 1 when nothing matches, so
-# `$(... | grep -c x || echo 0)` captures "0" twice ("0\n0"), which prints a
-# stray 0 and breaks `[ "$n" -gt 0 ]`. Use `|| true` instead.
 test_grep_count_fallback() {
   echo ""
   log_test "INFO" "═══ GREP -c FALLBACK ═══"
@@ -600,8 +586,6 @@ test_dhcp_cleanup_dispatch() {
   run_test_output_contains "completion: backup restore date offers latest" "latest" "(source '$SCRIPT_DIR/dcvm-completion.sh'; _dcvm_backup_dates_for_vm() { echo 20260101_120000; }; COMP_WORDS=(dcvm backup restore vm1 ''); COMP_CWORD=4; _dcvm_completion; echo \"\${COMPREPLY[*]}\")"
 }
 
-# Delete must clear only this VM's lease: no dhcp.sh clear, no restart_network
-# and no virsh net-destroy/net-start (that would cut every other VM's network).
 # shellcheck disable=SC2034,SC2317 # stubs are called by delete_single_vm
 test_delete_vm_keeps_network() {
   local t out
@@ -618,9 +602,6 @@ test_delete_vm_keeps_network() {
       esac
       return 0
     }
-    # Log any dhcp.sh call and run its real main against the stubbed virsh
-    # (fake bridge, so no real lease file is touched): a net-destroy/net-start
-    # reached that way shows up in the call log too.
     bash() {
       echo "bash $*" >>"$t/calls"
       case "$1" in
@@ -672,8 +653,6 @@ test_delete_vm_keeps_network() {
   rm -rf "$t"
 }
 
-# Source backup.sh without /etc/dcvm-install.conf: its top level calls
-# load_dcvm_config, so replace that right after each sourced file loads.
 load_backup_sh_for_test() {
   local base="$1"
   local backup_sh="$SCRIPT_DIR/../storage/backup.sh"
@@ -695,7 +674,6 @@ load_backup_sh_for_test() {
   LOG_FILE=/dev/null
 }
 
-# Stub virsh/qemu-img/virt-customize/sleep for backup.sh tests ($1 = state dir).
 stub_backup_tools() {
   local t="$1"
   # shellcheck disable=SC2317 # stub: invoked via PATH/function override from restore_vm
@@ -723,7 +701,6 @@ test_hosts_rename_sed_expr() {
   local t out
   t=$(mktemp -d)
   printf '127.0.1.1\tvm1 vm1\n127.0.1.1 vm1 vm1.local\n' >"$t/hosts"
-  # Runs the exact expression backup.sh passes to virt-customize, locally.
   out=$(
     load_backup_sh_for_test "$t"
     expr=$(hosts_rename_sed_expr vm1 vm1-copy)
@@ -746,9 +723,6 @@ test_hosts_rename_sed_expr() {
   rm -rf "$t"
 }
 
-# An in-place restore keeps the VM's MAC (and so its DHCP IP and port
-# forwards); only a copy gets new MACs. A versioned q35 machine type becomes
-# plain q35 so libvirt accepts the q35 PCIe controllers on the first define.
 test_backup_restore_in_place() {
   local t ts=20260101_120000 mode
   t=$(mktemp -d)
@@ -932,7 +906,6 @@ EOF
     log_test "FAIL" "backup restore (latest selector)"
   fi
 
-  # Static-IP copy: warn and do not auto-start
   mkdir -p "$t/config/network"
   cat >"$t/config/network/vm1.conf" <<'NET'
 VM_NAME="vm1"
@@ -958,7 +931,6 @@ NET
     log_test "FAIL" "backup restore <new_name> (static IP copy skips start/autostart)" "$(tail -5 "$t/out-static")"
   fi
 
-  # sed-path nvram drop (no xmlstarlet on PATH)
   rm -f "$t/defined.xml"
   : >"$t/calls"
   (
@@ -977,7 +949,6 @@ NET
     log_test "FAIL" "backup restore <new_name> (nvram dropped via sed)"
   fi
 
-  # import rename_to validation
   mkdir -p "$t/pkg"
   cp "$t/backups/vm1-$ts/vm1-disk-$ts.qcow2" "$t/backups/vm1-$ts/vm1-config-$ts.xml" "$t/pkg/"
   tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
@@ -1004,7 +975,6 @@ test_backup_ssh_setup_ip_wait() {
   out=$(
     load_backup_sh_for_test "$t"
     HOME="$t"
-    # Advance the deadline so the poll exits quickly without a real 120s wait.
     # shellcheck disable=SC2317
     sleep() { SECONDS=$((SECONDS + ${1:-1} + 120)); }
     # shellcheck disable=SC2317
@@ -1059,14 +1029,9 @@ test_create_extra_packages_userdata() {
   rm -rf "$t"
 }
 
-# Stand-in for generate_password_hash: a fake "\$6\$test\$..." hash that
-# records which password was hashed, so tests can check it.
 # shellcheck disable=SC2016 # literal $6$ prefix
 test_hash() { printf '$6$test$%s\n' "$(printf '%s' "$1" | base64 -w0 | tr '+/=' '._-')"; }
 
-# Generate user-data with create-vm.sh's generator ($1 user, $2 ENABLE_ROOT,
-# $3 SSH key, $4 output file, $5 -k packages, $6 password (testpass123),
-# $7 VM_OS (debian12), $8 ROOT_PASSWORD); the password hash is stubbed.
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
 generate_test_userdata() {
   local t
@@ -1197,8 +1162,6 @@ test_root_username_setup() {
   fi
 }
 
-# Print a value from a user-data file: $1 file, $2 a Python expression over
-# d (the yaml.safe_load result). Fails when the file does not parse.
 ud_py() {
   python3 -c 'import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -1208,12 +1171,8 @@ print(r if isinstance(r, str) else repr(r), end="")' "$1" "$2"
 
 has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
 
-# ud_py expression for the decoded SQL file content, which must be base64.
 ud_sql_expr='[__import__("base64").b64decode(w["content"]).decode() for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql" and w.get("encoding") == "b64"][0]'
 
-# #36: one password reaches the user's passwd hash, the root chpasswd hash
-# and MySQL unchanged, whatever it contains, and never passes through a guest
-# shell as text. Nothing sets a password on every boot (bootcmd).
 # shellcheck disable=SC2016 # literal $ in patterns and passwords
 test_userdata_passwords() {
   if ! has_pyyaml; then
@@ -1277,8 +1236,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
   fi
 
-  # The wizard keeps the password as typed: spaces at either end and
-  # backslashes included.
   local typed='  a\b c\  ' got=""
   read_password "Password: " got <<<"$typed" >/dev/null
   if [ "$got" = "$typed" ]; then
@@ -1287,8 +1244,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "read_password keeps leading/trailing spaces and backslashes (#36)" "got '$got'"
   fi
 
-  # Build the characters from their UTF-8 bytes: $'\u....' stays literal in
-  # the C locale.
   local sep lsep psep nel
   lsep=$(printf '\xe2\x80\xa8') psep=$(printf '\xe2\x80\xa9') nel=$(printf '\xc2\x85')
   ok=true
@@ -1301,8 +1256,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "validate_password rejects U+2028, U+2029 and U+0085 (YAML line breaks) (#36)"
   fi
 
-  # Even a password that bypasses validation cannot break the YAML: the SQL
-  # file is base64.
   pw="ab${lsep}cd${nel}ef"
   generate_test_userdata tester n "" "$t/sep.yaml" mysql-server "$pw" debian12
   sql=$(ud_py "$t/sep.yaml" "$ud_sql_expr" 2>/dev/null)
@@ -1322,7 +1275,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     log_test "FAIL" "-k mysql-client runs no SQL setup; docker group gets the user (#36)"
   fi
 
-  # Other names containing mysql-server install as typed, with no SQL setup.
   for os in debian12 ubuntu24.04; do
     for req in my-mysql-server-tools mysql-server-core-8.0; do
       f="$t/$os-$req.yaml"
@@ -1336,9 +1288,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
     done
   done
 
-  # Every supported VM_OS x both server names: package, service, SQL setup,
-  # and the root login: MySQL (Ubuntu) gets mysql_native_password, MariaDB
-  # keeps unix_socket and adds the password.
   local os pkg svc req auth
   for os in debian11 debian12 debian13 kali ubuntu20.04 ubuntu22.04 ubuntu24.04 archlinux; do
     for req in mysql-server default-mysql-server; do
@@ -1361,7 +1310,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
       grep -qxF "ALTER USER 'root'@'localhost' $auth;" <<<"$sql" || ok=false
       grep -qxF "  - systemctl start $svc" "$f" || ok=false
       if [ "$os" = archlinux ]; then
-        # install, then mariadb-install-db, then start
         line_of() { grep -nxF -- "$1" "$f" | head -1 | cut -d: -f1; }
         [ "$(line_of "    for pkg in mariadb; do")" -lt "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" ] 2>/dev/null &&
           [ "$(line_of '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql')" -lt "$(line_of '  - systemctl start mariadb')" ] 2>/dev/null || ok=false
@@ -1378,7 +1326,6 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
   rm -rf "$t"
 }
 
-# #38: per-OS base packages, SSH unit, sftp path and web server paths.
 # shellcheck disable=SC2016 # literal $pkg in the expected install lines
 test_userdata_per_os() {
   if ! has_pyyaml; then
@@ -1405,7 +1352,12 @@ test_userdata_per_os() {
       grep -qx '  - chown http:http /srv/http/index.html' "$f" || ok=false
       grep -qE 'www-data|/var/www|systemctl (enable|start) apache2' "$f" && ok=false
     else
-      [ "$(ud_py "$f" 'd["packages"]' 2>/dev/null)" = "$deb" ] || ok=false
+      if [[ "$os" == debian* ]]; then
+        [ "$(ud_py "$f" 'd["packages"]' 2>/dev/null)" = "${deb%]}, 'unattended-upgrades']" ] || ok=false
+      else
+        [ "$(ud_py "$f" 'd["packages"]' 2>/dev/null)" = "$deb" ] || ok=false
+      fi
+      [ "$(ud_py "$f" 'd["package_upgrade"]' 2>/dev/null)" = True ] || ok=false
       [ "$(ud_py "$f" 'd["runcmd"][0:3]' 2>/dev/null)" = "['systemctl enable ssh', 'systemctl restart ssh', 'systemctl status ssh --no-pager']" ] || ok=false
       grep -qx '      Subsystem sftp /usr/lib/openssh/sftp-server' "$f" || ok=false
       grep -qx '    for pkg in nginx apache2; do' "$f" || ok=false
@@ -1422,10 +1374,6 @@ test_userdata_per_os() {
   rm -rf "$t"
 }
 
-# libvirt dnsmasq status file for bridge "br" in $1 (libvirt runs dnsmasq with
-# --leasefile-ro, so there is no .leases file), and a matching
-# `virsh net-dhcp-leases` listing in $1/virsh-leases. vm10 comes first, so a
-# substring match for vm1 picks the wrong VM; VM1 is upper case in virsh.
 write_lease_fixture() {
   local h m ip exp sep=""
   {
@@ -1453,8 +1401,6 @@ EOF
   printf 'vm10\nvm1\nvm1-copy\nweb\n' >"$1/vms"
 }
 
-# Run dhcp.sh main "${@:3}" on the fixtures in $1 with extra stub code $2;
-# virsh and dhcp_release are stubbed and every call is logged to $1/calls.
 # shellcheck disable=SC2317,SC2034,SC1090,SC1091 # stubs; globals read by dhcp.sh
 run_dhcp_fixture() {
   local t="$1" extra="$2"
@@ -1481,10 +1427,8 @@ run_dhcp_fixture() {
   ) </dev/null 2>&1
 }
 
-# Status hostnames left in $1/br.status, or "invalid" when it is not JSON.
 status_hosts() { jq -c '[.[].hostname]' "$1/br.status" 2>/dev/null || echo invalid; }
 
-# #37: dhcp clear matches whole hostname/MAC fields and never restarts.
 # shellcheck disable=SC2016 # stub code is eval'd later
 test_dhcp_clear_exact() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -1558,8 +1502,6 @@ test_dhcp_clear_exact() {
   rm -rf "$t"
 }
 
-# 37-10: cleared leases are released from dnsmasq's memory with dhcp_release
-# (SIGHUP does not drop them); without dhcp_release, clear fails.
 # shellcheck disable=SC2016 # stub code is eval'd later
 test_dhcp_release() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -1602,8 +1544,6 @@ test_dhcp_release() {
     fi
   done
 
-  # libvirt's lease helper rewrites the status file when dnsmasq releases a
-  # lease, so dcvm writes it first and the helper writes last.
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
   run_dhcp_fixture "$t" 'dhcp_release() { echo "dhcp_release $(status_hosts "$t")" >>"$t/calls"; }' clear vm1 >/dev/null
@@ -1627,7 +1567,6 @@ test_dhcp_release() {
     fi
   done
 
-  # Nothing to clear is not an error for the command.
   for name in nosuchvm 52:54:00:99:99:99; do
     rm -rf "${t:?}"/*
     write_lease_fixture "$t"
@@ -1642,7 +1581,6 @@ test_dhcp_release() {
     fi
   done
 
-  # --stale with two leases to drop (gone expired, web orphaned).
   rm -rf "${t:?}"/*
   write_lease_fixture "$t"
   printf 'vm10\nvm1\nvm1-copy\n' >"$t/vms"
@@ -1657,10 +1595,6 @@ test_dhcp_release() {
   rm -rf "$t"
 }
 
-# #37 and X-4: delete matches this VM's lease and status entry exactly, the
-# post-delete check ignores other VMs, and no host systemd unit is touched.
-# Bulk clears leave a valid empty JSON array in the status file, in place
-# (same inode and mode), because libvirt parses it.
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
 test_bulk_status_reset() {
   local t before after
@@ -1709,7 +1643,6 @@ restart_network() { echo restart >>"$t/calls"; }
 DNSMASQ_DIR="$t" BRIDGE_NAME=br NETWORK_NAME=net
 main clear --all
 EOF
-  # clear --all asks for confirmation only on a terminal.
   printf 'y\n' | script -qec "bash $t/run.sh" /dev/null >/dev/null 2>&1
   after=$(stat -c '%i %a' "$t/br.status")
   if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ] &&
@@ -1789,8 +1722,6 @@ test_delete_vm_exact_match() {
   command rm -rf "$t"
 }
 
-# Run cleanup_dhcp_lease "${@:3}" on the fixtures in $1 with extra stub code
-# $2; dhcp_release calls are logged to $1/calls, temp files go to $1/tmp.
 # shellcheck disable=SC2034,SC2317 # globals read by cleanup_dhcp_lease; stubs
 run_cleanup_fixture() {
   local t="$1" extra="$2"
@@ -1804,7 +1735,6 @@ run_cleanup_fixture() {
   ) </dev/null 2>&1
 }
 
-# #37: cleanup_dhcp_lease never loses lease data when a step fails.
 # shellcheck disable=SC2016 # stub code is eval'd later
 test_cleanup_dhcp_lease_failures() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -1835,7 +1765,6 @@ test_cleanup_dhcp_lease_failures() {
     log_test "FAIL" "cleanup_dhcp_lease: no temp file means nothing released or changed, exit 2 (#37)" "exit $rc; $(echo "$out" | tr '\n' ';')"
   fi
 
-  # Exit codes: 0 cleared, 1 nothing matched, 2 failure.
   local codes="" args extra mac host want
   for args in "|52:54:00:00:00:01|vm1|0" "|52:54:00:99:99:99|nosuchvm|1" "|||1" "rm -f \"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
     ": >\"\$t/br.status\"|52:54:00:00:00:01|vm1|1" \
@@ -1879,7 +1808,6 @@ test_cleanup_dhcp_lease_failures() {
   rm -rf "$t"
 }
 
-# #37: two cleanups running at once on one status file both take effect.
 test_cleanup_dhcp_lease_parallel() {
   if ! command -v jq >/dev/null 2>&1; then
     log_test "SKIP" "cleanup_dhcp_lease parallel (#37)" "jq not available"
@@ -1902,9 +1830,6 @@ test_cleanup_dhcp_lease_parallel() {
   rm -rf "$t"
 }
 
-# 37-12: no SIGHUP "reload" of dnsmasq (it never found libvirt's dnsmasq and
-# does not drop leases), no dead .leases handling, and the lease helpers are
-# exported to child shells.
 # shellcheck disable=SC1091
 test_dhcp_cleanup_nits() {
   local lib="$SCRIPT_DIR/.."
@@ -1931,7 +1856,6 @@ test_dhcp_cleanup_nits() {
   fi
 }
 
-# get_vm_ip treats the subnet's dots literally.
 # shellcheck disable=SC2317,SC2030,SC2031 # stub; globals set for the call only
 test_get_vm_ip_subnet_dots() {
   local got
@@ -1955,9 +1879,6 @@ test_get_vm_ip_subnet_dots() {
   fi
 }
 
-# -k nginx, apache2 and docker.io set up their service; packages that only
-# contain the name (python3-docker, nginx-extras, libapache2-mod-php,
-# apache2-utils) install as typed with no setup.
 test_apache_exact_match() {
   local t pkg
   t=$(mktemp -d)
@@ -1986,7 +1907,6 @@ test_apache_exact_match() {
   rm -rf "$t"
 }
 
-# Print the installer's package list for host family $1 (debian or arch).
 installer_packages() {
   local line
   line=$(grep -m1 "^  local $1_packages=(" "$SCRIPT_DIR/../installation/install-dcvm.sh") || return 1
@@ -1995,9 +1915,6 @@ installer_packages() {
   printf '%s\n' "${list[@]}"
 }
 
-# The installer pulls in the host tools dcvm's lease cleanup needs.
-# Downloads are checked against SHA256SUMS/SHA512SUMS/<file>.SHA256 from the
-# mirror they came from or another mirror serving the same file name.
 test_published_checksum() {
   if ! command -v curl >/dev/null 2>&1 || ! command -v sha512sum >/dev/null 2>&1; then
     log_test "SKIP" "published checksum verification" "needs curl and sha512sum"
@@ -2042,8 +1959,6 @@ test_published_checksum() {
   rm -rf "$t"
 }
 
-# --disable-root turns root login off in force mode and conflicts with root
-# options; the guest NFS mount uses the configured subnet.
 test_disable_root_and_nfs_subnet() {
   local t out
   t=$(mktemp -d)
@@ -2091,8 +2006,6 @@ test_disable_root_and_nfs_subnet() {
   rm -rf "$t"
 }
 
-# The installer starts only stopped VMs on the dcvm network, and starting one
-# must not trip set -e (((x++)) returns 1 when x is 0).
 test_installer_starts_dcvm_vms_only() {
   local t
   t=$(mktemp -d)
@@ -2121,9 +2034,6 @@ test_installer_starts_dcvm_vms_only() {
   rm -rf "$t"
 }
 
-# Output helpers: no colour codes with NO_COLOR or when piped, columns
-# aligned by characters (printf pads by bytes), boxes with even sides, ASCII
-# symbols outside UTF-8.
 test_ui_output() {
   local out
   out=$(TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1 bash -c 'source "$1" >/dev/null 2>&1
@@ -2142,7 +2052,6 @@ test_ui_output() {
     log_test "FAIL" "ui_table aligns columns by characters" "$(sed -n 1,3p <<<"$out" | tr '\n' '|')"
   fi
   local widths
-  # Count characters in a UTF-8 shell; the suite itself may run in the C locale.
   widths=$(sed -n '5,8p' <<<"$out" | LC_ALL=C.UTF-8 bash -c 'while IFS= read -r l; do echo "${#l}"; done' | sort -u | wc -l)
   if [ "$widths" -eq 1 ] && grep -q '╭─ web is booting ─' <<<"$out"; then
     log_test "PASS" "ui_box lines have the same width"
@@ -2162,8 +2071,6 @@ test_ui_output() {
   fi
 }
 
-# ui_table keeps empty cells in place (tabs are IFS whitespace, so read
-# merges them), and ui_next leaves room after long commands (#56).
 test_ui_columns() {
   local out
   out=$(TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1 bash -c 'source "$1" >/dev/null 2>&1
@@ -2182,7 +2089,6 @@ test_ui_columns() {
   fi
 }
 
-# backup list aligns its columns whatever the length of the ID (#56).
 # shellcheck disable=SC2317 # stubs
 test_backup_list_columns() {
   local out
@@ -2206,7 +2112,6 @@ test_backup_list_columns() {
   fi
 }
 
-# Deleting a VM on a host without /etc/iptables prints no shell error (#54).
 # shellcheck disable=SC2317 # stubs
 test_delete_without_iptables_dir() {
   local t out
@@ -2229,8 +2134,6 @@ test_delete_without_iptables_dir() {
   rm -rf "$t"
 }
 
-# A successful self-update keeps the version it replaced for --revert and
-# prunes the older saved versions (#55).
 # shellcheck disable=SC2317,SC2034 # stubs; globals read by do_update
 test_self_update_keeps_backup() {
   local t
@@ -2263,8 +2166,6 @@ test_self_update_keeps_backup() {
   rm -rf "$t"
 }
 
-# With aria2c installed, downloads go through it, from the fastest mirrors
-# at once; the progress readouts of curl and aria2c are understood.
 # shellcheck disable=SC2317 # stubs
 test_aria2c_download() {
   local t out
@@ -2308,9 +2209,6 @@ test_aria2c_download() {
   rm -rf "$t"
 }
 
-# The live block counts the rows a wrapped line takes, so the next redraw
-# moves up far enough (otherwise the spinner line stays behind), and tool
-# output is not read as escape sequences.
 test_ui_region_rows() {
   local out
   out=$(TERM=xterm-256color LANG=C.UTF-8 bash -c 'source "$1" >/dev/null 2>&1
@@ -2327,8 +2225,6 @@ test_ui_region_rows() {
   fi
 }
 
-# An "alias dcvm=" line from an install before 0.9 shadows /usr/local/bin/dcvm;
-# the installer removes it for root and the sudo user, keeping other lines.
 test_remove_old_alias() {
   local t out
   t=$(mktemp -d)
@@ -2346,6 +2242,83 @@ test_remove_old_alias() {
     log_test "FAIL" "installer removes old 'alias dcvm=' lines (root and sudo user), keeps the rest" "$(tr '\n' '|' <<<"$out")"
   fi
   rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_base_builds() {
+  if ! command -v qemu-img >/dev/null 2>&1 || ! command -v qemu-io >/dev/null 2>&1; then
+    log_test "SKIP" "base builds (qemu-img/qemu-io not installed)"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    DATACENTER_BASE="$t"
+    tpl="$t/storage/templates"
+    mkdir -p "$tpl" "$t/vms/vm1"
+    qemu-img create -q -f qcow2 "$tpl/test.img" 4M
+    qemu-io -f qcow2 -c "write -P 0x11 0 1M" -c "write -P 0x22 1M 1M" "$tpl/test.img" >/dev/null
+    old=$(current_build test.img)
+    [ "$old" -ef "$tpl/test.img" ] && echo "hardlinked"
+    [ "$(build_image "$old")" = test.img ] && echo "image name"
+    vmdisk="$t/vms/vm1/vm1-disk.qcow2"
+    qemu-img create -q -f qcow2 -F qcow2 -b "$old" "$vmdisk"
+    qemu-io -f qcow2 -c "write -P 0x33 512K 4K" "$vmdisk" >/dev/null
+    qemu-img create -q -f qcow2 "$tpl/new.img" 4M
+    qemu-io -f qcow2 -c "write -P 0x11 0 1M" -c "write -P 0x44 1M 1M" "$tpl/new.img" >/dev/null
+    mv -f "$tpl/new.img" "$tpl/test.img"
+    new=$(current_build test.img)
+    [ "$new" != "$old" ] && [ -f "$old" ] && echo "old build kept"
+    get_vm_disk_path() { echo "$vmdisk"; }
+    get_vm_state() { echo "shut off"; }
+    virsh() {
+      [ "$1 $2" = "list --all" ] && echo vm1
+      return 0
+    }
+    vm_disk_outdated vm1 && echo "outdated"
+    prepare_vm_disk vm1 >/dev/null
+    [ "$(disk_backing "$vmdisk")" = "$new" ] && echo "moved"
+    qemu-io -f qcow2 -c "read -P 0x22 1M 1M" -c "read -P 0x33 512K 4K" "$vmdisk" 2>&1 | grep -q 'Pattern verification failed' || echo "contents kept"
+    [ ! -f "$old" ] && echo "old build deleted"
+    qemu-img create -q -f qcow2 -F qcow2 -b "$tpl/test.img" "$t/vms/vm1/legacy.qcow2"
+    get_vm_disk_path() { echo "$t/vms/vm1/legacy.qcow2"; }
+    cp -p "$new" "$t/storage/templates/builds/test-000000000000.img"
+    legacy_references && [ -z "$(prune_builds)" ] && echo "legacy keeps builds"
+  ) 2>/dev/null
+  local want="hardlinked image name old build kept outdated moved contents kept old build deleted legacy keeps builds"
+  if [ "$(echo $out)" = "$want" ]; then
+    log_test "PASS" "base builds: immutable build files, safe move to a new build, cleanup"
+  else
+    log_test "FAIL" "base builds: immutable build files, safe move to a new build, cleanup" "got: $(echo $out)"
+  fi
+  rm -rf "$t"
+}
+
+test_doctor_report() {
+  local out
+  out=$(
+    source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+    TERM=dumb
+    QUIET=true
+    section "Host"
+    report ok "KVM" "fine"
+    report warn "Tools" "missing aria2c"
+    report fixed "Shell alias" "removed"
+    report skip "dcvm" "offline"
+    echo "problems=$PROBLEMS"
+    echo "pkg=$(package_for aria2c) $(package_for dhcp_release)"
+  )
+  if grep -q '^Host' <<<"$out" && grep -q 'Tools' <<<"$out" && grep -q 'Shell alias' <<<"$out" &&
+    ! grep -qE 'KVM|offline' <<<"$out" && grep -qx 'problems=1' <<<"$out"; then
+    log_test "PASS" "doctor --quiet shows only problems and fixes, and counts problems"
+  else
+    log_test "FAIL" "doctor --quiet shows only problems and fixes, and counts problems" "$(tr '\n' '|' <<<"$out")"
+  fi
+  if grep -qE '^pkg=aria2 (dnsmasq-utils|dnsmasq)$' <<<"$out"; then
+    log_test "PASS" "doctor names the package of a missing tool"
+  else
+    log_test "FAIL" "doctor names the package of a missing tool" "$(grep pkg= <<<"$out")"
+  fi
 }
 
 test_installer_packages() {
@@ -2374,7 +2347,6 @@ test_installer_packages() {
   fi
 }
 
-# #37: get_vm_ip's lease fallback matches the whole hostname field.
 # shellcheck disable=SC2317,SC2030 # stub; DATACENTER_BASE set for the call only
 test_get_vm_ip_exact() {
   local t got
@@ -2525,6 +2497,8 @@ test_common_functions() {
   test_ui_columns
   test_ui_region_rows
   test_remove_old_alias
+  test_base_builds
+  test_doctor_report
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
@@ -2611,7 +2585,6 @@ test_storage_commands() {
     return
   fi
 
-  # Note: 'dcvm storage' is not tested here as it has a 30s delay
   run_test "dcvm backup help" "$dcvm_cmd backup --help"
 
   local backup_output
@@ -2795,9 +2768,6 @@ test_vm_lifecycle() {
 
   log_test "INFO" "Creating test VM: $TEST_VM_NAME"
 
-  # Ubuntu 22.04. select_os only accepts menu numbers 1-8 (no name).
-  # Index 3 was Ubuntu 22.04 until Debian 13 and Ubuntu 24.04 were inserted
-  # ahead of it; that image is option 5 now. Option 3 is Debian 11.
   if $dcvm_cmd create "$TEST_VM_NAME" -f -p "testpass123" -m 1024 -c 1 -d 10G -o 5 2>&1; then
     log_test "PASS" "VM creation"
 

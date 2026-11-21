@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# dcvm tab-completion for Bash and Zsh
 
 _dcvm_commands() {
-  echo "create create-iso delete list status start stop restart console network backup storage uninstall version help"
+  echo "create create-iso delete list status start stop restart console network backup template storage doctor fix-lock self-update uninstall version help"
 }
 
 _dcvm_vm_list() {

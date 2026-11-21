@@ -136,11 +136,11 @@ cmd_ip_forwarding() {
   local action="${1:-show}"
   case "$action" in
   on | enable)
-    echo 1 >/proc/sys/net/ipv4/ip_forward || {
+    enable_ip_forwarding || {
       print_error "Failed to enable ip_forward"
       exit 1
     }
-    ui_done ok "IP forwarding on" "until reboot; the installer persists it in /etc/sysctl.conf"
+    ui_done ok "IP forwarding on" "persisted in /etc/sysctl.d/90-dcvm.conf"
     ;;
   off | disable)
     echo 0 >/proc/sys/net/ipv4/ip_forward || {
@@ -166,7 +166,6 @@ cmd_config() {
   echo ""
 }
 
-# Stops a running VM before its graphics are changed (asks first).
 stop_for_vnc_change() {
   local vm_name="$1" confirm count=0
   virsh list | grep -q " $vm_name .*running" || return 0

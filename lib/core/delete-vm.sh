@@ -31,9 +31,6 @@ cleanup_port_forwarding_for_vm() {
   save_iptables_rules
 }
 
-# Destroy and undefine the libvirt storage pool whose target is this VM's
-# own directory. Other pools (default, templates) never match. A missing
-# pool is not an error.
 remove_vm_storage_pool() {
   local vm_dir="$DATACENTER_BASE/vms/$1" pool path
   while read -r pool; do
@@ -126,7 +123,6 @@ delete_single_vm() {
     ui_step ok "SSH config" "Host $VM_NAME entry removed"
   fi
 
-  # Check that nothing is left behind.
   local left=()
   check_vm_exists "$VM_NAME" && left+=("VM still exists in libvirt")
   sleep 2
@@ -184,7 +180,6 @@ delete_all_vms() {
     fi
   done 3<<<"$vms"
 
-  # Whatever the single deletes left: leases, the mappings file and rules.
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
   [ -f "$status_file" ] && printf '[]\n' >"$status_file"
@@ -219,6 +214,8 @@ main() {
     delete_single_vm "$1"
     ;;
   esac
+
+  prune_builds >/dev/null
 
   local remaining
   remaining=$(list_datacenter_vms | awk -F': ' '{ gsub(/^ +| +$/, "", $1); printf "%s%s (%s)", sep, $1, $2; sep = ", " }')

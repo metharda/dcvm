@@ -8,13 +8,15 @@ VM again if it was running. On the demo host a fresh Ubuntu 24.04 VM took 20
 seconds to back up and 80 seconds to restore. The 5 most recent backups of
 each VM are kept; older ones are removed after each new backup.
 
-> [!IMPORTANT]
+> [!NOTE]
 > The disk in a backup is the VM's qcow2 *overlay*: only the VM's own changes,
-> on top of its cloud image in `$DATACENTER_BASE/storage/templates`. Restore
-> and import need that same image file. If it is missing, they download the
-> current image of that name, which only works if upstream has not published
-> a newer image since. Keep your templates, and copy the template along with
-> an export when you move a VM to another host.
+> on top of the exact base build it was made on. Each backup records that
+> build (`base` in its folder: image, SHA-256, SHA-512), and dcvm keeps the
+> build in `storage/templates/builds/` while any backup needs it. Restore and
+> import find it by themselves and move the restored VM onto the current
+> build of its image; see [Restore](#restore) and
+> [Base images](base-images.md). A `--full` export contains a standalone disk
+> that needs no base at all.
 
 See also: [Architecture](architecture.md#backups) ·
 [Security](security.md#backups-and-exports)
@@ -42,12 +44,17 @@ dcvm backup delete <vm_name>-<YYYYMMDD>_<HHMMSS>
 
 Export a backup archive:
 ```bash
-# Export to default directory ($DATACENTER_BASE/backups/exports)
-dcvm backup export <vm> <backup_date>
+# Thin (default): the overlay disk plus the record of its base build
+dcvm backup export <vm> [<backup_date>] [/path/to/export/dir]
 
-# Export to specific directory
-dcvm backup export <vm> <backup_date> /path/to/export/dir
+# Full: the disk flattened into one standalone file; larger, but restores on
+# any host without the base build
+dcvm backup export <vm> [<backup_date>] [/path/to/export/dir] --full
 ```
+
+The default directory is `$DATACENTER_BASE/backups/exports`. A thin package
+is usually much smaller; the importing host needs the recorded base build,
+which import finds as described under [Restore](#restore).
 
 Import a backup archive:
 ```bash
@@ -60,6 +67,27 @@ dcvm backup import /path/to/archive.tar.gz [new_vm_name]
 Restoring over an existing VM asks you to type `yes`, then replaces the VM's
 disk and definition. The VM keeps its MAC addresses, so a DHCP VM gets its
 old IP back and saved port forwards still match.
+
+**Base check.** Before anything of an existing VM is touched, restore (and
+import) unpacks the disk and looks for the base build it was made on:
+
+| This host has | What happens | Downloads |
+| :------------ | :----------- | :-------- |
+| That exact build (found by SHA-256) | Used, then the disk moves onto the current build of its image | None |
+| Another build of the image | The original build is fetched from the image's archive by its checksum (Ubuntu `release-<date>`, Debian dated folders, Arch versions), the disk moves onto the installed current build | Only the original build |
+| No template of that image | The current build is downloaded and installed, then as above | Current build, plus the original |
+| A backup from before 0.9.9 (no record) | The disk is checked with a read-only file system check against each build of its image on this host; the one it fits is used | None |
+| None of the above | Restore stops and says so; nothing is changed | None |
+
+Moving onto another build uses qemu-img's safe rebase, so the VM sees exactly
+the same disk; it works on a copy that replaces the disk only when it
+succeeds. Daily builds are not kept in the archives, and Kali images are
+converted locally, so their original build can only come from this host or
+`--base`:
+
+```bash
+dcvm backup restore <vm> <backup_date> --base /path/to/original-build.img
+```
 
 Restore the latest backup:
 ```bash
@@ -98,5 +126,6 @@ If the source VM has a static IP recorded on this host (`$DATACENTER_BASE/config
 
 ## Tips
 - dcvm keeps the 5 most recent backups per VM; delete others with `dcvm backup delete <vm>`.
+- `dcvm doctor` shows which builds your backups need and whether they are on this host.
 - Store backups on a separate disk for safety.
 - Test your restore process periodically.

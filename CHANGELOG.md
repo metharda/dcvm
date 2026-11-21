@@ -12,6 +12,79 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-11-21
+
+Base images that can no longer be replaced under a VM, and `dcvm doctor`.
+See [Base images](docs/base-images.md) and [dcvm doctor](docs/doctor.md).
+
+**Upgrading:** VMs and backups made before this version refer to their
+template by name and do not record their base build. Run `dcvm doctor` once:
+it shows which VMs it can pin to their build and does so with `--fix` (a
+running VM is pinned at its next start through dcvm). Until those disks and
+backups are gone, dcvm deletes no base build.
+
+### Added
+
+- Immutable base builds: every downloaded cloud image is kept as
+  `storage/templates/builds/<image>-<sha256:12>.<ext>` (a hardlink, no extra
+  space) with its SHA-256 and SHA-512, and VM disks refer to that file instead
+  of `templates/<image>`. An old build is deleted automatically once no VM,
+  backup or template uses it.
+- `dcvm template download -f` and `-a -f` move VMs onto the new build by
+  themselves: stopped VMs at once, running ones the next time dcvm stops,
+  restarts or backs them up (`--restart`: now, after asking). Moving uses
+  qemu-img's safe rebase on a copy of the disk, so what the VM sees does not
+  change and an interruption cannot damage the disk.
+- Backups record the build their disk is on. Restore and import check for
+  that build first: on the host, else they fetch exactly that build from the
+  image's archive by checksum, and download a current build only when no
+  template of the image exists; the restored VM then moves onto the current
+  build. Backups from before this version are matched to a build with a
+  read-only file system check. `--base <file>` names the build directly.
+- `dcvm backup export --full` flattens the disk into one standalone file;
+  the default stays thin and now includes the base record.
+- `dcvm doctor [--fix] [--quiet]` checks the host (KVM, libvirt, missing
+  tools with their install command, old `alias dcvm=` lines, a newer dcvm),
+  the network (state, IP forwarding at boot, port forward rules missing after
+  a reboot, stale leases), VMs (base build, stuck at boot without an address,
+  autostart, locked disks), backups (base records, missing builds, VMs
+  without a recent backup) and storage (free space for a backup, orphan VM
+  folders, leftovers, corrupt templates). `--fix` repairs what is safe, for
+  example restoring port forward rules, persisting IP forwarding, removing old
+  aliases, saving an old base a running VM still holds open and moving VMs to
+  the current build; `--quiet` prints only problems and fixes.
+- dcvm runs `dcvm doctor` by itself: after `self-update` (new tools,
+  services, VMs to pin), at boot through the new `dcvm-boot.service` (with
+  `--fix` for the network, so port forward rules come back after a reboot),
+  when `start`, `restart`, restore or `create` fail (the reason and the fix
+  for that VM), as one line in `dcvm status` when a fast check finds
+  problems, and hourly after the storage check (logged to the journal).
+  `dcvm doctor` gained `--only <areas>`, `--vm <name>`, `--fast` and
+  `--summary`.
+- A backup checks the free space before it shuts the VM down, so a backup
+  that cannot fit leaves the VM running.
+- New VMs install pending updates on first boot (`package_upgrade`); Debian
+  VMs get unattended-upgrades.
+
+### Fixed
+
+- `dcvm template download --force` deleted the image before downloading the
+  new one, so VMs and backups built on it broke at their next boot (the VM
+  saw a mix of two file systems and hung), and a failed download left no
+  image at all. The old build is now kept and the file is only replaced when
+  the download succeeds.
+- Restore downloaded the newest image when a backup's base was missing,
+  which restored the disk onto a different build. It now restores only onto
+  the exact build, and resolves it before touching an existing VM.
+- IP forwarding was persisted in `/etc/sysctl.conf`, which Debian 13 no
+  longer reads at boot. The installer and `dcvm network ip-forwarding on`
+  now write `/etc/sysctl.d/90-dcvm.conf`.
+- `dcvm storage` (and the hourly check) only checked the first running VM:
+  `ssh` read the rest of the VM list from the loop's input.
+- Backup forced a VM off 60 seconds after asking it to shut down, even while
+  it was still booting. It now lets a VM that started less than 90 seconds
+  ago finish booting, and on a terminal asks before forcing it off.
+
 ## [0.9.8] - 2026-11-20
 
 Security and correctness fixes found while rewriting the documentation.
@@ -579,7 +652,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/metharda/dcvm/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/metharda/dcvm/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/metharda/dcvm/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/metharda/dcvm/compare/v0.9.5...v0.9.6

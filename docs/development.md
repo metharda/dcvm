@@ -38,6 +38,7 @@ dcvm/
 │       ├── common.sh           # shared helpers, sourced by every script
 │       ├── mirror-manager.sh   # cloud image mirrors (dcvm template)
 │       ├── fix-lock.sh         # dcvm fix-lock
+│       ├── doctor.sh           # dcvm doctor (also run by other commands and at boot)
 │       ├── dcvm-completion.sh  # bash completion
 │       └── test-suite.sh       # repository test suite
 ├── docs/
@@ -112,6 +113,7 @@ and `dcvm template`.
 | Live output | `ui_live` (can we draw?), `ui_watch` (redraw while a background job runs), `ui_spin` / `ui_spin_clear` (spinner line), `ui_bar` (progress bar) |
 | Formatting | `plural` (`3 VMs`), `format_bytes` (`6.9 GB`), `file_bytes` |
 | Repository | `fetch_repo_file`, `list_repo_files` (the installer and `self-update` download dcvm with them) |
+| Base images | `current_build`, `register_build`, `find_build`, `disk_backing`, `build_image`, `prepare_vm_disk` (pin or move a stopped VM's disk), `rebase_disk` (safe, on a copy), `vm_disk_outdated`, `prune_builds`, `legacy_references`, `write_base_record`, `disk_fits_build` / `legacy_disk_build` (for disks from before 0.9.9) |
 | Config and checks | `load_dcvm_config`, `require_root`, `command_exists`, `check_dependencies` |
 | Validation | `validate_vm_name`, `validate_vm_name_list`, `validate_username`, `validate_password`, `validate_package_list`, `validate_ip_in_subnet`, `validate_memory_size`, `validate_cpu_count`, `validate_disk_size`, `trim_whitespace` |
 | VMs | `list_datacenter_vm_names`, `check_vm_exists`, `get_vm_state`, `get_vm_ip`, `get_vm_mac`, `get_vm_disk_path`, `get_vm_username`, `default_username`, `list_datacenter_vms`, `is_vm_in_network`, `stop_vm_gracefully` |

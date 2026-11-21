@@ -11,6 +11,7 @@ libvirt itself.
 - [What `dcvm create` does](#what-dcvm-create-does)
 - [Networking](#networking)
 - [Backups](#backups)
+- [Base images](#base-images)
 - [State on the host](#state-on-the-host)
 - [Design decisions](#design-decisions)
 
@@ -183,18 +184,37 @@ flowchart LR
   new MAC addresses; when `virt-customize` is installed, its hostname,
   `/etc/hosts`, machine-id and SSH host keys are changed offline before first
   boot.
-- **Overlays, not full disks.** A backup copies the VM's qcow2 overlay, which
-  only holds the VM's own changes and still points at its cloud image in
-  `storage/templates`. Restore needs that same image; if it is missing,
-  restore downloads the current image of that name from the mirrors.
-- **Export/import.** Export packs the overlay and XML into a `.tar.gz` and
-  removes `authorized_keys` files from the image (with guestfish) and from the
-  cloud-init seed. Import on another dcvm host restores it on top of that
-  host's copy of the cloud image, downloading it if needed. The importing host
-  should have the same image file the VM was built on: an overlay on a newer
-  upstream image is not reliable.
+- **Overlays, not full disks.** A backup copies the VM's qcow2 overlay and
+  records the base build it sits on (see [Base images](#base-images)).
+  Restore finds that build (on the host, else in the image's archive by
+  checksum) and moves the restored VM onto the current build.
+- **Export/import.** Export packs the overlay, XML and base record into a
+  `.tar.gz` (`--full`: one flattened standalone disk instead) and removes
+  `authorized_keys` files from the image (with guestfish) and from the
+  cloud-init seed. Import runs the same base check as restore.
 
-See [backups.md](backups.md) for the selectors and every restore option.
+## Base images
+
+A VM disk is a qcow2 overlay that is only valid on the exact build it was
+created on. dcvm keeps every build as an immutable file in
+`storage/templates/builds/` (named by its SHA-256, a hardlink to the
+download), points disks at that file, and deletes a build only once no VM,
+backup or template uses it:
+
+```mermaid
+flowchart LR
+    dl[template download] -->|hardlink, no copy| b1[builds/ubuntu-…-04e8f246.img]
+    tpl[templates/ubuntu-24.04-….img<br/>current build, for new VMs] -.same file.- b1
+    b0[builds/ubuntu-…-6e7016f2.img<br/>older build] -->|safe rebase when the VM is off| b1
+    vm1[web-disk.qcow2] --> b1
+    bk[backup + base record] --> b0
+```
+
+When a newer build is downloaded, VMs move onto it with qemu-img's safe
+rebase (their view of the disk does not change) whenever dcvm has them off.
+Backups record their build, and restore and import find it on the host or in
+the publisher's archive by checksum. The full description, including the
+upgrade from 0.9.8, is in [Base images](base-images.md).
 
 ## State on the host
 
@@ -202,7 +222,8 @@ See [backups.md](backups.md) for the selectors and every restore option.
 | :--- | :------- |
 | `/etc/dcvm-install.conf` | `DATACENTER_BASE`, `NETWORK_NAME`, `BRIDGE_NAME`, `NETWORK_SUBNET` |
 | `/usr/local/bin/dcvm`, `/usr/local/lib/dcvm/` | Installed CLI and libraries |
-| `$DATACENTER_BASE/storage/templates/` | Downloaded cloud images (backing files for every VM disk) |
+| `$DATACENTER_BASE/storage/templates/` | Downloaded cloud images: the current build of each, for new VMs |
+| `$DATACENTER_BASE/storage/templates/builds/` | Immutable base builds (`<image>-<sha256:12>.<ext>` + `.sums`) that VM disks and backups refer to |
 | `$DATACENTER_BASE/vms/<vm>/` | `<vm>-disk.qcow2`, `cloud-init.iso`, `cloud-init/` (mode 700) |
 | `$DATACENTER_BASE/config/network/<vm>.conf` | Static IP record |
 | `$DATACENTER_BASE/port-mappings.txt` | `VM_NAME VM_IP SSH_PORT HTTP_PORT`, one line per forward |
@@ -220,7 +241,7 @@ in `/var/lib/libvirt/dnsmasq/<bridge>.status`.
 | :------- | :-- | :-------- |
 | Plain Bash over libvirt tools | Runs on any Linux host with libvirt, no runtime to install, and every step is a command you can run by hand. VMs stay ordinary libvirt domains, so `virsh` and virt-manager keep working. | No API; the scripts parse command output. |
 | Cloud images and cloud-init instead of installers | A ready VM in about a minute plus first-boot time, with the user, key and packages already set up. | Only the eight built-in images get this; anything else goes through `create-iso` and a manual install. |
-| qcow2 overlays on shared templates | New VMs are instant and small, and so are their backups. | Every VM disk and backup depends on its template file; deleting or replacing a template (for example `dcvm template download --force`) breaks those VMs. |
+| qcow2 overlays on shared templates | New VMs are instant and small, and so are their backups. | Every disk depends on its base build; dcvm keeps builds immutable and reference-counted, and moving a VM to a newer build copies the blocks that differ into its disk, which then grows by that amount. |
 | Password hashes only | The guest password never appears in plain text in the seed or a guest command (see [security.md](security.md)). | The password can't be read back later; reset it inside the VM. |
 | Cold backups | A powered-off copy can't be torn mid-write. | The VM is down for the length of the copy. |
 | iptables DNAT for access | Works the same on every distro and needs no extra service. | Rules are global and not reloaded at boot unless your distro restores `/etc/iptables/rules.v4`; run `dcvm network ports apply` after a reboot. |

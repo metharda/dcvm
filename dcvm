@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# dcvm - a VM manager
-# Main CLI entry point
 
 set -euo pipefail
 
@@ -21,7 +19,7 @@ source "$LIB_DIR/utils/common.sh"
 
 show_version() {
   echo "dcvm - a VM manager"
-  echo "Version: 0.9.8"
+  echo "Version: 0.9.9"
   echo "https://github.com/metharda/dcvm"
 }
 
@@ -52,6 +50,7 @@ Backups and images:
 
 System:
   self-update [--check]         Update dcvm from GitHub (--revert goes back)
+  doctor [--fix]                Check (and repair) the base images of VMs and backups
   fix-lock <vm> | --all         Clear stale disk locks when a VM will not start
   uninstall                     Remove dcvm, its VMs and data
   version                       Show the version
@@ -103,6 +102,9 @@ route_command() {
     ;;
   fix-lock)
     exec "$LIB_DIR/utils/fix-lock.sh" "$@"
+    ;;
+  doctor)
+    exec "$LIB_DIR/utils/doctor.sh" "$@"
     ;;
   self-update | update)
     exec "$LIB_DIR/installation/self-update.sh" "$@"
