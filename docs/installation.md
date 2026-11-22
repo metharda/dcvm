@@ -13,7 +13,7 @@ This guide will walk you through installing dcvm, a VM manager, on your system.
 
 ### Software Requirements
 
-- **Operating System**: Ubuntu 20.04+, Debian 11+, Arch Linux
+- **Operating System**: Ubuntu 20.04+, Debian 11+, Arch Linux, Fedora
 - **Privileges**: Root access required
 - **Virtualization**: KVM/QEMU support
 
@@ -98,8 +98,8 @@ image download and does not set up NFS. The first four answers are saved to
 
 The installer will:
 
-1. Install the packages with `apt` (Debian, Ubuntu and derivatives) or
-   `pacman` (Arch and derivatives): QEMU/KVM, libvirt, virt-install,
+1. Install the packages with `apt` (Debian, Ubuntu and derivatives),
+   `pacman` (Arch and derivatives) or `dnf` (Fedora): QEMU/KVM, libvirt, virt-install,
    genisoimage/cdrtools, libguestfs-tools, NFS utilities, `jq`, dnsmasq tools,
    `aria2` (fast image downloads)
 2. Check that the CPU supports KVM and `/dev/kvm` exists
@@ -210,6 +210,11 @@ sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-client
 # Arch Linux
 sudo pacman -S qemu-full libvirt virt-install virt-viewer \
     bridge-utils nfs-utils cdrtools dnsmasq ebtables iptables dmidecode jq aria2
+
+# Fedora
+sudo dnf install qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network \
+    libvirt-client virt-install bridge-utils nfs-utils genisoimage libguestfs guestfs-tools \
+    jq dnsmasq dnsmasq-utils iptables-nft aria2
 ```
 
 ## Uninstallation

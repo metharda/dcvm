@@ -65,6 +65,8 @@ backups are gone, dcvm deletes no base build.
   that cannot fit leaves the VM running.
 - New VMs install pending updates on first boot (`package_upgrade`); Debian
   VMs get unattended-upgrades.
+- Fedora hosts: the installer installs the packages with `dnf`, and
+  `dcvm doctor` names Fedora's packages for missing tools.
 
 ### Fixed
 
@@ -84,6 +86,10 @@ backups are gone, dcvm deletes no base build.
 - Backup forced a VM off 60 seconds after asking it to shut down, even while
   it was still booting. It now lets a VM that started less than 90 seconds
   ago finish booting, and on a terminal asks before forcing it off.
+- The installer stopped at the packages step with `ID_LIKE: unbound variable`
+  on distributions whose `/etc/os-release` has no `ID_LIKE` line, such as
+  Fedora. Distribution detection is now one shared function for the
+  installer and `dcvm doctor`.
 
 ## [0.9.8] - 2026-11-20
 

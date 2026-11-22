@@ -40,7 +40,7 @@ ordinary libvirt domain.
 
 ## Quick start
 
-**You need:** an x86_64 Linux host (Debian/Ubuntu or Arch based) with
+**You need:** an x86_64 Linux host (Debian/Ubuntu, Arch or Fedora based) with
 VT-x/AMD-V enabled, root access and an internet connection.
 
 ```bash
@@ -172,7 +172,7 @@ Linux. Defaults are 2048 MB RAM, 2 vCPUs and a 30G disk (Kali needs at least
 | CPU | x86_64 with VT-x or AMD-V enabled (`/dev/kvm` present); nested virtualization works for a VM host |
 | Memory | 4 GB minimum, 8 GB or more for several VMs (each defaults to 2 GB) |
 | Disk | 50 GB or more free; each cloud image is 0.4-0.6 GB, plus what the VMs write |
-| Host OS | Debian, Ubuntu or Arch Linux, or a derivative (the installer uses `apt` or `pacman`); systemd |
+| Host OS | Debian, Ubuntu, Arch Linux or Fedora, or a derivative (the installer uses `apt`, `pacman` or `dnf`); systemd |
 | Access | root, and internet for packages and images |
 
 ## Configuration

@@ -67,7 +67,7 @@ It takes a few seconds; `--fast` skips the two slow checks.
 | Check | Problem it finds |
 | :---- | :--------------- |
 | KVM | `/dev/kvm` missing (virtualization off in the firmware, or no nested KVM), or libvirt not answering |
-| Tools | Missing `qemu-img`, `virsh`, `virt-install`, `jq`, `dhcp_release`, `aria2c`, `guestfish`, `virt-customize`, `xz`, `curl` or `genisoimage`, with the `apt install` / `pacman -S` command for your distribution. `dcvm self-update` replaces dcvm's files but never installs packages, so updated hosts can miss tools a release needs |
+| Tools | Missing `qemu-img`, `virsh`, `virt-install`, `jq`, `dhcp_release`, `aria2c`, `guestfish`, `virt-customize`, `xz`, `curl` or `genisoimage`, with the `apt install` / `pacman -S` / `dnf install` command for your distribution. `dcvm self-update` replaces dcvm's files but never installs packages, so updated hosts can miss tools a release needs |
 | Shell alias | An `alias dcvm=…` line in `.bashrc`, `.zshrc`, `.profile`, … of root or the user who ran sudo. Installs before 0.9 added it; it hides `/usr/local/bin/dcvm` and every command fails with `no such file or directory` |
 | Services | `datacenter-storage.timer` and `dcvm-boot.service` missing, disabled or from an older version (see [Automatic runs](#automatic-runs)) |
 | dcvm | A newer version on GitHub (skipped with `--fast` and when offline) |
