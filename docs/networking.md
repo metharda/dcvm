@@ -159,8 +159,8 @@ dcvm network dhcp clear -a
 ```
 
   `clear <vm_name_or_mac>` and `clear -s` release the lease in the running
-  dnsmasq with `dhcp_release` (package `dnsmasq-utils` on Debian/Ubuntu, part
-  of `dnsmasq` on Arch) and remove it from libvirt's status file
+  dnsmasq with `dhcp_release` (package `dnsmasq-utils` on Debian/Ubuntu and
+  Fedora, part of `dnsmasq` on Arch) and remove it from libvirt's status file
   (`/var/lib/libvirt/dnsmasq/<bridge>.status`) with `jq`. The installer
   installs both. Without `dhcp_release` or `jq` they fail with an error and
   change nothing. They also fail when the status file cannot be read, another

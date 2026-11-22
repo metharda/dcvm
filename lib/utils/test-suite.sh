@@ -2225,6 +2225,22 @@ test_ui_region_rows() {
   fi
 }
 
+test_distro_family() {
+  local t out
+  t=$(mktemp -d)
+  printf 'NAME="Fedora Linux"\nID=fedora\n' >"$t/fedora"
+  printf 'ID=ubuntu\nID_LIKE=debian\n' >"$t/ubuntu"
+  printf 'ID=manjaro\nID_LIKE=arch\n' >"$t/manjaro"
+  printf 'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\n' >"$t/suse"
+  out=$(set -u && for f in fedora ubuntu manjaro suse; do printf '%s=%s ' "$f" "$(distro_family "$t/$f")"; done)
+  if [ "$out" = "fedora=fedora ubuntu=debian manjaro=arch suse= " ]; then
+    log_test "PASS" "distro detection works without ID_LIKE (Fedora) under set -u"
+  else
+    log_test "FAIL" "distro detection works without ID_LIKE (Fedora) under set -u" "$out"
+  fi
+  rm -rf "$t"
+}
+
 test_remove_old_alias() {
   local t out
   t=$(mktemp -d)
@@ -2497,6 +2513,7 @@ test_common_functions() {
   test_ui_columns
   test_ui_region_rows
   test_remove_old_alias
+  test_distro_family
   test_base_builds
   test_doctor_report
   test_backup_list_columns
