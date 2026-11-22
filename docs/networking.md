@@ -126,6 +126,22 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
     dcvm network ports apply
     ```
 
+### Firewalls
+
+- **libvirt's firewall backend:** dcvm's forwards are iptables rules. Where
+  libvirt uses nftables for its networks (the default on Fedora and Arch),
+  it rejects forwarded connections to VMs in its own table, and no iptables
+  rule can let them through. The installer therefore sets
+  `firewall_backend = "iptables"` in `/etc/libvirt/network.conf`, as libvirt
+  already does on Debian and Ubuntu.
+- **Rule order:** libvirt puts its own rules first when it restarts (for
+  example after a package update), above the forwards. Run
+  `dcvm network ports apply` afterwards; after a reboot `dcvm-boot.service`
+  does it.
+- **firewalld** (Fedora): libvirt puts the dcvm bridge in its `libvirt`
+  zone, which rejects NFS; the installer allows `nfs`, `rpc-bind` and
+  `mountd` in it. Forwarded connections pass firewalld without extra rules.
+
 ### Command Reference
 
 | Command | Description |
@@ -184,4 +200,4 @@ other NAT rules off those ports.
 
 ## Tips
 - **Security:** Ensure your host firewall (ufw/iptables) permits traffic on the forwarded ports if you want external access.
-- **Persistence:** Run `dcvm network ports apply` after a host reboot if rules are missing.
+- **Persistence:** Run `dcvm network ports apply` after a host reboot or a libvirt restart if forwards stop answering (see [Firewalls](#firewalls)).

@@ -90,6 +90,19 @@ backups are gone, dcvm deletes no base build.
   on distributions whose `/etc/os-release` has no `ID_LIKE` line, such as
   Fedora. Distribution detection is now one shared function for the
   installer and `dcvm doctor`.
+- The installer stopped without a message after the packages step on Fedora
+  and Arch: it looked for apt's `newly installed` line, and the failed match
+  ended the script. It now reads the apt, dnf or pacman summary of this run.
+- Port forwards did not reach VMs from other machines where libvirt uses its
+  nftables firewall backend (the default on Fedora and Arch): libvirt rejects
+  forwarded connections in its own table, which iptables rules cannot
+  override. The installer sets `firewall_backend = "iptables"` in
+  `/etc/libvirt/network.conf` and reapplies saved port forwards.
+- With firewalld running, VMs could not mount the NFS share: libvirt's zone
+  rejects NFS. The installer allows `nfs`, `rpc-bind` and `mountd` in the
+  zone of dcvm's bridge.
+- The NFS server was started but not enabled, so on Fedora it was off after a
+  host reboot and every VM waited 90 seconds for `/mnt/shared` at boot.
 
 ## [0.9.8] - 2026-11-20
 
