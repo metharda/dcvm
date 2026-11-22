@@ -93,13 +93,19 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   reach each other on every port.
 - **NFS share (optional).** If you answer `y` to the installer's NFS
   question, `$DATACENTER_BASE/nfs-share` is exported read-write to the dcvm
-  subnet only (`10.10.10.0/24` by default) with `no_root_squash`, so root in
-  any VM is root on the share. Machines outside the subnet can't mount it.
-  The folder has mode `1777`: every VM user (and every local user on the
-  host) can write to it, and the sticky bit stops them deleting each other's
-  files. Don't put anything private there.
-  Hosts installed before 0.9.8 exported it to `*` (any host); re-running the
-  installer and answering `y` again replaces that line in `/etc/exports`.
+  subnet only (`10.10.10.0/24` by default) with `all_squash`: every user of
+  every VM, root included, reads and writes as the unprivileged `dcvm-nfs`
+  account. No VM can create a root-owned or setuid-root file, or a device
+  node, on the host. The folder is mode `700` and owned by `dcvm-nfs`, so
+  local users on the host can't open it (root can). Every VM can read, change
+  and delete every file in it, so don't put anything private there.
+  Before 0.9.9.1 the export used `no_root_squash` and the folder was `1777`:
+  root in any VM could leave a setuid-root program there that any local user
+  on the host could run. `dcvm doctor` reports such an export as a failure,
+  and `sudo dcvm doctor --fix` converts it, moving setuid and device files
+  out of the share into `$DATACENTER_BASE/quarantine/`. If anything was moved
+  and VMs were used by people you don't fully trust, treat the host as
+  possibly compromised.
 
 ## Images, installer and updates
 
@@ -120,20 +126,42 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   same repository and branch over HTTPS.
 - **`dcvm self-update`** downloads the files from GitHub (`metharda/dcvm`,
   `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, with no
-  signature check, and keeps the version it replaced in
+  signature check, into a staging folder, and replaces the installed files in
+  one swap only when every file arrived. Every installed file is owned by root
+  with fixed modes, never inherited from the folder (on Debian, `/usr/local`
+  can be group `staff`). The version it replaced is kept in
   `/var/lib/dcvm/backups` for `--revert` (the last 3).
+- **Files on the host.** VM folders are mode `711` and their disks,
+  cloud-init seeds and copied installer ISOs `600`: the seed holds the
+  password hash, and any Tailscale key or MySQL password. QEMU still opens
+  them, because libvirt hands them to its own user when a VM starts.
+  `$DATACENTER_BASE/backups` is mode `700`. `dcvm doctor` reports looser
+  permissions on hosts set up before 0.9.9.1, and `--fix` closes them.
 
 ## Backups and exports
 
 - Backups in `$DATACENTER_BASE/backups` are full copies of the VM disk
   overlay and contain everything in the guest (password hashes, keys, data).
   Protect them like the VMs.
-- **Export removes SSH access.** `dcvm backup export` deletes
+- **Export removes SSH access and secrets.** `dcvm backup export` deletes
   `/root/.ssh/authorized_keys` and `/home/*/.ssh/authorized_keys` from the
   exported disk (needs `guestfish` from libguestfs-tools; dcvm warns if it is
-  missing) and strips `ssh_authorized_keys` from the packaged cloud-init seed,
-  so a package handed to someone else does not carry your key. Run
-  `dcvm backup ssh-setup <vm>` after import to add a key.
+  missing), and the package carries only the seed's `meta-data` and
+  `network-config`: `user-data` holds the password hash and any Tailscale key
+  or MySQL password, and stays on the host. Run `dcvm backup ssh-setup <vm>`
+  after import to add a key.
+- **Imports and restores treat the backup as untrusted.** An archive may
+  contain only plain files (no links or devices), and its file names must
+  give a valid VM name and backup date. The disk must be a plain qcow2 image:
+  no external data file, no other format (such as a VMDK pointing at a host
+  disk), no `json:` or network backing, and its base must resolve to a build in
+  `templates/builds/` (or a template, for backups from before 0.9.9). The
+  base record's image name and checksums are checked before use. The VM
+  definition is rebuilt from an allowlist: one disk (the restored one),
+  network interfaces without scripts, pty serial ports, graphics on
+  127.0.0.1; host devices, shared folders, `qemu:commandline`, security
+  labels, kernel and initrd paths, file-backed memory or audio and any other
+  element dcvm doesn't know are dropped.
 - **Restored copies get new identities.** `dcvm backup restore <vm> <date>
   <new_name>` gives the copy new MAC addresses and, with `virt-customize`, a
   new hostname, machine-id and SSH host keys, so two VMs don't share host keys.
@@ -145,7 +173,7 @@ For a host on a shared or public network:
 1. Firewall the forwarded ports (2221+, 8081+) to the addresses that need
    them, or skip `dcvm network ports setup`.
 2. Leave the NFS share off unless you need it; it is exported to the VM
-   subnet only, but every VM's root can write to it.
+   subnet only and squashed, but every VM can change every file in it.
 3. Create VMs with `--disable-root` and SSH keys, and turn password logins
    off inside the guest (`PasswordAuthentication no`).
 4. Pass passwords from variables or interactive prompts, not literally on the

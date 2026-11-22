@@ -56,11 +56,20 @@ The default directory is `$DATACENTER_BASE/backups/exports`. A thin package
 is usually much smaller; the importing host needs the recorded base build,
 which import finds as described under [Restore](#restore).
 
+A package holds the disk, the VM definition, the base record and the seed's
+`meta-data` and `network-config`, without the seed's `user-data` (password
+hash, Tailscale key, MySQL password).
+
 Import a backup archive:
 ```bash
 # Import and restore (optional: rename VM)
 dcvm backup import /path/to/archive.tar.gz [new_vm_name]
 ```
+
+Import refuses archives with links or special files, and file names that
+don't give a valid VM name and backup date. If the restore fails, the
+imported backup is removed again. Archives are untrusted: see
+[Security](security.md#backups-and-exports) for what restore checks and drops.
 
 ## Restore
 
