@@ -316,40 +316,32 @@ install_required_packages() {
   local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2)
   local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2)
 
-  if [[ -f /etc/os-release ]]; then
-    . /etc/os-release
-    local is_debian_based=false
-    local is_arch_based=false
+  local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz)
 
-    [[ "$ID" == "debian" || "$ID" == "ubuntu" ]] && is_debian_based=true
-    [[ "$ID" == "arch" ]] && is_arch_based=true
-
-    if [[ "$is_debian_based" == false && "$is_arch_based" == false ]]; then
-      [[ " $ID_LIKE " == *" debian "* || " $ID_LIKE " == *" ubuntu "* ]] && is_debian_based=true
-      [[ " $ID_LIKE " == *" arch "* ]] && is_arch_based=true
-    fi
-
-    if [[ "$is_debian_based" == true ]]; then
-      command -v apt-get >/dev/null 2>&1 || {
-        print_status "ERROR" "apt-get not found. Cannot install packages."
-        exit 1
-      }
-      print_status "INFO" "Detected Debian-based distro ($ID). Installing packages with apt-get..."
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update && apt-get install -y "${debian_packages[@]}"
-    elif [[ "$is_arch_based" == true ]]; then
-      command -v pacman >/dev/null 2>&1 || {
-        print_status "ERROR" "pacman not found. Cannot install packages."
-        exit 1
-      }
-      print_status "INFO" "Detected Arch-based distro ($ID). Installing packages with pacman..."
-      pacman -Sy --noconfirm "${arch_packages[@]}"
-    else
-      print_status "WARNING" "Unsupported distro: $ID (ID_LIKE: ${ID_LIKE:-none}). Please install dependencies manually."
-    fi
-  else
-    print_status "WARNING" "/etc/os-release not found. Cannot detect distribution. Please install dependencies manually."
-  fi
+  local family manager
+  family=$(distro_family)
+  case "$family" in
+  debian) manager=apt-get ;;
+  arch) manager=pacman ;;
+  fedora) manager=dnf ;;
+  *)
+    print_status "WARNING" "Unsupported distribution: install the dependencies manually (see docs/installation.md)."
+    return 0
+    ;;
+  esac
+  command -v "$manager" >/dev/null 2>&1 || {
+    print_status "ERROR" "$manager not found. Cannot install packages."
+    exit 1
+  }
+  print_status "INFO" "Detected a $family-based distribution. Installing packages with $manager..."
+  case "$family" in
+  debian)
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y "${debian_packages[@]}"
+    ;;
+  arch) pacman -Sy --noconfirm "${arch_packages[@]}" ;;
+  fedora) dnf install -y "${fedora_packages[@]}" ;;
+  esac
 }
 
 check_root() {
@@ -438,7 +430,7 @@ start_nfs_server() {
   # pipefail turns that into "not installed".
   if ! systemctl list-unit-files 2>/dev/null | grep -E 'nfs-kernel-server|nfs-server' >/dev/null; then
     print_status_log "WARNING" "NFS server is not installed"
-    print_status_log "INFO" "Install with: apt install nfs-kernel-server (Debian/Ubuntu) or pacman -S nfs-utils (Arch)"
+    print_status_log "INFO" "Install with: apt install nfs-kernel-server (Debian/Ubuntu), pacman -S nfs-utils (Arch) or dnf install nfs-utils (Fedora)"
     return 0
   fi
 

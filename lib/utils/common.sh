@@ -727,6 +727,18 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Fedora sets no ID_LIKE, so it must stay optional under set -u.
+distro_family() {
+  local name file="${1:-/etc/os-release}"
+  for name in $( ([ -r "$file" ] && . "$file" && echo "${ID:-} ${ID_LIKE:-}") 2>/dev/null); do
+    case "$name" in
+    debian | ubuntu) echo debian && return ;;
+    arch) echo arch && return ;;
+    fedora) echo fedora && return ;;
+    esac
+  done
+}
+
 check_dependencies() {
   local missing_deps=()
   for cmd in "$@"; do

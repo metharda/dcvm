@@ -32,9 +32,9 @@ report() {
 }
 
 package_for() {
-  local family=debian
-  grep -qiE '^(ID|ID_LIKE)=.*arch' /etc/os-release 2>/dev/null && family=arch
-  case "$family:$1" in
+  local family
+  family=$(distro_family)
+  case "${family:-debian}:$1" in
   debian:qemu-img) echo qemu-utils ;;
   debian:virsh) echo libvirt-clients ;;
   debian:virt-install) echo virtinst ;;
@@ -49,6 +49,11 @@ package_for() {
   arch:aria2c) echo aria2 ;;
   arch:virt-customize) echo guestfs-tools ;;
   arch:genisoimage) echo cdrtools ;;
+  fedora:virsh) echo libvirt-client ;;
+  fedora:dhcp_release) echo dnsmasq-utils ;;
+  fedora:aria2c) echo aria2 ;;
+  fedora:guestfish) echo libguestfs ;;
+  fedora:virt-customize) echo guestfs-tools ;;
   *) echo "$1" ;;
   esac
 }
@@ -78,7 +83,10 @@ check_host() {
     report ok "Tools" "all present"
   else
     local install="apt install"
-    grep -qiE '^(ID|ID_LIKE)=.*arch' /etc/os-release 2>/dev/null && install="pacman -S"
+    case "$(distro_family)" in
+    arch) install="pacman -S" ;;
+    fedora) install="dnf install" ;;
+    esac
     report warn "Tools" "missing ${missing[*]}: $install $(printf '%s\n' "${pkgs[@]}" | sort -u | tr '\n' ' ')"
   fi
 
