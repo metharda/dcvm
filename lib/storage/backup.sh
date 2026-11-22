@@ -1270,7 +1270,7 @@ restore_vm() {
   local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
 
   print_info "Preparing VM directory..."
-  if ! mkdir -p "$vm_dir"; then
+  if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
     print_error "Failed to create VM directory: $vm_dir"
     return 1
   fi
@@ -1309,7 +1309,7 @@ restore_vm() {
     chown root:root "$vm_disk_path"
   fi
 
-  chmod 660 "$vm_disk_path"
+  chmod 600 "$vm_disk_path"
 
   if command -v restorecon >/dev/null 2>&1 && selinuxenabled 2>/dev/null; then
     restorecon "$vm_disk_path" 2>/dev/null || true

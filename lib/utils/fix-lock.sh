@@ -217,7 +217,7 @@ fix_vm_locks() {
       }
     fi
 
-    chmod 660 "$VM_DISK_PATH" 2>/dev/null && print_success "Fixed permissions: $target_owner with 660" || {
+    chmod 600 "$VM_DISK_PATH" 2>/dev/null && print_success "Fixed permissions: $target_owner with 600" || {
       print_error "Failed to set permissions to 660"
       step_errors=$((step_errors + 1))
     }
@@ -235,7 +235,7 @@ fix_vm_locks() {
     return 1
   fi
 
-  phase_done "Permissions" "${target_owner:-unchanged}, mode 660"
+  phase_done "Permissions" "${target_owner:-unchanged}, mode 600"
 
   local temp_xml=$(mktemp)
   if virsh dumpxml "$vm_name" >"$temp_xml" 2>/dev/null; then
