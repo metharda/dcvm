@@ -130,6 +130,8 @@ backups and settings are not touched.
 | :-- | :--------- |
 | `/var/log/datacenter-startup.log` | Installer (falls back to `/tmp/dcvm-install.log`) |
 | `/var/log/dcvm-backup.log` | `dcvm backup` |
+| `/var/log/dcvm/audit.log`, `journalctl -u 'dcvm@*'` | Every request from a user without root: who, what, allowed or denied, exit status ([Users and agents](users.md#audit-log)) |
+| `/var/log/dcvm-reaper.log` | VMs deleted because their `--ttl` ran out |
 | `/var/log/datacenter-storage.log` | `dcvm storage` / `storage-cleanup` and its hourly timer: per-VM disk usage |
 | `/var/log/cloud-init-output.log`, `/var/log/dcvm-packages.log` | Inside a VM: first boot, and `-k` packages that failed to install |
 | `journalctl -u libvirtd` | libvirt and QEMU |

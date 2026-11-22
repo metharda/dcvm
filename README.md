@@ -14,15 +14,15 @@
 </div>
 
 dcvm turns one Linux machine into a small VM lab. `dcvm create web` builds a
-VM from a Debian, Ubuntu, Arch Linux or Kali Linux cloud image, creates your
+VM from a Debian, Ubuntu, Arch Linux, Kali Linux or Fedora cloud image, creates your
 user with a password and SSH key, installs the packages you asked for, and
 puts the VM on a private network. It's for students, homelabs, CTF and
 security practice, and anyone who wants a throwaway Linux box to try things
 on. Under the hood it's Bash on top of KVM/QEMU and libvirt, so every VM is an
 ordinary libvirt domain.
 
-- **One command, ready VM.** Eight built-in cloud images (Debian 11/12/13,
-  Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux). `dcvm create` returns in
+- **One command, ready VM.** Nine built-in cloud images (Debian 11/12/13,
+  Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44). `dcvm create` returns in
   about two seconds once the image is downloaded, and the VM finishes its
   first boot about a minute later.
 - **Set up on first boot.** User, password (stored only as a hash), SSH key,
@@ -35,8 +35,12 @@ ordinary libvirt domain.
   export/import between hosts.
 - **Any installer ISO.** `dcvm create-iso` boots Windows or any other
   installer with VNC, SPICE or a serial console.
-- **No lock-in.** No daemon or database; `virsh` and virt-manager keep
-  working on every VM.
+- **For you and your agents, without root.** Members of the `dcvm` group
+  run dcvm from their own accounts and see only their own VMs, within quotas.
+  `--wait`, `--json`, `--ttl` and `dcvm exec` let an agent create a VM, test
+  something in it and throw it away ([Users and agents](docs/users.md)).
+- **No lock-in.** No resident daemon; `virsh` and virt-manager keep working on
+  every VM.
 
 ## Quick start
 
@@ -152,13 +156,16 @@ backup puts the VM back exactly as it was.
 | Network, DHCP, VNC | `dcvm network` · `dcvm network dhcp show` · `dcvm network vnc enable web` |
 | Back up and restore | `dcvm backup create web` · `dcvm backup list` · `dcvm backup restore web` |
 | Cloud images | `dcvm template status` · `dcvm template download -a` |
+| Use a VM over SSH | `dcvm ssh web` · `dcvm exec web -- make test` · `dcvm cp ./app web:app` |
+| Throwaway VM for a script | `dcvm create t1 --ttl 2h --wait --json` · `dcvm delete t1 --yes` |
+| Let others in without sudo | `sudo dcvm user add alice` · `dcvm whoami` |
 | Health check | `dcvm doctor` · `dcvm doctor --fix` |
 | Delete | `dcvm delete web` |
 | Update dcvm | `dcvm self-update --check` · `dcvm self-update` |
 
 `-o` picks the OS: `1` Debian 13, `2` Debian 12, `3` Debian 11, `4` Ubuntu
 24.04 (default), `5` Ubuntu 22.04, `6` Ubuntu 20.04, `7` Arch Linux, `8` Kali
-Linux. Defaults are 2048 MB RAM, 2 vCPUs and a 30G disk (Kali needs at least
+Linux, `9` Fedora 44. Defaults are 2048 MB RAM, 2 vCPUs and a 30G disk (Kali needs at least
 30G).
 
 > [!WARNING]
@@ -173,7 +180,7 @@ Linux. Defaults are 2048 MB RAM, 2 vCPUs and a 30G disk (Kali needs at least
 | Memory | 4 GB minimum, 8 GB or more for several VMs (each defaults to 2 GB) |
 | Disk | 50 GB or more free; each cloud image is 0.4-0.6 GB, plus what the VMs write |
 | Host OS | Debian, Ubuntu, Arch Linux or Fedora, or a derivative (the installer uses `apt`, `pacman` or `dnf`); systemd |
-| Access | root, and internet for packages and images |
+| Access | root to install, internet for packages and images; afterwards members of the `dcvm` group need no root |
 
 ## Configuration
 
@@ -205,14 +212,15 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 
 ## Limitations
 
-- One Linux x86_64 host, run as root. No macOS or Windows hosts, no clusters.
-- Automatic setup covers the eight built-in images; ISO installs are manual.
+- One Linux x86_64 host. No macOS or Windows hosts, no clusters.
+- Automatic setup covers the nine built-in images; ISO installs are manual.
 - Backups are cold (the VM is shut down) and depend on the VM's cloud image
   file (see above). There are no live snapshots.
 - Port forwarding covers SSH (22) and HTTP (80) for each running VM, uses
   host ports 2220-2299 and 8080-8179, and is reapplied after a host reboot
   by `dcvm-boot.service` (`dcvm network ports apply` does it by hand).
-- VMs share one bridge and can reach each other.
+- VMs share one bridge and can reach each other, including VMs of different
+  users; the optional NFS share is one folder for every VM.
 - Cloud images are checked against the checksum files their publishers put
   next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
   mirror that publishes no checksum is used with a warning.
@@ -242,6 +250,7 @@ control over libvirt options.
 | [Backups](docs/backups.md) | Backup, restore, copies, export and import |
 | [Base images](docs/base-images.md) | How VM disks sit on cloud image builds, automatic moves to newer builds, restore on any host |
 | [dcvm doctor](docs/doctor.md) | Every check, what `--fix` repairs, and when dcvm runs it by itself |
+| [Users and agents](docs/users.md) | Using dcvm without root: roles, ownership, quotas, agents, how the socket works |
 | [Operations](docs/operations.md) | Reading the checks, reboots, updates, logs, settings, troubleshooting |
 | [Security](docs/security.md) | Threat model, credentials, network exposure, hardening |
 | [Architecture](docs/architecture.md) | Components, the create flow, design decisions |

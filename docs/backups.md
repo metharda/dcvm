@@ -71,6 +71,14 @@ don't give a valid VM name and backup date. If the restore fails, the
 imported backup is removed again. Archives are untrusted: see
 [Security](security.md#backups-and-exports) for what restore checks and drops.
 
+## Owners
+
+Each backup records the owner of the VM it was taken from (an `owner` file in
+the backup folder). Users without root see, restore, export and delete only
+their own backups, and rotation keeps the last three per owner, so a later VM
+that reuses a name never touches the previous owner's backups. Backups from
+before 0.9.10 belong to root. See [Users and agents](users.md#ownership).
+
 ## Restore
 
 Restoring over an existing VM asks you to type `yes`, then replaces the VM's

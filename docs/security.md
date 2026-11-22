@@ -19,13 +19,14 @@ See also: [Architecture](architecture.md) · [Operations](operations.md)
 
 | In scope | Out of scope |
 | :------- | :----------- |
-| Keeping VM passwords out of plain-text files, logs and the terminal | Local root on the host: dcvm runs as root and root can read every VM disk |
+| Keeping VM passwords out of plain-text files, logs and the terminal | Local root on the host: root (and `dcvm-admin`) can read every VM disk |
 | Keeping VMs off the LAN unless you forward a port | Isolating VMs from each other: all VMs share one bridge and can reach each other |
-| Not leaking SSH access when a backup is exported to another host | Untrusted users on the host or a multi-tenant setup |
-| Making the installer reviewable before it runs | Attacks from inside a guest against QEMU/KVM (libvirt's own sandboxing applies) |
+| Not leaking SSH access when a backup is exported to another host | Attacks from inside a guest against QEMU/KVM (libvirt's own sandboxing applies) |
+| Making the installer reviewable before it runs | Untrusted guests attacking other guests on the shared bridge |
+| Members of the `dcvm` group: no path to root, to other users' VMs, backups or secrets, or to host files they can't read (since 0.9.10) | Denial of service by a user within their quota |
 
-dcvm assumes the person running it is the host's administrator and that the
-VMs belong to them.
+Root and `dcvm-admin` members administer the host. Members of `dcvm` are
+treated as untrusted: see [Users without root](#users-without-root).
 
 ## Credentials
 
@@ -165,6 +166,45 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
 - **Restored copies get new identities.** `dcvm backup restore <vm> <date>
   <new_name>` gives the copy new MAC addresses and, with `virt-customize`, a
   new hostname, machine-id and SSH host keys, so two VMs don't share host keys.
+
+## Users without root
+
+Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
+[Users and agents](users.md)). The boundary:
+
+- **One way in.** Users reach root only through `/run/dcvm/dcvm.sock` (mode
+  0660, group `dcvm`). The root side identifies them with `SO_PEERCRED`, so
+  nothing the client sends can claim another identity, and it starts from a
+  clean environment: variables like `DATACENTER_BASE` or `COLUMNS` from the
+  caller never reach root.
+- **Allowlisted requests.** Each command a user may run is parsed by the
+  server: VM names must be valid and owned by the caller, options are checked
+  one by one (free text that reaches libvirt, such as `--graphics
+  vnc,listen=0.0.0.0` or `--boot loader=…`, is refused), keywords like `all`
+  and `latest` can't be VM names, and anything not listed is refused.
+- **No paths into root.** Files a user passes (an ISO, an export target) are
+  opened by the client with the user's own permissions and handed over as
+  descriptors; root never opens a path a user chose. Prompts that would ask
+  for a path refuse it for users.
+- **Secrets.** Passwords and Tailscale keys travel inside the request and
+  reach the script through a pipe; they never appear in a command line,
+  `/proc/*/cmdline`, the audit log or the journal. The user's own SSH key is
+  used for their VMs, never root's.
+- **Isolation between users.** Users see and change only their own VMs and
+  backups; backups carry their owner, so a reused VM name gets nothing of the
+  previous owner's. `fix-lock` doesn't restart libvirt for users. VNC set up
+  by a user has a random password (VNC allows 8 characters) that only the
+  owner can read. Disks and cloud-init seeds of every VM are readable by root
+  only.
+- **Limits.** Quotas cap each user's VMs, vCPUs, memory and disk
+  (`/etc/dcvm/limits.conf`).
+- **Audit.** Every request is logged with its caller and decision
+  (`/var/log/dcvm/audit.log`).
+- **What still connects users:** VMs share one bridge and can reach each
+  other, and the optional NFS share is one folder for every VM. Don't enable
+  the share on a host whose users don't trust each other. `dcvm-admin` is
+  root-equivalent by design; so are the `libvirt`, `disk` and `docker` groups,
+  which `dcvm doctor` warns about.
 
 ## Hardening checklist
 

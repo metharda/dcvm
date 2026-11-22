@@ -1,10 +1,11 @@
 # Architecture
 
 dcvm is a set of Bash scripts that drive KVM/QEMU through libvirt. There is no
-daemon, database or agent of its own: every command is a short-lived script
-that calls `virsh`, `virt-install`, `qemu-img`, `iptables` and cloud-init
-tooling, and keeps its state in plain files under `DATACENTER_BASE` and in
-libvirt itself.
+resident daemon: every command is a short-lived script that calls `virsh`,
+`virt-install`, `qemu-img`, `iptables` and cloud-init tooling, and keeps its
+state in plain files under `DATACENTER_BASE`, `/var/lib/dcvm` and libvirt.
+Users without root reach the same scripts through a socket-activated core
+(`lib/server/`): see [Users and agents](users.md#how-it-works).
 
 - [Components](#components)
 - [Command routing](#command-routing)
@@ -239,10 +240,11 @@ in `/var/lib/libvirt/dnsmasq/<bridge>.status`.
 
 | Decision | Why | Trade-off |
 | :------- | :-- | :-------- |
-| Plain Bash over libvirt tools | Runs on any Linux host with libvirt, no runtime to install, and every step is a command you can run by hand. VMs stay ordinary libvirt domains, so `virsh` and virt-manager keep working. | No API; the scripts parse command output. |
+| Bash modules over libvirt tools | Runs on any Linux host with libvirt, no runtime to install, and every step is a command you can run by hand. VMs stay ordinary libvirt domains, so `virsh` and virt-manager keep working. | The scripts parse command output. |
+| A small Python core at the privilege boundary | Users and agents without root need a gate that identifies callers, checks requests and passes files and secrets safely; Python 3 is already on every host (virt-install uses it) and stays readable. It holds policy only; the VM logic stays in Bash. | A second language; the request format is now a contract the client and server share. |
 | Cloud images and cloud-init instead of installers | A ready VM in about a minute plus first-boot time, with the user, key and packages already set up. | Only the eight built-in images get this; anything else goes through `create-iso` and a manual install. |
 | qcow2 overlays on shared templates | New VMs are instant and small, and so are their backups. | Every disk depends on its base build; dcvm keeps builds immutable and reference-counted, and moving a VM to a newer build copies the blocks that differ into its disk, which then grows by that amount. |
 | Password hashes only | The guest password never appears in plain text in the seed or a guest command (see [security.md](security.md)). | The password can't be read back later; reset it inside the VM. |
 | Cold backups | A powered-off copy can't be torn mid-write. | The VM is down for the length of the copy. |
 | iptables DNAT for access | Works the same on every distro and needs no extra service. | Rules are global and not reloaded at boot unless your distro restores `/etc/iptables/rules.v4`; run `dcvm network ports apply` after a reboot. |
-| No dcvm daemon | Nothing to keep running or secure; libvirt already autostarts the network and VMs. | Port forwards and IP discovery are refreshed on demand, not continuously. |
+| No resident daemon | Nothing to keep running; libvirt already autostarts the network and VMs. The socket starts one short-lived process per request, which also works for agents in sandboxes where `sudo` is blocked. | Port forwards and IP discovery are refreshed on demand, not continuously; the socket's root process is code to keep secure. |

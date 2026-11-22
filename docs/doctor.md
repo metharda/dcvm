@@ -69,7 +69,9 @@ It takes a few seconds; `--fast` skips the two slow checks.
 | KVM | `/dev/kvm` missing (virtualization off in the firmware, or no nested KVM), or libvirt not answering |
 | Tools | Missing `qemu-img`, `virsh`, `virt-install`, `jq`, `dhcp_release`, `aria2c`, `guestfish`, `virt-customize`, `xz`, `curl` or `genisoimage`, with the `apt install` / `pacman -S` / `dnf install` command for your distribution. `dcvm self-update` replaces dcvm's files but never installs packages, so updated hosts can miss tools a release needs |
 | Shell alias | An `alias dcvm=…` line in `.bashrc`, `.zshrc`, `.profile`, … of root or the user who ran sudo. Installs before 0.9 added it; it hides `/usr/local/bin/dcvm` and every command fails with `no such file or directory` |
-| Services | `datacenter-storage.timer` and `dcvm-boot.service` missing, disabled or from an older version (see [Automatic runs](#automatic-runs)) |
+| Services | `datacenter-storage.timer`, `dcvm-boot.service`, the socket for users without root (`dcvm.socket`) or the `--ttl` timer (`dcvm-reaper.timer`) missing, disabled or from an older version (see [Automatic runs](#automatic-runs)) |
+| Install | dcvm's files, `/etc/dcvm-install.conf` or a folder above them (such as a group-writable `/usr/local`) changeable by a non-root user, who could then run code as root through dcvm |
+| Users | Members of `dcvm` who are also in `libvirt`, `disk` or `docker`, which is root on the host and bypasses dcvm's limits |
 | NFS share | An export without `all_squash`, a share other host users can open, or setuid/device files left in it: root in a VM could get root on the host this way (see [Security](security.md#network-exposure)) |
 | Permissions | VM disks, cloud-init seeds (password hashes) or installer ISOs readable by every local user, VM folders other users can list, or a backups folder they can open |
 | dcvm | A newer version on GitHub (skipped with `--fast` and when offline) |
@@ -94,6 +96,7 @@ per other problem:
 | Stuck at boot | Running for more than 3 minutes without an address, with its CPU use. A VM busy at 100% with no address is usually hung at boot; look at `dcvm console <vm>` |
 | Autostart | A dcvm VM that does not start with the host |
 | Locked disk | A stopped VM whose disk is still locked, so it would not start (`dcvm fix-lock <vm>`) |
+| Owners | Owner records left for VMs that no longer exist |
 
 ### Backups
 
@@ -129,7 +132,9 @@ nothing. See [Base images](base-images.md#builds).
 | Port forward rules missing | `dcvm network ports apply` |
 | Stale DHCP leases | `dcvm network dhcp cleanup` |
 | Old `alias dcvm=` lines | Removed (a `.bak` copy of the file is kept); open a new shell afterwards |
-| Services missing or outdated | Installed and enabled |
+| Services missing or outdated | Installed and enabled, with the `dcvm` and `dcvm-admin` groups |
+| dcvm's files changeable by others | Made root-owned and not group- or world-writable (folders above them are only reported) |
+| Owner records of deleted VMs | Removed |
 | Unsafe NFS export | `all_squash` to the `dcvm-nfs` account, share mode `700`, setuid and device files moved to `$DATACENTER_BASE/quarantine/` |
 | Loose permissions | VM files `600`, VM folders `711`, backups folder `700` |
 | VM without autostart | Autostart turned on |

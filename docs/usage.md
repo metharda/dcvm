@@ -20,7 +20,7 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Kali Linux, Arch Linux)
+- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44)
 - Username (default: depends on OS, e.g. ubuntu)
 - Password
 - Root access settings
@@ -35,7 +35,19 @@ The wizard will prompt you for:
 dcvm create myvm -f -p password123
 ```
 
-Uses default values for all unspecified options.
+Uses default values for all unspecified options. Without a terminal (a script
+or an agent run by a user), dcvm never asks: a missing value is an error that
+names the option, and the password can come from `DCVM_PASSWORD`.
+
+```bash
+dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH answers
+```
+
+- `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
+  minutes by `dcvm-reaper.timer`).
+- `--wait` returns only once the VM answers on SSH.
+- `--json` prints one JSON object on stdout (`name`, `state`, `ip`, `user`,
+  `expires`); progress goes to stderr.
 
 #### Custom Configuration
 ```bash
@@ -320,14 +332,33 @@ ssh ubuntu@<vm-ip>
 # Enter password when prompted
 ```
 
+### With dcvm ssh
+
+```bash
+dcvm ssh web                           # log in with your own key
+dcvm exec web -- 'uname -a'            # run a command; exits with its status
+dcvm info web --json                   # state, IP, login user, owner
+```
+
+dcvm finds the address and login user itself and keeps the VMs' host keys in
+`~/.ssh/dcvm_known_hosts`.
+
 ### Finding VM IP Address
 
 ```bash
 dcvm status            # IP column of the VM table
+dcvm info web          # one VM
 dcvm network           # DHCP leases, static IPs and port mappings
 ```
 
 ## File Transfer
+
+### Using dcvm cp
+
+```bash
+dcvm cp ./app web:/home/ubuntu/app     # to the VM (folders too)
+dcvm cp web:/var/log/syslog .          # from the VM
+```
 
 ### Using SCP
 
