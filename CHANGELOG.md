@@ -12,6 +12,67 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.9.1] - 2026-11-22
+
+Security update. Hosts where other people use VMs, or that restore backups
+from elsewhere, should update now.
+
+**Upgrading:** after `sudo dcvm self-update`, run `sudo dcvm doctor --fix`.
+It secures the NFS export if there is one and closes VM files and backups
+to other local users. If it moved files out of the NFS share, a VM may have
+had root on the host.
+
+### Security
+
+- NFS share: root in any VM could leave a setuid-root program in the share
+  (`no_root_squash`, mode `1777`) that any local user on the host could run.
+  The export now uses `all_squash` to a `dcvm-nfs` account, the share is mode
+  `700`, and setuid and device files are moved to
+  `$DATACENTER_BASE/quarantine/`.
+- Restoring or importing a crafted backup could run commands or write files
+  as root:
+  - the base record's image name became a file path (`image=../../etc/…`);
+  - a path in the VM definition was pasted into `sed` (whose `e` flag runs
+    commands);
+  - the definition itself was defined almost as is.
+
+  Base records are now validated, and the definition is rebuilt from an
+  allowlist (one disk, no host devices, shared folders, `qemu:commandline`,
+  security labels or host paths).
+- Backup disks must be plain qcow2: a qcow2 external data file, a VMDK
+  extent or a `json:` backing could point a VM at a host file or another
+  VM's disk. A backing path through `builds/../` is no longer accepted.
+- Import archives may not contain links, and their file names cannot become
+  VM names like `all` or `--all`, which commands read as "every VM".
+- `cloud-init.iso` (password hash, Tailscale key, MySQL password), VM disks
+  and backups were readable by every local user. New files are private, and
+  `dcvm doctor --fix` closes existing ones.
+- Exports no longer include the seed's `user-data`.
+- `COLUMNS` or `UI_COLS` could run commands through shell arithmetic.
+- `dcvm doctor --fix` removed leftover files with an unquoted `rm`: a file
+  name with `*` deleted files in the working directory, such as `/bin`.
+- `fix-lock` killed every QEMU process whose command line contained the VM
+  name (`web` also matched `web-prod`) and deleted matching lock files in
+  `/tmp`, `/var/tmp`, `/dev/shm` and `/var/lock`. It now uses libvirt's
+  pidfile and that VM's own lock files.
+- Port forwarding and the installer wrote fixed file names in `/tmp`, which
+  another local user could replace with a symlink.
+- VM addresses for port forwards and SSH came from the guest agent first,
+  which a guest can make claim the gateway or another VM. Host-side DHCP
+  leases (by MAC) and static records come first now, and only valid host
+  addresses in the subnet are accepted.
+
+### Changed
+
+- `self-update` downloads into a staging folder and installs in one swap only
+  when every file arrived, includes non-shell files, sets owner and modes
+  itself, and runs the new version's `post-update.sh`; `--revert` swaps the
+  saved version back in whole.
+- VM names cannot start with a hyphen or be `all`, `latest` or `help`.
+- The NFS line in new VMs' `/etc/fstab` has `nofail`, so a VM doesn't wait
+  for the share at boot.
+- `dcvm doctor` no longer suggests "updating" to an older release.
+
 ## [0.9.9] - 2026-11-21
 
 Base images that can no longer be replaced under a VM, and `dcvm doctor`.
@@ -672,6 +733,7 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
 [Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.9...HEAD
+[0.9.9.1]: https://github.com/metharda/dcvm/pull/64
 [0.9.9]: https://github.com/metharda/dcvm/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/metharda/dcvm/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/metharda/dcvm/compare/v0.9.6...v0.9.7

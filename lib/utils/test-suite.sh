@@ -681,6 +681,10 @@ stub_backup_tools() {
     echo "virsh $*" >>"$t/calls"
     case "$1" in
     list) cat "$t/list" 2>/dev/null ;;
+    dominfo)
+      grep -q " ${*: -1} " "$t/list" 2>/dev/null
+      return
+      ;;
     define)
       cp "$2" "$t/defined.xml"
       printf ' -    %s    shut off\n' "$(sed -n 's|.*<name>\(.*\)</name>.*|\1|p' "$2" | head -1)" >>"$t/list"
@@ -691,6 +695,8 @@ stub_backup_tools() {
   }
   # shellcheck disable=SC2317
   qemu-img() { :; }
+  # shellcheck disable=SC2317
+  check_disk_image() { :; }
   # shellcheck disable=SC2317
   virt-customize() { echo "virt-customize $*" >>"$t/calls"; }
   # shellcheck disable=SC2317
@@ -2141,27 +2147,220 @@ test_self_update_keeps_backup() {
   mkdir -p "$t/bin" "$t/lib/core" "$t/backups"
   printf 'echo "Version: 0.9.7"\n' >"$t/bin/dcvm"
   echo old >"$t/lib/core/x.sh"
+  echo gone >"$t/lib/core/stale.sh"
   local d
   for d in 20260101000001 20260101000002 20260101000003 20260101000004; do mkdir "$t/backups/dcvm-backup-$d"; done
-  (
-    eval "$(sed -n '/^install_files()/,/^}/p; /^prune_update_backups()/,/^}/p; /^do_update()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
-    INSTALL_BIN="$t/bin" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups" KEEP_UPDATE_BACKUPS=3
-    get_current_version() { echo 0.9.7; }
-    get_remote_version() { echo 0.9.8; }
-    create_backup_dir() { :; }
-    list_repo_files() { printf 'dcvm\nlib/core/x.sh\n'; }
-    fetch_repo_file() { echo "new $1" >"$2"; }
-    do_update false
-  ) >/dev/null 2>&1
+  update() {
+    (
+      eval "$(sed -n '/^stage_files()/,/^}/p; /^new_stage()/,/^}/p; /^prune_update_backups()/,/^}/p; /^do_update()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
+      INSTALL_BIN="$t/bin" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups" KEEP_UPDATE_BACKUPS=3
+      get_current_version() { echo 0.9.7; }
+      get_remote_version() { echo 0.9.8; }
+      create_backup_dir() { :; }
+      dcvm_tree_permissions() { :; }
+      list_repo_files() { printf 'dcvm\nlib/core/x.sh\nlib/core/new.py\n'; }
+      fetch_repo_file() { [ "$1" != "${FAIL_ON:-}" ] && mkdir -p "${2%/*}" && echo "new $1" >"$2"; }
+      do_update false
+    ) >/dev/null 2>&1
+  }
+  FAIL_ON=lib/core/new.py update
+  local failed_kept_old=false
+  [ "$(cat "$t/lib/core/x.sh")" = old ] && [ -f "$t/lib/core/stale.sh" ] && failed_kept_old=true
+  FAIL_ON="" update
   local kept newest
   kept=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | wc -l)
   newest=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | sort -r | head -1)
-  if [ "$(cat "$t/lib/core/x.sh")" = "new lib/core/x.sh" ] && [ "$kept" -eq 3 ] &&
-    grep -q 'Version: 0.9.7' "$newest/dcvm" 2>/dev/null && [ "$(cat "$newest/lib/core/x.sh" 2>/dev/null)" = old ] &&
-    [ ! -d "$t/backups/dcvm-backup-20260101000001" ]; then
-    log_test "PASS" "self-update keeps the replaced version for --revert and prunes to 3 (#55)"
+  if $failed_kept_old && [ "$(cat "$t/lib/core/x.sh")" = "new lib/core/x.sh" ] && [ -f "$t/lib/core/new.py" ] &&
+    [ ! -e "$t/lib/core/stale.sh" ] && [ "$kept" -eq 3 ] && grep -q 'Version: 0.9.7' "$newest/dcvm" 2>/dev/null &&
+    [ "$(cat "$newest/lib/core/x.sh" 2>/dev/null)" = old ] && [ -z "$(find "$t" -maxdepth 1 -name '.dcvm-stage.*')" ]; then
+    log_test "PASS" "self-update swaps the whole tree only when every file arrived, keeps 3 saved versions"
   else
-    log_test "FAIL" "self-update keeps the replaced version for --revert and prunes to 3 (#55)" "kept $kept; newest $newest; x.sh: $(cat "$t/lib/core/x.sh")"
+    log_test "FAIL" "self-update swaps the whole tree only when every file arrived, keeps 3 saved versions" "failed run kept old: $failed_kept_old; kept $kept; x.sh: $(cat "$t/lib/core/x.sh")"
+  fi
+  rm -rf "$t"
+}
+
+test_ui_width_injection() {
+  local t out
+  t=$(mktemp -d)
+  out=$(
+    COLUMNS="1+a[\$(touch $t/ran)]" UI_COLS= ui_cols </dev/null 2>/dev/null
+    UI_COLS="1+a[\$(touch $t/ran2)]" ui_cols </dev/null 2>/dev/null
+    UI_COLS="1+a[\$(touch $t/ran3)]" ui_region "x" 2>/dev/null
+  )
+  if [ ! -e "$t/ran" ] && [ ! -e "$t/ran2" ] && [ ! -e "$t/ran3" ] && [ "$(head -1 <<<"$out")" = 80 ]; then
+    log_test "PASS" "COLUMNS and UI_COLS cannot run commands through \$(( ))"
+  else
+    log_test "FAIL" "COLUMNS and UI_COLS cannot run commands through \$(( ))" "$(ls "$t") / $out"
+  fi
+  rm -rf "$t"
+}
+
+test_build_names_and_sums() {
+  local t ok=true
+  t=$(mktemp -d)
+  mkdir -p "$t/storage/templates/builds" "$t/etc"
+  echo payload >"$t/payload"
+  (
+    DATACENTER_BASE="$t"
+    register_build "$t/payload" "../../../etc/x.sh" >/dev/null 2>&1 && exit 1
+    register_build "$t/payload" ".hidden.img" >/dev/null 2>&1 && exit 1
+    current_build "../../payload" >/dev/null 2>&1 && exit 1
+    find_build '.*' >/dev/null 2>&1 && exit 1
+    b=$(register_build "$t/payload" "ubuntu-24.04.img") || exit 1
+    [ "$(find_build "$(sha256sum "$t/payload" | cut -d' ' -f1)")" = "$b" ] || exit 1
+    registered_build "$b" && ! registered_build "$t/payload" && ! registered_build "$t/storage/templates/builds/../../../payload"
+  ) || ok=false
+  [ -z "$(find "$t/etc" "$t/storage" -name 'x-*')" ] || ok=false
+  if $ok; then
+    log_test "PASS" "base build names and checksums from backups cannot leave builds/"
+  else
+    log_test "FAIL" "base build names and checksums from backups cannot leave builds/"
+  fi
+  rm -rf "$t"
+}
+
+test_vm_name_reserved() {
+  local n bad="" good=""
+  for n in all latest help -x --all; do validate_vm_name "$n" >/dev/null 2>&1 && bad+="$n "; done
+  for n in web_1 db-2 Lab3; do validate_vm_name "$n" >/dev/null 2>&1 || good+="$n "; done
+  if [ -z "$bad$good" ]; then
+    log_test "PASS" "VM names: keywords and leading hyphens refused, existing styles still valid"
+  else
+    log_test "FAIL" "VM names: keywords and leading hyphens refused, existing styles still valid" "accepted: $bad rejected: $good"
+  fi
+}
+
+# shellcheck disable=SC2317 # stubs
+test_vm_ip_sources() {
+  local out
+  out=$(
+    NETWORK_SUBNET=10.10.10 NETWORK_NAME=datacenter-net DATACENTER_BASE=/nonexistent
+    LEASE="" AGENT=""
+    virsh() {
+      case "$1 $*" in
+      domiflist*) printf ' Interface Type Source Model MAC\n vnet0 network datacenter-net virtio 52:54:00:aa:bb:cc\n' ;;
+      net-dhcp-leases*) [ -n "$LEASE" ] && printf ' x\n -\n 2026-01-01 00:00:00 52:54:00:aa:bb:cc ipv4 %s/24 web -\n' "$LEASE" ;;
+      *"--source agent"*) [ -n "$AGENT" ] && printf ' vnet0 52:54:00:aa:bb:cc ipv4 %s/24\n' "$AGENT" ;;
+      esac
+    }
+    AGENT=10.10.10.1
+    printf '%s ' "$(get_vm_ip web)"
+    AGENT="10.10.10.2;id"
+    printf '%s ' "$(get_vm_ip web)"
+    LEASE=10.10.10.50 AGENT=10.10.10.77
+    printf '%s' "$(get_vm_ip web)"
+  )
+  if [ "$out" = "N/A N/A 10.10.10.50" ]; then
+    log_test "PASS" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text"
+  else
+    log_test "FAIL" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text" "$out"
+  fi
+}
+
+test_sanitize_domain_xml() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "domain XML sanitizer (python3 not installed)"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  cat >"$t/vm.xml" <<'XML'
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>old</name><uuid>1</uuid><memory unit='KiB'>1048576</memory><vcpu>1</vcpu>
+  <metadata><x/></metadata><seclabel type='none'/>
+  <memoryBacking><source type='file'/></memoryBacking>
+  <os><type arch='x86_64' machine='pc-q35-8.2'>hvm</type><kernel>/etc/shadow</kernel><loader>/etc/passwd</loader><nvram>/var/lib/libvirt/qemu/nvram/old.fd</nvram></os>
+  <devices>
+    <emulator>/tmp/evil</emulator>
+    <disk type='block' device='disk'><driver name='qemu' type='raw'/><source dev='/dev/sda'/><target dev='vda' bus='virtio'/></disk>
+    <disk type='file' device='disk'><source file='/srv/datacenter/vms/bob/bob.qcow2'/><target dev='vdb' bus='virtio'/></disk>
+    <disk type='file' device='cdrom'><source file='/etc/shadow'/><target dev='sda' bus='sata'/></disk>
+    <hostdev mode='subsystem' type='pci'/><filesystem type='mount'><source dir='/'/><target dir='r'/></filesystem>
+    <interface type='ethernet'><script path='/tmp/x'/></interface>
+    <interface type='network'><mac address='52:54:00:11:22:33'/><source network='datacenter-net'/></interface>
+    <serial type='file'><source path='/etc/cron.d/x'/></serial><serial type='pty'/>
+    <channel type='unix'><source mode='bind' path='/etc/x'/><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
+    <graphics type='vnc' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>
+    <audio id='1' type='file'><output path='/etc/y'/></audio>
+    <controller type='ide' index='0'/><controller type='usb' index='0'/>
+  </devices>
+  <qemu:commandline><qemu:arg value='-x'/></qemu:commandline>
+</domain>
+XML
+  sanitize_domain_xml "$t/vm.xml" new "/srv/datacenter/vms/new/new-disk.qcow2" true || {
+    log_test "FAIL" "domain XML sanitizer" "returned an error"
+    rm -rf "$t"
+    return
+  }
+  out=$(cat "$t/vm.xml")
+  local leaked
+  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35' <<<"$out" | sort -u | tr '\n' ' ')
+  if [ -z "$leaked" ] && grep -q '<name>new</name>' <<<"$out" && [ "$(grep -o '<disk ' <<<"$out" | wc -l)" -eq 1 ] &&
+    grep -q 'file="/srv/datacenter/vms/new/new-disk.qcow2"' <<<"$out" && grep -q 'type="pty"' <<<"$out" &&
+    grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out"; then
+    log_test "PASS" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override"
+  else
+    log_test "FAIL" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override" "leaked: $leaked"
+  fi
+  rm -rf "$t"
+}
+
+test_check_disk_image() {
+  if ! command -v qemu-img >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "disk image check (qemu-img or python3 not installed)"
+    return
+  fi
+  local t r=""
+  t=$(mktemp -d)
+  qemu-img create -q -f qcow2 "$t/plain.qcow2" 16M
+  qemu-img create -q -f qcow2 -o data_file="$t/hostfile" "$t/datafile.qcow2" 16M 2>/dev/null
+  printf '# Disk DescriptorFile\nversion=1\ncreateType="monolithicFlat"\nRW 2048 FLAT "/etc/hostname" 0\n' >"$t/extent.qcow2"
+  qemu-img create -q -f qcow2 -b 'json:{"file.filename":"/etc/hostname"}' -F raw "$t/json.qcow2" 16M 2>/dev/null
+  check_disk_image "$t/plain.qcow2" && r+="plain:ok "
+  check_disk_image "$t/datafile.qcow2" || r+="datafile:refused "
+  check_disk_image "$t/extent.qcow2" || r+="extent:refused "
+  check_disk_image "$t/json.qcow2" || r+="json:refused "
+  if [ "$r" = "plain:ok datafile:refused extent:refused json:refused " ]; then
+    log_test "PASS" "backup disks: external data files, VMDK extents and json: backing refused"
+  else
+    log_test "FAIL" "backup disks: external data files, VMDK extents and json: backing refused" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_import_rejects_hostile_archives() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/a" "$t/b" "$t/c"
+  ln -s /etc/hostname "$t/a/web-disk-20260101_000000.qcow2"
+  echo x >"$t/a/web-config-20260101_000000.xml"
+  echo x >"$t/b/all-disk-20260101_000000.qcow2"
+  echo x >"$t/b/all-config-20260101_000000.xml"
+  echo x >"$t/c/web-disk-20260101_000000.qcow2"
+  echo x >"$t/c/web-config-20260101_000000.xml"
+  printf 'image=../../../etc/x.img\nsha256=%064d\nrm=-rf\n' 0 >"$t/c/base"
+  tar -czf "$t/links.tar.gz" -C "$t/a" .
+  tar -czf "$t/keyword.tar.gz" -C "$t/b" .
+  tar -czf "$t/record.tar.gz" -C "$t/c" .
+  (
+    load_backup_sh_for_test "$t"
+    BACKUP_DIR="$t/backups"
+    restore_vm() { echo restored >"$t/restored-$1"; }
+    import_backup "$t/links.tar.gz" >/dev/null 2>&1
+    import_backup "$t/keyword.tar.gz" >/dev/null 2>&1
+    import_backup "$t/record.tar.gz" >/dev/null 2>&1
+  )
+  [ -e "$t/restored-web" ] && r+="record-imported "
+  [ -e "$t/restored-all" ] && r+="keyword-imported "
+  ls "$t/backups"/web-* >/dev/null 2>&1 && [ -z "$(find "$t/backups" -type l)" ] && r+="no-links "
+  grep -q '^image=' "$t/backups"/web-*/base 2>/dev/null && r+="bad-image-kept "
+  grep -q '^rm=' "$t/backups"/web-*/base 2>/dev/null && r+="unknown-key-kept "
+  if [ "$r" = "record-imported no-links " ]; then
+    log_test "PASS" "import refuses links and keyword names, keeps only valid base record lines"
+  else
+    log_test "FAIL" "import refuses links and keyword names, keeps only valid base record lines" "$r"
   fi
   rm -rf "$t"
 }
@@ -2368,11 +2567,15 @@ test_get_vm_ip_exact() {
   local t got
   t=$(mktemp -d)
   write_lease_fixture "$t"
+  stub_virsh() {
+    case "$1" in
+    domiflist) printf ' Interface Type Source Model MAC\n vnet0 network datacenter-net virtio 52:54:00:00:00:01\n' ;;
+    net-dhcp-leases) cat "$t/virsh-leases" ;;
+    esac
+    return 0
+  }
   got=$(
-    virsh() {
-      [ "$1" = net-dhcp-leases ] && grep -v ' VM1 ' "$t/virsh-leases"
-      return 0
-    }
+    virsh() { stub_virsh "$@" | grep -v ' VM1 '; }
     DATACENTER_BASE="$t" get_vm_ip vm1
   )
   if [ "$got" = "N/A" ]; then
@@ -2381,16 +2584,13 @@ test_get_vm_ip_exact() {
     log_test "FAIL" "get_vm_ip vm1 ignores vm10's lease (#37)" "got '$got'"
   fi
   got=$(
-    virsh() {
-      [ "$1" = net-dhcp-leases ] && cat "$t/virsh-leases"
-      return 0
-    }
+    virsh() { stub_virsh "$@" | sed 's/ vm10 / vm1  /'; }
     DATACENTER_BASE="$t" get_vm_ip vm1
   )
   if [ "$got" = "10.10.10.11" ]; then
-    log_test "PASS" "get_vm_ip vm1 finds its own lease (VM1, any case) (#37)"
+    log_test "PASS" "get_vm_ip vm1 finds its own lease by MAC, not by a hostname another guest sends (#37)"
   else
-    log_test "FAIL" "get_vm_ip vm1 finds its own lease (VM1, any case) (#37)" "got '$got'"
+    log_test "FAIL" "get_vm_ip vm1 finds its own lease by MAC, not by a hostname another guest sends (#37)" "got '$got'"
   fi
   got=$(
     virsh() {
@@ -2514,6 +2714,13 @@ test_common_functions() {
   test_ui_region_rows
   test_remove_old_alias
   test_distro_family
+  test_ui_width_injection
+  test_build_names_and_sums
+  test_vm_name_reserved
+  test_vm_ip_sources
+  test_sanitize_domain_xml
+  test_check_disk_image
+  test_import_rejects_hostile_archives
   test_base_builds
   test_doctor_report
   test_backup_list_columns

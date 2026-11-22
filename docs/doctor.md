@@ -70,6 +70,8 @@ It takes a few seconds; `--fast` skips the two slow checks.
 | Tools | Missing `qemu-img`, `virsh`, `virt-install`, `jq`, `dhcp_release`, `aria2c`, `guestfish`, `virt-customize`, `xz`, `curl` or `genisoimage`, with the `apt install` / `pacman -S` / `dnf install` command for your distribution. `dcvm self-update` replaces dcvm's files but never installs packages, so updated hosts can miss tools a release needs |
 | Shell alias | An `alias dcvm=…` line in `.bashrc`, `.zshrc`, `.profile`, … of root or the user who ran sudo. Installs before 0.9 added it; it hides `/usr/local/bin/dcvm` and every command fails with `no such file or directory` |
 | Services | `datacenter-storage.timer` and `dcvm-boot.service` missing, disabled or from an older version (see [Automatic runs](#automatic-runs)) |
+| NFS share | An export without `all_squash`, a share other host users can open, or setuid/device files left in it: root in a VM could get root on the host this way (see [Security](security.md#network-exposure)) |
+| Permissions | VM disks, cloud-init seeds (password hashes) or installer ISOs readable by every local user, VM folders other users can list, or a backups folder they can open |
 | dcvm | A newer version on GitHub (skipped with `--fast` and when offline) |
 
 ### Network
@@ -128,6 +130,8 @@ nothing. See [Base images](base-images.md#builds).
 | Stale DHCP leases | `dcvm network dhcp cleanup` |
 | Old `alias dcvm=` lines | Removed (a `.bak` copy of the file is kept); open a new shell afterwards |
 | Services missing or outdated | Installed and enabled |
+| Unsafe NFS export | `all_squash` to the `dcvm-nfs` account, share mode `700`, setuid and device files moved to `$DATACENTER_BASE/quarantine/` |
+| Loose permissions | VM files `600`, VM folders `711`, backups folder `700` |
 | VM without autostart | Autostart turned on |
 | Old base still held open by a running VM | Saved into `builds/`, and the VM is pinned to it at its next start |
 | VM from before 0.9.9 | Pinned to its build (a running one at its next start) |

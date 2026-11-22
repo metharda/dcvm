@@ -369,9 +369,7 @@ check_kvm_support() {
   fi
 }
 
-# dcvm's port forwards are iptables rules. libvirt's nftables backend (the
-# default on Fedora and Arch) rejects forwarded connections to VMs in its own
-# table, where no iptables rule can accept them.
+# libvirt's nftables backend rejects forwarded connections no iptables rule can accept.
 use_iptables_backend() {
   local conf=/etc/libvirt/network.conf
   command -v iptables >/dev/null 2>&1 && [ -f "$conf" ] && grep -q 'firewall_backend' "$conf" || return 1
@@ -452,8 +450,7 @@ start_nfs_server() {
     return 0
   fi
 
-  # Enabled too: Fedora does not enable it on install, and VMs then wait 90s
-  # for /mnt/shared at every boot after a host reboot.
+  # Fedora doesn't enable it; VMs then wait 90s for /mnt/shared after a reboot.
   systemctl enable --now nfs-server 2>/dev/null || systemctl enable --now nfs-kernel-server 2>/dev/null || {
     print_status_log "WARNING" "Could not start NFS server"
     return 0
@@ -462,29 +459,12 @@ start_nfs_server() {
   if systemctl is-active --quiet nfs-kernel-server 2>/dev/null || systemctl is-active --quiet nfs-server 2>/dev/null; then
     print_status_log "SUCCESS" "NFS server is running"
 
-    # Only the VM subnet may mount the share. no_root_squash lets the guests'
-    # root set up /mnt/shared for the VM user.
     local subnet="${NETWORK_SUBNET:-10.10.10}"
-    local old_line="$NFS_EXPORT_PATH *(rw,sync,no_subtree_check,no_root_squash)"
-    local export_line="$NFS_EXPORT_PATH ${subnet}.0/24(rw,sync,no_subtree_check,no_root_squash)"
-    if grep -qxF "$old_line" /etc/exports 2>/dev/null; then
-      local tmp_exports
-      tmp_exports=$(mktemp) &&
-        awk -v old="$old_line" -v new="$export_line" '$0 == old { $0 = new } { print }' /etc/exports >"$tmp_exports" &&
-        cat "$tmp_exports" >/etc/exports &&
-        print_status_log "SUCCESS" "Limited the NFS export to ${subnet}.0/24"
-      rm -f "$tmp_exports"
-    elif ! grep -q "$NFS_EXPORT_PATH" /etc/exports 2>/dev/null; then
-      echo "$export_line" >>/etc/exports 2>/dev/null || {
-        print_status_log "WARNING" "Could not update /etc/exports"
-        return 0
-      }
+    if ! secure_nfs_share "$NFS_EXPORT_PATH" "$subnet"; then
+      print_status_log "WARNING" "Could not set up the NFS export"
+      return 0
     fi
-
-    # Every VM user writes as its own UID, so make the share writable for all,
-    # with the sticky bit (like /tmp) so users can't delete each other's files.
-    chmod 1777 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not make $NFS_EXPORT_PATH writable for VM users"
-    exportfs -ra 2>/dev/null || print_status_log "WARNING" "Could not refresh NFS exports"
+    [ "${NFS_QUARANTINED:-0}" -gt 0 ] && print_status_log "WARNING" "Moved $NFS_QUARANTINED setuid or device files out of the share into $NFS_QUARANTINE_DIR"
     # firewalld puts the bridge in libvirt's zone, which rejects NFS.
     if systemctl is-active --quiet firewalld 2>/dev/null; then
       local zone services=(--add-service=nfs --add-service=rpc-bind --add-service=mountd)
@@ -529,6 +509,7 @@ check_directory_structure() {
       fi
     fi
   done
+  chmod 700 "$DATACENTER_BASE/backups"
 
   print_status_log "SUCCESS" "Directory structure verified"
 }
@@ -649,7 +630,8 @@ create_network() {
   fi
 
   print_status_log "INFO" "Creating network '$net_name'..."
-  local network_config="/tmp/${net_name}.xml"
+  local network_config
+  network_config=$(mktemp)
 
   cat >"$network_config" <<EOF
 <network>
@@ -841,7 +823,7 @@ install_dcvm_command() {
 
   mkdir -p "$install_bin" "$install_lib"
 
-  if ! install_by_fetch "$install_bin" "$install_lib"; then
+  if ! install_by_fetch "$install_bin" "$install_lib" || ! dcvm_tree_permissions "$install_bin/dcvm" "$install_lib"; then
     print_status_log "ERROR" "Failed to install dcvm files"
     exit 1
   fi

@@ -19,7 +19,7 @@ source "$LIB_DIR/utils/common.sh"
 
 show_version() {
   echo "dcvm - a VM manager"
-  echo "Version: 0.9.9"
+  echo "Version: 0.9.9.1"
   echo "https://github.com/metharda/dcvm"
 }
 

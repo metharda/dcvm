@@ -89,17 +89,19 @@ setup_vm_forwarding() {
   else
     print_error "  Failed to setup HTTP forwarding for $vm"
   fi
-  echo "$vm $vm_ip $ssh_port $http_port" >>/tmp/dcvm_port_mappings.tmp
+  [ -n "${MAPPINGS_TMP:-}" ] && echo "$vm $vm_ip $ssh_port $http_port" >>"$MAPPINGS_TMP"
   return 0
 }
 
 save_mappings_tmp_to_file() {
-  if [ -f /tmp/dcvm_port_mappings.tmp ]; then
+  if [ -n "${MAPPINGS_TMP:-}" ] && [ -f "$MAPPINGS_TMP" ]; then
     create_dir_safe "$DATACENTER_BASE"
     local map_file="$DATACENTER_BASE/port-mappings.txt"
-    echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$map_file"
-    cat /tmp/dcvm_port_mappings.tmp >>"$map_file"
-    rm -f /tmp/dcvm_port_mappings.tmp
+    {
+      echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT"
+      cat "$MAPPINGS_TMP"
+    } >"$map_file.new" && mv -f "$map_file.new" "$map_file"
+    rm -f "$MAPPINGS_TMP"
     print_success "Port mappings saved to $map_file"
   fi
 }
@@ -137,7 +139,7 @@ cmd_setup() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
   local skipped=() count=0
-  rm -f /tmp/dcvm_port_mappings.tmp
+  MAPPINGS_TMP=$(mktemp)
   while read -r vm <&3; do
     [ -z "$vm" ] && continue
     if ! virsh list | grep -q "$vm.*running"; then
@@ -236,7 +238,6 @@ cmd_apply() {
       ui_step fail "$vm" "could not add the rules"
     fi
   done <"$map_file"
-  rm -f /tmp/dcvm_port_mappings.tmp
   iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_iptables_rules
   ui_done ok "$(plural "$count" VM) forwarded" "dcvm network ports test checks them"
