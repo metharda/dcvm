@@ -72,7 +72,23 @@ KALI_VERSION="2026.3" # Update when there is a new Kali release
 MIRROR_kali="
 https://kali.download/cloud-images/kali-${KALI_VERSION}/kali-linux-${KALI_VERSION}-cloud-genericcloud-amd64.tar.xz
 "
-SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2"
+FEDORA_VERSION="44"
+FEDORA_COMPOSE="1.7" # Update with each Fedora release or respin
+FEDORA_UPSTREAM="Fedora-Cloud-Base-Generic-${FEDORA_VERSION}-${FEDORA_COMPOSE}.x86_64.qcow2"
+FEDORA_CHECKSUM="Fedora-Cloud-${FEDORA_VERSION}-${FEDORA_COMPOSE}-x86_64-CHECKSUM"
+MIRROR_fedora="
+https://dl.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://mirror.yandex.ru/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://ftp.acc.umu.se/mirror/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://ftp.gwdg.de/pub/linux/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://mirror.init7.net/fedora/fedora/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://fedora.mirror.liteserver.nl/linux/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://mirrors.kernel.org/fedora/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://mirror.nju.edu.cn/fedora/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+https://mirrors.ustc.edu.cn/fedora/releases/${FEDORA_VERSION}/Cloud/x86_64/images/${FEDORA_UPSTREAM}
+"
+SUPPORTED_IMAGES="debian-13-genericcloud-amd64.qcow2 debian-12-generic-amd64.qcow2 debian-11-generic-amd64.qcow2 ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img ubuntu-20.04-server-cloudimg-amd64.img Arch-Linux-x86_64-cloudimg.qcow2 kali-linux-cloud-genericcloud-amd64.qcow2 Fedora-Cloud-Base-Generic-${FEDORA_VERSION}.x86_64.qcow2"
 
 image_label() {
   case "$1" in
@@ -84,6 +100,7 @@ image_label() {
   ubuntu-20.04-*) echo "Ubuntu 20.04" ;;
   Arch-Linux-*) echo "Arch Linux" ;;
   kali-linux-*) echo "Kali Linux" ;;
+  Fedora-Cloud-*) echo "Fedora ${FEDORA_VERSION}" ;;
   *) echo "$1" ;;
   esac
 }
@@ -99,6 +116,7 @@ get_mirror_varname() {
   ubuntu-20.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2004" ;;
   Arch-Linux-x86_64-cloudimg.qcow2) echo "MIRROR_arch" ;;
   kali-linux-cloud-genericcloud-amd64.qcow2) echo "MIRROR_kali" ;;
+  Fedora-Cloud-Base-Generic-*.x86_64.qcow2) echo "MIRROR_fedora" ;;
   *) echo "" ;;
   esac
 }
@@ -169,7 +187,9 @@ rank_mirrors() {
 select_best_mirror() { rank_mirrors "$@" | head -1 | cut -d' ' -f1; }
 
 checksum_for_file() {
-  awk -v f="$1" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print tolower($1); exit } }'
+  awk -v f="$1" '
+    $1 ~ /^SHA(256|512)$/ && $2 == "(" f ")" && $3 == "=" { print tolower($4); exit }
+    { n = $2; sub(/^\*/, "", n); if (n == f) { print tolower($1); exit } }'
 }
 
 fetch_text() {
@@ -197,7 +217,7 @@ verify_published_checksum() {
   } | awk -v b="$base" 'NF { n = $0; sub(/.*\//, "", n); if (n == b) { sub(/\/[^\/]*$/, ""); if (!seen[$0]++) print } }')
   while IFS= read -r dir; do
     [ -n "$dir" ] || continue
-    for sums in SHA256SUMS SHA512SUMS "$base.SHA256"; do
+    for sums in SHA256SUMS SHA512SUMS "$base.SHA256" $([[ "$filename" == Fedora-Cloud-* ]] && echo "$FEDORA_CHECKSUM"); do
       hash=$(fetch_text "$dir/$sums" | checksum_for_file "$base")
       case ${#hash} in
       64) algo=sha256 ;;
@@ -405,6 +425,7 @@ find_archived_build() {
   url=$(get_mirrors "$img" | head -1)
   case "$url" in
   *kali.download*) return 1 ;; # converted locally: no published checksum of the qcow2
+  *fedora*) return 1 ;;
   esac
   archive=${url%/*}
   archive=${archive%/*}

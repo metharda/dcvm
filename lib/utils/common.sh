@@ -1342,6 +1342,61 @@ wait_for_vm() {
   return 1
 }
 
+vnc_password() { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 8; }
+
+# The password goes through a file and the environment: other local users can
+# read a root process's arguments in /proc, not its environment.
+set_vnc_password() {
+  local vm="$1" xml flags=--config
+  xml=$(mktemp) || return 1
+  if ! virsh dumpxml --security-info -- "$vm" 2>/dev/null | VNC_PW="$2" python3 -I -S -c '
+import os, sys, xml.etree.ElementTree as ET
+g = ET.parse(sys.stdin).getroot().find("devices/graphics")
+if g is None:
+    sys.exit(1)
+g.set("passwd", os.environ["VNC_PW"])
+print(ET.tostring(g, encoding="unicode"))' >"$xml"; then
+    rm -f "$xml"
+    return 1
+  fi
+  [ "$(get_vm_state "$vm")" = running ] && flags="--live --config"
+  # shellcheck disable=SC2086
+  virsh update-device "$vm" "$xml" $flags >/dev/null 2>&1
+  local rc=$?
+  rm -f "$xml"
+  return $rc
+}
+
+vnc_password_of() { virsh dumpxml --security-info -- "$1" 2>/dev/null | sed -n "s/.*<graphics[^>]* passwd='\([^']*\)'.*/\1/p" | head -1; }
+
+cleanup_port_forwarding_for_vm() {
+  local vm_ip="$1"
+  local ssh_port="$2"
+  local http_port="$3"
+
+  print_info "Cleaning up port forwarding rules"
+
+  if [ -n "$ssh_port" ] && [ -n "$http_port" ]; then
+    iptables -t nat -D PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null && print_info "Removed SSH port rule $ssh_port" || true
+    iptables -t nat -D PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null && print_info "Removed HTTP port rule $http_port" || true
+    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
+  else
+    print_info "Searching and removing all rules with IP $vm_ip"
+    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
+    for rule_num in $nat_rules; do
+      iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
+    done
+
+    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
+    for rule_num in $forward_rules; do
+      iptables -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
+    done
+  fi
+
+  save_iptables_rules
+}
+
 register_vm() {
   local vm="$1"
   shift
@@ -1801,7 +1856,7 @@ interactive_prompt_static_ip_common() {
 default_username() {
   local os_choice="$1"
   os_choice=$(echo "$os_choice" | sed 's/[0-9.].*$//')
-  local os_list=("ubuntu" "debian" "archlinux" "kali")
+  local os_list=("ubuntu" "debian" "archlinux" "kali" "fedora")
   if [[ " ${os_list[*]} " == *" $os_choice "* ]]; then
     echo "$os_choice"
   else
@@ -1813,7 +1868,8 @@ export -f print_info print_success print_warning print_error print_status ui_qui
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username
+export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username valid_vm_ip
+export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info

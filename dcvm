@@ -26,7 +26,7 @@ fi
 
 show_version() {
   echo "dcvm - a VM manager"
-  echo "Version: 0.9.9.1"
+  echo "Version: 0.9.10"
   echo "https://github.com/metharda/dcvm"
 }
 
@@ -135,7 +135,11 @@ route_command() {
     show_version
     ;;
   help | -h | --help)
-    show_usage
+    if [ "${1:-}" = agents ]; then
+      cat "$LIB_DIR/agents.md"
+    else
+      show_usage
+    fi
     ;;
   *)
     print_error "Unknown command: $command"

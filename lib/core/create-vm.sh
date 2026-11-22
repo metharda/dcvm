@@ -20,6 +20,7 @@ MIN_DISK_SIZE_GB["ubuntu24.04"]=10
 MIN_DISK_SIZE_GB["ubuntu22.04"]=10
 MIN_DISK_SIZE_GB["ubuntu20.04"]=10
 MIN_DISK_SIZE_GB["archlinux"]=10
+MIN_DISK_SIZE_GB["fedora44"]=10
 MIN_DISK_SIZE_GB["kali"]=30 # Kali template is 25 GiB, so minimum must be larger
 
 OS_REQUIRES_VNC=("kali" "debian13")
@@ -274,7 +275,8 @@ select_os() {
       cat <<-EOF
 			  1  Debian 13       4  Ubuntu 24.04 (default)   7  Arch Linux
 			  2  Debian 12       5  Ubuntu 22.04             8  Kali Linux
-			  3  Debian 11       6  Ubuntu 20.04             or the path to an ISO file
+			  3  Debian 11       6  Ubuntu 20.04             9  Fedora 44
+			  or the path to an ISO file
 			EOF
       read -r -p "Choose [4]: " VM_OS_CHOICE
       VM_OS_CHOICE=${VM_OS_CHOICE:-4}
@@ -321,6 +323,12 @@ select_os() {
     VM_OS="kali"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/kali-linux-cloud-genericcloud-amd64.qcow2"
     OS_VARIANT="debian12"
+    ;;
+  9)
+    VM_OS="fedora44"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Fedora-Cloud-Base-Generic-44.x86_64.qcow2"
+    OS_VARIANT="fedora-unknown"
+    osinfo-query os -f short-id 2>/dev/null | grep -qx fedora44 && OS_VARIANT="fedora44"
     ;;
   *)
 
@@ -1038,11 +1046,15 @@ generate_cloud_init_userdata() {
   local ssh_service=ssh sftp_server=/usr/lib/openssh/sftp-server
   local base_packages="openssh-server openssh-sftp-server nfs-common"
   local nginx_root=/var/www/html apache_root=/var/www/html web_owner=www-data:www-data apache_service=apache2
+  local vim_package=vim
   if [ "$VM_OS" = archlinux ]; then
     ssh_service=sshd sftp_server=/usr/lib/ssh/sftp-server base_packages="openssh nfs-utils"
     nginx_root=/usr/share/nginx/html apache_root=/srv/http web_owner=http:http apache_service=httpd
+  elif [[ "$VM_OS" == fedora* ]]; then
+    ssh_service=sshd sftp_server=/usr/libexec/openssh/sftp-server base_packages="openssh-server nfs-utils"
+    nginx_root=/usr/share/nginx/html web_owner=apache:apache apache_service=httpd vim_package=vim-enhanced
   fi
-  base_packages="$base_packages htop curl wget net-tools rsync nano vim tree unzip"
+  base_packages="$base_packages htop curl wget net-tools rsync nano $vim_package tree unzip"
   case "$VM_OS" in debian*) base_packages="$base_packages unattended-upgrades" ;; esac
 
   # -k packages are installed one by one in runcmd, so one unavailable
@@ -1081,6 +1093,15 @@ generate_cloud_init_userdata() {
         package=apache
       fi
       [ "$VM_OS" = archlinux ] && [ "$package" = docker.io ] && package=docker
+      if [[ "$VM_OS" == fedora* ]]; then
+        case "$package" in
+        apache2)
+          APACHE_REQUESTED=true
+          package=httpd
+          ;;
+        docker.io) package=moby-engine ;;
+        esac
+      fi
       EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
     done
   fi
@@ -1092,6 +1113,8 @@ generate_cloud_init_userdata() {
     for pkg in __DCVM_PACKAGES__; do
       if command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "$pkg"
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y "$pkg"
       else
         pacman -S --noconfirm --needed "$pkg"
       fi || echo "dcvm: failed to install package: $pkg" | tee -a /var/log/dcvm-packages.log
@@ -1405,6 +1428,8 @@ install_vm() {
   elif os_requires_vnc "$VM_OS"; then
     GRAPHICS="vnc,listen=127.0.0.1"
   fi
+  [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ] && GRAPHICS="${GRAPHICS%%,*},listen=127.0.0.1"
+  VM_GRAPHICS_USED=$GRAPHICS
   virt_error=$(virt-install \
     --name "$VM_NAME" \
     --virt-type kvm \
@@ -1653,6 +1678,10 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
+    if [ "$(caller_role)" != root ] && [ "${VM_GRAPHICS_USED:-none}" != none ]; then
+      VNC_PW=$(vnc_password)
+      set_vnc_password "$VM_NAME" "$VNC_PW" && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
+    fi
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then

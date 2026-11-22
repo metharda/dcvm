@@ -3,34 +3,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../utils/common.sh"
 
-cleanup_port_forwarding_for_vm() {
-  local vm_ip="$1"
-  local ssh_port="$2"
-  local http_port="$3"
-
-  print_info "Cleaning up port forwarding rules"
-
-  if [ -n "$ssh_port" ] && [ -n "$http_port" ]; then
-    iptables -t nat -D PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null && print_info "Removed SSH port rule $ssh_port" || true
-    iptables -t nat -D PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null && print_info "Removed HTTP port rule $http_port" || true
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
-  else
-    print_info "Searching and removing all rules with IP $vm_ip"
-    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
-    for rule_num in $nat_rules; do
-      iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
-    done
-
-    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
-    for rule_num in $forward_rules; do
-      iptables -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
-    done
-  fi
-
-  save_iptables_rules
-}
-
 remove_vm_storage_pool() {
   local vm_dir="$DATACENTER_BASE/vms/$1" pool path
   while read -r pool; do

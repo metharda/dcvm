@@ -2186,7 +2186,7 @@ test_socket_policy() {
   grep -q 'needs a dcvm admin' <<<"$(ask self-update)" && r+="admin-only "
   out=$(ask create isovm -o "$t/x.iso")
   grep -q "\"-o\", \"$t/base/vms/isovm/installer.iso\"" <<<"$out" && [ "$(cat "$t/base/vms/isovm/installer.iso" 2>/dev/null)" = "iso data" ] && r+="iso-fd "
-  grep -q 'over your vms quota' <<<"$(ask create web3 -f)" && r+="quota "
+  grep -q 'over your VM quota' <<<"$(ask create web3 -f)" && r+="quota "
   if [ "$uid" -eq 0 ]; then r+="iso-unreadable "; else grep -q 'cannot open ISO' <<<"$(ask create isovm2 -o /etc/shadow)" && r+="iso-unreadable "; fi
   grep -q '"decision": "deny"' "$t/state/audit.log" && r+="audit "
   stop_srv

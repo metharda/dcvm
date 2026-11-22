@@ -236,6 +236,12 @@ cmd_vnc() {
     sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
+      if [ "$(caller_role)" != root ]; then
+        local pw
+        pw=$(vnc_password)
+        set_vnc_password "$vm_name" "$pw" || print_warning "Could not set a VNC password"
+        ui_kv "Password" "$pw"
+      fi
       ui_done ok "VNC on for $vm_name" "listens on 127.0.0.1 of this host"
       ui_next "dcvm start $vm_name" "start it" "dcvm network vnc status $vm_name" "its VNC port, once running"
     else
@@ -253,6 +259,9 @@ cmd_vnc() {
       if [[ "$vnc_display" =~ :([0-9]+)$ ]]; then
         local vnc_port=$((5900 + BASH_REMATCH[1]))
         ui_kv "VNC" "on, display $vnc_display, port $vnc_port"
+        local pw
+        pw=$(vnc_password_of "$vm_name")
+        [ -n "$pw" ] && ui_kv "Password" "$pw"
         ui_next "ssh -L $vnc_port:127.0.0.1:$vnc_port root@<host>" "then point a VNC viewer at localhost:$vnc_port"
       else
         ui_kv "VNC" "on; the port is assigned when the VM starts"

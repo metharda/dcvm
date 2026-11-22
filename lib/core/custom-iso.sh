@@ -381,6 +381,11 @@ run_virt_install() {
   }
   register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")"
   ui_step ok "VM" "defined and booting the installer"
+  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+    local pw
+    pw=$(vnc_password)
+    set_vnc_password "$VM_NAME" "$pw" && ui_step ok "VNC" "password $pw (dcvm network vnc status $VM_NAME shows it again)"
+  fi
 }
 
 save_vm_info() {

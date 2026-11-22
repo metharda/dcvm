@@ -196,10 +196,11 @@ def check_quota(uid, user, cpus, memory_mb, disk_gb):
         "disk_gb": sum(int(e.get("disk_gb", "0") or 0) for e in mine),
     }
     want = {"vms": 1, "vcpus": cpus, "memory_mb": memory_mb, "disk_gb": disk_gb}
+    names = {"vms": "VM", "vcpus": "vCPU", "memory_mb": "memory (MB)", "disk_gb": "disk (GB)"}
     for k, n in want.items():
         if used[k] + n > limits[k]:
             raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
-                         % (k.replace("_", " "), used[k], n, limits[k], LIMITS))
+                         % (names[k], used[k], n, limits[k], LIMITS))
 
 
 def take_value(args, i, opt):
@@ -387,6 +388,12 @@ def decide_user(ctx, argv):
         ctx.update(vm=plain[0], mutating=True)
         return argv
     if cmd == "template" and plain[:1] in (["list"], ["status"], []):
+        return argv
+    if cmd == "network" and plain[:2] == ["ports", "show"] and len(plain) == 2:
+        return argv
+    if cmd == "network" and plain[:1] == ["ports"] and len(plain) == 3 and plain[1] in ("add", "remove"):
+        own_vm(ctx, plain[2])
+        ctx.update(vm=plain[2], mutating=True)
         return argv
     if cmd == "network" and plain[:1] == ["vnc"] and len(plain) == 3 and plain[1] in ("enable", "disable", "status"):
         own_vm(ctx, plain[2])

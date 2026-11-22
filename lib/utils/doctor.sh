@@ -103,11 +103,11 @@ check_host() {
   fi
 
   if dcvm_services_ok; then
-    report ok "Services" "hourly storage check, boot service"
+    report ok "Services" "hourly storage check, boot service, socket for users without root, expiry of --ttl VMs"
   elif $FIX && install_dcvm_services; then
-    report fixed "Services" "installed the hourly storage check and the boot service"
+    report fixed "Services" "installed the storage check, boot service, socket and --ttl expiry"
   else
-    report warn "Services" "the boot service (network and port forwards after a reboot) or the hourly check is missing: --fix installs them"
+    report warn "Services" "the boot service, hourly check, socket for users without root or --ttl expiry is missing or old: --fix installs them"
   fi
 
   local lib=/usr/local/lib/dcvm bad="" p
