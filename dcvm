@@ -17,6 +17,13 @@ if [ ! -f "$LIB_DIR/utils/common.sh" ]; then
 fi
 source "$LIB_DIR/utils/common.sh"
 
+if [ "$(id -u)" -ne 0 ]; then
+  case "${1:-}" in
+  "" | help | -h | --help | version | -v | --version | ssh | exec | cp) ;;
+  *) exec python3 -I -S "$LIB_DIR/server/dcvm-client.py" "$@" ;;
+  esac
+fi
+
 show_version() {
   echo "dcvm - a VM manager"
   echo "Version: 0.9.9.1"
@@ -36,6 +43,9 @@ VMs:
   start | stop | restart [vm]   One VM, or every dcvm VM
   console [vm]                  Serial console of a VM; without a name, access hints
   delete <vm> | --all           Delete a VM with its disk, leases and forwards
+  info <vm> [--json]            State, IP, login user, owner of one VM
+  ssh | exec | cp               Use a VM over SSH with your key (dcvm ssh --help)
+  protect | unprotect <vm>      Refuse delete and restore until unprotected
 
 Network:
   network                       Network, DHCP leases, static IPs and port forwards
@@ -52,6 +62,9 @@ System:
   self-update [--check]         Update dcvm from GitHub (--revert goes back)
   doctor [--fix]                Check (and repair) the base images of VMs and backups
   fix-lock <vm> | --all         Clear stale disk locks when a VM will not start
+  user add|remove|list          Who may use dcvm without root (admins)
+  owner <vm> <user>             Hand a VM to another user (admins)
+  whoami                        Your dcvm user and role
   uninstall                     Remove dcvm, its VMs and data
   version                       Show the version
 
@@ -102,6 +115,12 @@ route_command() {
     ;;
   fix-lock)
     exec "$LIB_DIR/utils/fix-lock.sh" "$@"
+    ;;
+  info | whoami | protect | unprotect | reap | user | owner)
+    exec "$LIB_DIR/core/access.sh" "$command" "$@"
+    ;;
+  ssh | exec | cp)
+    exec "$LIB_DIR/core/connect.sh" "$command" "$@"
     ;;
   doctor)
     exec "$LIB_DIR/utils/doctor.sh" "$@"

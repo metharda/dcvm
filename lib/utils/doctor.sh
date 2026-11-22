@@ -49,6 +49,7 @@ package_for() {
   arch:aria2c) echo aria2 ;;
   arch:virt-customize) echo guestfs-tools ;;
   arch:genisoimage) echo cdrtools ;;
+  arch:python3) echo python ;;
   fedora:virsh) echo libvirt-client ;;
   fedora:dhcp_release) echo dnsmasq-utils ;;
   fedora:aria2c) echo aria2 ;;
@@ -69,7 +70,7 @@ check_host() {
   fi
 
   local cmd missing=() pkgs=()
-  for cmd in qemu-img virsh virt-install jq dhcp_release aria2c guestfish virt-customize xz curl; do
+  for cmd in qemu-img virsh virt-install jq dhcp_release aria2c guestfish virt-customize xz curl python3; do
     command_exists "$cmd" || {
       missing+=("$cmd")
       pkgs+=("$(package_for "$cmd")")
@@ -107,6 +108,38 @@ check_host() {
     report fixed "Services" "installed the hourly storage check and the boot service"
   else
     report warn "Services" "the boot service (network and port forwards after a reboot) or the hourly check is missing: --fix installs them"
+  fi
+
+  local lib=/usr/local/lib/dcvm bad="" p
+  [ -d "$lib" ] && bad=$(find "$lib" /usr/local/bin/dcvm /etc/dcvm-install.conf \( ! -user root -o -perm /022 \) -print -quit 2>/dev/null)
+  local parents=""
+  p=$lib
+  while [ "$p" != / ] && [ -d "$lib" ]; do
+    p=$(dirname "$p")
+    [ "$(stat -c %u "$p")" = 0 ] && [ $((0$(stat -c %a "$p") & 022)) -eq 0 ] || parents+="${parents:+, }$p"
+  done
+  if [ -n "$parents" ]; then
+    report fail "Install" "$parents can be changed by non-root users, who could then run code as root through dcvm: make it root-owned and not group-writable"
+  elif [ -z "$bad" ]; then
+    report ok "Install" "dcvm's files are root-owned and not writable by others"
+  elif $FIX && dcvm_tree_permissions /usr/local/bin/dcvm "$lib" && chown root:root /etc/dcvm-install.conf 2>/dev/null && chmod go-w /etc/dcvm-install.conf 2>/dev/null; then
+    report fixed "Install" "dcvm's files made root-owned and not writable by others"
+  else
+    report fail "Install" "$bad can be changed by a non-root user, who could then run code as root through dcvm: --fix repairs it"
+  fi
+
+  local member members risky=""
+  members=$(getent group "$DCVM_USER_GROUP" "$DCVM_ADMIN_GROUP" 2>/dev/null | cut -d: -f4 | tr ',' '\n' | grep . | sort -u)
+  for member in $members; do
+    id -nG "$member" 2>/dev/null | tr ' ' '\n' | grep -qx "$DCVM_ADMIN_GROUP" && continue
+    id -nG "$member" 2>/dev/null | tr ' ' '\n' | grep -qxE 'libvirt|disk|docker' && risky+="${risky:+, }$member"
+  done
+  if [ -n "$risky" ]; then
+    report warn "Users" "$risky also in libvirt, disk or docker: that is root on this host and bypasses dcvm's limits"
+  elif [ -n "$members" ]; then
+    report ok "Users" "$(plural "$(grep -c . <<<"$members")" user) without root (dcvm user list)"
+  else
+    report skip "Users" "only root uses dcvm (dcvm user add <user> lets others in)"
   fi
 
   local share="$DATACENTER_BASE/nfs-share"
@@ -303,6 +336,19 @@ base_status() {
 check_vms() {
   section "VMs"
   local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 noip=()
+  local entry stale=()
+  for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
+    [ -f "$entry" ] || continue
+    vm=${entry##*/}
+    [ "$(registry_get "$vm" state)" = creating ] && [ -n "$(find "$entry" -mmin -60)" ] && continue
+    check_vm_exists "$vm" || stale+=("$vm")
+  done
+  if [ ${#stale[@]} -gt 0 ] && $FIX; then
+    for vm in "${stale[@]}"; do registry_remove "$vm"; done
+    report fixed "Owners" "removed owner records of deleted VMs: ${stale[*]}"
+  elif [ ${#stale[@]} -gt 0 ]; then
+    report warn "Owners" "owner records of VMs that no longer exist: ${stale[*]}: --fix removes them"
+  fi
   while IFS=$'\t' read -r vm disk base; do
     is_vm_in_network "$vm" || continue
     [ -z "$VM_FILTER" ] || [ "$vm" = "$VM_FILTER" ] || continue

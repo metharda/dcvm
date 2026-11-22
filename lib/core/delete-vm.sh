@@ -54,6 +54,10 @@ delete_single_vm() {
     print_error "VM $VM_NAME does not exist"
     return 1
   fi
+  if [ "$(registry_get "$VM_NAME" protected)" = 1 ]; then
+    print_error "$VM_NAME is protected: dcvm unprotect $VM_NAME first"
+    return 1
+  fi
 
   ui_quiet
   ui_title "Deleting $VM_NAME"
@@ -117,14 +121,18 @@ delete_single_vm() {
   fi
   ui_step ok "Disk and files" "$removed"
 
-  if [ -f ~/.ssh/config ] && grep -q "^Host $VM_NAME$" ~/.ssh/config; then
+  if [ "$(caller_role)" = root ] && [ -f ~/.ssh/config ] && grep -q "^Host $VM_NAME$" ~/.ssh/config; then
     sed -i "/^Host $VM_NAME$/,/^Host /{ /^Host $VM_NAME$/d; /^Host /!d; }" ~/.ssh/config
     sed -i "/^Host $VM_NAME$/,/^$/{d;}" ~/.ssh/config
     ui_step ok "SSH config" "Host $VM_NAME entry removed"
   fi
 
   local left=()
-  check_vm_exists "$VM_NAME" && left+=("VM still exists in libvirt")
+  if check_vm_exists "$VM_NAME"; then
+    left+=("VM still exists in libvirt")
+  else
+    registry_remove "$VM_NAME"
+  fi
   sleep 2
   local leases dhcp_check
   leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null)

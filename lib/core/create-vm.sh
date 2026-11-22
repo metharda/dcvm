@@ -41,6 +41,9 @@ FLAG_STATIC_IP=""
 FLAG_GRAPHICS=""
 ADDITIONAL_PACKAGES=""
 FLAG_TAILSCALE_AUTHKEY=""
+FLAG_TTL=""
+FLAG_WAIT=false
+FLAG_JSON=false
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-24.04-server-cloudimg-amd64.img"]=""
@@ -168,6 +171,18 @@ parse_arguments() {
       ;;
     -f | --force)
       FORCE_MODE=true
+      shift
+      ;;
+    --ttl)
+      FLAG_TTL="$2"
+      shift 2
+      ;;
+    --wait)
+      FLAG_WAIT=true
+      shift
+      ;;
+    --json)
+      FLAG_JSON=true
       shift
       ;;
     -h | --help)
@@ -310,6 +325,10 @@ select_os() {
   *)
 
     if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
+      if [ "$(caller_role)" != root ] && [ "$VM_OS_CHOICE" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
+        print_error "Pass the ISO as a file instead: dcvm create $VM_NAME -o <file.iso>"
+        exit 1
+      fi
       print_info "Detected ISO file - switching to custom ISO installation mode..."
       local force_flag=()
       [ "$FORCE_MODE" = true ] && force_flag=(-f)
@@ -482,7 +501,10 @@ setup_ssh_key() {
 
   if [ "$SETUP_SSH_KEY" = true ]; then
     [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || ui_section "SSH key"
-    if [ -f ~/.ssh/id_rsa.pub ]; then
+    if [ "$(caller_role)" != root ]; then
+      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
+    elif [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       [ "$FORCE_MODE" = true ] && print_success "SSH key configured" || print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
@@ -774,7 +796,10 @@ interactive_prompt_ssh_key() {
   done
   if [ "$SETUP_SSH_KEY" = true ]; then
     ui_section "SSH key"
-    if [ -f ~/.ssh/id_rsa.pub ]; then
+    if [ "$(caller_role)" != root ]; then
+      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
+    elif [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
@@ -1527,6 +1552,28 @@ main() {
   fi
 
   parse_arguments "$@"
+  read_dcvm_secrets
+  [ -n "${DCVM_SECRET_PASSWORD:-}" ] && FLAG_PASSWORD="$DCVM_SECRET_PASSWORD"
+  [ -z "$FLAG_PASSWORD" ] && [ "$(caller_role)" = root ] && FLAG_PASSWORD="${DCVM_PASSWORD:-}"
+  if [ -n "${DCVM_SECRET_ROOT_PASSWORD:-}" ]; then
+    FLAG_ROOT_PASSWORD="$DCVM_SECRET_ROOT_PASSWORD"
+    FLAG_ENABLE_ROOT=y
+  fi
+  [ -n "${DCVM_SECRET_TAILSCALE_AUTHKEY:-}" ] && FLAG_TAILSCALE_AUTHKEY="$DCVM_SECRET_TAILSCALE_AUTHKEY"
+  if [ -n "$FLAG_TTL" ] && ! TTL_SECONDS=$(ttl_seconds "$FLAG_TTL"); then
+    print_error "--ttl must look like 90m, 2h or 3d"
+    exit 1
+  fi
+  if [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && [ "$FORCE_MODE" != true ]; then
+    FORCE_MODE=true
+    if [ -z "$FLAG_PASSWORD" ]; then
+      print_error "No terminal to ask on: pass -p <password> or set DCVM_PASSWORD (and -f for defaults)"
+      exit 1
+    fi
+  fi
+  if [ "$FLAG_JSON" = true ]; then
+    exec 3>&1 1>&2
+  fi
 
   if [ -z "$VM_NAME" ]; then
     print_error "VM name required. Usage: dcvm create <vm_name> [options]"
@@ -1547,7 +1594,7 @@ main() {
   for vm in "${VM_NAMES[@]}"; do
     vm=$(trim_whitespace "$vm")
     [ -z "$vm" ] && continue
-    if virsh list --all 2>/dev/null | grep -q " $vm "; then
+    if check_vm_exists "$vm" && [ "$(registry_get "$vm" state)" != creating ]; then
       print_error "VM $vm already exists"
       echo "Use: dcvm delete $vm (to delete it first)"
       exit 1
@@ -1606,12 +1653,27 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
+    register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
+      "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
       ui_step ok "VM" "defined and started, starts with the host"
     else
       ui_step warn "VM" "defined and started, but autostart could not be set"
     fi
-    if [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
+    local vm_ip=""
+    if [ "$FLAG_WAIT" = true ]; then
+      if vm_ip=$(wait_for_vm "$VM_NAME" 600); then
+        ui_step ok "Ready" "SSH answers on $vm_ip"
+      else
+        ui_step warn "Ready" "SSH did not answer within 10 minutes"
+      fi
+    fi
+    if [ "$FLAG_JSON" = true ]; then
+      [ -n "$vm_ip" ] || vm_ip=$(get_vm_ip "$VM_NAME")
+      valid_vm_ip "$vm_ip" || vm_ip=""
+      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
+        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" >&3
+    elif [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
   done
 
   if [ ${#VM_NAMES[@]} -gt 1 ]; then

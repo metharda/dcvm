@@ -313,10 +313,10 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2)
-  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2)
+  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2 python3)
+  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2 python)
 
-  local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz)
+  local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz python3)
 
   local family manager
   family=$(distro_family)
@@ -757,6 +757,25 @@ setup_aliases() {
   return 0
 }
 
+setup_admin_user() {
+  local who="${SUDO_USER:-}"
+  [ -n "$who" ] && [ "$who" != root ] || return 0
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    ADMIN_RESULT="skip|let users in without sudo: sudo dcvm user add <user> [--admin]"
+    return 0
+  fi
+  echo
+  if ! prompt_yes_no "Let $who use dcvm without sudo, as a dcvm admin? [Y/n]: " "Y"; then
+    ADMIN_RESULT="skip|nobody added (sudo dcvm user add <user> [--admin])"
+    return 0
+  fi
+  if ensure_dcvm_groups && usermod -aG "$DCVM_USER_GROUP,$DCVM_ADMIN_GROUP" "$who"; then
+    ADMIN_RESULT="ok|$who is a dcvm admin; log in again to use dcvm without sudo"
+  else
+    ADMIN_RESULT="warn|could not add $who to the dcvm groups"
+  fi
+}
+
 install_completion() {
   local install_share="/usr/local/share/dcvm"
   local completion_dst="$install_share/dcvm-completion.sh"
@@ -902,7 +921,9 @@ main() {
   [ ${#STARTED_VMS[@]} -gt 0 ] && step ok "dcvm VMs" "started ${STARTED_VMS[*]}"
   setup_aliases
   [ -n "${ALIAS_RESULT:-}" ] && step "${ALIAS_RESULT%%|*}" "Shell alias" "${ALIAS_RESULT#*|}"
-  install_step "Services" "hourly storage check, network and port forwards back after reboot" setup_service
+  install_step "Services" "hourly storage check, network and port forwards back after reboot, socket for users without root" setup_service
+  setup_admin_user
+  [ -n "${ADMIN_RESULT:-}" ] && step "${ADMIN_RESULT%%|*}" "Admin" "${ADMIN_RESULT#*|}"
   show_datacenter_summary
 }
 

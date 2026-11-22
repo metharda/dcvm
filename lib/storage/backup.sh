@@ -23,6 +23,17 @@ COMPRESSION_ENABLED=true
 
 log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
 get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
+
+backup_owner() { cat "$1/owner" 2>/dev/null || echo 0; }
+backup_visible() {
+  local owner
+  owner=$(backup_owner "$1")
+  if [ -n "${BACKUP_OWNER_FILTER:-}" ]; then
+    [ "$owner" = "$BACKUP_OWNER_FILTER" ]
+    return
+  fi
+  [ "$(caller_role)" != user ] || [ "$owner" = "$(caller_uid)" ]
+}
 list_backup_timestamps_desc() { collect_backup_timestamps "$1" "" "desc"; }
 list_day_backup_timestamps_asc() { collect_backup_timestamps "$1" "$2" "asc"; }
 collect_backup_timestamps() {
@@ -38,6 +49,7 @@ collect_backup_timestamps() {
 
   while IFS= read -r path; do
     [ -z "$path" ] && continue
+    backup_visible "$path" || continue
     local base=$(basename "$path")
     local ts="${base#${vm_name}-}"
     [[ "$ts" =~ $regex ]] && ts_list+=("$ts")
@@ -45,6 +57,7 @@ collect_backup_timestamps() {
 
   while IFS= read -r path; do
     [ -z "$path" ] && continue
+    [ "$(caller_role)" != user ] && [ "${BACKUP_OWNER_FILTER:-0}" = 0 ] || continue
     local base=$(basename "$path")
     local ts="${base#${vm_name}-disk-}"
     ts="${ts%.qcow2.gz}"
@@ -198,7 +211,7 @@ remove_backup_artifacts() {
 cleanup_old_backups() {
   local vm_name="$1"
 
-  mapfile -t all_ts < <(list_backup_timestamps_desc "$vm_name")
+  mapfile -t all_ts < <(BACKUP_OWNER_FILTER=$(vm_owner_uid "$vm_name") list_backup_timestamps_desc "$vm_name")
   if [ ${#all_ts[@]} -gt $KEEP_BACKUPS ]; then
     local to_delete=("${all_ts[@]:$KEEP_BACKUPS}")
     for dp in "${to_delete[@]}"; do
@@ -287,13 +300,19 @@ list_all_backups() {
   fi
   mapfile -t vms < <(printf "%s\n" "${vms[@]}" | sort -u)
 
+  local shown=0
   for vm in "${vms[@]}"; do
     rows=$(backup_rows "$vm") || continue
+    shown=$((shown + 1))
     all+=$(awk -F'\t' -v vm="$vm" -v st="$(vm_state_label "$vm")" 'BEGIN { OFS = "\t" } { print (NR == 1 ? vm : " "), (NR == 1 ? st : " "), $0 }' <<<"$rows")$'\n'
   done
   n=$(grep -c . <<<"$all")
   total=$(awk -F'\t' '{ t += $8 } END { print t + 0 }' <<<"$all")
-  ui_title "Backups" "$(plural "$n" backup) of $(plural "${#vms[@]}" VM) ${SYM_DOT} $(format_bytes "$total") in $BACKUP_DIR"
+  if [ "$shown" -eq 0 ]; then
+    print_warning "No backups found"
+    return 1
+  fi
+  ui_title "Backups" "$(plural "$n" backup) of $(plural "$shown" VM) ${SYM_DOT} $(format_bytes "$total") in $BACKUP_DIR"
   local cols=1-7 head=$'VM\tSTATE\tID\tTAKEN\tAGE\tSIZE\tNOTE'
   awk -F'\t' 'NF && $7 != " "' <<<"$all" | grep -q . || cols=1-6 head=${head%$'\t'NOTE}
   printf '%s\n%s\n' "$head" "$(grep . <<<"$all" | cut -f"$cols")" | ui_table
@@ -491,6 +510,10 @@ resolve_backup_selector() {
   fi
 
   if [[ "$selector" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
+    if [ -d "$(get_backup_folder_path "$vm_name" "$selector")" ] && ! backup_visible "$(get_backup_folder_path "$vm_name" "$selector")"; then
+      echo ""
+      return 1
+    fi
     echo "$selector"
     return 0
   fi
@@ -579,6 +602,7 @@ export_backup() {
   local export_base="$BACKUP_DIR/exports"
   [ -n "$output_dir" ] && export_base="$output_dir"
   export_base="${export_base/#\~/$HOME}"
+  [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]] && export_base="$BACKUP_DIR/exports"
   if ! mkdir -p "$export_base"; then
     print_error "Cannot create export directory: $export_base"
     return 1
@@ -593,6 +617,7 @@ export_backup() {
 
   local pkg_name="${vm_name}-${backup_date}.tar.gz"
   local pkg_path="$export_base/$pkg_name"
+  [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]] && pkg_path="/dev/fd/$DCVM_EXPORT_FD"
 
   local tmpdir
   tmpdir=$(mktemp -d)
@@ -692,6 +717,10 @@ EOF
     return 1
   }
   rm -rf "$tmpdir"
+  if [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]]; then
+    ui_step ok "Archive" "written to your file (${UI_RUN_SECS}s)"
+    return 0
+  fi
   ui_step ok "Archive" "$(get_file_size "$pkg_path") (${UI_RUN_SECS}s)"
 
   ui_done ok "Exported to $pkg_path"
@@ -791,6 +820,7 @@ import_backup() {
     print_error "Failed to import config file"
     return 1
   }
+  caller_uid >"$backup_folder/owner"
   [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
 
   rm -rf "$workdir"
@@ -907,6 +937,7 @@ backup_vm() {
   fi
 
   write_base_record "$vm_disk_path" "$backup_folder_path"
+  vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
   if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
     ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
@@ -1317,7 +1348,7 @@ restore_vm() {
     return 1
   fi
 
-  if [ "$renamed" = true ]; then
+  if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
 
@@ -1326,6 +1357,7 @@ restore_vm() {
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
       ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
+      [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name" "user=$(get_vm_username "$vm_name")"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi

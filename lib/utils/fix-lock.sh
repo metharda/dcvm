@@ -9,6 +9,7 @@ EXIT_CODE=0
 
 print_verbose() {
   [ "$VERBOSE" = true ] && echo -e "  ${DIM}${SYM_INFO} $1${NC}"
+  return 0
 }
 
 phase_done() {
@@ -270,7 +271,9 @@ fix_vm_locks() {
   phase_done "Definition" "CD-ROM and IDE removed, disk on virtio, redefined"
 
   local restart_success=false
-  if systemctl restart libvirtd 2>/dev/null; then
+  if [ "$(caller_role)" = user ]; then
+    phase_done "libvirtd" "not restarted (it serves every user; ask an admin if the VM still won't start)"
+  elif systemctl restart libvirtd 2>/dev/null; then
     restart_success=true
     print_success "libvirtd restarted with systemctl"
   elif service libvirtd restart 2>/dev/null; then
@@ -293,9 +296,8 @@ fix_vm_locks() {
     done
 
     [ $wait_count -ge $max_wait ] && print_error "libvirtd not responding after ${max_wait}s" && step_errors=$((step_errors + 1))
+    phase_done "libvirtd" "restarted and responding"
   fi
-
-  phase_done "libvirtd" "restarted and responding"
 
   virsh pool-list --all 2>/dev/null | grep -q "default" && print_info "Refreshing storage pools" && virsh pool-refresh default >/dev/null 2>&1 || print_verbose "Could not refresh default storage pool"
 

@@ -20,10 +20,13 @@ main() {
   require_confirmation "Deletes every dcvm VM with its disk, all backups in $DATACENTER_BASE, the network and dcvm itself."
   echo ""
 
-  systemctl disable --now datacenter-storage.timer dcvm-boot.service 2>/dev/null || true
+  systemctl disable --now datacenter-storage.timer dcvm-boot.service dcvm.socket dcvm-reaper.timer 2>/dev/null || true
   rm -f $DCVM_UNITS /etc/sysctl.d/90-dcvm.conf
   systemctl daemon-reload 2>/dev/null || true
-  ui_step ok "Services" "storage timer and boot service removed"
+  rm -rf /var/lib/dcvm/vms /run/dcvm
+  groupdel "$DCVM_ADMIN_GROUP" 2>/dev/null
+  groupdel "$DCVM_USER_GROUP" 2>/dev/null
+  ui_step ok "Services" "timers, boot service, socket and the dcvm groups removed"
 
   local deleted_count=0 vm_name
   for vm_name in $(virsh list --all --name 2>/dev/null); do

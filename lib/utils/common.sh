@@ -800,7 +800,14 @@ remove_shell_lines() {
 
 free_bytes() { echo $(($(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024)); }
 
-DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service"
+DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service /etc/systemd/system/dcvm.socket /etc/systemd/system/dcvm@.service /etc/systemd/system/dcvm-reaper.service /etc/systemd/system/dcvm-reaper.timer"
+DCVM_USER_GROUP=dcvm
+DCVM_ADMIN_GROUP=dcvm-admin
+
+ensure_dcvm_groups() {
+  getent group "$DCVM_USER_GROUP" >/dev/null || groupadd --system "$DCVM_USER_GROUP" || return 1
+  getent group "$DCVM_ADMIN_GROUP" >/dev/null || groupadd --system "$DCVM_ADMIN_GROUP"
+}
 
 install_dcvm_services() {
   command_exists systemctl || return 1
@@ -827,6 +834,53 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+  ensure_dcvm_groups || return 1
+  cat >/etc/systemd/system/dcvm.socket <<EOF || return 1
+[Unit]
+Description=dcvm for users without root
+
+[Socket]
+ListenStream=/run/dcvm/dcvm.sock
+SocketUser=root
+SocketGroup=$DCVM_USER_GROUP
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=64
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat >/etc/systemd/system/dcvm@.service <<'EOF' || return 1
+[Unit]
+Description=dcvm request
+After=libvirtd.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I -S /usr/local/lib/dcvm/server/dcvm-server.py
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+CollectMode=inactive-or-failed
+EOF
+  cat >/etc/systemd/system/dcvm-reaper.service <<'EOF' || return 1
+[Unit]
+Description=dcvm: delete VMs whose --ttl has passed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dcvm reap
+EOF
+  cat >/etc/systemd/system/dcvm-reaper.timer <<'EOF' || return 1
+[Unit]
+Description=Delete expired dcvm VMs every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+
+[Install]
+WantedBy=timers.target
+EOF
   cat >/etc/systemd/system/dcvm-boot.service <<'EOF' || return 1
 [Unit]
 Description=dcvm: bring back the dcvm network and port forwards after boot
@@ -841,15 +895,17 @@ ExecStart=-/usr/local/bin/dcvm doctor --fix --quiet --only network
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload &&
-    systemctl enable --now datacenter-storage.timer >/dev/null 2>&1 &&
-    systemctl enable dcvm-boot.service >/dev/null 2>&1
+    systemctl enable --now datacenter-storage.timer dcvm-reaper.timer >/dev/null 2>&1 &&
+    systemctl enable dcvm-boot.service >/dev/null 2>&1 &&
+    systemctl enable dcvm.socket >/dev/null 2>&1 && systemctl restart dcvm.socket >/dev/null 2>&1
 }
 
 dcvm_services_ok() {
   command_exists systemctl || return 0
   grep -qs 'dcvm doctor' /etc/systemd/system/datacenter-storage.service &&
-    systemctl is-enabled datacenter-storage.timer >/dev/null 2>&1 &&
-    systemctl is-enabled dcvm-boot.service >/dev/null 2>&1
+    grep -qs 'dcvm-server.py' /etc/systemd/system/dcvm@.service &&
+    systemctl is-enabled datacenter-storage.timer dcvm-boot.service dcvm-reaper.timer dcvm.socket >/dev/null 2>&1 &&
+    systemctl is-active dcvm.socket >/dev/null 2>&1
 }
 
 # Whether net.ipv4.ip_forward=1 is applied at boot. Asks systemd which
@@ -1210,7 +1266,90 @@ check_port_forward() {
   check_port_connectivity "$vm_ip" "$vm_port"
 }
 
+registry_file() { echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
+registry_get() { sed -n "s/^$2=//p" "$(registry_file "$1")" 2>/dev/null | head -1; }
+registry_remove() { rm -f "$(registry_file "$1")"; }
+
+registry_set() {
+  local vm="$1" file tmp kv
+  shift
+  file=$(registry_file "$vm")
+  mkdir -p -m 700 "${file%/*}" || return 1
+  tmp="$file.tmp.$$"
+  {
+    [ -f "$file" ] && grep -v -E "^($(printf '%s\n' "$@" | cut -d= -f1 | paste -sd'|'))=" "$file"
+    for kv in "$@"; do printf '%s\n' "${kv//$'\n'/ }"; done
+  } >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$file"
+}
+
+caller_uid() { echo "${DCVM_CALLER_UID:-$(id -u)}"; }
+caller_user() { echo "${DCVM_CALLER_USER:-$(id -un)}"; }
+caller_role() { echo "${DCVM_CALLER_ROLE:-root}"; }
+vm_owner_uid() {
+  local o
+  o=$(registry_get "$1" owner_uid)
+  echo "${o:-0}"
+}
+vm_visible() { [ "$(caller_role)" != user ] || [ "$(vm_owner_uid "$1")" = "$(caller_uid)" ]; }
+
+read_dcvm_secrets() {
+  local line
+  [[ "${DCVM_SECRETS_FD:-}" =~ ^[0-9]+$ ]] || return 0
+  while IFS= read -r line <&"$DCVM_SECRETS_FD"; do
+    case "$line" in
+    password=*) DCVM_SECRET_PASSWORD=${line#*=} ;;
+    root_password=*) DCVM_SECRET_ROOT_PASSWORD=${line#*=} ;;
+    tailscale_authkey=*) DCVM_SECRET_TAILSCALE_AUTHKEY=${line#*=} ;;
+    esac
+  done
+  exec {DCVM_SECRETS_FD}<&-
+  unset DCVM_SECRETS_FD
+}
+
+size_gb() {
+  local v="${1^^}"
+  [[ "$v" =~ ^[0-9]+[MGT]?$ ]] || {
+    echo 0
+    return
+  }
+  case "$v" in
+  *M) echo $(((${v%M} + 1023) / 1024)) ;;
+  *G) echo "${v%G}" ;;
+  *T) echo $((${v%T} * 1024)) ;;
+  *) echo "${v:-0}" ;;
+  esac
+}
+
+ttl_seconds() {
+  [[ "$1" =~ ^([1-9][0-9]{0,4})([mhd])$ ]] || return 1
+  case "${BASH_REMATCH[2]}" in
+  m) echo $((BASH_REMATCH[1] * 60)) ;;
+  h) echo $((BASH_REMATCH[1] * 3600)) ;;
+  d) echo $((BASH_REMATCH[1] * 86400)) ;;
+  esac
+}
+
+wait_for_vm() {
+  local vm="$1" timeout="${2:-300}" start=$SECONDS ip
+  while [ $((SECONDS - start)) -lt "$timeout" ]; do
+    ip=$(get_vm_ip "$vm")
+    if valid_vm_ip "$ip" && timeout 3 bash -c 'exec 3<>"/dev/tcp/$1/22"' _ "$ip" 2>/dev/null; then
+      echo "$ip"
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
+register_vm() {
+  local vm="$1"
+  shift
+  registry_set "$vm" "owner_uid=$(caller_uid)" "owner=$(caller_user)" "state=ready" "created=$(date +%s)" "$@"
+}
+
 is_vm_in_network() {
+  vm_visible "$1" || return 1
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
   virsh domiflist "$vm_name" 2>/dev/null | grep -q "$network_name"

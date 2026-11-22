@@ -158,6 +158,7 @@ interactive_prompt_boot_order() {
 }
 
 interactive_prompt_copy_iso() {
+  [ "$(caller_role)" = root ] || return 0
   echo ""
   read -p "Copy ISO to VM directory? (y/N): " copy_choice
   if [[ "$copy_choice" =~ ^[Yy]$ ]]; then
@@ -212,8 +213,16 @@ validate_vm_not_exists() {
 
 prompt_iso_path() {
   if [ -z "$ISO_PATH" ]; then
+    if [ "$(caller_role)" != root ]; then
+      print_error "Pass the ISO as a file: dcvm create-iso $VM_NAME --iso <file.iso>"
+      exit 1
+    fi
     echo ""
     read -p "Enter path to ISO file: " ISO_PATH
+  fi
+  if [ "$(caller_role)" != root ] && [ "$ISO_PATH" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
+    print_error "Pass the ISO as a file: dcvm create-iso $VM_NAME --iso <file.iso>"
+    exit 1
   fi
   if [ ! -f "$ISO_PATH" ]; then
     print_error "ISO file not found: $ISO_PATH"
@@ -320,7 +329,31 @@ create_vm_disk() {
   ui_step ok "Disk" "$DISK_SIZE, $DISK_PATH"
 }
 
+# --boot and --graphics reach virt-install's option parser: free text can name host files.
+validate_iso_options() {
+  GRAPHICS=${GRAPHICS:-vnc} BOOT_ORDER=${BOOT_ORDER:-cdrom,hd}
+  case "$GRAPHICS" in none | vnc | spice) ;; *)
+    print_error "Graphics must be none, vnc or spice"
+    exit 1
+    ;;
+  esac
+  case "$BOOT_ORDER" in cdrom,hd | hd,cdrom | cdrom | hd) ;; *)
+    print_error "Boot order must be cdrom,hd or hd,cdrom"
+    exit 1
+    ;;
+  esac
+  if [[ ! "$OS_VARIANT" =~ ^[A-Za-z0-9._-]{0,64}$ ]]; then
+    print_error "Invalid OS variant: $OS_VARIANT"
+    exit 1
+  fi
+  if [ -n "$STATIC_IP" ] && ! valid_vm_ip "$STATIC_IP"; then
+    print_error "Invalid static IP: $STATIC_IP"
+    exit 1
+  fi
+}
+
 build_virt_install_opts() {
+  validate_iso_options
   VIRT_INSTALL_OPTS=(
     --name "$VM_NAME"
     --memory "$MEMORY"
@@ -346,6 +379,7 @@ run_virt_install() {
     sed 's/^/    /' "$UI_RUN_LOG" | tail -10
     exit 1
   }
+  register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")"
   ui_step ok "VM" "defined and booting the installer"
 }
 
