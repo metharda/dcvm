@@ -617,11 +617,17 @@ def run_module(ctx, conn, argv, req, fds):
             os.close(fd)
     cancelled = False
     while proc.poll() is None:
+        if cancelled:
+            try:
+                proc.wait(1)
+            except subprocess.TimeoutExpired:
+                pass
+            continue
         try:
             ready, _, _ = select.select([conn], [], [], 0.5)
         except (OSError, ValueError):
             ready = []
-        if ready and not cancelled:
+        if ready:
             try:
                 data = conn.recv(64)
             except OSError:
