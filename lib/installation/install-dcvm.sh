@@ -369,8 +369,26 @@ check_kvm_support() {
   fi
 }
 
+# dcvm's port forwards are iptables rules. libvirt's nftables backend (the
+# default on Fedora and Arch) rejects forwarded connections to VMs in its own
+# table, where no iptables rule can accept them.
+use_iptables_backend() {
+  local conf=/etc/libvirt/network.conf
+  command -v iptables >/dev/null 2>&1 && [ -f "$conf" ] && grep -q 'firewall_backend' "$conf" || return 1
+  grep -qE '^[[:space:]]*firewall_backend[[:space:]]*=[[:space:]]*"iptables"' "$conf" && return 1
+  sed -i -E '/^[[:space:]]*firewall_backend[[:space:]]*=/d' "$conf"
+  echo 'firewall_backend = "iptables"' >>"$conf"
+}
+
 start_libvirtd() {
   print_status "INFO" "Checking libvirtd service..."
+
+  if use_iptables_backend; then
+    print_status "INFO" "libvirt networks now use iptables, like dcvm's port forwards"
+    systemctl try-restart libvirtd virtnetworkd 2>/dev/null || true
+    # The restart puts libvirt's rules above the saved port forwards.
+    [ -s "$(get_port_mappings_file)" ] && dcvm network ports apply >/dev/null 2>&1 || true
+  fi
 
   if systemctl is-active --quiet libvirtd; then
     print_status "INFO" "libvirtd is already running."
@@ -434,14 +452,12 @@ start_nfs_server() {
     return 0
   fi
 
-  if ! systemctl is-active --quiet nfs-kernel-server 2>/dev/null && ! systemctl is-active --quiet nfs-server 2>/dev/null; then
-    print_status_log "INFO" "Starting NFS server..."
-    systemctl start nfs-kernel-server 2>/dev/null || systemctl start nfs-server 2>/dev/null || {
-      print_status_log "WARNING" "Could not start NFS server"
-      return 0
-    }
-    sleep 2
-  fi
+  # Enabled too: Fedora does not enable it on install, and VMs then wait 90s
+  # for /mnt/shared at every boot after a host reboot.
+  systemctl enable --now nfs-server 2>/dev/null || systemctl enable --now nfs-kernel-server 2>/dev/null || {
+    print_status_log "WARNING" "Could not start NFS server"
+    return 0
+  }
 
   if systemctl is-active --quiet nfs-kernel-server 2>/dev/null || systemctl is-active --quiet nfs-server 2>/dev/null; then
     print_status_log "SUCCESS" "NFS server is running"
@@ -469,6 +485,16 @@ start_nfs_server() {
     # with the sticky bit (like /tmp) so users can't delete each other's files.
     chmod 1777 "$NFS_EXPORT_PATH" 2>/dev/null || print_status_log "WARNING" "Could not make $NFS_EXPORT_PATH writable for VM users"
     exportfs -ra 2>/dev/null || print_status_log "WARNING" "Could not refresh NFS exports"
+    # firewalld puts the bridge in libvirt's zone, which rejects NFS.
+    if systemctl is-active --quiet firewalld 2>/dev/null; then
+      local zone services=(--add-service=nfs --add-service=rpc-bind --add-service=mountd)
+      zone=$(firewall-cmd --get-zone-of-interface="$BRIDGE_NAME" 2>/dev/null) || zone=libvirt
+      if firewall-cmd -q --zone="$zone" "${services[@]}" && firewall-cmd -q --permanent --zone="$zone" "${services[@]}"; then
+        print_status_log "SUCCESS" "firewalld: NFS allowed in zone $zone"
+      else
+        print_status_log "WARNING" "Could not allow NFS in firewalld zone $zone"
+      fi
+    fi
     print_status_log "SUCCESS" "NFS exports configured at: $NFS_EXPORT_PATH"
     NFS_RESULT="ok|$NFS_EXPORT_PATH for ${subnet}.0/24, mounted in VMs at /mnt/shared"
     print_status_log "INFO" "VMs can mount: $NFS_EXPORT_PATH from ${subnet}.1"
@@ -853,9 +879,11 @@ main() {
   fi
 
   ui_title "Installing dcvm" "${DCVM_REPO_SLUG}@${DCVM_REPO_BRANCH} ${SYM_DOT} $DATACENTER_BASE"
+  local log_start installed
+  log_start=$(($(wc -l <"$LOG_FILE" 2>/dev/null || echo 0) + 1))
   if UI_RUN_DETAIL=package_progress run_step "Packages" install_required_packages; then
-    local installed
-    installed=$(grep -oE '[0-9]+ newly installed' "$LOG_FILE" 2>/dev/null | tail -1 | grep -oE '^[0-9]+')
+    installed=$(tail -n +"$log_start" "$LOG_FILE" 2>/dev/null |
+      grep -oE '[0-9]+ newly installed|Installing: +[0-9]+ packages?|^Packages? \([0-9]+\)' | tail -1 | grep -oE '[0-9]+' || true)
     if [ "${installed:-0}" -gt 0 ]; then
       step ok "Packages" "$installed installed in ${STEP_SECS}s (QEMU/KVM, libvirt, aria2, image tools)"
     else
