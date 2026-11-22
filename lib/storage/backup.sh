@@ -141,7 +141,7 @@ normalize_backing_chain() {
     return 0
   fi
   local info backing
-  info=$(qemu-img info "$vm_disk_path" 2>/dev/null) || return 0
+  info=$(qemu-img info -U -f qcow2 "$vm_disk_path" 2>/dev/null) || return 0
   backing=$(echo "$info" | awk -F': ' '/backing file:/ {print $2; exit}')
   if [ -z "$backing" ]; then
     return 0
@@ -149,7 +149,7 @@ normalize_backing_chain() {
   if echo "$backing" | grep -q "/vms/"; then
     print_warning "Disk has VM-backed backing file ($backing). Flattening to standalone..."
     local tmp="${vm_disk_path}.tmp"
-    if qemu-img convert -O qcow2 "$vm_disk_path" "$tmp"; then
+    if qemu-img convert -f qcow2 -O qcow2 "$vm_disk_path" "$tmp"; then
       mv -f "$tmp" "$vm_disk_path"
       print_success "Disk flattened to standalone image"
     else
@@ -638,7 +638,7 @@ export_backup() {
     if [[ "$work_disk" == *.gz ]]; then
       local tmp_img="${work_disk%.gz}.tmp.$$"
       if gunzip -c "$work_disk" >"$tmp_img" 2>/dev/null; then
-        if guestfish --rw -a "$tmp_img" -i <<'GFSCMDS' 2>/dev/null; then
+        if guestfish --rw --format=qcow2 -a "$tmp_img" -i <<'GFSCMDS' 2>/dev/null; then
 -rm /root/.ssh/authorized_keys
 -glob rm /home/*/.ssh/authorized_keys
 GFSCMDS
@@ -648,7 +648,7 @@ GFSCMDS
         rm -f "$tmp_img" 2>/dev/null
       fi
     else
-      if guestfish --rw -a "$work_disk" -i <<'GFSCMDS' 2>/dev/null; then
+      if guestfish --rw --format=qcow2 -a "$work_disk" -i <<'GFSCMDS' 2>/dev/null; then
 -rm /root/.ssh/authorized_keys
 -glob rm /home/*/.ssh/authorized_keys
 GFSCMDS
@@ -668,13 +668,6 @@ GFSCMDS
   local vm_cloud_dir="${DATACENTER_BASE}/vms/${vm_name}/cloud-init"
   if [ -d "$vm_cloud_dir" ]; then
     mkdir -p "$tmpdir/cloud-init"
-    if [ -f "$vm_cloud_dir/user-data" ]; then
-      awk 'BEGIN{skip=0}
-			{ if ($0 ~ /^[[:space:]]*ssh_authorized_keys:/) {skip=1; next} 
-			  if (skip==1) { if ($0 ~ /^[[:space:]]*-/) next; else skip=0 }
-			  if (skip==0) print }
-			' "$vm_cloud_dir/user-data" >"$tmpdir/cloud-init/user-data" || cp "$vm_cloud_dir/user-data" "$tmpdir/cloud-init/user-data"
-    fi
     [ -f "$vm_cloud_dir/meta-data" ] && cp "$vm_cloud_dir/meta-data" "$tmpdir/cloud-init/" || true
     [ -f "$vm_cloud_dir/network-config" ] && cp "$vm_cloud_dir/network-config" "$tmpdir/cloud-init/" || true
     rm -f "$tmpdir/cloud-init"/*authorized_keys 2>/dev/null || true
@@ -690,7 +683,7 @@ created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 dcvm_version=portable
 EOF
 
-  [ -d "$tmpdir/cloud-init" ] && ui_step ok "cloud-init" "seed files, without ssh_authorized_keys"
+  [ -d "$tmpdir/cloud-init" ] && ui_step ok "cloud-init" "meta-data and network-config (user-data holds secrets and stays here)"
 
   ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" . || {
     rm -rf "$tmpdir"
@@ -728,13 +721,18 @@ import_backup() {
   workdir=$(mktemp -d)
 
   if [ -f "$pkg_path" ]; then
-    if ! tar -xzf "$pkg_path" -C "$workdir" 2>/dev/null; then
+    if ! tar --no-same-owner --no-same-permissions -xzf "$pkg_path" -C "$workdir" 2>/dev/null; then
       rm -rf "$workdir"
       print_error "Unsupported or corrupt archive: $pkg_path"
       return 1
     fi
   else
     cp -r "$pkg_path"/* "$workdir"/ 2>/dev/null || true
+  fi
+  if [ -n "$(find "$workdir" -mindepth 1 ! -type f ! -type d -print -quit)" ]; then
+    rm -rf "$workdir"
+    print_error "The archive contains links or special files: $pkg_path"
+    return 1
   fi
 
   local disk_file
@@ -748,17 +746,22 @@ import_backup() {
     return 1
   fi
 
-  local base_disk
+  local base_disk vm_from date_part
   base_disk=$(basename "$disk_file")
-  local vm_from
-  vm_from=$(echo "$base_disk" | awk -F"-disk-" '{print $1}')
-  local date_part
-  date_part=$(echo "$base_disk" | sed -E "s/${vm_from}-disk-(.*)\.qcow2(\.gz)?/\1/")
+  vm_from=${base_disk%%-disk-*}
+  date_part=${base_disk#*-disk-}
+  date_part=${date_part%.gz}
+  date_part=${date_part%.qcow2}
+  if ! validate_vm_name "$vm_from" || [[ ! "$date_part" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
+    rm -rf "$workdir"
+    print_error "Unexpected file names in the archive: $base_disk"
+    return 1
+  fi
 
   local vm_target="$vm_from"
   [ -n "$rename_to" ] && vm_target="$rename_to"
 
-  mkdir -p "$BACKUP_DIR" || {
+  mkdir -p -m 700 "$BACKUP_DIR" || {
     rm -rf "$workdir"
     print_error "Cannot create $BACKUP_DIR"
     return 1
@@ -788,13 +791,15 @@ import_backup() {
     print_error "Failed to import config file"
     return 1
   }
-  [ -f "$workdir/base" ] && cp "$workdir/base" "$backup_folder/base"
+  [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
 
-  restore_vm "$vm_target" "$date_part" "" "from_import"
-  return $?
+  if ! restore_vm "$vm_target" "$date_part" "" "from_import"; then
+    rm -rf "$backup_folder"
+    return 1
+  fi
 }
 
 backup_vm() {
@@ -819,7 +824,7 @@ backup_vm() {
 
   ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
-  mkdir -p "$BACKUP_DIR"
+  mkdir -p -m 700 "$BACKUP_DIR"
   if [ "$(free_bytes "$BACKUP_DIR")" -lt "$(file_bytes "$vm_disk_path")" ]; then
     ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the copy needs $(get_file_size "$vm_disk_path")"
     echo -e "      ${DIM}$vm_name was not stopped. Free some space (dcvm backup delete <vm>), then try again.${NC}"
@@ -861,7 +866,7 @@ backup_vm() {
     return 1
   fi
 
-  if ! mkdir -p "$BACKUP_DIR"; then
+  if ! mkdir -p -m 700 "$BACKUP_DIR"; then
     print_error "Failed to create backup directory: $BACKUP_DIR"
     log "ERROR" "Failed to create backup directory: $BACKUP_DIR"
     return 1
@@ -984,7 +989,7 @@ customize_restored_guest() {
     return 1
   fi
 
-  local -a args=(-q -a "$disk_path" --hostname "$new_name")
+  local -a args=(-q --format qcow2 -a "$disk_path" --hostname "$new_name")
   if [ -n "$old_name" ] && validate_vm_name "$old_name" >/dev/null 2>&1; then
     local hosts_expr
     hosts_expr=$(hosts_rename_sed_expr "$old_name" "$new_name")
@@ -1013,12 +1018,17 @@ restore_disk_base() {
     ui_step ok "Base image" "none needed (standalone disk)"
     return 0
   fi
-  [ -f "$record" ] && img=$(sed -n 's/^image=//p' "$record")
+  [ -f "$record" ] && img=$(sed -n 's/^image=//p' "$record" | head -1)
+  valid_image_name "$img" || img=""
   if [ -z "$img" ]; then
     case "$backing" in
     "$(builds_dir)"/*) img=$(build_image "$backing") ;;
     *) img=${backing##*/} ;;
     esac
+  fi
+  if ! valid_image_name "$img"; then
+    ui_step fail "Base image" "the backup names an invalid base image"
+    return 1
   fi
   if [ -n "${RESTORE_BASE:-}" ]; then
     if [ ! -f "$RESTORE_BASE" ]; then
@@ -1036,8 +1046,11 @@ restore_disk_base() {
     elif build=$(fetch_archived_build "$img" "$sha256" "$sha512"); then
       how="fetched from the archive"
     fi
-  elif [[ "$backing" == "$(builds_dir)"/* ]] && [ -f "$backing" ]; then
-    build=$backing how="on this host"
+  elif registered_build "$backing"; then
+    build=$(realpath -e -- "$backing") how="on this host"
+  elif ! inside_dir "$backing" "$(templates_dir)"; then
+    ui_step fail "Base image" "the disk's base is outside dcvm's templates: $backing"
+    return 1
   else
     if ui_run "Checking base" legacy_disk_build "$disk" "$img" && [ -n "$(tail -1 "$UI_RUN_LOG")" ]; then
       build=$(tail -1 "$UI_RUN_LOG")
@@ -1087,6 +1100,11 @@ stage_backup_disk() {
     return 1
   }
   ui_step ok "Unpacked disk" "$(get_file_size "$staged") in ${UI_RUN_SECS}s"
+  if ! check_disk_image "$staged"; then
+    rm -f "$staged"
+    ui_step fail "Disk" "not a plain qcow2 image (external data file, other format or backing protocol)"
+    return 1
+  fi
   restore_disk_base "$staged" "$record" || {
     rm -f "$staged"
     return 1
@@ -1262,7 +1280,7 @@ restore_vm() {
 
   chmod 660 "$vm_disk_path"
 
-  if command -v restorecon >/dev/null 2>&1 && [ -f /selinux/enforce ]; then
+  if command -v restorecon >/dev/null 2>&1 && selinuxenabled 2>/dev/null; then
     restorecon "$vm_disk_path" 2>/dev/null || true
   fi
 
@@ -1270,7 +1288,9 @@ restore_vm() {
 
   local backup_vm_name renamed=false static_ip_copy=""
   backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
-  if [ -n "$backup_vm_name" ] && [ "$backup_vm_name" != "$vm_name" ]; then
+  if [[ ! "$backup_vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+    backup_vm_name="" renamed=true
+  elif [ "$backup_vm_name" != "$vm_name" ]; then
     renamed=true
     local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
     if [ -f "$source_net_conf" ]; then
@@ -1291,113 +1311,10 @@ restore_vm() {
     return 1
   fi
 
-  local original_main_file=""
-  if command -v xmlstarlet >/dev/null 2>&1; then
-    original_main_file=$(xmlstarlet sel -t -v "(/domain/devices/disk[@device='disk']/source/@file)[1]" "$temp_config" 2>/dev/null)
-    if [ -z "$original_main_file" ]; then
-      original_main_file=$(xmlstarlet sel -t -v "(/domain/devices/disk[not(@device='cdrom')]/source/@file)[1]" "$temp_config" 2>/dev/null)
-    fi
-  else
-    original_main_file=$(grep -oE "source (file|dev)=['\"][^'\"]+['\"]" "$temp_config" | head -1 | sed -E "s/.*=['\"]([^'\"]+)['\"]/\1/")
-  fi
-
-  if command -v xmlstarlet >/dev/null 2>&1; then
-    if ! xmlstarlet ed -P -L -u "/domain/devices/disk[@device='disk']/source/@file" -v "$vm_disk_path" "$temp_config"; then
-      print_error "Failed to update disk source with xmlstarlet"
-      rm -f "$temp_config"
-      return 1
-    fi
-    xmlstarlet ed -P -L -u "/domain/name" -v "$vm_name" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -d "/domain/uuid" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -d "/domain/devices/disk[@device='cdrom']" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -d "/domain/devices/disk[contains(source/@file, '.iso')]" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -d "/domain/devices/controller[@type='ide']" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -N qemu='http://libvirt.org/schemas/domain/qemu/1.0' -d "/domain/qemu:commandline[qemu:arg/@value[contains(., '.iso')]]" "$temp_config" 2>/dev/null || true
-    xmlstarlet ed -P -L -d "/domain/metadata" "$temp_config" 2>/dev/null || true
-    # A versioned q35 type (pc-q35-8.2, pc-q35-noble) may not exist on this
-    # QEMU; plain q35 keeps the chipset, which the PCIe devices need.
-    current_machine=$(xmlstarlet sel -t -v "/domain/os/type/@machine" "$temp_config" 2>/dev/null)
-    case "$current_machine" in
-    "" | q35) ;;
-    *q35*) xmlstarlet ed -P -L -u "/domain/os/type/@machine" -v q35 "$temp_config" 2>/dev/null || true ;;
-    *) xmlstarlet ed -P -L -d "/domain/os/type/@machine" "$temp_config" 2>/dev/null || true ;;
-    esac
-    xmlstarlet ed -P -L -N libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0' -d "/domain/@xmlns:libosinfo" "$temp_config" 2>/dev/null || true
-    print_info "Removed cdrom/iso/ide/qemu:commandline entries from config (if any)"
-    print_info "Normalized domain metadata and machine attribute for compatibility"
-  else
-    sed -i "/<disk[^>]*device=\"disk\"[^>]*>/,/<\/disk>/{s|<source file='[^']*'/>|<source file='$vm_disk_path'/>|g}" "$temp_config"
-    sed -i "s|<name>[^<]*</name>|<name>$vm_name</name>|" "$temp_config" 2>/dev/null || true
-    sed -i "/<uuid>.*<\/uuid>/d" "$temp_config" 2>/dev/null || true
-    sed -i "/<disk[^>]*device=['\"]cdrom['\"][^>]*>/,/<\\/disk>/d" "$temp_config"
-    sed -i "/<disk[^>]*>[^<]*<source[^>]*file=['\"][^'\"]*\.iso['\"][^>]*>[^<]*<[^>]*>/,/<\\/disk>/d" "$temp_config"
-    sed -i "/<controller[^>]*type=['\"]ide['\"][^>]*>/,/<\\/controller>/d" "$temp_config"
-    sed -i "/<qemu:commandline[\s\S]*\.iso[\s\S]*<\\/qemu:commandline>/d" "$temp_config"
-    sed -i "/<metadata[ >\t]/,/<\\/metadata>/d" "$temp_config"
-    sed -i -E "s/ machine=(['\"])[^'\"]*q35[^'\"]*['\"]/ machine=\1q35\1/" "$temp_config"
-    if grep -q "machine=\"q35\"" "$temp_config" || grep -q "machine='q35'" "$temp_config"; then
-      :
-    else
-      sed -i "s/ machine='[^']*'//" "$temp_config"
-      sed -i 's/ machine=\"[^\"]*\"//' "$temp_config"
-    fi
-    sed -i "s/ xmlns:libosinfo='[^']*'//" "$temp_config"
-    sed -i 's/ xmlns:libosinfo="[^"]*"//' "$temp_config"
-    print_info "Removed cdrom/iso/ide/qemu:commandline entries and normalized metadata/machine attributes"
-  fi
-
-  if [ -n "$original_main_file" ] && [ "$original_main_file" != "$vm_disk_path" ]; then
-    sed -i "s|file='$original_main_file'|file='$vm_disk_path'|g" "$temp_config" 2>/dev/null || true
-    sed -i "s|file=\"$original_main_file\"|file=\"$vm_disk_path\"|g" "$temp_config" 2>/dev/null || true
-  fi
-
-  sed -i "/<disk[^>]*>/,/<\\/disk>/{ \
-	/<source[^>]*file='[^']*\\/vms\\/[^']*'[^>]*>/ { \
-		/<source[^>]*file='[^']*\\/vms\\\/$vm_name\\/[^']*'[^>]*>/! d \
-	} \
-}" "$temp_config" 2>/dev/null || true
-  sed -i "/<disk[^>]*>/,/<\\/disk>/{ \
-	/<source[^>]*file=\"[^\"]*\\/vms\\/[^\"]*\"[^>]*>/ { \
-		/<source[^>]*file=\"[^\"]*\\/vms\\\/$vm_name\\/[^\"]*\"[^>]*>/! d \
-	} \
-}" "$temp_config" 2>/dev/null || true
-  # Only a copy needs new MACs; an in-place restore keeps them, and with
-  # them its DHCP address and port forwards.
-  if [ "$renamed" != true ]; then
-    :
-  elif command -v xmlstarlet >/dev/null 2>&1; then
-    local __ifcnt
-    __ifcnt=$(xmlstarlet sel -t -v "count(/domain/devices/interface/mac/@address)" "$temp_config" 2>/dev/null | tr -d '\n')
-    if [[ "$__ifcnt" =~ ^[0-9]+$ ]] && [ "$__ifcnt" -gt 0 ]; then
-      for ((i = 1; i <= __ifcnt; i++)); do
-        local newmac
-        newmac=$(generate_random_mac)
-        xmlstarlet ed -P -L -u "(/domain/devices/interface/mac/@address)[$i]" -v "$newmac" "$temp_config" 2>/dev/null || true
-      done
-      print_info "Randomized $__ifcnt MAC address(es) to avoid DHCP lease reuse"
-    fi
-  else
-    local __tmp_mac_cfg
-    __tmp_mac_cfg=$(mktemp)
-    while IFS= read -r __line; do
-      if echo "$__line" | grep -q "<mac address=\\\"\|<mac address='"; then
-        local mac
-        mac=$(generate_random_mac)
-        __line=$(echo "$__line" | sed -E "s/address='[^']*'/address='$mac'/g; s/address=\\\"[^\\\"]*\\\"/address=\\\"$mac\\\"/g")
-      fi
-      echo "$__line" >>"$__tmp_mac_cfg"
-    done <"$temp_config"
-    mv "$__tmp_mac_cfg" "$temp_config"
-    print_info "Randomized MAC addresses (sed fallback)"
-  fi
-
-  if [ "$renamed" = true ]; then
-    # The NVRAM file belongs to the source VM; libvirt creates a new one.
-    if command -v xmlstarlet >/dev/null 2>&1; then
-      xmlstarlet ed -P -L -d "/domain/os/nvram" "$temp_config" 2>/dev/null || true
-    else
-      sed -i -e '/<nvram[^>]*\/>/d' -e '/<nvram[^>]*>.*<\/nvram>/d' "$temp_config" 2>/dev/null || true
-    fi
+  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed"; then
+    print_error "The backup's VM configuration could not be read"
+    rm -f "$temp_config"
+    return 1
   fi
 
   if [ "$renamed" = true ]; then
@@ -1684,8 +1601,9 @@ ssh_setup_vm() {
 
   local tmp_out
   tmp_out=$(mktemp)
-  local tmp_fifo
-  tmp_fifo=$(mktemp -u)
+  local tmp_fifo fifo_dir
+  fifo_dir=$(mktemp -d)
+  tmp_fifo="$fifo_dir/out"
   mkfifo "$tmp_fifo"
 
   (ssh-copy-id -o StrictHostKeyChecking=no -i "$ssh_pubkey" "${target_user}@${vm_ip}" >"$tmp_fifo" 2>&1) &
@@ -1731,7 +1649,7 @@ ssh_setup_vm() {
   local scp_rc=$?
   local scp_output
   scp_output=$(cat "$tmp_out") || scp_output=""
-  rm -f "$tmp_out" "$tmp_fifo"
+  rm -rf "$tmp_out" "$fifo_dir"
 
   if echo "$scp_output" | grep -qi "All keys were skipped"; then
     print_warning "All keys were skipped because they already exist on the remote system. Use -f to force installation if appropriate."

@@ -267,7 +267,7 @@ check_iso_dependencies() {
 prepare_vm_directory() {
   VM_DIR="$DATACENTER_BASE/vms/$VM_NAME"
   DISK_PATH="$VM_DIR/${VM_NAME}-disk.qcow2"
-  mkdir -p "$VM_DIR" || {
+  mkdir -p "$VM_DIR" && chmod 711 "$VM_DIR" || {
     print_error "Failed to create VM directory"
     exit 1
   }
@@ -276,10 +276,8 @@ prepare_vm_directory() {
 copy_iso_if_needed() {
   INSTALL_ISO="$ISO_PATH"
   if [ "$COPY_ISO" = "true" ]; then
-    local iso_name
-    iso_name=$(basename "$ISO_PATH")
-    INSTALL_ISO="$VM_DIR/$iso_name"
-    ui_run "Copying ISO" cp "$ISO_PATH" "$INSTALL_ISO" || {
+    INSTALL_ISO="$VM_DIR/installer.iso"
+    ui_run "Copying ISO" sh -c 'umask 077 && cp -- "$1" "$2"' _ "$ISO_PATH" "$INSTALL_ISO" || {
       ui_step fail "ISO" "copy failed"
       exit 1
     }
@@ -315,7 +313,7 @@ check_iso_accessibility() {
 }
 
 create_vm_disk() {
-  qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE" >/dev/null 2>&1 || {
+  (umask 077 && qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE") >/dev/null 2>&1 || {
     ui_step fail "Disk" "qemu-img create failed"
     exit 1
   }

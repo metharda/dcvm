@@ -85,8 +85,8 @@ get_remote_version() {
   echo "${version:-error}"
 }
 
-install_files() {
-  local files="$1" result="$2" ok=true updated_count=0 file_path dest tmp_dest dest_root tmp_abs root_abs
+stage_files() {
+  local files="$1" stage="$2" result="$3" ok=true count=0 file_path dest
   while IFS= read -r file_path; do
     [[ -z "$file_path" ]] && continue
     if [[ "$file_path" == /* ]] || [[ "$file_path" == *".."* ]]; then
@@ -94,41 +94,30 @@ install_files() {
       ok=false
       continue
     fi
-    if [[ "$file_path" == "dcvm" ]]; then
-      dest="$INSTALL_BIN/dcvm" dest_root="$INSTALL_BIN"
-    elif [[ "$file_path" == lib/* ]]; then
-      dest="$INSTALL_LIB/${file_path#lib/}" dest_root="$INSTALL_LIB"
-    else
+    case "$file_path" in
+    dcvm) dest="$stage/dcvm" ;;
+    lib/*) dest="$stage/lib/${file_path#lib/}" ;;
+    *)
       print_warning "Skipping unexpected repository path: $file_path"
       ok=false
       continue
-    fi
-    tmp_dest="${dest}.tmp.$$"
-    mkdir -p "$(dirname "$tmp_dest")" 2>/dev/null || true
-    if ! fetch_repo_file "$file_path" "$tmp_dest"; then
+      ;;
+    esac
+    if ! fetch_repo_file "$file_path" "$dest"; then
       print_warning "Could not download $file_path"
-      rm -f "$tmp_dest" 2>/dev/null || true
       ok=false
       continue
     fi
-    if command -v readlink >/dev/null 2>&1; then
-      tmp_abs=$(readlink -f "$tmp_dest" 2>/dev/null || true)
-      root_abs=$(readlink -f "$dest_root" 2>/dev/null || true)
-      case "$tmp_abs" in
-      "$root_abs"/*) ;;
-      *)
-        print_error "Refusing to install $file_path outside $dest_root"
-        rm -f "$tmp_dest"
-        ok=false
-        continue
-        ;;
-      esac
-    fi
-    mv -f "$tmp_dest" "$dest"
-    [[ "$dest" == *.sh || "$file_path" == dcvm ]] && chmod +x "$dest" 2>/dev/null
-    updated_count=$((updated_count + 1))
+    count=$((count + 1))
   done <<<"$files"
-  echo "$updated_count $ok" >"$result"
+  echo "$count $ok" >"$result"
+}
+
+new_stage() {
+  local stage
+  stage="$(dirname "$INSTALL_LIB")/.dcvm-stage.$$"
+  rm -rf "$stage"
+  mkdir -p "$stage/lib" && chmod 700 "$stage" && echo "$stage"
 }
 
 prune_update_backups() {
@@ -171,24 +160,36 @@ do_update() {
     exit 1
   fi
 
-  local result updated_count ok
+  local result updated_count ok stage
   result=$(mktemp)
-  ui_run "Downloading" install_files "$files" "$result" || true
+  stage=$(new_stage) || {
+    print_error "Could not create a staging folder next to $INSTALL_LIB"
+    exit 1
+  }
+  ui_run "Downloading" stage_files "$files" "$stage" "$result" || true
   read -r updated_count ok <"$result"
   rm -f "$result"
 
-  if [[ "$ok" == "true" ]]; then
-    ui_step ok "Files" "$updated_count installed (${UI_RUN_SECS}s)"
-    prune_update_backups
-    ui_done ok "dcvm updated to $remote_version" "dcvm self-update --revert goes back to $current_version"
-    echo ""
-    "$INSTALL_LIB/utils/doctor.sh" --quiet --fast --only host,vms || true
-  else
-    ui_step fail "Files" "${updated_count:-0} installed, some failed"
+  if [[ "$ok" != "true" ]]; then
+    rm -rf "$stage"
+    ui_step fail "Files" "${updated_count:-0} downloaded, some failed; nothing was changed"
     sed 's/^/  /' "$UI_RUN_LOG"
-    print_error "Some files failed to update; the previous version is in $backup_dir (dcvm self-update --revert)"
     exit 1
   fi
+  if ! install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB"; then
+    rm -rf "$stage"
+    print_error "Could not install the new files; the previous version is in $backup_dir (dcvm self-update --revert)"
+    exit 1
+  fi
+  rm -rf "$stage"
+  ui_step ok "Files" "$updated_count installed (${UI_RUN_SECS}s)"
+  prune_update_backups
+  ui_done ok "dcvm updated to $remote_version" "dcvm self-update --revert goes back to $current_version"
+  echo ""
+  if [[ -x "$INSTALL_LIB/installation/post-update.sh" ]]; then
+    "$INSTALL_LIB/installation/post-update.sh" "$current_version" "$remote_version" || true
+  fi
+  "$INSTALL_LIB/utils/doctor.sh" --quiet --fast --only host,vms || true
 }
 
 check_update() {
@@ -257,21 +258,26 @@ do_revert() {
     exit 1
   fi
 
-  local selected_backup="${backup_array[$((choice - 1))]}"
+  local selected_backup="${backup_array[$((choice - 1))]}" stage
   echo ""
-  if [[ -f "$selected_backup/dcvm" ]]; then
-    cp "$selected_backup/dcvm" "$INSTALL_BIN/dcvm"
-    chmod +x "$INSTALL_BIN/dcvm"
-    ui_step ok "dcvm" "$INSTALL_BIN/dcvm"
-  else
-    ui_step warn "dcvm" "not in this backup, left as is"
+  if [[ ! -f "$selected_backup/dcvm" || ! -d "$selected_backup/lib" ]]; then
+    print_error "This saved version is incomplete: $selected_backup"
+    exit 1
   fi
-  if [[ -d "$selected_backup/lib" ]]; then
-    cp -r "$selected_backup/lib/"* "$INSTALL_LIB/"
-    ui_step ok "Libraries" "$INSTALL_LIB"
-  else
-    ui_step warn "Libraries" "not in this backup, left as is"
+  if [[ -x "$INSTALL_LIB/installation/pre-revert.sh" ]]; then
+    "$INSTALL_LIB/installation/pre-revert.sh" || {
+      print_error "Could not undo this version's setup; nothing was reverted"
+      exit 1
+    }
   fi
+  stage=$(new_stage) && cp -a "$selected_backup/dcvm" "$stage/dcvm" && cp -a "$selected_backup/lib/." "$stage/lib/" &&
+    install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB" || {
+    rm -rf "$stage"
+    print_error "Could not restore $selected_backup"
+    exit 1
+  }
+  rm -rf "$stage"
+  ui_step ok "dcvm" "$INSTALL_BIN/dcvm and $INSTALL_LIB"
 
   ui_done ok "Reverted to $(get_current_version)" "dcvm self-update installs the latest again"
   echo ""

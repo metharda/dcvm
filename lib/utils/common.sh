@@ -52,10 +52,12 @@ ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]
 
 # The terminal's width in columns, read once from the terminal itself (tput
 # in a command substitution has no terminal to ask and says 80).
+# Numbers only: $(( )) runs commands hidden in an array subscript.
 ui_cols() {
-  if [ -z "${UI_COLS:-}" ]; then
+  if [[ ! "${UI_COLS:-}" =~ ^[1-9][0-9]{0,3}$ ]]; then
     UI_COLS=$(stty size </dev/tty 2>/dev/null | awk '{ print $2 }')
-    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=${COLUMNS:-80}
+    [[ "$UI_COLS" =~ ^[1-9][0-9]{0,3}$ ]] || UI_COLS=${COLUMNS:-80}
+    [[ "$UI_COLS" =~ ^[1-9][0-9]{0,3}$ ]] || UI_COLS=80
   fi
   echo "$UI_COLS"
 }
@@ -371,6 +373,31 @@ fetch_repo_file() {
   fi
 }
 
+# Root runs these files: on Debian /usr/local can be setgid staff, so the
+# owner, the group and every mode are set, never inherited.
+dcvm_tree_permissions() {
+  local bin="$1" lib="$2"
+  chown root:root "$bin" && chmod 755 "$bin" || return 1
+  chown -R root:root "$lib" || return 1
+  find "$lib" -type d -exec chmod 755 {} + -exec chmod g-s {} +
+  find "$lib" -type f -exec chmod 644 {} +
+  find "$lib" -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod 755 {} +
+}
+
+install_dcvm_tree() {
+  local stage="$1" bin="$2" lib="$3" old
+  [ -f "$stage/dcvm" ] && [ -d "$stage/lib" ] || return 1
+  dcvm_tree_permissions "$stage/dcvm" "$stage/lib" || return 1
+  old="$lib.old.$$"
+  [ -d "$lib" ] && { mv "$lib" "$old" || return 1; }
+  if ! mv "$stage/lib" "$lib"; then
+    [ -d "$old" ] && mv "$old" "$lib"
+    return 1
+  fi
+  mv -f "$stage/dcvm" "$bin/dcvm" || return 1
+  rm -rf "$old"
+}
+
 list_repo_files() {
   local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_BRANCH:-main}?recursive=1"
   local response files
@@ -388,16 +415,16 @@ list_repo_files() {
     return 1
   fi
   if command_exists jq; then
-    files=$(jq -r '.tree[]? | select(.path == "dcvm" or (.path | startswith("lib/") and endswith(".sh"))) | .path' <<<"$response" 2>/dev/null)
+    files=$(jq -r '.tree[]? | select(.type == "blob") | select(.path == "dcvm" or (.path | startswith("lib/"))) | .path' <<<"$response" 2>/dev/null)
   elif command_exists python3; then
     files=$(python3 -c '
 import sys, json
 for item in json.load(sys.stdin).get("tree", []):
     p = item.get("path", "")
-    if p == "dcvm" or (p.startswith("lib/") and p.endswith(".sh")):
+    if item.get("type") == "blob" and (p == "dcvm" or p.startswith("lib/")):
         print(p)' <<<"$response" 2>/dev/null)
   else
-    files=$(grep -o '"path": *"[^"]*"' <<<"$response" | sed 's/"path": *"//;s/"$//' | grep -E '^(dcvm$|lib/.+\.sh$)')
+    files=$(grep -o '"path": *"[^"]*"' <<<"$response" | sed 's/"path": *"//;s/"$//' | grep -E '^(dcvm$|lib/.+\.[a-z]+$)')
   fi
   [[ -n "$files" ]] || return 1
   echo "$files"
@@ -418,8 +445,136 @@ build_image() {
 
 build_sum() { sed -n "s/^$2=//p" "${1%.*}.sums" 2>/dev/null | head -1; }
 
+# Names also come from backup records and archives: a slash would write anywhere.
+valid_image_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] && [[ "$1" != *..* ]]; }
+valid_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
+valid_sha512() { [[ "$1" =~ ^[0-9a-f]{128}$ ]]; }
+
+inside_dir() {
+  local rp dir
+  rp=$(realpath -e -- "$1" 2>/dev/null) && dir=$(realpath -e -- "$2" 2>/dev/null) && [[ "$rp" == "$dir"/* ]]
+}
+
+registered_build() {
+  local rp dir
+  rp=$(realpath -e -- "$1" 2>/dev/null) && dir=$(realpath -e -- "$(builds_dir)" 2>/dev/null) || return 1
+  [[ "$rp" == "$dir"/* ]] && [ -f "$rp" ] && [ -f "${rp%.*}.sums" ]
+}
+
+# Backups and archives are untrusted: a qcow2 can name any host file as its
+# data file or backing file, and a non-qcow2 header (a VMDK extent) can too.
+check_disk_image() {
+  local info backing
+  info=$(qemu-img info -U -f qcow2 --output=json -- "$1" 2>/dev/null) || return 1
+  backing=$(python3 -c '
+import json, sys
+i = json.load(sys.stdin)
+if i.get("format") != "qcow2": sys.exit(1)
+if ((i.get("format-specific") or {}).get("data") or {}).get("data-file"): sys.exit(1)
+b = i.get("full-backing-filename") or i.get("backing-filename") or ""
+if b and (i.get("backing-filename-format", "qcow2") != "qcow2" or b.startswith("json:") or "://" in b): sys.exit(1)
+print(b)' <<<"$info") || return 1
+}
+
+sanitize_domain_xml() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import os, sys, xml.etree.ElementTree as ET
+path, name, disk, renamed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+tree = ET.parse(path)
+dom = tree.getroot()
+if dom.tag != "domain":
+    sys.exit(1)
+top = {"name", "title", "description", "memory", "currentMemory", "maxMemory", "vcpu", "vcpus", "iothreads",
+       "cputune", "numatune", "memtune", "os", "features", "cpu", "clock", "on_poweroff", "on_reboot",
+       "on_crash", "on_lockfailure", "pm", "devices", "genid", "sysinfo", "perf"}
+devs = {"disk", "controller", "interface", "input", "graphics", "video", "sound", "audio", "memballoon", "rng",
+        "watchdog", "panic", "tpm", "vsock", "hub", "serial", "console", "channel", "iommu"}
+for child in list(dom):
+    if child.tag not in top:
+        dom.remove(child)
+for el in list(dom.iter()):
+    for sub in [c for c in el if c.tag == "seclabel"]:
+        el.remove(sub)
+dom.find("name").text = name
+osel = dom.find("os")
+if osel is not None:
+    for child in list(osel):
+        text = (child.text or "").strip()
+        if child.tag in ("kernel", "initrd", "cmdline", "dtb", "acpi", "init", "initarg", "initenv", "initdir", "inituser", "initgroup", "shim"):
+            osel.remove(child)
+        elif child.tag == "loader" and (not text.startswith("/usr/share/") or ".." in text):
+            osel.remove(child)
+        elif child.tag == "nvram" and (renamed or not text.startswith("/var/lib/libvirt/qemu/nvram/") or ".." in text or not child.get("template", "/usr/share/").startswith("/usr/share/")):
+            osel.remove(child)
+    t = osel.find("type")
+    if t is not None:
+        m = t.get("machine", "")
+        if m and m != "q35":
+            if "q35" in m:
+                t.set("machine", "q35")
+            else:
+                del t.attrib["machine"]
+devices = dom.find("devices")
+if devices is None:
+    sys.exit(1)
+kept_disk = False
+for d in list(devices):
+    tag = d.tag
+    keep = tag in devs
+    if tag == "disk":
+        keep = d.get("device", "disk") == "disk" and not kept_disk
+        if keep:
+            kept_disk = True
+            d.set("type", "file")
+            d.set("device", "disk")
+            for c in [c for c in d if c.tag in ("source", "backingStore", "driver", "auth", "mirror", "encryption", "reservations")]:
+                d.remove(c)
+            ET.SubElement(d, "driver", {"name": "qemu", "type": "qcow2"})
+            ET.SubElement(d, "source", {"file": disk})
+    elif tag == "controller":
+        keep = d.get("type") != "ide"
+    elif tag == "interface":
+        keep = d.get("type") in ("network", "bridge")
+        for c in [c for c in d if c.tag in ("script", "downscript", "backenddomain", "teaming", "portForward")]:
+            d.remove(c)
+        mac = d.find("mac")
+        if keep and renamed and mac is not None:
+            b = os.urandom(3)
+            mac.set("address", "52:54:00:%02x:%02x:%02x" % (b[0], b[1], b[2]))
+    elif tag == "graphics":
+        keep = d.get("type") in ("vnc", "spice")
+        if keep:
+            if d.get("listen") is not None:
+                d.set("listen", "127.0.0.1")
+            for c in [c for c in d if c.tag == "listen"]:
+                d.remove(c)
+            ET.SubElement(d, "listen", {"type": "address", "address": "127.0.0.1"})
+    elif tag == "audio":
+        keep = d.get("type") in ("none", "spice")
+    elif tag == "rng":
+        b = d.find("backend")
+        keep = b is not None and b.get("model") == "random" and (b.text or "/dev/urandom").strip() in ("/dev/urandom", "/dev/random")
+    elif tag == "tpm":
+        b = d.find("backend")
+        keep = b is not None and b.get("type") == "emulator"
+    elif tag in ("serial", "console"):
+        keep = d.get("type") == "pty"
+    elif tag == "channel":
+        keep = d.get("type") in ("unix", "spicevmc", "qemu-vdagent")
+        src = d.find("source")
+        if keep and src is not None:
+            src.attrib.pop("path", None)
+    if not keep:
+        devices.remove(d)
+if not kept_disk:
+    sys.exit(1)
+tree.write(path)
+PY
+}
+
 register_build() {
   local file="$1" img="$2" dir sha b
+  valid_image_name "$img" || return 1
   dir=$(builds_dir)
   mkdir -p "$dir" || return 1
   sha=$(sha256sum "$file" | cut -d' ' -f1) || return 1
@@ -434,6 +589,7 @@ register_build() {
 
 current_build() {
   local img="$1" file b
+  valid_image_name "$img" || return 1
   file="$(templates_dir)/$img"
   [ -f "$file" ] || return 1
   for b in "$(builds_dir)/${img%.*}"-*."${img##*.}"; do
@@ -446,8 +602,9 @@ current_build() {
 
 find_build() {
   local f b
+  valid_sha256 "$1" || return 1
   for f in "$(builds_dir)"/*.sums; do
-    [ -f "$f" ] && grep -qx "sha256=$1" "$f" || continue
+    [ -f "$f" ] && grep -qxF "sha256=$1" "$f" || continue
     for b in "${f%.sums}".*; do [ "${b##*.}" != sums ] && [ -f "$b" ] && echo "$b" && return 0; done
   done
   return 1
@@ -524,7 +681,7 @@ disk_fits_build() {
   while read -r fs type; do
     case "$type" in
     ext2 | ext3 | ext4)
-      rc=$(guestfish -a "$tmp" run : fsck "$type" "$fs" 2>/dev/null | tail -1)
+      rc=$(guestfish --format=qcow2 -a "$tmp" run : fsck "$type" "$fs" 2>/dev/null | tail -1)
       case "$rc" in 0 | 1 | 0x0 | 0x1) ok=0 ;; *)
         ok=1
         break
@@ -532,13 +689,13 @@ disk_fits_build() {
       esac
       ;;
     btrfs)
-      guestfish -a "$tmp" run : btrfs-check "$fs" >/dev/null 2>&1 && ok=0 || {
+      guestfish --format=qcow2 -a "$tmp" run : btrfs-check "$fs" >/dev/null 2>&1 && ok=0 || {
         ok=1
         break
       }
       ;;
     esac
-  done < <(guestfish --ro -a "$tmp" run : list-filesystems 2>/dev/null | sed 's/: / /')
+  done < <(guestfish --ro --format=qcow2 -a "$tmp" run : list-filesystems 2>/dev/null | sed 's/: / /')
   rm -f "$tmp"
   return "$ok"
 }
@@ -759,8 +916,13 @@ validate_vm_name() {
     print_error "VM name cannot be empty"
     return 1
   fi
-  if [[ ! "$vm_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-    print_error "VM name can only contain letters, numbers, underscores, and hyphens"
+  if [[ ! "$vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+    print_error "VM name can only contain letters, numbers, underscores, and hyphens, and cannot start with a hyphen"
+    return 1
+  fi
+  # Commands read these words as "every VM" or "the newest backup".
+  if [[ "$vm_name" =~ ^(all|latest|help)$ ]]; then
+    print_error "'$vm_name' is reserved, choose another VM name"
     return 1
   fi
   if [ ${#vm_name} -lt 3 ] || [ ${#vm_name} -gt 64 ]; then
@@ -864,41 +1026,29 @@ get_vm_state() {
   virsh domstate "$vm_name" 2>/dev/null || echo "not-found"
 }
 
-get_vm_ip() {
-  local vm_name="$1"
-  local attempts="${2:-1}"
-  local ip=""
-  local count=0
-  local subnet="${NETWORK_SUBNET:-10.10.10}"
-  local subnet_re="${subnet//./\\.}"
+valid_vm_ip() {
+  local subnet="${NETWORK_SUBNET:-10.10.10}" host
+  [[ "$1" == "$subnet".* ]] || return 1
+  host=${1#"$subnet".}
+  [[ "$host" =~ ^[0-9]{1,3}$ ]] && [ "$host" -ge 2 ] && [ "$host" -le 254 ]
+}
 
-  while [ -z "$ip" ] && [ $count -lt $attempts ]; do
-    ip=$(virsh domifaddr "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
-    if [ -z "$ip" ]; then
-      ip=$(virsh domifaddr "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
-    fi
-    if [ -z "$ip" ]; then
-      local network_name="${NETWORK_NAME:-datacenter-net}"
-      ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$vm_name" 6 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
-    fi
-    if [ -z "$ip" ]; then
-      local mac=$(virsh domiflist "$vm_name" 2>/dev/null | grep "${NETWORK_NAME:-datacenter-net}" | awk '{print $5}')
-      if [ -n "$mac" ]; then
-        ip=$(virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{print $5}' | cut -d'/' -f1 | grep "^${subnet_re}\." | head -1)
-      fi
-    fi
-    if [ -z "$ip" ] && [ $attempts -gt 1 ]; then
-      sleep 2
-    fi
+# Host-side sources first: the guest agent reports whatever the guest wants.
+get_vm_ip() {
+  local vm_name="$1" attempts="${2:-1}" ip="" count=0 mac
+  local network_name="${NETWORK_NAME:-datacenter-net}"
+  local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
+
+  while [ -z "$ip" ] && [ "$count" -lt "$attempts" ]; do
+    mac=$(virsh domiflist -- "$vm_name" 2>/dev/null | awk -v n="$network_name" '$3 == n { print $5; exit }')
+    [ -n "$mac" ] && ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{ print $5 }' | cut -d/ -f1 | head -1)
+    valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
+    valid_vm_ip "$ip" || ip=$([ -f "$static_conf" ] && grep '^IP=' "$static_conf" | head -1 | cut -d= -f2- | sed 's/^"//;s/"$//')
+    valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
+    valid_vm_ip "$ip" || ip=""
+    [ -z "$ip" ] && [ "$attempts" -gt 1 ] && sleep 2
     count=$((count + 1))
   done
-
-  if [ -z "$ip" ]; then
-    local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
-    if [ -f "$static_conf" ]; then
-      ip=$(grep '^IP=' "$static_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
-    fi
-  fi
 
   if [ -z "$ip" ]; then
     echo "N/A"
@@ -1075,9 +1225,59 @@ read_port_mappings() {
   [ -f "$file" ] && grep -v "^#" "$file" | grep -v "^$"
 }
 
+# libvirt's pidfile, checked against the command line: a pgrep pattern also
+# matches other VMs whose names contain this one.
+vm_qemu_pid() {
+  local pid
+  pid=$(cat "/run/libvirt/qemu/$1.pid" 2>/dev/null) && [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -qxF -e "guest=$1,debug-threads=on" -e "guest=$1" -e "$1" || return 1
+  echo "$pid"
+}
+
+NFS_SQUASH_USER=dcvm-nfs
+
+# With no_root_squash, root in any VM could plant a setuid-root file that every
+# host user can run. all_squash maps every NFS user to one unprivileged account.
+nfs_unsafe_files() {
+  find "$1" \( \( -perm /4000 ! -user "$2" \) -o \( -perm /2000 ! -group "$3" \) -o -type b -o -type c \) "${@:4}" 2>/dev/null
+}
+
+nfs_share_secure() {
+  local share="$1" uid gid
+  uid=$(id -u "$NFS_SQUASH_USER" 2>/dev/null) && gid=$(id -g "$NFS_SQUASH_USER") || return 1
+  awk -v p="$share" -v u="anonuid=$uid" '$1 == p && $2 ~ /all_squash/ && index($2, u) { f = 1 } END { exit !f }' /etc/exports 2>/dev/null || return 1
+  [ "$(stat -c '%u %a' "$share" 2>/dev/null)" = "$uid 700" ] || return 1
+  [ -z "$(nfs_unsafe_files "$share" "$uid" "$gid" -print -quit)" ]
+}
+
+secure_nfs_share() {
+  local share="$1" subnet="$2" uid gid quarantine f rel moved=0 tmp
+  if ! id -u "$NFS_SQUASH_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --home-dir /nonexistent --shell "$(command -v nologin || echo /bin/false)" "$NFS_SQUASH_USER" || return 1
+  fi
+  uid=$(id -u "$NFS_SQUASH_USER") gid=$(id -g "$NFS_SQUASH_USER")
+  mkdir -p "$share" || return 1
+  quarantine="${DATACENTER_BASE:-/srv/datacenter}/quarantine/nfs-$(date +%Y%m%d%H%M%S)"
+  while IFS= read -r -d '' f; do
+    rel=${f#"$share"/}
+    mkdir -p "$quarantine/$(dirname "$rel")" && chmod 700 "${quarantine%/*}" "$quarantine" &&
+      mv -- "$f" "$quarantine/$rel" && chmod a-s "$quarantine/$rel" 2>/dev/null
+    moved=$((moved + 1))
+  done < <(nfs_unsafe_files "$share" "$uid" "$gid" -print0)
+  chown -R "$uid:$gid" "$share" && chmod 700 "$share" || return 1
+  tmp=$(mktemp) || return 1
+  {
+    awk -v p="$share" '$1 != p' /etc/exports 2>/dev/null
+    echo "$share ${subnet}.0/24(rw,sync,no_subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
+  } >"$tmp" &&
+    cat "$tmp" >/etc/exports
+  rm -f "$tmp"
+  command_exists exportfs && exportfs -ra 2>/dev/null
+  NFS_QUARANTINED=$moved NFS_QUARANTINE_DIR=$quarantine
+}
+
 check_vm_exists() {
-  local vm_name="$1"
-  virsh list --all 2>/dev/null | grep -q " $vm_name "
+  virsh dominfo -- "$1" >/dev/null 2>&1
 }
 
 vm_exists() { check_vm_exists "$@"; }

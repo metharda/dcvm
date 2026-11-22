@@ -109,6 +109,32 @@ check_host() {
     report warn "Services" "the boot service (network and port forwards after a reboot) or the hourly check is missing: --fix installs them"
   fi
 
+  local share="$DATACENTER_BASE/nfs-share"
+  if ! awk -v p="$share" '$1 == p { f = 1 } END { exit !f }' /etc/exports 2>/dev/null; then
+    report skip "NFS share" "not exported"
+  elif nfs_share_secure "$share"; then
+    report ok "NFS share" "VM users squashed, closed to host users"
+  elif $FIX && secure_nfs_share "$share" "${NETWORK_SUBNET:-10.10.10}"; then
+    report fixed "NFS share" "VM users squashed, share closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
+  else
+    report fail "NFS share" "root in any VM can get root on this host: --fix squashes NFS users and closes the share"
+  fi
+
+  local vm_files vm_dirs backups_open=0
+  vm_files=$(find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -printf . 2>/dev/null | wc -c)
+  vm_dirs=$(find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
+  [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
+  if [ $((vm_files + vm_dirs + backups_open)) -eq 0 ]; then
+    report ok "Permissions" "VM disks, seeds and backups closed to other users"
+  elif $FIX; then
+    find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -exec chmod go-rwx {} + 2>/dev/null
+    find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
+    [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
+    report fixed "Permissions" "closed VM disks, seeds and backups to other users"
+  else
+    report warn "Permissions" "VM disks, cloud-init seeds (password hashes) or backups are readable by every local user: --fix closes them"
+  fi
+
   $FAST && return 0
   local here latest tmp
   here=$(sed -n 's/.*Version: \([0-9][0-9.]*\).*/\1/p' "$(command -v dcvm 2>/dev/null || echo /usr/local/bin/dcvm)" 2>/dev/null | head -1)
@@ -121,6 +147,8 @@ check_host() {
     report skip "dcvm" "${here:-unknown}; could not check for a newer version"
   elif [ "$here" = "$latest" ]; then
     report ok "dcvm" "$here, the latest"
+  elif [ "$(printf '%s\n%s\n' "$here" "$latest" | sort -V | tail -1)" = "$here" ]; then
+    report ok "dcvm" "$here, newer than the latest release ($latest)"
   else
     report warn "dcvm" "$here installed, $latest available: dcvm self-update"
   fi
@@ -382,16 +410,17 @@ check_storage() {
   done
   [ -n "$orphans" ] && report warn "VM folders" "no VM for $orphans in $DATACENTER_BASE/vms (remove them by hand if not needed)"
 
-  local stale
-  stale=$(find "$DATACENTER_BASE/vms" "$DATACENTER_BASE/backups" "$(templates_dir)" -maxdepth 2 \
-    \( -name '*.rebase' -o -name '.restore-*.qcow2' -o -name '*.tmp.*' -o -name '.fetch.*' -o -name '.rescue.tmp' \) -mmin +60 2>/dev/null)
-  if [ -z "$stale" ]; then
+  local stale=(find "$DATACENTER_BASE/vms" "$DATACENTER_BASE/backups" "$(templates_dir)" -maxdepth 2 -type f
+  \( -name '*.rebase' -o -name '.restore-*.qcow2' -o -name '*.tmp.*' -o -name '.fetch.*' -o -name '.rescue.tmp' \) -mmin +60)
+  local count
+  count=$("${stale[@]}" -printf . 2>/dev/null | wc -c)
+  if [ "$count" -eq 0 ]; then
     report ok "Leftovers" "no files from interrupted operations"
   elif $FIX; then
-    rm -f $stale
-    report fixed "Leftovers" "removed $(plural "$(grep -c . <<<"$stale")" file) from interrupted operations"
+    "${stale[@]}" -delete 2>/dev/null
+    report fixed "Leftovers" "removed $(plural "$count" file) from interrupted operations"
   else
-    report warn "Leftovers" "$(plural "$(grep -c . <<<"$stale")" file) from interrupted downloads, restores or base moves: --fix removes them"
+    report warn "Leftovers" "$(plural "$count" file) from interrupted downloads, restores or base moves: --fix removes them"
   fi
 
   $FAST && return 0

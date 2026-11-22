@@ -311,12 +311,14 @@ select_os() {
 
     if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
       print_info "Detected ISO file - switching to custom ISO installation mode..."
+      local force_flag=()
+      [ "$FORCE_MODE" = true ] && force_flag=(-f)
       exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
         ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
         ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
         ${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
         ${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
-        ${FORCE_MODE:+-f}
+        "${force_flag[@]}"
       exit $?
     fi
     if [ "$FORCE_MODE" = true ]; then
@@ -982,10 +984,9 @@ prepare_vm_directory() {
     exit 1
   }
 
-  # cloud-init/ holds the user-data with the password hash: root only.
-  # The VM folder itself stays traversable, since QEMU runs as its own user
-  # and must reach the disk and cloud-init.iso.
+  # QEMU runs as its own user: it must traverse the folder, nobody else read it.
   if ! mkdir -p "$DATACENTER_BASE/vms/$VM_NAME/cloud-init" ||
+    ! chmod 711 "$DATACENTER_BASE/vms/$VM_NAME" ||
     ! chmod 700 "$DATACENTER_BASE/vms/$VM_NAME/cloud-init"; then
     print_error "Failed to create cloud-init directory"
     exit 1
@@ -1188,7 +1189,7 @@ runcmd:
   - systemctl status $ssh_service --no-pager
   - mkdir -p /mnt/shared
   - chown $VM_USERNAME:$VM_USERNAME /mnt/shared
-  - echo "${NETWORK_SUBNET:-10.10.10}.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults 0 0" >> /etc/fstab
+  - echo "${NETWORK_SUBNET:-10.10.10}.1:${DATACENTER_BASE}/nfs-share /mnt/shared nfs defaults,nofail,_netdev 0 0" >> /etc/fstab
   - mount -a || true
   - mkdir -p $vm_home/{Documents,Downloads,Scripts}
   - chown -R $VM_USERNAME:$VM_USERNAME $vm_home
@@ -1353,13 +1354,14 @@ create_cloud_init_iso() {
       exit 1
     }
   fi
+  chmod 600 cloud-init.iso
 }
 
 create_vm_disk() {
   [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
   local disk_error base
   base=$(current_build "$(basename "$TEMPLATE_FILE")") || base="$TEMPLATE_FILE"
-  disk_error=$(qemu-img create -f qcow2 -F qcow2 -b "$base" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
+  disk_error=$(umask 077 && qemu-img create -f qcow2 -F qcow2 -b "$base" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
   if [ $? -ne 0 ]; then
     print_error "Failed to create VM disk"
     echo "  Error: $disk_error"

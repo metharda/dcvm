@@ -400,6 +400,8 @@ download_with_mirrors() {
 # at the newest 60 folders; fails when the build is not there.
 find_archived_build() {
   local img="$1" sha256="$2" sha512="$3" url archive dir sums line name
+  valid_image_name "$img" && valid_sha256 "$sha256" || return 1
+  valid_sha512 "$sha512" || sha512=""
   url=$(get_mirrors "$img" | head -1)
   case "$url" in
   *kali.download*) return 1 ;; # converted locally: no published checksum of the qcow2
@@ -408,7 +410,7 @@ find_archived_build() {
   archive=${archive%/*}
   while IFS= read -r dir; do
     for sums in SHA256SUMS SHA512SUMS $(fetch_text "$archive/$dir/" | grep -oE 'href="[^"]+\.SHA256"' | sed 's/href="//;s/"$//'); do
-      line=$(fetch_text "$archive/$dir/$sums" | grep -iE "^($sha256|$sha512)[[:space:]]" | head -1)
+      line=$(fetch_text "$archive/$dir/$sums" | awk -v a="$sha256" -v b="$sha512" 'tolower($1) == a || (b != "" && tolower($1) == b) { print; exit }')
       [ -n "$line" ] || continue
       name=$(awk '{ print $2 }' <<<"$line")
       echo "$archive/$dir/${name#\*}"

@@ -90,16 +90,14 @@ fix_vm_locks() {
   sleep 3
 
   print_info "Terminating QEMU processes"
-  local qemu_pids=$(pgrep -f "qemu.*$vm_name" 2>/dev/null || true)
-  if [ -n "$qemu_pids" ]; then
-    print_verbose "Found QEMU PIDs: $qemu_pids"
-    echo "$qemu_pids" | xargs -r kill -TERM 2>/dev/null || true
+  local qemu_pid
+  if qemu_pid=$(vm_qemu_pid "$vm_name"); then
+    print_verbose "Found QEMU PID: $qemu_pid"
+    kill -TERM "$qemu_pid" 2>/dev/null || true
     sleep 3
-
-    qemu_pids=$(pgrep -f "qemu.*$vm_name" 2>/dev/null || true)
-    [ -n "$qemu_pids" ] && print_warning "Force killing QEMU processes: $qemu_pids" && echo "$qemu_pids" | xargs -r kill -KILL 2>/dev/null || true
+    qemu_pid=$(vm_qemu_pid "$vm_name") && print_warning "Force killing QEMU process: $qemu_pid" && kill -KILL "$qemu_pid" 2>/dev/null || true
   else
-    print_verbose "No QEMU processes found for $vm_name"
+    print_verbose "No QEMU process found for $vm_name"
   fi
   sleep 2
 
@@ -122,12 +120,12 @@ fix_vm_locks() {
 
   phase_done "Stopped" "VM and its QEMU processes"
 
-  local lock_dirs=("/var/lib/libvirt/qemu" "/run/libvirt/qemu" "/var/run/libvirt/qemu" "/tmp" "/var/tmp")
+  local lock_dirs=("/var/lib/libvirt/qemu" "/run/libvirt/qemu")
   local locks_found=false
 
   for lock_dir in "${lock_dirs[@]}"; do
     if [ -d "$lock_dir" ]; then
-      local found_locks=$(find "$lock_dir" -name "*${vm_name}*" \( -name "*.lock" -o -name "*.pid" \) 2>/dev/null)
+      local found_locks=$(find "$lock_dir" -maxdepth 1 -type f \( -name "${vm_name}.pid" -o -name "${vm_name}.lock" -o -name "${vm_name}.*.lock" \) 2>/dev/null)
       if [ -n "$found_locks" ]; then
         locks_found=true
         print_verbose "Removing locks in $lock_dir:"
@@ -165,21 +163,6 @@ fix_vm_locks() {
     print_verbose "No disk lock files found"
   fi
 
-  local vm_basename=$(basename "$vm_name")
-  local shm_files=$(find /dev/shm -name "*qemu*${vm_basename}*" -o -name "*${vm_basename}*qemu*" 2>/dev/null || true)
-  if [ -n "$shm_files" ]; then
-    print_verbose "Found shared memory files:"
-    echo "$shm_files" | while read -r shm_file; do
-      print_verbose "  Removing: $shm_file"
-      rm -f "$shm_file" 2>/dev/null || {
-        print_warning "Failed to remove shared memory: $shm_file"
-        step_errors=$((step_errors + 1))
-      }
-    done
-  else
-    print_verbose "No shared memory files found"
-  fi
-
   if command_exists qemu-img; then
     print_info "Attempting to force unlock with qemu-img"
     qemu-img info "$VM_DISK_PATH" >/dev/null 2>&1 && print_verbose "qemu-img can access the disk" || {
@@ -194,34 +177,6 @@ fix_vm_locks() {
     }
   else
     print_warning "qemu-img not available - cannot force unlock disk"
-  fi
-
-  print_info "Attempting Python-based lock clearing"
-  if command_exists python3; then
-    python3 -c "
-import fcntl, sys, os
-try:
-    disk_path = '$VM_DISK_PATH'
-    if os.path.exists(disk_path):
-        with open(disk_path, 'r+b') as f:
-            try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                print('Released file lock')
-            except Exception as e:
-                print(f'Lock release failed: {e}', file=sys.stderr)
-                sys.exit(1)
-    else:
-        print(f'Disk file not found: {disk_path}', file=sys.stderr)
-        sys.exit(1)
-except Exception as e:
-    print(f'Python lock clear failed: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>/dev/null || {
-      print_warning "Python lock clearing failed"
-      step_errors=$((step_errors + 1))
-    }
-  else
-    print_warning "Python3 not available for lock clearing"
   fi
 
   phase_done "Image locks" "released, shared memory cleared"
@@ -270,7 +225,7 @@ except Exception as e:
     local new_perms=$(stat -c '%a' "$VM_DISK_PATH" 2>/dev/null || stat -f '%A' "$VM_DISK_PATH" 2>/dev/null || echo "unknown")
     print_verbose "New owner: $new_owner, permissions: $new_perms"
 
-    if command_exists restorecon && [ -f /selinux/enforce ]; then
+    if command_exists restorecon && selinuxenabled 2>/dev/null; then
       print_info "Restoring SELinux context"
       restorecon "$VM_DISK_PATH" 2>/dev/null && print_verbose "SELinux context restored" || print_warning "Failed to restore SELinux context"
     fi
@@ -341,8 +296,6 @@ except Exception as e:
   fi
 
   phase_done "libvirtd" "restarted and responding"
-
-  [ -d /var/lock ] && find /var/lock -name "*${vm_name}*" -delete 2>/dev/null || true
 
   virsh pool-list --all 2>/dev/null | grep -q "default" && print_info "Refreshing storage pools" && virsh pool-refresh default >/dev/null 2>&1 || print_verbose "Could not refresh default storage pool"
 
