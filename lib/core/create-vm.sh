@@ -1430,22 +1430,29 @@ install_vm() {
   fi
   [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ] && GRAPHICS="${GRAPHICS%%,*},listen=127.0.0.1"
   VM_GRAPHICS_USED=$GRAPHICS
-  virt_error=$(virt-install \
-    --name "$VM_NAME" \
-    --virt-type kvm \
-    --memory "$VM_MEMORY" \
-    --vcpus "$VM_CPUS" \
-    --boot hd,menu=on \
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk" \
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom" \
-    --graphics "$GRAPHICS" \
-    --os-variant "$OS_VARIANT" \
-    --network "network=$NETWORK_NAME" \
-    --console pty,target_type=serial \
-    --import \
-    --noautoconsole 2>&1)
+  local vi=(virt-install
+    --name "$VM_NAME"
+    --virt-type kvm
+    --memory "$VM_MEMORY"
+    --vcpus "$VM_CPUS"
+    --boot hd,menu=on
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk"
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom"
+    --graphics "$GRAPHICS"
+    --os-variant "$OS_VARIANT"
+    --network "network=$NETWORK_NAME"
+    --console pty,target_type=serial
+    --import
+    --noautoconsole)
+  local rc=0
+  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+    VNC_PW=$(vnc_password)
+    virt_error=$(virt_install_with_vnc_password "$VNC_PW" "${vi[@]}" 2>&1) || rc=$?
+  else
+    virt_error=$("${vi[@]}" 2>&1) || rc=$?
+  fi
 
-  if [ $? -ne 0 ]; then
+  if [ "$rc" -ne 0 ]; then
     print_error "Failed to create VM"
     "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,storage || true
     echo ""
@@ -1678,10 +1685,7 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
-    if [ "$(caller_role)" != root ] && [ "${VM_GRAPHICS_USED:-none}" != none ]; then
-      VNC_PW=$(vnc_password)
-      set_vnc_password "$VM_NAME" "$VNC_PW" && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
-    fi
+    [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then

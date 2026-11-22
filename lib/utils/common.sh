@@ -1344,26 +1344,28 @@ wait_for_vm() {
 
 vnc_password() { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 8; }
 
-# The password goes through a file and the environment: other local users can
-# read a root process's arguments in /proc, not its environment.
-set_vnc_password() {
-  local vm="$1" xml flags=--config
+# QEMU only takes a VNC password set before it starts, and other local users
+# can read a root process's arguments, so it goes into the XML through the
+# environment: virt-install prints the domain, dcvm defines and starts it.
+virt_install_with_vnc_password() {
+  local pw="$1" xml name
+  shift
   xml=$(mktemp) || return 1
-  if ! virsh dumpxml --security-info -- "$vm" 2>/dev/null | VNC_PW="$2" python3 -I -S -c '
-import os, sys, xml.etree.ElementTree as ET
-g = ET.parse(sys.stdin).getroot().find("devices/graphics")
-if g is None:
-    sys.exit(1)
-g.set("passwd", os.environ["VNC_PW"])
-print(ET.tostring(g, encoding="unicode"))' >"$xml"; then
-    rm -f "$xml"
+  if ! "$@" --print-xml >"$xml.all" || ! VNC_PW="$pw" python3 -I -S -c '
+import os, re, sys, xml.etree.ElementTree as ET
+docs = re.findall(r"<domain[\s\S]*?</domain>", open(sys.argv[1]).read())
+d = ET.fromstring(docs[-1])
+for g in d.iter("graphics"):
+    g.set("passwd", os.environ["VNC_PW"])
+open(sys.argv[2], "w").write(ET.tostring(d, encoding="unicode"))
+print(d.findtext("name"))' "$xml.all" "$xml" >"$xml.name"; then
+    rm -f "$xml" "$xml.all" "$xml.name"
     return 1
   fi
-  [ "$(get_vm_state "$vm")" = running ] && flags="--live --config"
-  # shellcheck disable=SC2086
-  virsh update-device "$vm" "$xml" $flags >/dev/null 2>&1
+  name=$(cat "$xml.name")
+  virsh define "$xml" >/dev/null && virsh start "$name" >/dev/null
   local rc=$?
-  rm -f "$xml"
+  rm -f "$xml" "$xml.all" "$xml.name"
   return $rc
 }
 

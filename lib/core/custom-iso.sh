@@ -374,18 +374,19 @@ build_virt_install_opts() {
 }
 
 run_virt_install() {
-  ui_run "Starting VM" virt-install "${VIRT_INSTALL_OPTS[@]}" || {
+  local cmd=(virt-install "${VIRT_INSTALL_OPTS[@]}")
+  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+    VNC_PW=$(vnc_password)
+    cmd=(virt_install_with_vnc_password "$VNC_PW" "${cmd[@]}")
+  fi
+  ui_run "Starting VM" "${cmd[@]}" || {
     ui_step fail "VM" "virt-install failed"
     sed 's/^/    /' "$UI_RUN_LOG" | tail -10
     exit 1
   }
   register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")"
   ui_step ok "VM" "defined and booting the installer"
-  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
-    local pw
-    pw=$(vnc_password)
-    set_vnc_password "$VM_NAME" "$pw" && ui_step ok "VNC" "password $pw (dcvm network vnc status $VM_NAME shows it again)"
-  fi
+  [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
 }
 
 save_vm_info() {

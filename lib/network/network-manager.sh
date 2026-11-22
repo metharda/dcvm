@@ -229,19 +229,25 @@ cmd_vnc() {
     fi
     echo ""
     stop_for_vnc_change "$vm_name" || return 1
-    local graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
+    local pw="" graphics_xml
+    [ "$(caller_role)" != root ] && pw=$(vnc_password)
+    graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
     tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" >"$tmp_xml"
-    sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
+    if [ -n "$pw" ]; then
+      VNC_PW="$pw" python3 -I -S -c '
+import os, sys
+p = sys.argv[1]
+g = "<graphics type=\"vnc\" port=\"-1\" autoport=\"yes\" listen=\"127.0.0.1\" passwd=\"%s\"><listen type=\"address\" address=\"127.0.0.1\"/></graphics>" % os.environ["VNC_PW"]
+s = open(p).read().replace("</devices>", g + sys.argv[2] + "</devices>", 1)
+open(p, "w").write(s)' "$tmp_xml" "$video_xml"
+    else
+      sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
+    fi
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
-      if [ "$(caller_role)" != root ]; then
-        local pw
-        pw=$(vnc_password)
-        set_vnc_password "$vm_name" "$pw" || print_warning "Could not set a VNC password"
-        ui_kv "Password" "$pw"
-      fi
+      [ -n "$pw" ] && ui_kv "Password" "$pw"
       ui_done ok "VNC on for $vm_name" "listens on 127.0.0.1 of this host"
       ui_next "dcvm start $vm_name" "start it" "dcvm network vnc status $vm_name" "its VNC port, once running"
     else
