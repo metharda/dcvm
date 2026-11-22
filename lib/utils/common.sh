@@ -1342,7 +1342,7 @@ wait_for_vm() {
   return 1
 }
 
-vnc_password() { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 8; }
+vnc_password() { head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-8; }
 
 # QEMU only takes a VNC password set before it starts, and other local users
 # can read a root process's arguments, so it goes into the XML through the
