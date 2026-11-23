@@ -20,7 +20,7 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44)
+- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44). Debian 11 is end of life: it gets no security updates and installs packages from archive.debian.org
 - Username (default: depends on OS, e.g. ubuntu)
 - Password
 - Root access settings
@@ -446,8 +446,11 @@ setup.
 | --- | --- |
 | `nginx` | Enables and starts nginx and writes a welcome `index.html` (`/var/www/html`; `/usr/share/nginx/html` on Arch Linux) |
 | `apache2` (also `apache` on Arch Linux) | Enables and starts Apache (`apache2`; package `apache`, service `httpd` on Arch Linux) and writes a welcome `index.html` (`/var/www/html`; `/srv/http` on Arch Linux) |
-| `docker`, `docker.io` | Enables and starts Docker and adds the VM user to the `docker` group |
+| `docker`, `docker.io` | Installs Docker (`docker.io` on Debian, Ubuntu and Kali, where the `docker` package is an unrelated tray app; `docker` on Arch Linux), enables and starts it and adds the VM user to the `docker` group |
 | `mysql-server`, `default-mysql-server` | Installs the database server below and sets the database passwords |
+
+`nginx` and `apache2` (or `apache`) together are refused, since both need
+port 80.
 
 Database server installed:
 
@@ -460,11 +463,14 @@ Database server installed:
 
 Database accounts:
 
-- The database `root@localhost` gets the VM password (`-p`). With MariaDB it
-  also keeps its passwordless login from the system root account
-  (`sudo mariadb`); with MySQL it uses the password only.
+- With MariaDB, the database `root@localhost` gets the VM password (`-p`) and
+  keeps its passwordless login from the system root account (`sudo mariadb`).
+  With MySQL, `root@localhost` keeps only that passwordless login
+  (`sudo mysql`).
 - Unless the username is `root`, a database user with the VM username and
   password is created with all privileges.
+- If this setup fails, the VM still boots and the failure is logged in the
+  guest to `/var/log/dcvm-packages.log`.
 
 ### After VM Creation
 

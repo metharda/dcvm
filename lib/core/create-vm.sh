@@ -330,6 +330,7 @@ select_os() {
     VM_OS="debian11"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
     OS_VARIANT="debian11"
+    print_warning "Debian 11 is end of life (no security updates since August 2026); it installs packages from archive.debian.org"
     ;;
   4)
     VM_OS="ubuntu24.04"
@@ -634,6 +635,11 @@ wants_tailscale() {
     [ "${p,,}" = tailscale ] && return 0
   done
   return 1
+}
+
+web_servers_clash() {
+  local p=",${ADDITIONAL_PACKAGES//[[:space:]]/},"
+  [[ "$p" == *,nginx,* && ("$p" == *,apache2,* || "$p" == *,apache,*) ]]
 }
 
 # The key ends up in a root shell command inside the guest.
@@ -1151,6 +1157,8 @@ generate_cloud_init_userdata() {
         package=apache
       fi
       [ "$VM_OS" = archlinux ] && [ "$package" = docker.io ] && package=docker
+      # apt's docker package is wmdocker, an unrelated tray app.
+      [[ "$VM_OS" =~ ^(debian|ubuntu|kali) ]] && [ "$package" = docker ] && package=docker.io
       if [[ "$VM_OS" == fedora* ]]; then
         case "$package" in
         apache2)
@@ -1211,16 +1219,16 @@ PACKAGES_EOF
   if [ "$MYSQL_REQUESTED" = true ]; then
     local sql_password=${VM_PASSWORD//\\/\\\\}
     sql_password=${sql_password//\'/\'\'}
-    local root_auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password')"
-    [ "$mysql_service" = mysql ] && root_auth="IDENTIFIED WITH mysql_native_password BY '$sql_password'"
-    mysql_sql="ALTER USER 'root'@'localhost' $root_auth;"
+    # MySQL has no "socket OR password" auth, so its root stays on auth_socket (sudo mysql).
+    [ "$mysql_service" = mariadb ] &&
+      mysql_sql="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password');"
     if [ "$VM_USERNAME" != "root" ]; then
-      mysql_sql+="
-CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
+      mysql_sql+="${mysql_sql:+
+}CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
 GRANT ALL PRIVILEGES ON *.* TO '$VM_USERNAME'@'localhost' WITH GRANT OPTION;"
     fi
-    mysql_sql+="
-FLUSH PRIVILEGES;"
+    mysql_sql+="${mysql_sql:+
+}FLUSH PRIVILEGES;"
   fi
 
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" <<USERDATA_EOF
@@ -1248,7 +1256,10 @@ packages:
 $(
     # shellcheck disable=SC2086 # one package per word
     printf '  - %s\n' $base_packages
-  )
+  )$(if [ "$VM_OS" = archlinux ]; then echo "
+# The Arch image ships no pacman keyring; package_update runs after bootcmd.
+bootcmd:
+  - cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'"; fi)
 
 write_files:
   - content: |
@@ -1280,7 +1291,14 @@ write_files:
       CREATED="$(date)"
     path: /etc/vm-info
     owner: root:root
-    permissions: '0644'$(if [ -n "$mysql_sql" ]; then
+    permissions: '0644'$(if [ "$VM_OS" = debian11 ]; then echo "
+  - content: |
+      deb http://archive.debian.org/debian bullseye main
+      deb http://archive.debian.org/debian bullseye-updates main
+      deb http://archive.debian.org/debian-security bullseye-security main
+    path: /etc/apt/sources.list
+    owner: root:root
+    permissions: '0644'"; fi)$(if [ -n "$mysql_sql" ]; then
     echo "
   - encoding: b64
     content: $(printf '%s\n' "$mysql_sql" | base64 | tr -d '\n')
@@ -1321,7 +1339,7 @@ $(if [ "$MYSQL_REQUESTED" = true ]; then
     cat <<MYSQL_EOF
   - systemctl enable $mysql_service
   - systemctl start $mysql_service
-  - $mysql_service < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql
+  - '$mysql_service < /root/dcvm-mysql-init.sql || echo "dcvm: database user setup failed, see /var/log/cloud-init-output.log" | tee -a /var/log/dcvm-packages.log; rm -f /root/dcvm-mysql-init.sql'
 MYSQL_EOF
   fi)
 $(if [ "$DOCKER_REQUESTED" = true ]; then
@@ -1681,6 +1699,10 @@ main() {
   fi
 
   if [ -n "$ADDITIONAL_PACKAGES" ] && ! validate_package_list "$ADDITIONAL_PACKAGES"; then
+    exit 1
+  fi
+  if web_servers_clash; then
+    print_error "-k nginx and apache2 both need port 80; choose one of them"
     exit 1
   fi
 

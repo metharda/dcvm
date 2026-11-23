@@ -1493,7 +1493,7 @@ test_userdata_passwords() {
     [ "$(ud_py "$f" 'd["chpasswd"]["list"]' 2>/dev/null)" = "root:$(test_hash "$pw")" ] || ok=false
     ud_py "$f" 'd.get("bootcmd") or ""' 2>/dev/null | grep -q chpasswd && ok=false
     sql=$(ud_py "$f" "$sql_expr" 2>/dev/null)
-    grep -qxF "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$esc';" <<<"$sql" || ok=false
+    grep -q "ALTER USER 'root'" <<<"$sql" && ok=false
     grep -qxF "CREATE USER 'tester'@'localhost' IDENTIFIED BY '$esc';" <<<"$sql" || ok=false
     grep -qxF "GRANT ALL PRIVILEGES ON *.* TO 'tester'@'localhost' WITH GRANT OPTION;" <<<"$sql" || ok=false
     [ "$(ud_py "$f" '[w["permissions"] for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql"][0]' 2>/dev/null)" = "0600" ] || ok=false
@@ -1599,11 +1599,14 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
       ok=true
       grep -q "^    for pkg in $pkg; do\$" "$f" || ok=false
       grep -qx "  - systemctl enable $svc" "$f" || ok=false
-      grep -qx "  - $svc < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql" "$f" || ok=false
+      grep -qF "  - '$svc < /root/dcvm-mysql-init.sql || echo " "$f" || ok=false
       grep -q "^CREATE USER 'tester'@'localhost'" <<<"$sql" || ok=false
-      auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('pw1234')"
-      [ "$svc" = mysql ] && auth="IDENTIFIED WITH mysql_native_password BY 'pw1234'"
-      grep -qxF "ALTER USER 'root'@'localhost' $auth;" <<<"$sql" || ok=false
+      auth="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('pw1234');"
+      if [ "$svc" = mysql ]; then
+        grep -q "ALTER USER" <<<"$sql" && ok=false
+      else
+        grep -qxF "$auth" <<<"$sql" || ok=false
+      fi
       grep -qxF "  - systemctl start $svc" "$f" || ok=false
       if [ "$os" = archlinux ]; then
         line_of() { grep -nxF -- "$1" "$f" | head -1 | cut -d: -f1; }
@@ -1667,6 +1670,49 @@ test_userdata_per_os() {
       log_test "FAIL" "user-data for $os: packages, ssh unit, sftp path, web paths (#38)"
     fi
   done
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2016,SC2030,SC2031,SC1091 # literal $ in patterns; create-vm.sh in a subshell
+test_guest_setup_userdata() {
+  if ! has_pyyaml; then
+    log_test "SKIP" "guest setup user-data (#45, #46)" "python3 yaml not available"
+    return
+  fi
+  local t r="" os
+  t=$(mktemp -d)
+  generate_test_userdata tester n "" "$t/arch.yaml" mariadb pw1234 archlinux
+  [ "$(ud_py "$t/arch.yaml" 'd["bootcmd"]' 2>/dev/null)" = "[\"cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'\"]" ] && r+="keyring "
+  generate_test_userdata tester n "" "$t/d11.yaml" "" pw1234 debian11
+  generate_test_userdata tester n "" "$t/d12.yaml" "" pw1234 debian12
+  ud_py "$t/d11.yaml" '[w["content"] for w in d["write_files"] if w["path"] == "/etc/apt/sources.list"][0]' 2>/dev/null |
+    grep -qx 'deb http://archive.debian.org/debian-security bullseye-security main' &&
+    ! grep -q 'sources.list\|bootcmd' "$t/d12.yaml" && r+="bullseye "
+  for os in debian12 ubuntu24.04 kali archlinux; do
+    generate_test_userdata tester n "" "$t/u.yaml" docker pw1234 "$os"
+    if [ "$os" = archlinux ]; then
+      grep -qx '    for pkg in docker; do' "$t/u.yaml" && r+="$os "
+    else
+      grep -qx '    for pkg in docker.io; do' "$t/u.yaml" && grep -qx '  - systemctl enable docker' "$t/u.yaml" && r+="$os "
+    fi
+  done
+  generate_test_userdata tester n "" "$t/my.yaml" mysql-server pw1234 ubuntu24.04
+  generate_test_userdata root y "" "$t/myroot.yaml" mysql-server pw1234 ubuntu24.04 pw1234
+  [ "$(ud_py "$t/my.yaml" "$ud_sql_expr" 2>/dev/null)" = "CREATE USER 'tester'@'localhost' IDENTIFIED BY 'pw1234';
+GRANT ALL PRIVILEGES ON *.* TO 'tester'@'localhost' WITH GRANT OPTION;
+FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/myroot.yaml" "$ud_sql_expr" 2>/dev/null)" = "FLUSH PRIVILEGES;" ] && r+="socket "
+  ud_py "$t/my.yaml" 'd["runcmd"]' 2>/dev/null | grep -qF 'mysql < /root/dcvm-mysql-init.sql || echo "dcvm: database user setup failed, see /var/log/cloud-init-output.log" | tee -a /var/log/dcvm-packages.log; rm -f /root/dcvm-mysql-init.sql' &&
+    ! grep -q '|| true; rm -f /root/dcvm-mysql-init.sql' "$t/my.yaml" && r+="reported "
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    ADDITIONAL_PACKAGES="nginx, apache2" web_servers_clash && ADDITIONAL_PACKAGES="apache,nginx" web_servers_clash &&
+      ! ADDITIONAL_PACKAGES="nginx,libapache2-mod-php,apache2-utils" web_servers_clash && ! ADDITIONAL_PACKAGES="apache2" web_servers_clash
+  ) && r+="clash "
+  if [ "$r" = "keyring bullseye debian12 ubuntu24.04 kali archlinux socket reported clash " ]; then
+    log_test "PASS" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)"
+  else
+    log_test "FAIL" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)" "$r"
+  fi
   rm -rf "$t"
 }
 
@@ -3751,6 +3797,7 @@ test_common_functions() {
   test_create_cancel_and_failure_cleanup
   test_userdata_passwords
   test_userdata_per_os
+  test_guest_setup_userdata
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
   test_dhcp_lease_edge_cases
