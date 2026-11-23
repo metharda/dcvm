@@ -108,4 +108,4 @@ dnsmasq.conf
 # Test files
 test/
 *-test
-testing/
+testing/__pycache__/

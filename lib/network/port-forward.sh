@@ -165,7 +165,7 @@ cmd_setup() {
     {
       printf 'VM\tIP\tSSH\tHTTP\n'
       read_port_mappings | while read -r vm ip sp hp; do
-        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(get_vm_username "$vm")@$HOST_IP" "http://$HOST_IP:$hp"
+        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(vm_login "$vm" | grep . || echo '<user>')@$HOST_IP" "http://$HOST_IP:$hp"
       done
     } | ui_table
   fi
@@ -221,6 +221,10 @@ cmd_add() {
     print_error "$vm has no address yet; start it and wait for it to boot"
     return 1
   }
+  if ip_held_by_other_vm "$ip" "$vm"; then
+    print_error "$ip is leased to another VM; check the address set inside $vm"
+    return 1
+  fi
   for ((port = SSH_PORT_START; port <= 2299; port++)); do
     read_port_mappings 2>/dev/null | awk -v p="$port" '$3 == p { f = 1 } END { exit !f }' && continue
     ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
@@ -243,7 +247,7 @@ cmd_add() {
   echo "$vm $ip $ssh_port $http_port" >>"$map_file"
   iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
   save_iptables_rules
-  ui_done ok "$vm forwarded" "ssh -p $ssh_port $(get_vm_username "$vm")@$host_ip, http://$host_ip:$http_port"
+  ui_done ok "$vm forwarded" "ssh -p $ssh_port $(vm_login "$vm" | grep . || echo '<user>')@$host_ip, http://$host_ip:$http_port"
 }
 
 cmd_remove() {
@@ -357,6 +361,11 @@ EOF
 }
 
 main() {
+  case "${1:-}" in help | --help | -h)
+    cmd_help
+    exit 0
+    ;;
+  esac
   load_dcvm_config
   require_root
   check_dependencies iptables virsh

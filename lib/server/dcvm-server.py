@@ -34,20 +34,51 @@ ROLE_MAP = {}
 
 DEFAULT_LIMITS = {"vms": 5, "vcpus": 8, "memory_mb": 16384, "disk_gb": 200}
 
-NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}$")
+NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z")
 RESERVED = {"all", "latest", "help"}
-BACKUP_ID = re.compile(r"^([0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?|latest)$")
-SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMm]?$")
-USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{2,31}$")
-PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+-]*)*$")
-IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$")
-TTL = re.compile(r"^[1-9][0-9]{0,4}[mhd]$")
-OS_VARIANT = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-TERM = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
+BACKUP_ID = re.compile(r"^([0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?|latest)\Z")
+SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMmTt]\Z")
+USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{2,31}\Z")
+PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+-]*)*\Z")
+IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}\Z")
+TTL = re.compile(r"^[1-9][0-9]{0,4}[mhd]\Z")
+OS_VARIANT = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
+TERM = re.compile(r"^[A-Za-z0-9._+-]{1,64}\Z")
 
 
 class Denied(Exception):
     pass
+
+
+SECRET_FLAGS = ("-p", "--password", "-r", "--root-password", "--tailscale-authkey")
+
+
+def redact(argv):
+    out, hide = [], False
+    for a in argv:
+        if not isinstance(a, str):
+            out.append("***" if hide else "<not text>")
+            hide = False
+        elif hide:
+            out.append("***")
+            hide = False
+        elif a in SECRET_FLAGS:
+            out.append(a)
+            hide = True
+        elif (a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--")) or \
+                any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
+            out.append(a[:2] + "***")
+        else:
+            out.append(a)
+    return out
+
+
+def redact_text(text, argv):
+    # Errors quote what the caller typed; a secret must not reach the log through them.
+    for raw, shown in zip(argv, redact(argv)):
+        if isinstance(raw, str) and raw and raw != shown:
+            text = re.sub(r"(?<![^\s'\"=:(])%s(?![^\s'\",:)])" % re.escape(raw), lambda _m: shown, text)
+    return text
 
 
 def read_config():
@@ -182,7 +213,9 @@ def size_gb(value, default):
         return default
     v = value.upper()
     if v.endswith("M"):
-        return max(1, int(v[:-1]) // 1024)
+        return max(1, -(-int(v[:-1]) // 1024))
+    if v.endswith("T"):
+        return int(v[:-1]) * 1024
     return int(v.rstrip("G"))
 
 
@@ -201,6 +234,7 @@ def check_quota(uid, user, cpus, memory_mb, disk_gb):
         if used[k] + n > limits[k]:
             raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
                          % (names[k], used[k], n, limits[k], LIMITS))
+    return "%d %d %d" % tuple(limits[k] - used[k] for k in ("vcpus", "memory_mb", "disk_gb"))
 
 
 def take_value(args, i, opt):
@@ -215,10 +249,8 @@ def take_value(args, i, opt):
 def own_vm(ctx, vm):
     if not NAME.match(vm) or vm in RESERVED:
         raise Denied("invalid VM name: %s" % vm)
-    if not vm_exists(vm) and registry_read(vm) is None:
-        raise Denied("no VM named %s" % vm)
-    if owner_of(vm) != ctx["uid"]:
-        raise Denied("%s is not your VM" % vm)
+    if (not vm_exists(vm) and registry_read(vm) is None) or owner_of(vm) != ctx["uid"]:
+        raise Denied("you have no VM named %s" % vm)
     return vm
 
 
@@ -231,21 +263,23 @@ def new_vm_name(vm):
 
 
 CREATE_FLAGS = {"-f", "--force", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key",
-                "--json", "--wait"}
+                "--json", "--wait", "--uefi"}
+ISO_FLAGS = {"-f", "--force", "--json", "--wait", "--uefi"}
 
 
 def parse_create(ctx, args, iso_mode):
     out, vm, i = [], None, 0
-    cpus, memory, disk = 2, 2048, 30
+    cpus, memory, disk = 2, 2048, 20 if iso_mode else 30
+    disk_given = False
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
-        if a in CREATE_FLAGS:
+        if a in CREATE_FLAGS and (not iso_mode or a in ISO_FLAGS):
             out.append(a)
         elif opt in ("-m", "--memory"):
             v, i = take_value(args, i, opt)
-            if not v.isdigit() or not 256 <= int(v) <= 1048576:
-                raise Denied("--memory must be MB between 256 and 1048576")
+            if not v.isdigit() or not 512 <= int(v) <= 1048576:
+                raise Denied("--memory must be MB between 512 and 1048576")
             memory = int(v)
             out += ["-m", v]
         elif opt in ("-c", "--cpus"):
@@ -258,9 +292,11 @@ def parse_create(ctx, args, iso_mode):
             v, i = take_value(args, i, opt)
             if not SIZE.match(v):
                 raise Denied("--disk must look like 30G")
-            disk = size_gb(v, 30)
-            out += ["-d", v]
-        elif opt in ("-u", "--username") and not iso_mode:
+            if v.upper().endswith("T") and int(v[:-1]) > 10:
+                raise Denied("--disk is at most 10T")
+            disk, disk_given = size_gb(v, disk), True
+            out += ["-d", v.upper()]
+        elif opt in ("-u", "--username"):
             v, i = take_value(args, i, opt)
             if not USERNAME.match(v):
                 raise Denied("invalid --username")
@@ -289,7 +325,7 @@ def parse_create(ctx, args, iso_mode):
             v, i = take_value(args, i, opt)
             if v.startswith("fd:"):
                 ctx["iso_fd"] = fd_ref(ctx, v)
-            elif not re.match(r"^[1-9]$", v):
+            elif not re.match(r"^[1-9]\Z", v):
                 raise Denied("--os must be 1-9, or an ISO file")
             else:
                 out += ["-o", v]
@@ -309,7 +345,7 @@ def parse_create(ctx, args, iso_mode):
                 raise Denied("invalid --os-variant")
             out += ["--os-variant", v]
         elif a.startswith("-"):
-            raise Denied("option not allowed: %s" % opt)
+            raise Denied("option not allowed: %s" % redact([opt])[0])
         elif vm is None:
             vm = new_vm_name(a)
         else:
@@ -319,6 +355,8 @@ def parse_create(ctx, args, iso_mode):
         raise Denied("VM name required")
     if ctx.get("iso_fd") is not None:
         out = (["--iso"] if iso_mode else ["-o"]) + ["@ISO@"] + out
+        if not disk_given:
+            disk = 20
     check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
     ctx.update(vm=vm, new_vm=True, mutating=True, quota=(cpus, memory, disk))
     return [vm] + out
@@ -335,6 +373,11 @@ def fd_ref(ctx, value):
 def decide_user(ctx, argv):
     if not argv:
         raise Denied("no command")
+    for a in argv:
+        if a == "--":
+            break
+        if a in ("-h", "--help"):
+            raise Denied("help is shown by your dcvm command itself: dcvm %s --help" % argv[0])
     cmd, args = argv[0], argv[1:]
     json_flag = [a for a in args if a == "--json"]
     plain = [a for a in args if a != "--json"]
@@ -347,7 +390,7 @@ def decide_user(ctx, argv):
         return argv
     if cmd == "info" and len(plain) == 1:
         own_vm(ctx, plain[0])
-        return argv
+        return [cmd] + plain + json_flag
     if cmd in ("start", "stop", "restart"):
         if len(plain) > 1:
             raise Denied("%s takes one VM" % cmd)
@@ -382,11 +425,13 @@ def decide_user(ctx, argv):
     if cmd in ("protect", "unprotect") and len(plain) == 1:
         own_vm(ctx, plain[0])
         ctx.update(vm=plain[0], mutating=True)
-        return argv
-    if cmd == "fix-lock" and len(plain) == 1 and not plain[0].startswith("-"):
-        own_vm(ctx, plain[0])
-        ctx.update(vm=plain[0], mutating=True)
-        return argv
+        return [cmd] + plain
+    if cmd == "fix-lock":
+        rest = [a for a in plain if a != "--verbose"]
+        if len(rest) == 1 and not rest[0].startswith("-"):
+            own_vm(ctx, rest[0])
+            ctx.update(vm=rest[0], mutating=True)
+            return [cmd] + rest + (["--verbose"] if len(rest) < len(plain) else [])
     if cmd == "template" and plain[:1] in (["list"], ["status"], []):
         return argv
     if cmd == "network" and plain[:2] == ["ports", "show"] and len(plain) == 2:
@@ -420,14 +465,27 @@ def decide_backup(ctx, args):
         if rest:
             check_backup_vm(ctx, rest[0])
         return ["backup", "list"] + rest
-    if sub == "delete" and len(rest) == 2:
-        check_backup_vm(ctx, rest[0])
-        if not BACKUP_ID.match(rest[1]) or rest[1] == "latest":
-            raise Denied("delete takes a backup id")
-        ctx.update(vm=rest[0], mutating=True)
-        return ["backup", "delete", rest[0], rest[1]]
+    if sub == "delete" and len(rest) in (1, 2):
+        day = r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]+|[0-9]{2}:[0-9]{2}:[0-9]{2}))?"
+        if len(rest) == 1:
+            # The module takes one <vm>-<id> argument and splits it with the same greedy regex.
+            m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
+            if not m:
+                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+            vm, bid = m.group(1), m.group(2)
+        else:
+            vm, bid = rest[0], strip_vm(rest[0], rest[1])
+            t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
+            if t:
+                bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
+            if not re.match(r"^%s\Z" % day, bid):
+                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+        check_backup_vm(ctx, vm)
+        ctx.update(vm=vm, mutating=True)
+        return ["backup", "delete", "%s-%s" % (vm, bid)]
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
+        rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
         if len(rest) >= 2 and not BACKUP_ID.match(rest[1]):
             raise Denied("invalid backup id")
         if len(rest) == 3:
@@ -442,20 +500,26 @@ def decide_backup(ctx, args):
         return ["backup", "restore"] + rest
     if sub == "export" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
+        rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
         if len(rest) >= 2 and not rest[1].startswith("fd:") and not BACKUP_ID.match(rest[1]):
             raise Denied("invalid backup id")
-        if not rest[-1].startswith("fd:"):
+        if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
         ctx["export_fd"] = fd_ref(ctx, rest[-1])
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")]
     raise Denied("'backup %s' needs a dcvm admin" % sub)
 
 
+def strip_vm(vm, bid):
+    return bid[len(vm) + 1:] if bid.startswith(vm + "-") else bid
+
+
 def check_backup_vm(ctx, vm):
     if not NAME.match(vm) or vm in RESERVED:
         raise Denied("invalid VM name: %s" % vm)
     base = read_config()["DATACENTER_BASE"]
-    folders = [f for f in os.listdir(os.path.join(base, "backups")) if f.startswith(vm + "-")] if os.path.isdir(os.path.join(base, "backups")) else []
+    own = re.compile(re.escape(vm) + r"-[0-9]{8}_[0-9]{6}\Z")
+    folders = [f for f in os.listdir(os.path.join(base, "backups")) if own.match(f)] if os.path.isdir(os.path.join(base, "backups")) else []
     for f in folders:
         try:
             with open(os.path.join(base, "backups", f, "owner")) as fh:
@@ -491,7 +555,9 @@ def module_env(ctx, req):
     env["DCVM_CALLER_UID"] = str(ctx["uid"])
     env["DCVM_CALLER_USER"] = ctx["user"]
     env["DCVM_CALLER_ROLE"] = ctx["role"]
-    env["DCVM_ORIGIN"] = "terminal" if req.get("origin") == "terminal" else "agent"
+    env["DCVM_ORIGIN"] = ctx["origin"]
+    if ctx.get("quota_left"):
+        env["DCVM_QUOTA_LEFT"] = ctx["quota_left"]
     return env
 
 
@@ -503,17 +569,32 @@ def stage_iso(ctx, fd, vm):
         raise Denied("the ISO is larger than 16 GB")
     base = read_config()["DATACENTER_BASE"]
     vm_dir = os.path.join(base, "vms", vm)
+    # Users' names were checked when reserved; anyone else must not stage into (or later remove) a folder in use.
+    if not ctx.get("reserved") and (vm_exists(vm) or os.path.lexists(vm_dir)):
+        raise Denied("VM %s already exists (or %s is left over)" % (vm, vm_dir))
+    fs = os.statvfs(base)
+    if fs.f_bavail * fs.f_frsize < st.st_size + 2 * 1024 ** 3:
+        raise Denied("not enough free space in %s for the ISO (and 2 GB to spare); ask an admin" % base)
+    vm_dir = os.path.join(base, "vms", vm)
     os.makedirs(vm_dir, mode=0o711, exist_ok=True)
     os.chmod(vm_dir, 0o711)
     dest = os.path.join(vm_dir, "installer.iso")
     out = os.open(dest + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
         os.lseek(fd, 0, os.SEEK_SET)
+        copied = 0
         while True:
             chunk = os.read(fd, 4 * 1024 * 1024)
             if not chunk:
                 break
+            copied += len(chunk)
+            # The caller's file may grow after the size check.
+            if copied > st.st_size:
+                raise Denied("the ISO changed while it was being copied")
             os.write(out, chunk)
+    except BaseException:
+        os.unlink(dest + ".part")
+        raise
     finally:
         os.close(out)
     os.replace(dest + ".part", dest)
@@ -524,11 +605,11 @@ def stage_iso(ctx, fd, vm):
 def audit(ctx, argv, decision, rc=None, reason=None, started=None):
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "uid": ctx.get("uid"), "user": ctx.get("user"),
            "role": ctx.get("role"), "origin": ctx.get("origin"), "pid": ctx.get("pid"),
-           "argv": argv, "decision": decision}
+           "argv": redact(argv) if isinstance(argv, list) else "<malformed>", "decision": decision}
     if rc is not None:
         rec["exit"] = rc
     if reason:
-        rec["reason"] = reason
+        rec["reason"] = redact_text(reason, argv) if isinstance(argv, list) else reason
     if started:
         rec["seconds"] = round(time.time() - started, 1)
     line = json.dumps(rec, ensure_ascii=True)
@@ -654,7 +735,6 @@ def handle(conn):
         pid, uid, _gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
         ctx.update(uid=uid, pid=pid, user=user_name(uid), role=role_of(uid))
         req, files = recv_request(conn)
-        ctx["origin"] = "terminal" if req.get("origin") == "terminal" else "agent"
         if len(files) > MAX_FDS:
             raise Denied("too many files passed")
         fdmap = {}
@@ -663,6 +743,9 @@ def handle(conn):
             if isinstance(i, int) and 0 <= i < len(files):
                 fdmap[name] = files[i]
         ctx["files"] = {i: fd for i, fd in enumerate(files)}
+        # A client may say "agent" on a terminal, never "terminal" without one.
+        ttys = all(fdmap.get(n) is not None and os.isatty(fdmap[n]) for n in ("stdin", "stdout"))
+        ctx["origin"] = "terminal" if req.get("origin") == "terminal" and ttys else "agent"
         argv = req.get("argv")
         if not isinstance(argv, list) or not all(isinstance(a, str) and len(a) <= 4096 for a in argv) or len(argv) > 64:
             raise Denied("malformed request")
@@ -676,10 +759,10 @@ def handle(conn):
         audit(ctx, argv, "allow", rc=rc, started=started)
         send(conn, {"exit": rc})
     except Denied as e:
-        say(fdmap_get(req, files, "stderr"), str(e))
+        say(fdmap_get(req, files, "stderr"), redact_text(str(e), argv) if isinstance(argv, list) else str(e))
         audit(ctx, argv, "deny", reason=str(e), started=started)
         send(conn, {"exit": 77, "error": str(e)})
-    except (ValueError, OSError, socket.timeout) as e:
+    except Exception as e:
         audit(ctx, argv, "error", reason=str(e), started=started)
         send(conn, {"exit": 70, "error": "dcvm server: %s" % e})
 
@@ -722,9 +805,13 @@ def execute(ctx, conn, argv, req, fds):
             held.append(lock("vm-" + vm))
         if ctx.get("new_vm") and vm and ctx["role"] == "user":
             held.append(lock("global"))
-            if vm_exists(vm) or registry_read(vm) is not None:
+            vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
+            if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
                 raise Denied("the name %s is taken" % vm)
+            # Nothing was there, so whatever a failed run leaves in it is ours to remove.
+            ctx["staged_dir"] = vm_dir
             cpus, memory, disk = ctx["quota"]
+            ctx["quota_left"] = check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
             registry_write(vm, {"owner_uid": ctx["uid"], "owner": ctx["user"], "state": "creating",
                                 "cpus": cpus, "memory_mb": memory, "disk_gb": disk, "created": int(time.time())})
             os.close(held.pop())
@@ -744,6 +831,8 @@ def execute(ctx, conn, argv, req, fds):
         finally:
             if rc is None and ctx.get("reserved"):
                 release_reservation(ctx, vm)
+        if rc != 0 and ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
+            subprocess.run(["rm", "-rf", "--", ctx["staged_dir"]])
         if ctx.get("reserved"):
             entry = registry_read(vm) or {}
             if rc != 0 and not vm_exists(vm):
@@ -776,7 +865,7 @@ def write_pubkey(ctx, req):
     if not isinstance(key, str) or not key.strip():
         return
     key = key.strip().splitlines()[0]
-    if len(key) > 16384 or not re.match(r"^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( [^\x00-\x1f]*)?$", key):
+    if len(key) > 16384 or not re.match(r"^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( [^\x00-\x1f]*)?\Z", key):
         raise Denied("your SSH public key is not in a format dcvm accepts")
     os.makedirs(os.path.join(RUN, "keys"), mode=0o700, exist_ok=True)
     path = os.path.join(RUN, "keys", "%d-%d.pub" % (ctx["uid"], os.getpid()))

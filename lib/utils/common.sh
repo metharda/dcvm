@@ -28,8 +28,8 @@ ui_quiet() { [ "${DCVM_VERBOSE:-0}" = 1 ] || UI_QUIET=true; }
 
 print_info() { [ "$UI_QUIET" = true ] || echo -e "${BLUE}${SYM_INFO}${NC} $1"; }
 print_success() { [ "$UI_QUIET" = true ] || echo -e "${GREEN}${SYM_OK}${NC} $1"; }
-print_warning() { echo -e "${YELLOW}${SYM_WARN}${NC} $1"; }
-print_error() { echo -e "${RED}${SYM_FAIL} error:${NC} $1"; }
+print_warning() { echo -e "${YELLOW}${SYM_WARN}${NC} $1" >&2; }
+print_error() { echo -e "${RED}${SYM_FAIL} error:${NC} $1" >&2; }
 
 ui_title() {
   echo ""
@@ -105,7 +105,8 @@ ui_bar() {
 }
 
 ui_watch() {
-  local _w_pid=$1 _w_tick=$2 _w_rc=0
+  local _w_pid=$1 _w_tick=$2 _w_rc=0 _w_traps
+  _w_traps=$(trap -p INT TERM)
   trap 'ui_spin_clear; printf "\033[?25h" >&2; pkill -P "$_w_pid" 2>/dev/null; kill "$_w_pid" 2>/dev/null; exit 130' INT TERM
   printf '\033[?25l' >&2
   while kill -0 "$_w_pid" 2>/dev/null; do
@@ -115,7 +116,9 @@ ui_watch() {
   wait "$_w_pid" || _w_rc=$?
   ui_spin_clear
   printf '\033[?25h' >&2
+  # Put back the caller's handlers (custom-iso's undo relies on its own).
   trap - INT TERM
+  eval "$_w_traps"
   return "$_w_rc"
 }
 
@@ -637,6 +640,8 @@ legacy_references() {
 
 prune_builds() {
   local b used
+  # ponytail: builds staged by a restore in flight aren't counted, so only root and admins prune; add a build lock if that races.
+  [ "$(caller_role)" = user ] && return 0
   legacy_references && return 0
   used=$({
     vm_disks | cut -f3
@@ -1122,11 +1127,17 @@ get_vm_mac() {
 get_vm_disk_path() {
   local vm_name="$1"
   local disk_path=""
-  disk_path=$(virsh domblklist "$vm_name" 2>/dev/null | grep -v "Target" | grep -v "^$" | awk '{print $2}' | head -1)
-  if [ -z "$disk_path" ]; then
-    disk_path=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -oP "source file='\K[^']+(?=')" | head -1)
-  fi
+  # Disks only: an attached ISO is never "the VM's disk" to back up or delete.
+  disk_path=$(virsh domblklist "$vm_name" --details 2>/dev/null | awk '$2 == "disk" { sub(/^ *[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print; exit }')
   echo "$disk_path"
+}
+
+vm_login() {
+  local login
+  login=$(registry_get "$1" user)
+  # Without cloud-init (an ISO install) dcvm can't know the user; get_vm_username would guess "admin".
+  [ -n "$login" ] || [ ! -f "${DATACENTER_BASE:-/srv/datacenter}/vms/$1/cloud-init/user-data" ] || login=$(get_vm_username "$1")
+  echo "$login"
 }
 
 get_vm_username() {
@@ -1170,7 +1181,7 @@ read_password() {
   local var_name="$2"
   local password=""
   echo -n "$prompt"
-  IFS= read -rs password
+  IFS= read -rs password || no_input
   echo
   printf -v "$var_name" '%s' "$password"
 }
@@ -1219,7 +1230,7 @@ backup_file() {
 
 confirm_action() {
   local default="${2:-n}" answer
-  read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=""
+  read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=n
   [[ "${answer:-$default}" =~ ^[Yy] ]] && return 0
   echo "  Cancelled."
   return 1
@@ -1306,6 +1317,65 @@ read_dcvm_secrets() {
   unset DCVM_SECRETS_FD
 }
 
+# The server passes what is left of a user's quota; prompts and backups can ask for more than it charged.
+within_quota() {
+  [ -n "${DCVM_QUOTA_LEFT:-}" ] || return 0
+  local c m d
+  read -r c m d <<<"$DCVM_QUOTA_LEFT"
+  if [ "$1" -gt "$c" ] || [ "$2" -gt "$m" ] || [ "$3" -gt "$d" ]; then
+    print_error "Over your quota: this VM needs $1 vCPU, $2 MB, $3 GB; you have $c vCPU, $m MB, $d GB left"
+    return 1
+  fi
+}
+
+# Another VM's lease or static record: forwarding to it would reach that VM.
+ip_held_by_other_vm() {
+  local ip="$1" vm="$2" mac f
+  mac=$(get_vm_mac "$vm" 2>/dev/null)
+  virsh net-dhcp-leases "${NETWORK_NAME:-datacenter-net}" 2>/dev/null |
+    awk -v ip="$ip/" -v mac="${mac,,}" 'index($5, ip) == 1 && tolower($3) != mac { f = 1 } END { exit !f }' && return 0
+  for f in "${DATACENTER_BASE:-/srv/datacenter}"/config/network/*.conf; do
+    [ -f "$f" ] && [ "${f##*/}" != "$vm.conf" ] && grep -qE "^IP=\"?${ip//./\\.}\"?$" "$f" && return 0
+  done
+  return 1
+}
+
+# `shift 2` fails without shifting when the value is missing; looping on it never ends.
+wants_help() {
+  local a
+  for a in "$@"; do
+    case "$a" in -h | --help) return 0 ;; esac
+  done
+  return 1
+}
+
+need_value() {
+  print_error "$1 needs a value"
+  exit 1
+}
+
+no_input() {
+  print_error "No answer (end of input): run it in a terminal, or give the answer as an option (see --help)"
+  exit 1
+}
+
+claim_static_ip() {
+  local vm="$1" ip="$2"
+  validate_ip_in_subnet "$ip" || return 1
+  if ip_held_by_other_vm "$ip" "$vm"; then
+    print_error "$ip is already used by another VM"
+    return 1
+  fi
+}
+
+# Only once the VM is defined: a record left by a cancelled create would hold the address forever.
+save_static_ip() {
+  local vm="$1" ip="$2"
+  mkdir -p "$DATACENTER_BASE/config/network" &&
+    printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$DATACENTER_BASE/config/network/$vm.conf"
+}
+
 size_gb() {
   local v="${1^^}"
   [[ "$v" =~ ^[0-9]+[MGT]?$ ]] || {
@@ -1385,12 +1455,12 @@ cleanup_port_forwarding_for_vm() {
     iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
   else
     print_info "Searching and removing all rules with IP $vm_ip"
-    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
+    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $nat_rules; do
       iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
     done
 
-    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep "$vm_ip" | awk '{print $1}' | tac)
+    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $forward_rules; do
       iptables -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
     done
@@ -1609,6 +1679,8 @@ cleanup_dhcp_lease() {
 
 cleanup_dhcp_lease_unlocked() {
   local mac="${1,,}" host="${2,,}"
+  # The guest picks its own DHCP hostname; with a MAC, a hostname match could free another VM's lease.
+  [ -n "$mac" ] && host=""
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   local tmp matches lmac ip n rc=0
 
@@ -1678,7 +1750,7 @@ interactive_prompt_memory_common() {
   local result=""
 
   while true; do
-    read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " result
+    read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " result || no_input
     result=${result:-2048}
     if [[ ! "$result" =~ ^[0-9]+$ ]]; then
       print_error "Memory must be a number"
@@ -1690,7 +1762,7 @@ interactive_prompt_memory_common() {
     fi
     if [ "$result" -gt "$max_mem" ]; then
       print_warning "Requested ${result}MB exceeds recommended ${max_mem}MB"
-      read -p "Continue anyway? (y/N): " cont
+      read -p "Continue anyway? (y/N): " cont || no_input
       [[ ! "$cont" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -1705,7 +1777,7 @@ interactive_prompt_cpus_common() {
   local result=""
 
   while true; do
-    read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " result
+    read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " result || no_input
     result=${result:-2}
     if [[ ! "$result" =~ ^[0-9]+$ ]]; then
       print_error "CPU count must be a number"
@@ -1717,7 +1789,7 @@ interactive_prompt_cpus_common() {
     fi
     if [ "$result" -gt "$max_cpus" ]; then
       print_warning "Requested ${result} CPUs exceeds recommended ${max_cpus}"
-      read -p "Continue anyway? (y/N): " cont
+      read -p "Continue anyway? (y/N): " cont || no_input
       [[ ! "$cont" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -1730,7 +1802,7 @@ interactive_prompt_disk_common() {
   local result=""
 
   while true; do
-    read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " result
+    read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " result || no_input
     result=${result:-20G}
     result=${result^^}
     if [[ ! "$result" =~ ^[0-9]+[GMT]$ ]]; then
@@ -1829,7 +1901,7 @@ interactive_prompt_static_ip_common() {
   echo ""
 
   while true; do
-    read -p "Use static IP? (y/N, default: DHCP): " use_static
+    read -p "Use static IP? (y/N, default: DHCP): " use_static || no_input
     use_static=${use_static:-n}
 
     if [[ "$use_static" =~ ^[Nn]$ ]]; then
@@ -1838,7 +1910,7 @@ interactive_prompt_static_ip_common() {
       break
     elif [[ "$use_static" =~ ^[Yy]$ ]]; then
       while true; do
-        read -p "Enter static IP (e.g., ${subnet}.50): " result
+        read -p "Enter static IP (e.g., ${subnet}.50): " result || no_input
         if [ -z "$result" ]; then
           print_error "IP address cannot be empty"
           continue

@@ -20,14 +20,25 @@ Examples:
 EOF
 }
 
-VM_IP="" VM_USER="" VM_ALIAS=""
+VM_IP="" VM_USER="" VM_ALIAS="" VM_STATE=""
 resolve_vm() {
   local info
   info=$("$(command -v dcvm || echo "$SCRIPT_DIR/../../dcvm")" info "$1" --json) || exit 1
-  read -r VM_IP VM_USER VM_ALIAS < <(python3 -I -S -c '
+  read -r VM_IP VM_USER VM_ALIAS VM_STATE < <(python3 -I -S -c '
 import json, sys
 i = json.loads(sys.stdin.read())
-print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i.get("created") or 0))' <<<"$info")
+print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i.get("created") or 0), (i.get("state") or "-").replace(" ", "_"))' <<<"$info")
+  if [ "$VM_STATE" = shut_off ]; then
+    print_error "$1 is shut off; start it first: dcvm start $1"
+    exit 1
+  elif [ "$VM_STATE" != running ]; then
+    print_error "$1 is ${VM_STATE//_/ }, not running (dcvm info $1)"
+    exit 1
+  fi
+  if [ "$VM_USER" = - ]; then
+    print_error "dcvm doesn't know $1's login user (an ISO install, or a VM without its cloud-init files); use ssh yourself"
+    exit 1
+  fi
   if [ "$VM_IP" = - ]; then
     print_error "$1 has no address yet; wait for it to boot (dcvm info $1)"
     exit 1
@@ -41,16 +52,26 @@ ssh_opts() {
 }
 
 main() {
-  local cmd="${1:-}"
+  local cmd="${1:-}" a
   shift || true
+  # Help anywhere before "--"; after it, --help belongs to the remote command.
+  for a in "$@"; do
+    [ "$a" = -- ] && break
+    case "$a" in -h | --help)
+      usage
+      return 0
+      ;;
+    esac
+  done
   case "$cmd" in
   ssh | exec)
     local vm="${1:-}"
-    [ -n "$vm" ] && [ "$vm" != --help ] || {
+    case "$vm" in "" | -h | --help)
       usage
       [ -n "$vm" ]
       return
-    }
+      ;;
+    esac
     shift
     [ "${1:-}" = -- ] && shift
     if [ "$cmd" = exec ] && [ $# -eq 0 ]; then
@@ -63,9 +84,14 @@ main() {
     if [ "$cmd" = exec ]; then
       exec ssh "${opts[@]}" -o BatchMode=yes -T "$VM_USER@$VM_IP" "$@"
     fi
-    exec ssh "${opts[@]}" -t "$VM_USER@$VM_IP" "$@"
+    exec ssh "${opts[@]}" "$([ -t 0 ] && echo -t || echo -T)" "$VM_USER@$VM_IP" "$@"
     ;;
   cp)
+    case "${1:-}" in -h | --help)
+      usage
+      return 0
+      ;;
+    esac
     [ $# -eq 2 ] || {
       usage
       return 1
@@ -78,7 +104,7 @@ main() {
     fi
     if [[ "$dst" == *:* && "$dst" != /* && "$dst" != .* ]]; then
       [ -n "$vm" ] && {
-        print_error "Copy between your machine and one VM"
+        print_error "dcvm cp copies between this machine and one VM, not from VM to VM"
         return 1
       }
       vm=${dst%%:*}

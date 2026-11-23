@@ -10,7 +10,7 @@ elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
   source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
 fi
 
-load_dcvm_config
+[ "${1:-}" = help ] || wants_help "$@" || load_dcvm_config
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -81,6 +81,10 @@ get_backup_disk_path() {
   local date_part="$2"
   local folder
   folder=$(get_backup_folder_path "$vm_name" "$date_part")
+  backup_visible "$folder" || {
+    echo ""
+    return 1
+  }
   if [ -d "$folder" ]; then
     if [ -f "$folder/${vm_name}-disk-${date_part}.qcow2.gz" ]; then
       echo "$folder/${vm_name}-disk-${date_part}.qcow2.gz"
@@ -108,6 +112,10 @@ get_backup_config_path() {
   local date_part="$2"
   local folder
   folder=$(get_backup_folder_path "$vm_name" "$date_part")
+  backup_visible "$folder" || {
+    echo ""
+    return 1
+  }
   if [ -d "$folder" ] && [ -f "$folder/${vm_name}-config-${date_part}.xml" ]; then
     echo "$folder/${vm_name}-config-${date_part}.xml"
     return 0
@@ -398,7 +406,7 @@ delete_backups() {
       print_warning "No backups to delete for VM: $vm_name"
       return 0
     fi
-    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection
+    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection || no_input
     selection=$(echo "$selection" | tr -d ' ')
     if [ -z "$selection" ]; then
       echo "  Cancelled."
@@ -452,6 +460,7 @@ delete_backups() {
     local MM=$(echo "$hms" | cut -d':' -f2)
     local SS=$(echo "$hms" | cut -d':' -f3)
     resolved_ts="${yyyymmdd}_${HH}${MM}${SS}"
+    backup_visible "$(get_backup_folder_path "$vm_name" "$resolved_ts")" || resolved_ts=""
   elif [ -n "$indexN" ]; then
     local selector="${dd}.${mm}.${yyyy}-${indexN}"
     resolved_ts=$(resolve_backup_selector "$vm_name" "$selector") || true
@@ -655,6 +664,7 @@ export_backup() {
     print_error "Failed to copy config backup"
     return 1
   }
+  [ -f "$(dirname "$config_backup")/login" ] && cp "$(dirname "$config_backup")/login" "$tmpdir/login"
 
   local work_disk="$tmpdir/$(basename "$disk_backup")"
   local ssh_cleaned=false
@@ -821,6 +831,8 @@ import_backup() {
     return 1
   }
   caller_uid >"$backup_folder/owner"
+  local login
+  [ -f "$workdir/login" ] && login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$workdir/login") && echo "$login" >"$backup_folder/login"
   [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
 
   rm -rf "$workdir"
@@ -938,6 +950,7 @@ backup_vm() {
 
   write_base_record "$vm_disk_path" "$backup_folder_path"
   vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
+  vm_login "$vm_name" >"$backup_folder_path/login"
   if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
     ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
@@ -1219,13 +1232,17 @@ restore_vm() {
   local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
   rm -f "$staged"
   if check_vm_exists "$vm_name"; then
+    if [ "$(registry_get "$vm_name" protected)" = 1 ]; then
+      print_error "$vm_name is protected: dcvm unprotect $vm_name first"
+      return 1
+    fi
     local vm_state=$(get_vm_state "$vm_name")
     print_warning "VM '$vm_name' already exists (state: $vm_state)"
 
     if [ "$force_restore" != "true" ]; then
       print_warning "This will COMPLETELY REPLACE the existing VM!"
       print_warning "All current data in the VM will be LOST!"
-      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
+      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm || no_input
       echo ""
 
       if [ "$confirm" != "yes" ]; then
@@ -1250,7 +1267,7 @@ restore_vm() {
     fi
 
     print_info "Removing existing VM definition (keeping storage)..."
-    virsh undefine "$vm_name" >/dev/null 2>&1 || true
+    virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
 
     print_info "Running fix-lock.sh for comprehensive cleanup..."
     if [ -x "$FIX_LOCK_SCRIPT" ]; then
@@ -1348,6 +1365,21 @@ restore_vm() {
     return 1
   fi
 
+  local cpus mem_kib disk_bytes mem_mb disk_gb
+  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
+  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
+  disk_bytes=$(qemu-img info -U --output=json "$vm_disk_path" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
+  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
+  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
+    print_error "Could not read the backup's size to check your quota"
+    rm -f "$temp_config"
+    return 1
+  fi
+  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
+    rm -f "$temp_config"
+    return 1
+  fi
+
   if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
@@ -1357,7 +1389,15 @@ restore_vm() {
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
       ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
-      [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name" "user=$(get_vm_username "$vm_name")"
+      [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name"
+      local login_file login
+      login_file="$(dirname "$config_backup")/login"
+      if [ "$(dirname "$config_backup")" != "$BACKUP_DIR" ] && [ -f "$login_file" ]; then
+        login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$login_file")
+      else
+        login=$(vm_login "$vm_name")
+      fi
+      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi
@@ -1522,7 +1562,7 @@ restore_vm() {
   if [ "$from_import" = "true" ] && [ -n "$static_ip_copy" ]; then
     echo "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
   elif [ "$from_import" = "true" ]; then
-    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh
+    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh || setup_ssh=n
     setup_ssh=${setup_ssh:-y}
     if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
       ssh_setup_vm "$vm_name"
@@ -1559,7 +1599,7 @@ ssh_setup_vm() {
   fi
 
   ui_title "SSH key for $vm_name" "copies this host's public key with ssh-copy-id"
-  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user
+  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user || no_input
   target_user=${target_user:-root}
 
   if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
@@ -1755,7 +1795,7 @@ main() {
     exit 0
   fi
 
-  if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
+  if [[ "$1" == "help" ]] || wants_help "$@"; then
     show_help
     exit 0
   fi

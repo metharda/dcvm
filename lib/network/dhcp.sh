@@ -42,7 +42,8 @@ clear_lease_by_mac() {
 
 clear_all_leases() {
   if [ -t 0 ]; then
-    confirm_action "Release every DHCP lease on $NETWORK_NAME and restart it?" || return 0
+    # Declining must stop renew too, which carries on after this returns 0.
+    confirm_action "Release every DHCP lease on $NETWORK_NAME and restart it?" || return 1
   else
     print_error "Cannot prompt for confirmation: stdin is not a terminal (non-interactive mode)"
     return 1
@@ -252,6 +253,11 @@ EOF
 }
 
 main() {
+  case "${1:-}" in help | --help | -h)
+    dhcp_help
+    exit 0
+    ;;
+  esac
   load_dcvm_config
   require_root
   check_dependencies virsh

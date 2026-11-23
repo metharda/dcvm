@@ -17,7 +17,22 @@ if [ ! -f "$LIB_DIR/utils/common.sh" ]; then
 fi
 source "$LIB_DIR/utils/common.sh"
 
-if [ "$(id -u)" -ne 0 ]; then
+# A help flag anywhere shows only help: other arguments must never run an action.
+DCVM_HELP=false
+case "${1:-}" in
+"" | help | -h | --help | version | -v | --version | ssh | exec | cp) ;;
+*)
+  if wants_help "${@:2}"; then
+    DCVM_HELP=true
+    case "$1:${2:-}" in
+    network:ports | network:dhcp | network:vnc) set -- network "$2" --help ;;
+    *) set -- "$1" --help ;;
+    esac
+  fi
+  ;;
+esac
+
+if [ "$(id -u)" -ne 0 ] && [ "$DCVM_HELP" = false ]; then
   case "${1:-}" in
   "" | help | -h | --help | version | -v | --version | ssh | exec | cp) ;;
   *) exec python3 -I -S "$LIB_DIR/server/dcvm-client.py" "$@" ;;
@@ -38,18 +53,19 @@ Usage: dcvm <command> [args]       dcvm <command> --help for its options
 
 VMs:
   create <name> [options]       Create a VM from a cloud image (or an ISO with -o)
+  create-iso <name> --iso <f>   Create a VM that boots an installer ISO
   list                          VMs with state, IP, vCPU and memory
   status                        The same, plus the network and port forwards
-  start | stop | restart [vm]   One VM, or every dcvm VM
+  start | stop | restart [vm]   One VM, or every dcvm VM without a name
   console [vm]                  Serial console of a VM; without a name, access hints
-  delete <vm> | --all           Delete a VM with its disk, leases and forwards
+  delete <vm> | --all           Delete a VM with its disk, leases and forwards (backups stay)
   info <vm> [--json]            State, IP, login user, owner of one VM
   ssh | exec | cp               Use a VM over SSH with your key (dcvm ssh --help)
   protect | unprotect <vm>      Refuse delete and restore until unprotected
 
 Network:
   network                       Network, DHCP leases, static IPs and port forwards
-  network ports <command>       Forward host ports to VMs: setup, show, test, apply, clear
+  network ports <command>       Forward host ports to VMs: add, remove, show, setup, test, apply, clear
   network dhcp <command>        DHCP leases: show, clear, cleanup, renew
   network vnc <action> <vm>     VNC on a VM: enable, disable, status
 
@@ -67,6 +83,7 @@ System:
   whoami                        Your dcvm user and role
   uninstall                     Remove dcvm, its VMs and data
   version                       Show the version
+  help agents                   A short guide for AI agents using dcvm
 
 Examples:
   dcvm create web -f -p "\$VM_PASSWORD"

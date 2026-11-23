@@ -50,10 +50,11 @@ The VM's `cloud-init/` folder is created with mode 700 (root only).
 `cloud-init.iso`, built from it, stays in the VM folder because QEMU has to
 read it; it contains the same `user-data`.
 
-**SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the host root
-user's `~/.ssh/id_rsa.pub` to the VM user's `authorized_keys`, creating a
-4096-bit RSA key pair without a passphrase first if there is none. Anyone who
-can use that private key can log in to every dcvm VM on the host.
+**SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the creator's
+public key to the VM user's `authorized_keys`: for root, `~/.ssh/id_rsa.pub`
+(a 4096-bit RSA key pair without a passphrase is created first if there is
+none); for a user, their own key, created as ed25519 if they have none.
+Anyone who can use root's private key can log in to every VM root created.
 
 ## Guest defaults
 
@@ -116,7 +117,7 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
   or `<file>.SHA256`, looked up on the mirror it came from and on the other
   mirrors that serve the same file name (the official servers publish them
-  for all eight images). A download that matches no published checksum is
+  for all nine images). A download that matches no published checksum is
   discarded and the next mirror is tried. If no mirror publishes a checksum,
   dcvm keeps the file and prints `download not verified`. GPG signatures are
   not checked, so a checksum file only proves the download is intact and is
@@ -201,7 +202,10 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
 - **Audit.** Every request is logged with its caller and decision
   (`/var/log/dcvm/audit.log`).
 - **What still connects users:** VMs share one bridge and can reach each
-  other, and the optional NFS share is one folder for every VM. Don't enable
+  other, and a guest can set any address on it, including another VM's.
+  dcvm refuses a static `--ip` or a port forward to an address another VM
+  holds, but it can't stop a guest's own network settings. The optional NFS
+  share is one folder for every VM. Don't enable
   the share on a host whose users don't trust each other. `dcvm-admin` is
   root-equivalent by design; so are the `libvirt`, `disk` and `docker` groups,
   which `dcvm doctor` warns about.

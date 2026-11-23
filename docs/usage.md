@@ -40,14 +40,14 @@ or an agent run by a user), dcvm never asks: a missing value is an error that
 names the option, and the password can come from `DCVM_PASSWORD`.
 
 ```bash
-dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH answers
+dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH accepts connections
 ```
 
 - `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
   minutes by `dcvm-reaper.timer`).
 - `--wait` returns only once the VM answers on SSH.
-- `--json` prints one JSON object on stdout (`name`, `state`, `ip`, `user`,
-  `expires`); progress goes to stderr.
+- `--json` prints one JSON object per VM on stdout (`name`, `state`, `ip`,
+  `user`, `expires`, `ready`); progress goes to stderr.
 
 #### Custom Configuration
 ```bash
@@ -68,7 +68,7 @@ dcvm create myvm \
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
 - `-d, --disk`: Disk size (default: 30G)
-- `-o, --os`: OS choice (1=Debian13, 2=Debian12, 3=Debian11, 4=Ubuntu24.04, 5=Ubuntu22.04, 6=Ubuntu20.04, 7=ArchLinux, 8=KaliLinux)
+- `-o, --os`: OS choice (1=Debian13, 2=Debian12, 3=Debian11, 4=Ubuntu24.04, 5=Ubuntu22.04, 6=Ubuntu20.04, 7=ArchLinux, 8=KaliLinux, 9=Fedora44)
 - `--ip`: Static IP address (e.g., 10.10.10.50) - uses DHCP if not specified
 
 Note about multiple VMs and `--ip`:
@@ -111,6 +111,11 @@ The wizard will prompt you for:
 - Boot order
 - Static IP (optional)
 
+The summary before "Create it?" shows the login user dcvm will use for
+`ssh`/`exec`/`cp`; the wizard doesn't ask for it, so pass `-u <user>` if the
+installed OS has one you want dcvm to use. `--uefi` and `--ttl` are options
+only.
+
 #### ISO Mode with Options
 ```bash
 dcvm create-iso archvm --iso /path/to/archlinux.iso \
@@ -119,30 +124,53 @@ dcvm create-iso archvm --iso /path/to/archlinux.iso \
   -d 50G \
   --graphics vnc \
   --os-variant archlinux \
-  --boot cdrom,hd
+  --uefi
 ```
 
 **ISO Options:**
-- `--iso, -o`: Path to installer ISO (required)
-- `-m, --memory`: Memory in MB
-- `-c, --cpus`: Number of CPUs
-- `-d, --disk`: Disk size (formats: 20G, 512M, 1T)
-- `--graphics`: vnc, spice, or none (default: vnc)
-- `--os-variant`: libosinfo variant (e.g., ubuntu22.04, win10, archlinux)
-- `--boot`: Boot order (default: cdrom,hd)
-- `--ip`: Static IP address (manual configuration required in VM)
-- `--copy-iso`: Copy ISO to VM directory
+- `--iso`: Path to installer ISO (`-o` on `dcvm create`; root is asked for it if missing)
+- `-m, --memory`: Memory in MB (default 2048)
+- `-c, --cpus`: Number of CPUs (default 2)
+- `-d, --disk`: Disk size, e.g. 20G (default 20G)
+- `--graphics`: vnc, spice, or none (default: vnc, on 127.0.0.1)
+- `--os-variant`: libosinfo variant (e.g., ubuntu24.04, win11, archlinux);
+  detected from the ISO when left out, generic if unknown. dcvm sets no disk
+  bus or network model: virt-install picks devices the OS variant has
+  drivers for (virtio for a recognized Linux, older emulated devices such as
+  IDE or SATA and e1000 for Windows or an unknown ISO)
+- `--boot`: Boot order (default: hd,cdrom)
+- `--uefi`: UEFI firmware instead of BIOS (needs OVMF: `ovmf`, or
+  `edk2-ovmf` on Fedora and Arch)
+- `--ip`: Static IP you set in the installer; refused if another VM has it
+- `-u, --username`: The login user the installed OS has, so `dcvm ssh`,
+  `exec` and `cp` work
+- `--ttl`, `--wait`, `--json`, `-f`: as for `dcvm create`. `-f` answers
+  every question with the defaults; `--wait` waits up to 30 minutes for SSH
+- `--copy-iso`: Copy ISO to VM directory (root; users' ISOs are always copied)
+
+**How the ISO boots:** the VM boots its disk first and falls back to the ISO
+while the disk is empty. The installer runs on first boot, and when it
+reboots, the VM keeps running and boots the installed OS. The ISO stays
+attached until the VM is deleted; backups and restored copies leave it out.
 
 **Connecting to Installer:**
 ```bash
-# Get VNC display port
-virsh vncdisplay myvm
-
-# Console (for --graphics none)
-dcvm console myvm
+dcvm network vnc status myvm   # VNC port (and password for users)
+dcvm console myvm              # for --graphics none, if the ISO uses a serial console
 ```
 
-**Note:** Force mode (-f) is not supported for ISO installations as they require interactive setup.
+**Unattended ISOs (agents):** an ISO that installs itself, such as an
+Ubuntu autoinstall or a custom image with SSH and your public key baked in,
+works without a terminal:
+
+```bash
+dcvm create-iso runner --iso ./runner.iso -u runner --uefi --ttl 4h --wait --json
+dcvm exec runner -- 'uname -a'
+```
+
+`-p`, `-k`, `-r`, `--enable-root` and `--tailscale-authkey` configure cloud
+images and are refused with an ISO. Secrets in the environment
+(`DCVM_PASSWORD` and the others) are ignored for an ISO create.
 
 ### Listing VMs
 
@@ -175,6 +203,9 @@ dcvm start myvm
 dcvm stop myvm
 ```
 
+`dcvm start`, `stop` and `restart` without a VM name act on every dcvm VM
+(for a user, every VM of theirs), without asking.
+
 ### Restarting a VM
 
 ```bash
@@ -203,7 +234,10 @@ dcvm delete --all    # every dcvm VM; asks you to type yes and a random number
 > [!WARNING]
 > `dcvm delete <vm>` does not ask for confirmation. It stops the VM and removes
 > its disk, cloud-init files, DHCP lease and reservation, port forwards and
-> static IP record. Backups are kept.
+> static IP record. Backups are kept. If libvirt refuses to remove the VM
+> (for example, because it has snapshots), the VM stays defined and stopped
+> with its disk, without its forwards and lease, and delete exits 1 with
+> libvirt's reason.
 
 ## Network Management
 
@@ -269,7 +303,7 @@ dcvm backup create myvm
 ```
 
 Shuts the VM down, copies its disk and configuration to
-`$DATACENTER_BASE/backups`, and starts it again. The 5 most recent backups of
+`$DATACENTER_BASE/backups`, and starts it again if it was running. The 5 most recent backups of
 each VM are kept.
 
 ### Restore a VM
@@ -381,8 +415,8 @@ sftp ubuntu@<vm-ip>
 If you enabled the NFS share when installing (the installer asks; the default
 is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. Every user
 of every VM reads and writes there as one unprivileged account (`dcvm-nfs`),
-so any VM can change or delete any file in it. On the host the folder is
-readable by root only. Read [Security](security.md#network-exposure) before
+so any VM can change or delete any file in it. On the host the folder
+belongs to `dcvm-nfs` with mode 700, so no other host user can read it. Read [Security](security.md#network-exposure) before
 enabling it.
 
 ```bash
@@ -422,6 +456,7 @@ Database server installed:
 | Ubuntu 20.04/22.04/24.04 | MySQL (`mysql-server`, service `mysql`) | `default-mysql-server` (MySQL, service `mysql`) |
 | Debian 11/12/13, Kali Linux | MariaDB (`mariadb-server`, service `mariadb`) | `default-mysql-server` (MariaDB, service `mariadb`) |
 | Arch Linux | MariaDB (`mariadb`, service `mariadb`) | MariaDB (`mariadb`, service `mariadb`) |
+| Fedora 44 | MariaDB (`mariadb-server`, service `mariadb`) | MariaDB (`mariadb-server`, service `mariadb`) |
 
 Database accounts:
 
@@ -614,7 +649,7 @@ dcvm uninstall
 > [!WARNING]
 > **Uninstalling DCVM is destructive and cannot be undone.** `dcvm uninstall` asks for confirmation first, then will:
 >
-> - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
+> - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks under the install directory. Disks or ISOs a VM uses from elsewhere on the host are left in place.
 > - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`.
 > - Remove the dcvm network, port-forwarding rules, DHCP leases, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
 > - Delete `/var/log/datacenter-startup.log`.

@@ -66,6 +66,10 @@ EOSSH
 }
 
 main() {
+  if [ "${2:-}" = --help ]; then
+    echo "Usage: dcvm storage     Disk usage inside each running VM over SSH; over the threshold, old logs move to the NFS share (admins)"
+    exit 0
+  fi
   load_dcvm_config
   log_to_file "$LOG_FILE" "Starting storage management check"
   ui_title "Disk usage" "root file system of each running VM, over SSH"

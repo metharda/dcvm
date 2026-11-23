@@ -54,6 +54,10 @@ with `sudo dcvm user add <user> [--admin]` and hand VMs over with
 - `dcvm doctor` checks that dcvm's files can't be changed by non-root users,
   warns about users also in `libvirt`, `disk` or `docker`, and removes owner
   records of deleted VMs.
+- ISO VMs for agents: `create-iso` (and `create -o file.iso`) take
+  `--json`, `--wait`, `--ttl` and `-u <login user>`, so an unattended ISO
+  (an agent's own image) can be created, reached over SSH and thrown away.
+- `--uefi` for ISO and cloud VMs. The installer adds the OVMF firmware.
 
 ### Changed
 
@@ -66,6 +70,58 @@ with `sudo dcvm user add <user> [--admin]` and hand VMs over with
 
 - `fix-lock` printed "libvirtd not responding" and "VM not found in libvirt
   after cleanup" after a successful run.
+- `dcvm <command> --help` shows help for every command and role and never
+  runs it. Before, `delete web --help` deleted `web`, `network stop --help`
+  stopped the network and users got no help at all.
+- Without a terminal, dcvm no longer waits forever on a question; errors go
+  to stderr, so `--json` output stays clean.
+- Agents can create VMs from an ISO (`create-iso -f` uses defaults) with
+  `--ttl`; an ISO libosinfo doesn't recognize installs as a generic OS.
+- `create --wait --json` reports `"ready"` and exits 1 if SSH never
+  answered. `delete` exits non-zero when the VM survives and clears a record
+  left by a create that never finished. `list --json` fails when libvirt
+  doesn't answer.
+- `ssh`, `exec` and `cp` say when the VM isn't running.
+- Users can run `backup delete <vm> <id>` and use ids as `backup list`
+  prints them; `--json` and `--verbose` work in any position.
+- The `--ttl` reaper no longer races a command on the same VM.
+- An ISO VM boots its disk and falls back to the ISO while the disk is
+  empty, in a single definition: the installer's reboot lands in the
+  installed OS and the VM keeps running. Before, the reboot powered the VM
+  off, and restarting it mid-install lost the ISO.
+- `delete --all` no longer removes the folder and disk of a VM it refused
+  (a protected VM) or failed to delete, and `delete` keeps the disk when
+  libvirt won't remove the VM.
+- UEFI VMs can be deleted. Deleting a VM no longer lets libvirt remove
+  storage, which could have taken a shared ISO with it.
+- An option without its value (`dcvm create web -m`) no longer loops
+  forever. `create-iso` refuses unknown options; `create -o file.iso`
+  refuses options only cloud images use, including `-p`.
+- `dcvm fix-lock --all` no longer stops libvirt VMs that aren't dcvm's.
+  Declining `dcvm network dhcp renew` no longer renews every lease anyway.
+  Restore refuses to replace a protected VM for root and admins too.
+- `-k default-mysql-server` on Fedora installs MariaDB.
+- A failed `create-iso` removes what it made; ISOs with a comma in their
+  path work; ISO VMs get the disk and network devices the detected OS has
+  drivers for, so Windows installers see their disk.
+
+### Security
+
+- A user could restore or export another user's backup by its exact id,
+  after backing up a VM whose name starts with the other VM's name. Every
+  backup path now checks the owner.
+- Deleting a VM also removed the port forwards of addresses it prefixed
+  (deleting `10.10.10.2` removed those of `.20` to `.29` and `.200` to
+  `.254`), for root too.
+- A static `--ip` or a port forward to an address another VM holds is
+  refused.
+- Restoring a backup as a new VM, or answering `create`'s prompts, can no
+  longer go over a user's quota.
+- The client's claim to run in a terminal is checked against the files it
+  passes; `-pSECRET` no longer reaches the audit log; the client no longer
+  overwrites an existing SSH private key.
+- `dcvm console`, failure summaries and ownership errors no longer show
+  other users' VMs.
 
 ## [0.9.9.1] - 2026-11-22
 

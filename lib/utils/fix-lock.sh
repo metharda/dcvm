@@ -21,9 +21,6 @@ phase_done() {
   PHASE_ERRORS=$step_errors
 }
 
-check_permissions
-check_dependencies virsh lsof
-
 fix_vm_locks() {
   local vm_name="$1"
   local step_errors=0
@@ -345,6 +342,12 @@ fix_vm_locks() {
 }
 
 main() {
+  if wants_help "$@"; then
+    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
+    exit 0
+  fi
+  check_permissions
+  check_dependencies virsh lsof
   VM_NAME="$1"
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1
@@ -361,6 +364,8 @@ main() {
     failed_vms=0
 
     for vm in $VM_LIST; do
+      # Only dcvm's VMs: other libvirt VMs on the host are not ours to stop.
+      is_vm_in_network "$vm" || continue
       total_vms=$((total_vms + 1))
       fix_vm_locks "$vm" || failed_vms=$((failed_vms + 1))
     done

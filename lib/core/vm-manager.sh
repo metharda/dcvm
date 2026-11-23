@@ -14,7 +14,7 @@ show_enhanced_console() {
   {
     printf 'VM\tSSH\tHTTP\tCONSOLE\n'
     read_port_mappings | while read -r vm ip ssh_port http_port; do
-      [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "ssh -p $ssh_port $(get_vm_username "$vm")@$host" "http://$host:$http_port" "dcvm console $vm"
+      [ -n "$vm" ] && vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "ssh -p $ssh_port $(vm_login "$vm" | grep . || echo '<user>')@$host" "http://$host:$http_port" "dcvm console $vm"
     done
   } | ui_table
   echo -e "  ${DIM}Exit a console with Ctrl+]${NC}"
@@ -209,6 +209,10 @@ restart_vms() {
 show_vm_table() {
   local vm state ip vcpu mem owner total=0 running=0 others=0 json="${1:-}"
   local rows
+  if ! virsh list --all --name >/dev/null 2>&1; then
+    print_error "libvirt is not answering (virsh list failed); an admin can check: dcvm doctor"
+    return 1
+  fi
   rows=$(
     printf 'NAME\tOWNER\tSTATE\tIP\tVCPU\tMEMORY\n'
     while read -r vm; do
@@ -263,7 +267,25 @@ show_enhanced_status() {
   echo ""
 }
 
+usage() {
+  ui_help <<EOF
+dcvm list | status | start | stop | restart | console
+
+Usage:
+  dcvm list [--json]          VMs with state, IP, vCPU and memory (and owner, for admins)
+  dcvm status                 The same, plus the network and port forwards
+  dcvm start [vm|all]         One VM, or every dcvm VM without a name (yours, without root)
+  dcvm stop [vm|all]          Shut down one VM, or every dcvm VM
+  dcvm restart [vm|all]       Restart one VM, or every dcvm VM
+  dcvm console [vm]           Serial console of a VM (exit with Ctrl+]); without a name, access hints
+EOF
+}
+
 main() {
+  if [ "${2:-}" = --help ]; then
+    usage
+    exit 0
+  fi
   load_dcvm_config
 
   case $1 in

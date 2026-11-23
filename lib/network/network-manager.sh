@@ -313,6 +313,14 @@ EOF
 }
 
 main() {
+  case "${1:-}:${2:-}" in
+  help:* | -h:* | --help:* | vnc:--help)
+    cmd_help
+    exit 0
+    ;;
+  ports:--help) exec "$SCRIPT_DIR/port-forward.sh" --help ;;
+  dhcp:--help) exec "$SCRIPT_DIR/dhcp.sh" --help ;;
+  esac
   load_dcvm_config
   require_root
   check_dependencies virsh iptables

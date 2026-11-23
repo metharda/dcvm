@@ -33,8 +33,10 @@ ordinary libvirt domain.
   reachable.
 - **Break it, get it back.** Backups, restore in place or as a copy,
   export/import between hosts.
-- **Any installer ISO.** `dcvm create-iso` boots Windows or any other
-  installer with VNC, SPICE or a serial console.
+- **Any installer ISO.** `dcvm create-iso` boots Linux, BSD or Windows 10
+  installers, BIOS or UEFI, with VNC, SPICE or a serial console; unattended
+  ISOs install without anyone watching. (Windows 11's TPM and Secure Boot
+  are not set up.)
 - **For you and your agents, without root.** Members of the `dcvm` group
   run dcvm from their own accounts and see only their own VMs, within quotas.
   `--wait`, `--json`, `--ttl` and `dcvm exec` let an agent create a VM, test
@@ -125,7 +127,7 @@ backup puts the VM back exactly as it was.
   keeps its MAC address and IP. `dcvm backup restore web latest web2` creates
   a second VM with new MACs, hostname, machine-id and SSH host keys.
 - **Portable.** `dcvm backup export` packs a backup into a `.tar.gz` without
-  your `authorized_keys`; `dcvm backup import` restores it on another dcvm
+  your `authorized_keys` (with libguestfs-tools installed); `dcvm backup import` restores it on another dcvm
   host.
 - The 5 most recent backups of each VM are kept.
 
@@ -217,7 +219,7 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 - Backups are cold (the VM is shut down) and depend on the VM's cloud image
   file (see above). There are no live snapshots.
 - Port forwarding covers SSH (22) and HTTP (80) for each running VM, uses
-  host ports 2220-2299 and 8080-8179, and is reapplied after a host reboot
+  host ports 2221-2299 and 8081-8179, and is reapplied after a host reboot
   by `dcvm-boot.service` (`dcvm network ports apply` does it by hand).
 - VMs share one bridge and can reach each other, including VMs of different
   users; the optional NFS share is one folder for every VM.
@@ -229,7 +231,7 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 
 | Tool | Good for | Hosts |
 | :--- | :------- | :---- |
-| **dcvm** | Ready Linux VMs from eight cloud images or any ISO, with NAT networking, port forwards, backups and export/import in one CLI | Linux with KVM/libvirt |
+| **dcvm** | Ready Linux VMs from nine cloud images or any ISO, with NAT networking, port forwards, backups and export/import in one CLI | Linux with KVM/libvirt |
 | [Multipass](https://documentation.ubuntu.com/multipass/en/latest/) | Cloud-style Ubuntu VMs with cloud-init, snapshots, mounts and a GUI | Linux, macOS, Windows |
 | [Vagrant](https://developer.hashicorp.com/vagrant/intro) + [vagrant-libvirt](https://vagrant-libvirt.github.io/vagrant-libvirt/) | Reproducible environments described in a `Vagrantfile` you commit | Linux, macOS, Windows |
 | [virt-install](https://github.com/virt-manager/virt-manager/blob/main/man/virt-install.rst) | Full control over every libvirt install method and device | Linux with libvirt |

@@ -1145,6 +1145,7 @@ test_root_username_setup() {
   local out
   out=$(
     source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    exec 2>&1
     FORCE_MODE=true VM_NAME=rootvm FLAG_USERNAME=root FLAG_PASSWORD=testpass123
     setup_user_account
     setup_root_access
@@ -1152,9 +1153,9 @@ test_root_username_setup() {
   )
   if echo "$out" | grep -q "Warning: configuring root login for VM rootvm (username 'root')" &&
     echo "$out" | grep -q '^ENABLE_ROOT=y ROOT_PASSWORD=testpass123$'; then
-    log_test "PASS" "create -u root (stdout warning, root enabled, one password)"
+    log_test "PASS" "create -u root (warning, root enabled, one password)"
   else
-    log_test "FAIL" "create -u root (stdout warning, root enabled, one password)"
+    log_test "FAIL" "create -u root (warning, root enabled, one password)"
   fi
   if (
     source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
@@ -2175,14 +2176,31 @@ test_socket_policy() {
   local out
   out=$(ask create web -f -p s3cret -m 1024 --json)
   grep -q '"argv": \["create", "web", "-f", "-m", "1024", "--json"\]' <<<"$out" && grep -q '"secrets": \["password"\]' <<<"$out" &&
-    ! grep -q s3cret <<<"$out" && grep -q '^state=ready' "$t/state/vms/web" && grep -q "^owner_uid=$uid" "$t/state/vms/web" && r+="create "
+    ! grep -q s3cret <<<"$out" && grep -q '^state=ready' "$t/state/vms/web" && grep -q "^owner_uid=$uid" "$t/state/vms/web" &&
+    grep -q '"DCVM_QUOTA_LEFT": "8 16384 200"' <<<"$out" && r+="create "
   grep -q 'invalid VM name' <<<"$(ask create all -f)" && r+="reserved "
   grep -q 'graphics must be' <<<"$(ask create web2 --graphics vnc,listen=0.0.0.0)" && r+="graphics "
   grep -q 'os must be 1-9' <<<"$(ask create web2 --os 12)" && r+="os-path "
-  grep -q 'not your VM' <<<"$(ask start rootvm)" && r+="foreign "
+  grep -q 'you have no VM named rootvm' <<<"$(ask start rootvm)" && r+="foreign "
   grep -q '"argv": \["start", "web"\]' <<<"$(ask start web)" && r+="own "
   grep -q 'needs --yes' <<<"$(ask delete web)" && r+="yes-needed "
   grep -q '"argv": \["delete", "web"\]' <<<"$(ask delete web --yes)" && r+="delete "
+  grep -q 'needs --yes' <<<"$(ORIGIN=terminal ask delete web)" && r+="origin "
+  mkdir -p "$t/base/backups/rootvm-x-20260101_120000" "$t/base/backups/web-20260101_120000"
+  echo "$uid" >"$t/base/backups/rootvm-x-20260101_120000/owner"
+  echo "$uid" >"$t/base/backups/web-20260101_120000/owner"
+  grep -q 'no backups of rootvm' <<<"$(ask backup export rootvm 20260101_120000 "$t")" && r+="backup-prefix "
+  grep -q '"argv": \["backup", "delete", "web-01.01.2026-1"\]' <<<"$(ask backup delete web 01.01.2026-1)" &&
+    grep -q '"argv": \["backup", "delete", "web-01.01.2026-12:00:00"\]' <<<"$(ask backup delete web 20260101_120000)" &&
+    grep -q '"argv": \["backup", "delete", "web-01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" && r+="backup-delete "
+  grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$(ask backup restore web web-01.01.2026-1)" && r+="restore-id "
+  grep -q 'only goes with create' <<<"$(ask start web -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" &&
+    grep -q '"secrets": \["password"\]' <<<"$(ask create web5 -p=hunter2 --os 4)" && grep -q 'write -p VALUE' <<<"$(ask create web6 -phunter2)" &&
+    grep -q 'does nothing with an ISO' <<<"$(ask create-iso web7 --iso "$t/x.iso" -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" && r+="secret-forms "
+  grep -q '"argv": \["fix-lock", "web", "--verbose"\]' <<<"$(ask fix-lock web --verbose)" &&
+    grep -q '"argv": \["info", "web", "--json"\]' <<<"$(ask info --json web)" && r+="arg-order "
+  grep -q 'help is shown by your dcvm command' <<<"$(ask delete web --help)" && r+="help-deny "
+  rm -f "$t/state/vms/web5"
   grep -q 'needs a dcvm admin' <<<"$(ask self-update)" && r+="admin-only "
   out=$(ask create isovm -o "$t/x.iso")
   grep -q "\"-o\", \"$t/base/vms/isovm/installer.iso\"" <<<"$out" && [ "$(cat "$t/base/vms/isovm/installer.iso" 2>/dev/null)" = "iso data" ] && r+="iso-fd "
@@ -2195,12 +2213,80 @@ test_socket_policy() {
   stop_srv
   start_srv admin
   grep -q '"argv": \["self-update"\]' <<<"$(ask self-update)" && r+="admin "
+  mkdir -p "$t/base/vms/leftover" && echo keep >"$t/base/vms/leftover/disk.qcow2"
+  grep -q 'left over' <<<"$(ask create-iso leftover --iso "$t/x.iso")" && [ -f "$t/base/vms/leftover/disk.qcow2" ] && r+="admin-leftover "
   stop_srv
-  local want="list create reserved graphics os-path foreign own yes-needed delete admin-only iso-fd quota iso-unreadable audit no-group admin "
+  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-leftover "
   if [ "$r" = "$want" ]; then
     log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
   else
     log_test "FAIL" "socket server: roles, ownership, quotas, secrets, files and --yes enforced" "missing: $(comm -13 <(tr ' ' '\n' <<<"$r" | sort) <(tr ' ' '\n' <<<"$want" | sort) | tr '\n' ' ') | $(tr '\n' ' ' <"$t/answers" | cut -c1-600)"
+  fi
+  rm -rf "$t"
+}
+
+test_forward_cleanup_exact_ip() {
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  cat >"$t/bin/iptables" <<'STUB'
+#!/bin/bash
+case "$*" in
+*"-L PREROUTING"*) printf 'num target prot opt source destination\n1 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:2221 to:10.10.10.20:22\n2 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:2222 to:10.10.10.2:22\n' ;;
+*"-L FORWARD"*) printf 'num target prot opt source destination\n1 ACCEPT tcp -- 0.0.0.0/0 10.10.10.200 tcp dpt:22\n2 ACCEPT tcp -- 0.0.0.0/0 10.10.10.2 tcp dpt:22\n' ;;
+*"-D"*) echo "$*" >>"${0%/*}/deleted" ;;
+esac
+STUB
+  chmod +x "$t/bin/iptables"
+  (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.2 "" "") >/dev/null 2>&1
+  out=$(cat "$t/bin/deleted" 2>/dev/null)
+  if [ "$out" = "$(printf -- '-t nat -D PREROUTING 2\n-D FORWARD 2')" ]; then
+    log_test "PASS" "deleting a VM removes only its own forwards, not those of .20 or .200"
+  else
+    log_test "FAIL" "deleting a VM removes only its own forwards, not those of .20 or .200" "$(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+test_backup_exact_id_visibility() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/web-20260101_120000"
+  : >"$t/backups/web-20260101_120000/web-disk-20260101_120000.qcow2"
+  : >"$t/backups/web-20260101_120000/web-config-20260101_120000.xml"
+  echo 1001 >"$t/backups/web-20260101_120000/owner"
+  look() { (load_backup_sh_for_test "$t" >/dev/null 2>&1 && BACKUP_DIR="$t/backups" &&
+    get_backup_disk_path web 20260101_120000 && get_backup_config_path web 20260101_120000) 2>/dev/null; }
+  [ "$(DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001 look | grep -c .)" = 2 ] && r+="owner "
+  [ -z "$(DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1002 look)" ] && r+="other "
+  [ "$(look | grep -c .)" = 2 ] && r+="root "
+  if [ "$r" = "owner other root " ]; then
+    log_test "PASS" "a backup id names only backups the caller owns"
+  else
+    log_test "FAIL" "a backup id names only backups the caller owns" "$r"
+  fi
+  rm -rf "$t"
+}
+
+test_iso_create_options() {
+  local t r="" opts
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\nprintf " Type Device Target Source\\n----\\n file cdrom hda /srv/iso/x.iso\\n file disk vda /srv/vm/vm-disk.qcow2\\n"\n' >"$t/bin/virsh"
+  chmod +x "$t/bin/virsh"
+  iso() { (source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1 && "$@") 2>&1; }
+  opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
+  grep -q -- '--disk path=/i,device=cdrom,readonly=on' <<<"$opts" && grep -q -- '--boot hd,cdrom' <<<"$opts" && grep -q -- '--import' <<<"$opts" &&
+    ! grep -q -- '--cdrom' <<<"$opts" && r+="boot "
+  opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G UEFI=true OS_VARIANT=win10 build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
+  grep -q -- '--boot uefi,hd,cdrom' <<<"$opts" && grep -q -- '--disk path=/d,format=qcow2 ' <<<"$opts" && grep -q -- '--network network=n ' <<<"$opts" && r+="uefi-win "
+  grep -q 'needs a value' <<<"$(timeout 5 bash -c 'source "$1/../core/custom-iso.sh" >/dev/null 2>&1; parse_args web --iso' _ "$SCRIPT_DIR" 2>&1)" && r+="no-loop "
+  grep -q 'Unknown option' <<<"$(iso parse_args web --bogus)" && r+="unknown "
+  [ "$(PATH="$t/bin:$PATH" get_vm_disk_path vm)" = /srv/vm/vm-disk.qcow2 ] && r+="disk-not-iso "
+  if [ "$r" = "boot uefi-win no-loop unknown disk-not-iso " ]; then
+    log_test "PASS" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors"
+  else
+    log_test "FAIL" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors" "$r | $(tr '\n' ' ' <<<"$opts" | cut -c1-300)"
   fi
   rm -rf "$t"
 }
@@ -2230,6 +2316,32 @@ STUB
     log_test "PASS" "dcvm list shows each VM's owner to root and admins, users see only theirs"
   else
     log_test "FAIL" "dcvm list shows each VM's owner to root and admins, users see only theirs" "$(tr '\n' '|' <<<"$out_root$out_user$out_json" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+test_help_never_acts() {
+  local t f out bad=""
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  for f in virsh virt-install iptables qemu-img ssh scp systemctl; do
+    printf '#!/bin/bash\necho "%s $*" >>"%s/ran"\n' "$f" "$t" >"$t/bin/$f"
+    chmod +x "$t/bin/$f"
+  done
+  for f in "delete web --help" "start web -h" "stop all --help" "backup create web --help" "restore web --help" \
+    "network stop --help" "network ports clear --help" "network dhcp renew --help" "network vnc enable web -h" \
+    "fix-lock web --help" "storage --help" "uninstall --help" "reap --help" "owner web bob --help" \
+    "template download ubuntu --help" "create web -p x --help" "self-update --help" "list --help" \
+    "delete web -- --help" "cp web:/etc/hosts --help" "exec web --help" "ssh web -h"; do
+    # shellcheck disable=SC2086
+    out=$(PATH="$t/bin:$PATH" DCVM_LIB_DIR="$SCRIPT_DIR/.." bash "$SCRIPT_DIR/../../dcvm" $f </dev/null 2>&1) &&
+      grep -qi 'usage\|dcvm ' <<<"$out" || bad+="$f; "
+  done
+  [ -f "$t/ran" ] && bad+="ran: $(tr '\n' ' ' <"$t/ran")"
+  if [ -z "$bad" ]; then
+    log_test "PASS" "a help flag anywhere shows help and runs nothing"
+  else
+    log_test "FAIL" "a help flag anywhere shows help and runs nothing" "$bad"
   fi
   rm -rf "$t"
 }
@@ -2841,6 +2953,10 @@ test_common_functions() {
   test_socket_policy
   test_registry_visibility
   test_list_owner_column
+  test_help_never_acts
+  test_forward_cleanup_exact_ip
+  test_backup_exact_id_visibility
+  test_iso_create_options
   test_base_builds
   test_doctor_report
   test_backup_list_columns
@@ -3197,6 +3313,10 @@ generate_report() {
 }
 
 main() {
+  # Tests that restore or create VMs write owner records; keep them off the host's real ones.
+  export DCVM_STATE_DIR
+  DCVM_STATE_DIR=$(mktemp -d)
+  trap 'rm -rf "$DCVM_STATE_DIR"' EXIT
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --quick)

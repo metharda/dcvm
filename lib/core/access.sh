@@ -15,13 +15,6 @@ show_whoami() {
   echo ""
 }
 
-vm_login() {
-  local login
-  login=$(registry_get "$1" user)
-  [ -n "$login" ] || login=$(get_vm_username "$1")
-  echo "$login"
-}
-
 show_info() {
   local vm="$1" json="${2:-}" state ip cpus mem owner expires protected created
   if ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then
@@ -40,12 +33,12 @@ show_info() {
   if [ "$json" = --json ]; then
     printf '{"name":%s,"state":%s,"ip":%s,"user":%s,"owner":%s,"vcpus":%s,"memory_mb":%s,"protected":%s,"expires":%s,"created":%s}\n' \
       "$(json_str "$vm")" "$(json_str "$state")" "$([ -n "$ip" ] && json_str "$ip" || echo null)" \
-      "$(json_str "$(vm_login "$vm")")" "$(json_str "${owner:-root}")" "${cpus:-null}" "${mem:-null}" \
+      "$(login=$(vm_login "$vm") && [ -n "$login" ] && json_str "$login" || echo null)" "$(json_str "${owner:-root}")" "${cpus:-null}" "${mem:-null}" \
       "$([ "$protected" = 1 ] && echo true || echo false)" "${expires:-null}" "${created:-null}"
     return 0
   fi
   echo ""
-  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm")" \
+  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm" | grep . || echo "not known to dcvm (an ISO install, or a VM without its cloud-init files)")" \
     "Owner" "${owner:-root}" "Resources" "${cpus:-?} vCPU, ${mem:-?} MB" \
     "Protected" "$([ "$protected" = 1 ] && echo yes || echo no)" \
     "Expires" "$([ -n "$expires" ] && date -d "@$expires" '+%Y-%m-%d %H:%M' || echo never)"
@@ -79,8 +72,12 @@ reap_expired() {
       continue
     fi
     if check_vm_exists "$vm"; then
-      "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1 && count=$((count + 1))
-      log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
+      # The server holds this lock while a user works on the VM; a busy VM waits for the next run.
+      mkdir -p -m 700 /run/dcvm/locks
+      if flock -n "/run/dcvm/locks/vm-$vm" "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1; then
+        count=$((count + 1))
+        log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
+      fi
     else
       registry_remove "$vm"
     fi
@@ -157,10 +154,25 @@ set_owner() {
   ui_done ok "$vm now belongs to $name" "its existing backups stay with their owner"
 }
 
+usage() {
+  case "$1" in
+  info) echo "Usage: dcvm info <vm> [--json]     State, IP, login user, owner, resources, expiry" ;;
+  whoami) echo "Usage: dcvm whoami [--json]        Your dcvm user and role (root, admin or user)" ;;
+  protect | unprotect) echo "Usage: dcvm protect <vm> | dcvm unprotect <vm>    A protected VM refuses delete and restore" ;;
+  reap) echo "Usage: dcvm reap                  Delete VMs whose --ttl has passed (admins; the timer runs it every 5 minutes)" ;;
+  user) echo "Usage: dcvm user add <user> [--admin] | remove <user> | list    Who may use dcvm without root (admins)" ;;
+  owner) echo "Usage: dcvm owner <vm> <user>     Hand a VM to another user (admins)" ;;
+  esac
+}
+
 main() {
-  load_dcvm_config
   local cmd="$1"
   shift
+  if [ "${1:-}" = --help ]; then
+    usage "$cmd"
+    exit 0
+  fi
+  load_dcvm_config
   case "$cmd" in
   whoami) show_whoami "$@" ;;
   info) [ -n "${1:-}" ] && show_info "$@" || print_error "Usage: dcvm info <vm> [--json]" ;;
