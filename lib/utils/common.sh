@@ -420,7 +420,7 @@ list_repo_files() {
   if command_exists jq; then
     files=$(jq -r '.tree[]? | select(.type == "blob") | select(.path == "dcvm" or (.path | startswith("lib/"))) | .path' <<<"$response" 2>/dev/null)
   elif command_exists python3; then
-    files=$(python3 -c '
+    files=$(python3 -I -S -c '
 import sys, json
 for item in json.load(sys.stdin).get("tree", []):
     p = item.get("path", "")
@@ -469,7 +469,7 @@ registered_build() {
 check_disk_image() {
   local info backing
   info=$(qemu-img info -U -f qcow2 --output=json -- "$1" 2>/dev/null) || return 1
-  backing=$(python3 -c '
+  backing=$(python3 -I -S -c '
 import json, sys
 i = json.load(sys.stdin)
 if i.get("format") != "qcow2": sys.exit(1)
@@ -480,7 +480,7 @@ print(b)' <<<"$info") || return 1
 }
 
 sanitize_domain_xml() {
-  python3 - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -S - "$1" "$2" "$3" "$4" <<'PY'
 import os, sys, xml.etree.ElementTree as ET
 path, name, disk, renamed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
 tree = ET.parse(path)
@@ -1025,21 +1025,28 @@ validate_package_list() {
 validate_vm_name_list() {
   local raw="$1"
   local -a names
-  local name
-  local saw_name=0
-  IFS=',' read -ra names <<<"$raw"
-  for name in "${names[@]}"; do
-    name=$(trim_whitespace "$name")
-    [ -z "$name" ] && continue
-    saw_name=1
-    if ! validate_vm_name "$name"; then
-      return 1
-    fi
-  done
-  if [ "$saw_name" -eq 0 ]; then
+  local name seen=","
+  if [[ "$raw" == *$'\n'* || "$raw" == *$'\r'* ]]; then
+    print_error "VM names cannot contain newlines (separate them with commas)"
+    return 1
+  fi
+  if [[ "$raw" =~ (^|,)[[:space:]]*(,|$) ]]; then
     print_error "VM name cannot be empty"
     return 1
   fi
+  IFS=',' read -ra names <<<"$raw"
+  for name in "${names[@]}"; do
+    name=$(trim_whitespace "$name")
+    if ! validate_vm_name "$name"; then
+      return 1
+    fi
+    # A repeated name would overwrite the disk of the VM created just before it.
+    if [[ "$seen" == *",$name,"* ]]; then
+      print_error "VM $name is named twice"
+      return 1
+    fi
+    seen+="$name,"
+  done
   return 0
 }
 
@@ -1433,8 +1440,12 @@ print(d.findtext("name"))' "$xml.all" "$xml" >"$xml.name"; then
     return 1
   fi
   name=$(cat "$xml.name")
-  virsh define "$xml" >/dev/null && virsh start "$name" >/dev/null
-  local rc=$?
+  local rc=0
+  virsh define "$xml" >/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && ! virsh start "$name" >/dev/null; then
+    rc=1
+    virsh undefine "$name" --nvram >/dev/null 2>&1 || virsh undefine "$name" >/dev/null 2>&1
+  fi
   rm -f "$xml" "$xml.all" "$xml.name"
   return $rc
 }

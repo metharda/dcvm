@@ -540,6 +540,18 @@ setup_root_access() {
   [ "$FORCE_MODE" != true ] && echo ""
 }
 
+# The key goes into user-data as one YAML line: printable ASCII only, first valid key only.
+first_ssh_key() {
+  LC_ALL=C tr -cd '\040-\176\n' 2>/dev/null <"$1" | grep -m1 -E '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( .*)?$'
+}
+
+# YAML 1.1 reads bare yes, off, null or 123 as non-strings, and ": " or " #" end a plain value.
+yaml_quote() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
 setup_ssh_key() {
   SSH_KEY=""
   SETUP_SSH_KEY=true
@@ -550,15 +562,15 @@ setup_ssh_key() {
   if [ "$SETUP_SSH_KEY" = true ]; then
     [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || ui_section "SSH key"
     if [ "$(caller_role)" != root ]; then
-      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      SSH_KEY=$(first_ssh_key "${DCVM_SSH_PUBKEY_FILE:-/dev/null}")
       [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
     elif [ -f ~/.ssh/id_rsa.pub ]; then
-      SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+      SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
       [ "$FORCE_MODE" = true ] && print_success "SSH key configured" || print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
       [ "$FORCE_MODE" = true ] && print_info "Creating SSH key" || print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-        SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
         SSH_KEY_CREATED=true
         [ "$FORCE_MODE" = true ] && print_success "SSH key created" || print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
@@ -613,9 +625,27 @@ setup_static_ip() {
   fi
 }
 
+wants_tailscale() {
+  local p
+  local -a pkgs=()
+  IFS=',' read -ra pkgs <<<"$ADDITIONAL_PACKAGES"
+  for p in "${pkgs[@]}"; do
+    p=$(trim_whitespace "$p")
+    [ "${p,,}" = tailscale ] && return 0
+  done
+  return 1
+}
+
+# The key ends up in a root shell command inside the guest.
+valid_tailscale_authkey() { [[ "$1" =~ ^tskey-[A-Za-z0-9_-]+$ ]]; }
+
 setup_tailscale() {
   TAILSCALE_AUTHKEY=""
-  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! valid_tailscale_authkey "$FLAG_TAILSCALE_AUTHKEY"; then
+    print_error "Invalid Tailscale auth key: it must look like tskey-auth-..."
+    exit 1
+  fi
+  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! wants_tailscale; then
     if [ -n "$ADDITIONAL_PACKAGES" ]; then
       ADDITIONAL_PACKAGES="${ADDITIONAL_PACKAGES},tailscale"
     else
@@ -623,7 +653,7 @@ setup_tailscale() {
     fi
   fi
 
-  if ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if ! wants_tailscale; then
     return 0
   fi
 
@@ -648,10 +678,9 @@ setup_tailscale() {
             print_error "Auth key cannot be empty"
             continue
           fi
-          if [[ ! "$TAILSCALE_AUTHKEY" =~ ^tskey- ]]; then
-            print_warning "Auth key doesn't start with 'tskey-', are you sure?"
-            read -p "Continue anyway? (y/N): " confirm_key || no_input
-            [[ ! "$confirm_key" =~ ^[Yy]$ ]] && continue
+          if ! valid_tailscale_authkey "$TAILSCALE_AUTHKEY"; then
+            print_error "Invalid auth key: it must look like tskey-auth-..."
+            continue
           fi
           print_success "Tailscale will auto-connect with provided auth key"
           break
@@ -834,15 +863,15 @@ interactive_prompt_ssh_key() {
   if [ "$SETUP_SSH_KEY" = true ]; then
     ui_section "SSH key"
     if [ "$(caller_role)" != root ]; then
-      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      SSH_KEY=$(first_ssh_key "${DCVM_SSH_PUBKEY_FILE:-/dev/null}")
       [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
     elif [ -f ~/.ssh/id_rsa.pub ]; then
-      SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+      SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
       print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
       print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-        SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
         SSH_KEY_CREATED=true
         print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
@@ -1022,7 +1051,7 @@ show_vm_summary() {
       "$(printf '%-11s%s' Network "${FLAG_STATIC_IP:-DHCP} on $NETWORK_NAME")"
     )
     [ -n "$ADDITIONAL_PACKAGES" ] && rows+=("$(printf '%-11s%s' Packages "${ADDITIONAL_PACKAGES//,/, }")")
-    if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    if wants_tailscale; then
       rows+=("$(printf '%-11s%s' Tailscale "$([ -n "$TAILSCALE_AUTHKEY" ] && echo "joins with the auth key" || echo "connect by hand")")")
     fi
     ui_box "$VM_NAME" "${rows[@]}"
@@ -1031,7 +1060,7 @@ show_vm_summary() {
 }
 
 confirm_vm_creation() {
-  [ "$FORCE_MODE" = true ] || confirm_action "Create it?" y || exit 0
+  [ "$FORCE_MODE" = true ] || confirm_action "Create it?" y || exit 130
 }
 
 prepare_vm_directory() {
@@ -1196,15 +1225,15 @@ FLUSH PRIVILEGES;"
 
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" <<USERDATA_EOF
 #cloud-config
-hostname: $VM_NAME
+hostname: $(yaml_quote "$VM_NAME")
 users:
-  - name: $VM_USERNAME$(if [ "$VM_USERNAME" != "root" ]; then echo "
+  - name: $(yaml_quote "$VM_USERNAME")$(if [ "$VM_USERNAME" != "root" ]; then echo "
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash"; fi)
     lock_passwd: false$(if [ "$VM_USERNAME" != "root" ]; then echo "
     passwd: '$PASSWORD_HASH'"; fi)$(if [ -n "$SSH_KEY" ]; then echo "
     ssh_authorized_keys:
-      - $SSH_KEY"; fi)
+      - $(yaml_quote "$SSH_KEY")"; fi)
 
 ssh_pwauth: true
 disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")$(if [ "$ROOT_LOGIN_SETTING" = "yes" ]; then echo "
@@ -1356,7 +1385,7 @@ USERDATA_EOF
 generate_cloud_init_metadata() {
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/meta-data" <<METADATA_EOF
 instance-id: $VM_NAME-$(date +%s)
-local-hostname: $VM_NAME
+local-hostname: $(yaml_quote "$VM_NAME")
 METADATA_EOF
 }
 
@@ -1492,7 +1521,8 @@ install_vm() {
     echo "    - Check if network '$NETWORK_NAME' is active: virsh net-list"
     echo "    - Check if OS variant '$OS_VARIANT' is valid: osinfo-query os | grep $OS_VARIANT"
     echo "    - Check disk permissions and space"
-    rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
+    # A domain that exists is not ours: never delete its disk.
+    check_vm_exists "$VM_NAME" || rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
     exit 1
   fi
 
@@ -1548,7 +1578,7 @@ show_post_creation_info() {
       "dcvm console $VM_NAME" "watch the first boot" \
       "dcvm network ports setup" "reach it from other machines"
   fi
-  if [ "${TAILSCALE_REQUESTED:-false}" = true ] || echo "$ADDITIONAL_PACKAGES" | grep -qi tailscale; then
+  if wants_tailscale; then
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       echo -e "  Tailscale joins your tailnet after first boot; check with ${CYAN}tailscale status${NC} inside the VM."
     else
@@ -1581,7 +1611,7 @@ Wait 2-3 minutes for cloud-init to complete setup
    Check logs: tail -f /var/log/cloud-init-output.log (inside VM)
 EOF
 
-  if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if wants_tailscale; then
     echo ""
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       print_success "Tailscale VPN will auto-connect after cloud-init completes"
@@ -1680,6 +1710,10 @@ main() {
     VM_NAME=$(trim_whitespace "${VM_NAMES[$i]}")
     [ -z "$VM_NAME" ] && continue
     if ! validate_vm_name "$VM_NAME"; then
+      exit 1
+    fi
+    if check_vm_exists "$VM_NAME"; then
+      print_error "VM $VM_NAME already exists"
       exit 1
     fi
     if [ -n "$BASE_STATIC_IP" ]; then

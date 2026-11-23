@@ -303,7 +303,7 @@ show_vm_summary() {
 }
 
 confirm_creation() {
-  confirm_action "Create it?" y || exit 0
+  confirm_action "Create it?" y || exit 130
   echo ""
 }
 
