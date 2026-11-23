@@ -75,7 +75,7 @@ cmd_status() {
   network_title || return 1
   network_kv
   local addr
-  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }')
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }' || true)
   ui_kv "Address" "${addr:-none}"
   echo ""
 }
@@ -124,9 +124,9 @@ cmd_leases() {
 cmd_bridge() {
   ui_title "Bridge" "$BRIDGE_NAME"
   local addr pid
-  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; sub(/^ +/, ""); print }')
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; sub(/^ +/, ""); print }' || true)
   pid=$(pgrep -f "dnsmasq.*/${NETWORK_NAME}.conf" | head -1 || true)
-  ui_kv "Address" "${addr:-bridge not found}" "dnsmasq" "${pid:+running, pid $pid}${pid:-not running}"
+  ui_kv "Address" "${addr:-bridge not found}" "dnsmasq" "$([ -n "$pid" ] && echo "running, pid $pid" || echo "not running")"
   ui_section "Routes"
   ip route show | sed 's/^/  /'
   echo ""

@@ -70,7 +70,7 @@ check_host() {
   fi
 
   local cmd missing=() pkgs=()
-  for cmd in qemu-img virsh virt-install jq dhcp_release aria2c guestfish virt-customize xz curl python3; do
+  for cmd in qemu-img virsh virt-install jq dhcp_release iptables aria2c guestfish virt-customize xz curl python3; do
     command_exists "$cmd" || {
       missing+=("$cmd")
       pkgs+=("$(package_for "$cmd")")
@@ -229,7 +229,8 @@ check_network() {
   while read -r vm ip ssh_port http_port; do
     [ -n "$vm" ] || continue
     saved=$((saved + 1))
-    grep -q -- "--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" || lost=$((lost + 1))
+    # An old rule without the LOCAL match also rewrites VM egress; ports apply replaces it.
+    grep -q -- "--dst-type LOCAL .*--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" || lost=$((lost + 1))
     if check_vm_exists "$vm" && [ "$(get_vm_state "$vm")" = running ]; then
       local now
       now=$(get_vm_ip "$vm" 2>/dev/null)
@@ -250,15 +251,14 @@ check_network() {
 
   local status="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" stale=0
   if [ -s "$status" ] && command_exists jq; then
-    stale=$(jq --argjson now "$(date +%s)" --arg vms "$(virsh list --all --name 2>/dev/null | tr '[:upper:]' '[:lower:]')" \
-      '[.[] | select(((."expiry-time" // 0) < $now) or ((.hostname // "") != "" and ((.hostname | ascii_downcase) as $h | ($vms | split("\n") | index($h)) == null)))] | length' "$status" 2>/dev/null || echo 0)
+    stale=$(stale_leases 2>/dev/null | grep -c .)
   fi
   if [ "${stale:-0}" -eq 0 ]; then
     report ok "DHCP leases" "no stale leases"
   elif $FIX && "$SCRIPT_DIR/../network/dhcp.sh" cleanup >/dev/null 2>&1; then
     report fixed "DHCP leases" "$(plural "$stale" "stale lease") released"
   else
-    report warn "DHCP leases" "$(plural "$stale" "stale lease") (expired or of deleted VMs): --fix releases them"
+    report warn "DHCP leases" "$(plural "$stale" "stale lease") (MAC of no VM): --fix releases them"
   fi
 }
 

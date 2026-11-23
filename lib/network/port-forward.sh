@@ -76,14 +76,16 @@ get_vm_ip_advanced() {
 setup_vm_forwarding() {
   local vm="$1" vm_ip="$2" ssh_port="$3" http_port="$4" host_ip="$5"
   print_info "Setting up port forwarding for $vm ($vm_ip)"
-  if iptables -t nat -I PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null; then
+  # Only traffic to this host: routed traffic (VM egress, docker, VPNs) to the same port is never rewritten.
+  local match=(! -i "$BRIDGE_NAME" -p tcp -m addrtype --dst-type LOCAL)
+  if iptables -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null; then
     iptables -I FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null
     print_success "  SSH: $host_ip:$ssh_port -> $vm_ip:22"
   else
     print_error "  Failed to setup SSH forwarding for $vm"
     return 1
   fi
-  if iptables -t nat -I PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null; then
+  if iptables -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null; then
     iptables -I FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null
     print_success "  HTTP: $host_ip:$http_port -> $vm_ip:80"
   else
@@ -108,12 +110,12 @@ save_mappings_tmp_to_file() {
 
 cmd_setup() {
   ui_quiet
-  if ! virsh net-list --all | grep -q "$NETWORK_NAME"; then
+  if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     print_error "$NETWORK_NAME network not found"
     echo "Run the dcvm installer to create it."
     exit 1
   fi
-  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+  if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
     print_warning "$NETWORK_NAME is not active, starting it"
     if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
       sleep 3

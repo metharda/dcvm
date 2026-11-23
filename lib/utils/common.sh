@@ -1279,7 +1279,7 @@ check_port_forward() {
   local host_port="$1"
   local vm_ip="$2"
   local vm_port="$3"
-  iptables -t nat -C PREROUTING -p tcp --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
+  iptables -t nat -C PREROUTING ! -i "${BRIDGE_NAME:-virbr-dc}" -p tcp -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
   iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -j ACCEPT 2>/dev/null || return 1
   check_port_connectivity "$vm_ip" "$vm_port"
 }
@@ -1460,8 +1460,14 @@ cleanup_port_forwarding_for_vm() {
   print_info "Cleaning up port forwarding rules"
 
   if [ -n "$ssh_port" ] && [ -n "$http_port" ]; then
-    iptables -t nat -D PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null && print_info "Removed SSH port rule $ssh_port" || true
-    iptables -t nat -D PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null && print_info "Removed HTTP port rule $http_port" || true
+    local rule args
+    # By port and destination, whatever else the rule matches: older rules have no address match.
+    while read -r rule; do
+      read -ra args <<<"${rule#-A }"
+      iptables -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
+    done < <(iptables -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
+      $1 == "-A" { d = t = ""; for (i = 2; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
+        if (d " " t == s || d " " t == h) print }')
     iptables -D FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
   else
@@ -1740,7 +1746,7 @@ cleanup_dhcp_lease_unlocked() {
   fi
   rm -f "$tmp"
   while IFS=$'\t' read -r lmac ip; do
-    [[ "$ip" == *.* ]] || continue
+    [[ "$ip" == *.* ]] && [ -n "$lmac" ] || continue
     dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null || {
       print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
       rc=2
@@ -1752,6 +1758,35 @@ cleanup_dhcp_lease_unlocked() {
     print_info "Removed $n lease(s) from $status_file"
   fi
   return "$rc"
+}
+
+# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer.
+domain_macs() {
+  local names d
+  names=$(virsh list --all --name 2>/dev/null) || return 1
+  while read -r d; do
+    [ -n "$d" ] && virsh domiflist -- "$d" 2>/dev/null | awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }'
+  done <<<"$names"
+}
+
+# Status-file leases whose MAC belongs to no defined domain, whatever the guest
+# calls itself; by hostname only when the lease has no MAC. One line each:
+# mac, ip, hostname, reason separated by | (dnsmasq allows no | in hostnames).
+stale_leases() {
+  local status="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" macs vms
+  macs=$(domain_macs) || return 1
+  vms=$(virsh list --all --name 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  [ -s "$status" ] || return 0
+  # shellcheck disable=SC2016 # jq variables
+  jq -r --arg macs "$macs" --arg vms "$vms" --argjson now "$(date +%s)" '
+    ($macs | split("\n")) as $m | ($vms | split("\n")) as $v | . as $all | .[]
+    | ((."mac-address" // "") | ascii_downcase) as $mac | ((.hostname // "") | ascii_downcase) as $h
+    | select(if $mac != "" then ($m | index($mac)) == null
+      else $h != "" and ($v | index($h)) == null
+        and ([$all[] | select((."mac-address" // "") != "" and ((.hostname // "") | ascii_downcase) == $h)] | length) == 0 end)
+    | [$mac, (."ip-address" // ""), (.hostname // ""),
+      ((if $mac != "" then "no VM has this MAC" else "no VM named \(.hostname)" end)
+        + (if (."expiry-time" // 0) < $now then ", expired" else "" end))] | join("|")' "$status"
 }
 
 interactive_prompt_memory_common() {

@@ -84,12 +84,8 @@ clear_vm_lease() {
 clear_stale_leases() {
   ui_quiet
   ui_title "Stale DHCP leases" "$NETWORK_NAME"
-  local current_time=$(date +%s)
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local removed_count=0
-  local -a macs_to_remove=()
-  local existing_vms=$(virsh list --all --name 2>/dev/null | grep -v '^$')
-  local active_macs=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR>2 {print $3}' | sort -u)
+  local removed_count=0 stale mac ip hostname reason
 
   if ! command_exists jq; then
     print_error "jq not available; cannot read $status_file (install jq)"
@@ -99,42 +95,17 @@ clear_stale_leases() {
     print_error "Could not parse $status_file; left unchanged"
     return 1
   fi
-
-  if [ -s "$status_file" ]; then
-    while IFS=$'\t' read -r timestamp mac ip hostname; do
-      [ -z "$mac" ] && continue
-
-      local keep_lease=false
-      local reason=""
-
-      if [ "$timestamp" -le "$current_time" ] 2>/dev/null; then
-        reason="expired"
-      elif [ -n "$hostname" ] && [ "$hostname" != "*" ] && [ "$hostname" != "-" ]; then
-        if echo "$existing_vms" | grep -qixF "$hostname"; then
-          keep_lease=true
-        else
-          reason="orphaned (VM '$hostname' doesn't exist)"
-        fi
-      else
-        if echo "$active_macs" | grep -qix "$mac"; then
-          keep_lease=true
-        else
-          reason="stale (no active lease)"
-        fi
-      fi
-
-      if [ "$keep_lease" != true ]; then
-        ui_step ok "$ip" "$reason, ${hostname:-no hostname}, $mac"
-        macs_to_remove+=("$mac")
-        removed_count=$((removed_count + 1))
-      fi
-    done < <(jq -r '.[] | [(."expiry-time" // 0 | tostring), (."mac-address" // ""), (."ip-address" // ""), (.hostname // "")] | @tsv' "$status_file" 2>/dev/null)
+  if ! stale=$(stale_leases); then
+    print_error "Could not list the VMs' MAC addresses (is libvirt running?); no lease released"
+    return 1
   fi
 
-  local mac
-  for mac in $(printf '%s\n' "${macs_to_remove[@]}" | sort -u); do
-    cleanup_dhcp_lease "$mac" "" || [ $? -ne 2 ] || return 1
-  done
+  while IFS='|' read -r mac ip hostname reason; do
+    [ -n "$mac$hostname" ] || continue
+    ui_step ok "$ip" "$reason, ${hostname:-no hostname}, ${mac:-no MAC}"
+    cleanup_dhcp_lease "$mac" "$hostname" || [ $? -ne 2 ] || return 1
+    removed_count=$((removed_count + 1))
+  done <<<"$stale"
 
   if [ $removed_count -gt 0 ]; then
     ui_done ok "Removed $(plural "$removed_count" "stale lease")"
@@ -238,7 +209,7 @@ Usage: dcvm network dhcp <command>
 Commands:
   show                 Current leases
   clear <vm|mac>       Release one lease (exact VM name or MAC); the network keeps running
-  clear --stale, -s    Release expired leases and leases of VMs that no longer exist
+  clear --stale, -s    Release leases whose MAC belongs to no VM (expired or not)
   cleanup              Same as clear --stale
   clear --all, -a      Release every lease and restart the network (asks first)
   renew                Clear all leases and ask running VMs to renew

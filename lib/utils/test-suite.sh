@@ -1645,6 +1645,7 @@ EOF
  2030-01-01 00:00:00   52:54:00:ab:c2:54   ipv4       10.10.10.254/24   web        -
 EOF
   printf 'vm10\nvm1\nvm1-copy\nweb\n' >"$1/vms"
+  printf 'vm10 52:54:00:00:00:10\nvm1 52:54:00:00:00:01\nvm1-copy 52:54:00:00:00:02\nweb 52:54:00:AB:C2:54\n' >"$1/ifaces"
 }
 
 # shellcheck disable=SC2317,SC2034,SC1090,SC1091 # stubs; globals read by dhcp.sh
@@ -1664,6 +1665,10 @@ run_dhcp_fixture() {
       case "$1" in
       net-dhcp-leases) cat "$t/virsh-leases" ;;
       list) cat "$t/vms" ;;
+      domiflist)
+        printf ' Interface Type Source Model MAC\n---\n'
+        awk -v d="${*: -1}" '$1 == d { print " vnet0 network net virtio " $2 }' "$t/ifaces"
+        ;;
       esac
       return 0
     }
@@ -1837,6 +1842,45 @@ test_dhcp_release() {
     log_test "PASS" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)"
   else
     log_test "FAIL" "dhcp clear --stale releases each expired or orphaned lease from the status file (37-10)" "$(status_hosts "$t"); $(tr '\n' ';' <"$t/calls")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_stale_by_mac() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp cleanup decides by MAC (#76)" "jq not available"
+    return
+  fi
+  local t n
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  cat >"$t/br.status" <<'EOF'
+[
+  {"ip-address": "10.10.10.254", "mac-address": "52:54:00:ab:c2:54", "hostname": "ubuntu", "expiry-time": 1893456000},
+  {"ip-address": "10.10.10.11", "mac-address": "52:54:00:00:00:01", "hostname": "vm1", "expiry-time": 1000},
+  {"ip-address": "10.10.10.77", "mac-address": "52:54:00:00:00:77", "expiry-time": 1893456000},
+  {"ip-address": "10.10.10.88", "hostname": "olddeleted", "expiry-time": 1893456000},
+  {"ip-address": "10.10.10.89", "hostname": "VM10", "expiry-time": 1893456000}
+]
+EOF
+  echo ' 2030-01-01 00:00:00   52:54:00:00:00:77   ipv4       10.10.10.77/24    -          -' >>"$t/virsh-leases"
+  cp "$t/br.status" "$t/status.orig"
+  n=$(run_dhcp_fixture "$t" 'stale_leases | grep -c .; exit')
+  run_dhcp_fixture "$t" "" cleanup >/dev/null
+  if [ "$n" = 2 ] && [ "$(status_hosts "$t")" = '["ubuntu","vm1","VM10"]' ] &&
+    [ "$(grep '^dhcp_release' "$t/calls")" = "dhcp_release br 10.10.10.77 52:54:00:00:00:77" ]; then
+    log_test "PASS" "dhcp cleanup keeps leases of defined VMs' MACs whatever the hostname, frees MAC orphans, hostname only without a MAC (#76)"
+  else
+    log_test "FAIL" "dhcp cleanup keeps leases of defined VMs' MACs whatever the hostname, frees MAC orphans, hostname only without a MAC (#76)" "count $n; $(status_hosts "$t"); $(grep '^dhcp_release' "$t/calls" | tr '\n' ';')"
+  fi
+  cp "$t/status.orig" "$t/br.status"
+  : >"$t/calls"
+  if ! run_dhcp_fixture "$t" 'virsh() { return 1; }' cleanup >/dev/null && cmp -s "$t/br.status" "$t/status.orig" &&
+    ! grep -q '^dhcp_release' "$t/calls"; then
+    log_test "PASS" "dhcp cleanup releases nothing when libvirt does not answer (#76)"
+  else
+    log_test "FAIL" "dhcp cleanup releases nothing when libvirt does not answer (#76)" "$(status_hosts "$t")"
   fi
   rm -rf "$t"
 }
@@ -2159,6 +2203,63 @@ installer_packages() {
   eval "${line#  local }"
   local -n list="$1_packages"
   printf '%s\n' "${list[@]}"
+}
+
+# shellcheck disable=SC2016,SC2034,SC2317 # stubs are eval'd and called by the installer functions
+test_installer_network() {
+  local t r="" out
+  t=$(mktemp -d)
+  echo 'NETWORK_NAME=datacenter-net' >"$t/conf"
+  inst() {
+    (
+      eval "$(sed -n '/^valid_bridge_name()/p; /^create_network()/,/^}/p; /^main()/,/^}/p; /^dcvm_init()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+      CONFIG_FILE="$t/conf" LOG_FILE="$t/log" NETWORK_NAME=datacenter-net BRIDGE_NAME=virbr-dc NETWORK_ONLY=0 NETWORK_NAME_ARG=""
+      print_status_log() { echo "[$1] $2"; }
+      check_root() { :; }
+      install_required_packages() { :; }
+      start_libvirtd() { :; }
+      eval "$1"
+      shift
+      "$@"
+    ) </dev/null 2>&1
+  }
+  local net='create_network() { echo "net=$1 bridge=$2"; }'
+  [ "$(inst "$net" dcvm_init --network-only --network-name datacenter-net | grep '^net=')" = "net=datacenter-net bridge=virbr-datacente" ] && r+="space "
+  [ "$(inst "$net" dcvm_init --network-name=lab --network-only | grep '^net=')" = "net=lab bridge=virbr-lab" ] && r+="equals "
+  ! out=$(inst "$net" dcvm_init --network-only --network-name) && grep -q 'requires a value' <<<"$out" && r+="no-value "
+  ! out=$(inst 'virsh() { case $1 in net-info) return 1 ;; net-start) echo "error: bridge in use" >&2; return 1 ;; esac; }' create_network n virbr-n) &&
+    grep -q 'could not start' <<<"$out" && grep -q 'bridge in use' <<<"$out" && r+="new-start-fails "
+  ! out=$(inst 'virsh() { case $1 in net-info) echo "Active:         no" ;; net-list) echo " n-old  active  yes  yes" ;; net-start) return 1 ;; esac; }' create_network n virbr-n) &&
+    grep -q 'could not start' <<<"$out" && r+="existing-start-fails "
+  installer_packages debian | grep -qx iptables && r+="debian-iptables "
+  if [ "$r" = "space equals no-value new-start-fails existing-start-fails debian-iptables " ]; then
+    log_test "PASS" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, failed net-start fails the step, iptables on Debian (#68)"
+  else
+    log_test "FAIL" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, failed net-start fails the step, iptables on Debian (#68)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2016 # the script runs in its own bash
+test_network_status_no_bridge() {
+  local t c out r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\ncase "$*" in *"addr show"*) exit 1 ;; esac\nexit 0\n' >"$t/bin/ip"
+  printf '#!/bin/bash\n[ "$1" = net-info ] && echo "Autostart: yes"\nexit 0\n' >"$t/bin/virsh"
+  chmod +x "$t/bin/ip" "$t/bin/virsh"
+  for c in status bridge; do
+    out=$(PATH="$t/bin:$PATH" bash -c 'source "$1/../network/network-manager.sh" >/dev/null
+      load_dcvm_config() { :; }; require_root() { :; }; check_dependencies() { :; }
+      BRIDGE_NAME=virbr-gone NETWORK_NAME=net; main "$2"' _ "$SCRIPT_DIR" "$c" 2>&1) &&
+      grep -qE 'none|bridge not found' <<<"$out" && r+="$c "
+  done
+  if [ "$r" = "status bridge " ]; then
+    log_test "PASS" "network status and bridge print their fallback when the bridge is missing (#69)"
+  else
+    log_test "FAIL" "network status and bridge print their fallback when the bridge is missing (#69)" "$r"
+  fi
+  rm -rf "$t"
 }
 
 test_published_checksum() {
@@ -2556,6 +2657,88 @@ STUB
     log_test "PASS" "deleting a VM removes only its own forwards, not those of .20 or .200"
   else
     log_test "FAIL" "deleting a VM removes only its own forwards, not those of .20 or .200" "$(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC1090,SC1091,SC2016 # stub scripts are written literally
+test_forward_rules_scope() {
+  local t out r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  cat >"$t/bin/iptables" <<'STUB'
+#!/bin/bash
+case "$*" in
+*"-S PREROUTING"*) printf '%s\n' '-P PREROUTING ACCEPT' \
+  '-A PREROUTING -p tcp -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+  '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 8081 -j DNAT --to-destination 10.10.10.5:80' \
+  '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 2222 -j DNAT --to-destination 10.10.10.50:22' \
+  '-A PREROUTING -p tcp -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.55:22' ;;
+*"-I PREROUTING"* | *"-D"*) echo "$*" >>"${0%/*}/calls" ;;
+esac
+STUB
+  chmod +x "$t/bin/iptables"
+  (PATH="$t/bin:$PATH" && source "$SCRIPT_DIR/../network/port-forward.sh" && BRIDGE_NAME=virbr-dc &&
+    setup_vm_forwarding web 10.10.10.5 2221 8081 192.0.2.1) >/dev/null 2>&1
+  [ "$(cat "$t/bin/calls" 2>/dev/null)" = "$(printf '%s\n' \
+    '-t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+    '-t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="local-only "
+  rm -f "$t/bin/calls"
+  (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.5 2221 8081) >/dev/null 2>&1
+  out=$(grep -- '-t nat' "$t/bin/calls" 2>/dev/null)
+  [ "$out" = "$(printf '%s\n' \
+    '-t nat -D PREROUTING -p tcp -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+    '-t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="remove-old-and-new "
+  if [ "$r" = "local-only remove-old-and-new " ]; then
+    log_test "PASS" "port forwards DNAT only traffic to the host, not from the bridge; removal matches old and new rules (#77)"
+  else
+    log_test "FAIL" "port forwards DNAT only traffic to the host, not from the bridge; removal matches old and new rules (#77)" "$r; $(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by delete_all_vms
+test_delete_all_shared_state() {
+  local t r=""
+  t=$(mktemp -d)
+  run_delete_all() {
+    (
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t" NETWORK_SUBNET=10.10.10
+      virsh() {
+        [ "$1" = list ] && echo " 1    vm1    running"
+        return 0
+      }
+      is_vm_in_network() { [ ! -e "$t/deleted" ]; }
+      get_vm_state() { echo running; }
+      shuf() { echo 1234; }
+      get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+      save_iptables_rules() { :; }
+      iptables() {
+        case "$*" in
+        "-t nat -S PREROUTING") printf '%s\n' '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' \
+          '-A PREROUTING -p tcp -m tcp --dport 18080 -j DNAT --to-destination 10.10.10.9:80' ;;
+        "-t nat -L PREROUTING"*) printf 'num target prot opt source destination\n1 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:2230 to:10.10.10.5:22\n2 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:18080 to:10.10.10.9:80\n' ;;
+        *-D*) echo "$*" >>"$t/calls" ;;
+        esac
+      }
+      eval "$1"
+      delete_all_vms
+    ) <<<$'yes\n1234' >/dev/null 2>&1
+  }
+  printf '[{"ip-address": "10.10.10.5", "mac-address": "52:54:00:00:00:05"}]\n' >"$t/br.status"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nvm1 10.10.10.5 2230 8090\n' >"$t/port-mappings.txt"
+  cp "$t/br.status" "$t/status.orig"
+  cp "$t/port-mappings.txt" "$t/map.orig"
+  run_delete_all 'delete_single_vm() { return 1; }'
+  cmp -s "$t/br.status" "$t/status.orig" && cmp -s "$t/port-mappings.txt" "$t/map.orig" && [ ! -e "$t/calls" ] && r+="survivor-kept "
+  run_delete_all 'delete_single_vm() { : >"$t/deleted"; }'
+  [ "$(grep -c . "$t/port-mappings.txt")" = 1 ] && [ "$(grep PREROUTING "$t/calls")" = \
+    '-t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' ] && r+="by-destination "
+  if [ "$r" = "survivor-kept by-destination " ]; then
+    log_test "PASS" "delete --all keeps a refused VM's lease, mapping and rules; removes rules by the mapping's destinations (#77)"
+  else
+    log_test "FAIL" "delete --all keeps a refused VM's lease, mapping and rules; removes rules by the mapping's destinations (#77)" "$r; $(tr '\n' '|' <"$t/calls" 2>/dev/null)"
   fi
   rm -rf "$t"
 }
@@ -3316,8 +3499,8 @@ test_common_functions() {
   run_test_expect_fail "validate_vm_name_list (newline)" "validate_vm_name_list \$'web1\\nweb2'"
   run_test_expect_fail "validate_vm_name_list (empty entry)" "validate_vm_name_list 'web1,,web2'"
   run_test_expect_fail "validate_vm_name_list (trailing comma)" "validate_vm_name_list 'web1,'"
-  local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING -p tcp --dport 2221 -j DNAT --to-destination 10.10.10.50:22' | '-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }"
-  run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "($pf_rules; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
+  local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.50:22' |'-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }"
+  run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "(BRIDGE_NAME=virbr-dc; $pf_rules; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (no DNAT rule)" "(iptables() { case \"\$*\" in '-t nat'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (no FORWARD rule)" "(iptables() { case \"\$*\" in '-C FORWARD'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (VM port closed)" "(iptables() { return 0; }; check_port_connectivity() { return 1; }; check_port_forward 2221 10.10.10.50 22)"
@@ -3420,6 +3603,11 @@ test_common_functions() {
   test_list_owner_column
   test_help_never_acts
   test_forward_cleanup_exact_ip
+  test_dhcp_stale_by_mac
+  test_forward_rules_scope
+  test_delete_all_shared_state
+  test_installer_network
+  test_network_status_no_bridge
   test_backup_exact_id_visibility
   test_iso_create_options
   test_base_builds

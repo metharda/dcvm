@@ -313,7 +313,7 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2 python3 ovmf)
+  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils iptables aria2 python3 ovmf)
   local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2 python edk2-ovmf)
 
   local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz python3 edk2-ovmf)
@@ -621,9 +621,12 @@ create_network() {
 
   if virsh net-info "$net_name" >/dev/null 2>&1; then
     print_status_log "INFO" "Network '$net_name' already exists."
-    if ! virsh net-list | grep -q "$net_name.*active"; then
+    if [ "$(virsh net-info "$net_name" 2>/dev/null | awk '/^Active:/ { print $2 }')" != yes ]; then
       print_status_log "INFO" "Starting existing network '$net_name'..."
-      virsh net-start "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not start network"
+      if ! virsh net-start "$net_name" >/dev/null; then
+        print_status_log "ERROR" "Network '$net_name' could not start (subnet or bridge in use?): virsh net-start $net_name"
+        return 1
+      fi
     fi
 
     return 0
@@ -652,25 +655,27 @@ create_network() {
 </network>
 EOF
 
-  if virsh net-define "$network_config" >/dev/null 2>&1; then
-    print_status_log "SUCCESS" "Network '$net_name' defined"
-
-    if virsh net-start "$net_name" >/dev/null 2>&1; then
-      print_status_log "SUCCESS" "Network '$net_name' started"
-    else
-      print_status_log "WARNING" "Network defined but could not start - may need manual start"
-    fi
-
-    virsh net-autostart "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not set network to autostart"
-
-    print_status_log "SUCCESS" "Network '$net_name' created"
-  else
+  # virsh's own error goes to the step log, which install_step shows on failure.
+  if ! virsh net-define "$network_config" >/dev/null; then
+    rm -f "$network_config"
     print_status_log "ERROR" "Failed to create network '$net_name'"
     return 1
   fi
+  rm -f "$network_config"
+  print_status_log "SUCCESS" "Network '$net_name' defined"
 
-  rm -f "$network_config" 2>/dev/null || true
+  if ! virsh net-start "$net_name" >/dev/null; then
+    print_status_log "ERROR" "Network '$net_name' defined but could not start (${subnet}.0/24 or bridge $bridge_name in use?): virsh net-start $net_name"
+    return 1
+  fi
+
+  virsh net-autostart "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not set network to autostart"
+
+  print_status_log "SUCCESS" "Network '$net_name' created"
 }
+
+# Linux interface names are at most 15 bytes (IFNAMSIZ).
+valid_bridge_name() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 
 create_datacenter_network() {
   create_network "$NETWORK_NAME" "$BRIDGE_NAME"
@@ -874,8 +879,13 @@ main() {
     if [[ -n "$NETWORK_NAME_ARG" ]]; then
       net_name="$NETWORK_NAME_ARG"
       bridge_name="virbr-${net_name//[^a-zA-Z0-9]/}"
+      bridge_name="${bridge_name:0:15}"
     fi
-    create_network "$net_name" "$bridge_name"
+    if [[ ! "$net_name" =~ ^[A-Za-z0-9_.-]+$ ]] || ! valid_bridge_name "$bridge_name"; then
+      print_status_log "ERROR" "Invalid network name '$net_name' or bridge name '$bridge_name' (letters, digits, - _ .; a bridge at most 15)"
+      exit 1
+    fi
+    create_network "$net_name" "$bridge_name" || exit 1
     exit 0
   fi
 
@@ -944,6 +954,10 @@ dcvm_init() {
       echo "Please enter the bridge name for dcvm."
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+      if ! valid_bridge_name "$BRIDGE_NAME"; then
+        echo "Invalid bridge name: at most 15 letters, digits, - _ or . Using default: virbr-dc"
+        BRIDGE_NAME="virbr-dc"
+      fi
 
       echo "Network IP Configuration (default: 10.10.10.0/24)"
       echo "This determines the IP range for your VMs."
@@ -981,21 +995,24 @@ dcvm_init() {
 
   NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
 
-  for arg in "$@"; do
-    case $arg in
+  while [ $# -gt 0 ]; do
+    case $1 in
     --network-only) NETWORK_ONLY=1 ;;
-    --network-name=*) NETWORK_NAME_ARG="${arg#*=}" ;;
+    --network-name=*) NETWORK_NAME_ARG="${1#*=}" ;;
     --network-name)
-      [[ -n "${2:-}" ]] && NETWORK_NAME_ARG="$2" || {
+      [[ -n "${2:-}" && "$2" != -* ]] || {
         echo "Error: --network-name requires a value" >&2
         exit 1
       }
+      NETWORK_NAME_ARG="$2"
+      shift
       ;;
     esac
+    shift
   done
   echo ""
   print_status_log "INFO" "Executing dcvm installer..." >&2
-  main "$@"
+  main
 }
 
 if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] || [[ -z "${BASH_SOURCE[0]:-}" ]]; then
