@@ -12,6 +12,15 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `dcvm reap` keeps owner records while libvirt is not answering (#72).
+- `dcvm info <missing vm>` exits 1; `dcvm ssh/exec/cp` keep its exit code and work without `/usr/local/bin` in `PATH` (#73).
+- `dcvm exec`/`ssh`: remote command arguments can no longer be read as ssh options.
+- `dcvm fix-lock` really repairs the definition (only the VM's own disk), says when nothing changed, and keeps VNC passwords (#83).
+- `dcvm fix-lock` gives a running VM 60 seconds to shut down instead of 3.
+- `dcvm doctor` reports a disk as locked or a template as corrupt only when qemu-img says so (#83).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
