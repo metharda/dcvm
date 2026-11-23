@@ -201,7 +201,10 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
 - **Audit.** Every request is logged with its caller and decision
   (`/var/log/dcvm/audit.log`).
 - **What still connects users:** VMs share one bridge and can reach each
-  other, and the optional NFS share is one folder for every VM. Don't enable
+  other, and a guest can set any address on it, including another VM's.
+  dcvm refuses a static `--ip` or a port forward to an address another VM
+  holds, but it can't stop a guest's own network settings. The optional NFS
+  share is one folder for every VM. Don't enable
   the share on a host whose users don't trust each other. `dcvm-admin` is
   root-equivalent by design; so are the `libvirt`, `disk` and `docker` groups,
   which `dcvm doctor` warns about.

@@ -66,6 +66,8 @@ Admin only: `network` (start, stop, config, DHCP), `ports setup`/`apply`/`clear`
 `self-update`, `uninstall`, `user`, `owner`, `reap`, and `delete --all`.
 
 A user who tries anything else gets exit status 77 and a message that says why.
+A VM that isn't theirs gets the same answer as one that doesn't exist.
+`dcvm <command> --help` works for everyone and never runs the command.
 
 ## Ownership
 
