@@ -84,10 +84,10 @@ delete_single_vm() {
 
   virsh autostart "$VM_NAME" --disable >/dev/null 2>&1 || true
 
-  if ! virsh undefine "$VM_NAME" --remove-all-storage >/dev/null 2>&1; then
-    virsh undefine "$VM_NAME" >/dev/null 2>&1 || true
-    [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
-  fi
+  # Not --remove-all-storage: an attached ISO may be a shared file of root's.
+  # --nvram: libvirt refuses to undefine a UEFI VM that keeps its variables.
+  virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1 || true
+  [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
 
   remove_vm_storage_pool "$VM_NAME"
 

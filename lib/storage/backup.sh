@@ -1259,7 +1259,7 @@ restore_vm() {
     fi
 
     print_info "Removing existing VM definition (keeping storage)..."
-    virsh undefine "$vm_name" >/dev/null 2>&1 || true
+    virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
 
     print_info "Running fix-lock.sh for comprehensive cleanup..."
     if [ -x "$FIX_LOCK_SCRIPT" ]; then

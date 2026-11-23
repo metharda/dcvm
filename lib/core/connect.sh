@@ -32,6 +32,10 @@ print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i
     print_error "$1 is ${VM_STATE//_/ }; start it first: dcvm start $1"
     exit 1
   fi
+  if [ "$VM_USER" = - ]; then
+    print_error "dcvm doesn't know $1's login user (an ISO install); create it with -u <user>, or use ssh yourself"
+    exit 1
+  fi
   if [ "$VM_IP" = - ]; then
     print_error "$1 has no address yet; wait for it to boot (dcvm info $1)"
     exit 1

@@ -1124,7 +1124,8 @@ get_vm_mac() {
 get_vm_disk_path() {
   local vm_name="$1"
   local disk_path=""
-  disk_path=$(virsh domblklist "$vm_name" 2>/dev/null | grep -v "Target" | grep -v "^$" | awk '{print $2}' | head -1)
+  # Disks only: an attached ISO is never "the VM's disk" to back up or delete.
+  disk_path=$(virsh domblklist "$vm_name" --details 2>/dev/null | awk '$2 == "disk" { print $4; exit }')
   if [ -z "$disk_path" ]; then
     disk_path=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -oP "source file='\K[^']+(?=')" | head -1)
   fi
@@ -1329,6 +1330,24 @@ ip_held_by_other_vm() {
     [ -f "$f" ] && [ "${f##*/}" != "$vm.conf" ] && grep -qE "^IP=\"?${ip//./\\.}\"?$" "$f" && return 0
   done
   return 1
+}
+
+# `shift 2` fails without shifting when the value is missing; looping on it never ends.
+need_value() {
+  print_error "$1 needs a value"
+  exit 1
+}
+
+claim_static_ip() {
+  local vm="$1" ip="$2"
+  validate_ip_in_subnet "$ip" || return 1
+  if ip_held_by_other_vm "$ip" "$vm"; then
+    print_error "$ip is already used by another VM"
+    return 1
+  fi
+  mkdir -p "$DATACENTER_BASE/config/network" &&
+    printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$DATACENTER_BASE/config/network/$vm.conf"
 }
 
 size_gb() {

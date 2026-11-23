@@ -249,12 +249,12 @@ def new_vm_name(vm):
 
 
 CREATE_FLAGS = {"-f", "--force", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key",
-                "--json", "--wait"}
+                "--json", "--wait", "--uefi"}
 
 
 def parse_create(ctx, args, iso_mode):
     out, vm, i = [], None, 0
-    cpus, memory, disk = 2, 2048, 30
+    cpus, memory, disk = 2, 2048, 20 if iso_mode else 30
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
@@ -276,9 +276,9 @@ def parse_create(ctx, args, iso_mode):
             v, i = take_value(args, i, opt)
             if not SIZE.match(v):
                 raise Denied("--disk must look like 30G")
-            disk = size_gb(v, 30)
+            disk = size_gb(v, disk)
             out += ["-d", v.upper()]
-        elif opt in ("-u", "--username") and not iso_mode:
+        elif opt in ("-u", "--username"):
             v, i = take_value(args, i, opt)
             if not USERNAME.match(v):
                 raise Denied("invalid --username")
@@ -547,7 +547,12 @@ def stage_iso(ctx, fd, vm):
         raise Denied("the ISO must be a regular file")
     if st.st_size > MAX_ISO:
         raise Denied("the ISO is larger than 16 GB")
+    if not ctx.get("reserved") and vm_exists(vm):
+        raise Denied("VM %s already exists" % vm)
     base = read_config()["DATACENTER_BASE"]
+    fs = os.statvfs(base)
+    if fs.f_bavail * fs.f_frsize < st.st_size + 2 * 1024 ** 3:
+        raise Denied("not enough free space in %s for the ISO and a disk; ask an admin" % base)
     vm_dir = os.path.join(base, "vms", vm)
     os.makedirs(vm_dir, mode=0o711, exist_ok=True)
     os.chmod(vm_dir, 0o711)
@@ -796,6 +801,8 @@ def execute(ctx, conn, argv, req, fds):
         finally:
             if rc is None and ctx.get("reserved"):
                 release_reservation(ctx, vm)
+        if rc != 0 and ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
+            subprocess.run(["rm", "-rf", "--", ctx["staged_dir"]])
         if ctx.get("reserved"):
             entry = registry_read(vm) or {}
             if rc != 0 and not vm_exists(vm):

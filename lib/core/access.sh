@@ -18,7 +18,7 @@ show_whoami() {
 vm_login() {
   local login
   login=$(registry_get "$1" user)
-  [ -n "$login" ] || login=$(get_vm_username "$1")
+  [ -n "$login" ] || [ "$(registry_get "$1" source)" = iso ] || login=$(get_vm_username "$1")
   echo "$login"
 }
 
@@ -40,12 +40,12 @@ show_info() {
   if [ "$json" = --json ]; then
     printf '{"name":%s,"state":%s,"ip":%s,"user":%s,"owner":%s,"vcpus":%s,"memory_mb":%s,"protected":%s,"expires":%s,"created":%s}\n' \
       "$(json_str "$vm")" "$(json_str "$state")" "$([ -n "$ip" ] && json_str "$ip" || echo null)" \
-      "$(json_str "$(vm_login "$vm")")" "$(json_str "${owner:-root}")" "${cpus:-null}" "${mem:-null}" \
+      "$(login=$(vm_login "$vm") && [ -n "$login" ] && json_str "$login" || echo null)" "$(json_str "${owner:-root}")" "${cpus:-null}" "${mem:-null}" \
       "$([ "$protected" = 1 ] && echo true || echo false)" "${expires:-null}" "${created:-null}"
     return 0
   fi
   echo ""
-  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm")" \
+  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm" | grep . || echo "unknown (ISO install; create it with -u)")" \
     "Owner" "${owner:-root}" "Resources" "${cpus:-?} vCPU, ${mem:-?} MB" \
     "Protected" "$([ "$protected" = 1 ] && echo yes || echo no)" \
     "Expires" "$([ -n "$expires" ] && date -d "@$expires" '+%Y-%m-%d %H:%M' || echo never)"

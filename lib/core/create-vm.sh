@@ -45,6 +45,7 @@ FLAG_TAILSCALE_AUTHKEY=""
 FLAG_TTL=""
 FLAG_WAIT=false
 FLAG_JSON=false
+FLAG_UEFI=false
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-24.04-server-cloudimg-amd64.img"]=""
@@ -79,11 +80,16 @@ Options:
   --without-ssh-key              Password login only
   --tailscale-authkey <key>      Install Tailscale and join the tailnet
   --graphics <none|vnc|spice>    Display (default: none, VNC for OSes that need it)
+  --uefi                         UEFI firmware instead of BIOS
+  --ttl <90m|2h|3d>              Delete the VM after this long
+  --wait                         Return once SSH answers (up to 10 minutes)
+  --json                         Print the result as JSON on stdout
   -h, --help                     Show this help
 
 OS:
   1 Debian 13    2 Debian 12      3 Debian 11      4 Ubuntu 24.04
   5 Ubuntu 22.04 6 Ubuntu 20.04   7 Arch Linux     8 Kali Linux
+  9 Fedora 44
 
 Without -f, dcvm asks for every option you did not give.
 Packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale, or any other.
@@ -103,11 +109,11 @@ parse_arguments() {
     case $1 in
     -u | --username)
       FLAG_USERNAME="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -p | --password)
       FLAG_PASSWORD="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --enable-root)
       FLAG_ENABLE_ROOT="y"
@@ -120,35 +126,35 @@ parse_arguments() {
     -r | --root-password)
       FLAG_ROOT_PASSWORD="$2"
       FLAG_ENABLE_ROOT="y"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -m | --memory)
       FLAG_MEMORY="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -c | --cpus)
       FLAG_CPUS="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -o | --os)
       FLAG_OS="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -d | --disk)
       FLAG_DISK_SIZE="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -k | --packages)
       ADDITIONAL_PACKAGES="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --tailscale-authkey)
       FLAG_TAILSCALE_AUTHKEY="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --ip)
       FLAG_STATIC_IP="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --with-ssh-key)
       FLAG_WITH_SSH_KEY=true
@@ -168,7 +174,7 @@ parse_arguments() {
         exit 1
         ;;
       esac
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -f | --force)
       FORCE_MODE=true
@@ -176,10 +182,14 @@ parse_arguments() {
       ;;
     --ttl)
       FLAG_TTL="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --wait)
       FLAG_WAIT=true
+      shift
+      ;;
+    --uefi)
+      FLAG_UEFI=true
       shift
       ;;
     --json)
@@ -253,6 +263,21 @@ check_dependencies() {
   fi
 }
 
+# These configure a cloud image through cloud-init; an installer ISO would ignore them.
+iso_handoff_check() {
+  local opt
+  for opt in "${ADDITIONAL_PACKAGES:+-k}" "${FLAG_ROOT_PASSWORD:+-r}" "${FLAG_TAILSCALE_AUTHKEY:+--tailscale-authkey}" \
+    "$([ "$FLAG_ENABLE_ROOT" = y ] && echo --enable-root)"; do
+    [ -z "$opt" ] && continue
+    print_error "$opt does nothing with an ISO: the installer sets up the OS"
+    exit 1
+  done
+  if [ "${#VM_NAMES[@]}" -gt 1 ]; then
+    print_error "One VM per ISO create"
+    exit 1
+  fi
+}
+
 select_os() {
   [ "$FORCE_MODE" = true ] && [ -z "$VM_OS_CHOICE" ] && VM_OS_CHOICE="$DEFAULT_OS"
   if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == *.ISO ]] ||
@@ -260,12 +285,19 @@ select_os() {
     print_info "Detected ISO file - switching to custom ISO installation mode..."
     local force_flag=""
     [ "$FORCE_MODE" = true ] && force_flag="-f"
+    iso_handoff_check
+    [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
     exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
       ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
       ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
       ${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
       ${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
       ${FLAG_TTL:+--ttl "$FLAG_TTL"} \
+      ${FLAG_USERNAME:+-u "$FLAG_USERNAME"} \
+      ${FLAG_GRAPHICS:+--graphics "$FLAG_GRAPHICS"} \
+      $([ "$FLAG_UEFI" = true ] && echo --uefi) \
+      $([ "$FLAG_JSON" = true ] && echo --json) \
+      $([ "$FLAG_WAIT" = true ] && echo --wait) \
       $force_flag
     exit $?
   fi
@@ -341,12 +373,19 @@ select_os() {
       print_info "Detected ISO file - switching to custom ISO installation mode..."
       local force_flag=()
       [ "$FORCE_MODE" = true ] && force_flag=(-f)
+      iso_handoff_check
+    [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
       exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
         ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
         ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
         ${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
         ${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
         ${FLAG_TTL:+--ttl "$FLAG_TTL"} \
+        ${FLAG_USERNAME:+-u "$FLAG_USERNAME"} \
+        ${FLAG_GRAPHICS:+--graphics "$FLAG_GRAPHICS"} \
+        $([ "$FLAG_UEFI" = true ] && echo --uefi) \
+        $([ "$FLAG_JSON" = true ] && echo --json) \
+        $([ "$FLAG_WAIT" = true ] && echo --wait) \
         "${force_flag[@]}"
       exit $?
     fi
@@ -568,23 +607,8 @@ compute_incremental_ip() {
 
 setup_static_ip() {
   if [ -n "$FLAG_STATIC_IP" ]; then
-    if ! validate_ip_in_subnet "$FLAG_STATIC_IP"; then
-      exit 1
-    fi
-    if ip_held_by_other_vm "$FLAG_STATIC_IP" "$VM_NAME"; then
-      print_error "$FLAG_STATIC_IP is already used by another VM"
-      exit 1
-    fi
+    claim_static_ip "$VM_NAME" "$FLAG_STATIC_IP" || exit 1
     [ "$FORCE_MODE" = true ] && print_info "Static IP: $FLAG_STATIC_IP" || print_success "Using static IP: $FLAG_STATIC_IP"
-    if [ -n "${DATACENTER_BASE:-}" ] && [ -n "${VM_NAME:-}" ]; then
-      mkdir -p "$DATACENTER_BASE/config/network" 2>/dev/null || true
-      cat >"$DATACENTER_BASE/config/network/${VM_NAME}.conf" <<NETCONF
-VM_NAME="${VM_NAME}"
-IP="${FLAG_STATIC_IP}"
-ASSIGNED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-SOURCE="static"
-NETCONF
-    fi
   elif [ "$FORCE_MODE" != true ]; then
     interactive_prompt_static_ip
   fi
@@ -1441,7 +1465,7 @@ install_vm() {
     --virt-type kvm
     --memory "$VM_MEMORY"
     --vcpus "$VM_CPUS"
-    --boot hd,menu=on
+    --boot "$([ "$FLAG_UEFI" = true ] && echo uefi,)hd,menu=on"
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk"
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom"
     --graphics "$GRAPHICS"

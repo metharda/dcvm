@@ -14,6 +14,10 @@ BOOT_ORDER=""
 STATIC_IP=""
 COPY_ISO=""
 FORCE_MODE=false
+LOGIN_USER=""
+UEFI=false
+JSON=false
+WAIT=false
 
 show_usage() {
   ui_help <<EOF
@@ -27,16 +31,24 @@ Options:
   -m, --memory <MB>            Memory (asked if missing)
   -c, --cpus <N>               vCPUs (asked if missing)
   -d, --disk <SIZE>            Disk size, e.g. 20G (asked if missing)
-  --os-variant <name>          libosinfo variant, e.g. debian12
-  --graphics <vnc|spice|none>  Installer display (default vnc, on 127.0.0.1)
-  --boot <order>               Boot order (default cdrom,hd)
-  --ip <address>               Static IP to configure in the installer
+  --os-variant <name>          libosinfo variant, e.g. debian12 (default: detected, else generic)
+  --graphics <vnc|spice|none>  Display (default vnc, on 127.0.0.1)
+  --boot <order>               Boot order (default hd,cdrom)
+  --uefi                       UEFI firmware instead of BIOS
+  --ip <address>               Static IP you set in the installer
+  -u, --username <name>        Login user the installed OS has, for dcvm ssh/exec/cp
   --copy-iso                   Copy the ISO next to the VM's disk
   --ttl <90m|2h|3d>            Delete the VM after this long
+  --wait                       Return once SSH answers (up to 30 minutes)
+  --json                       Print the result as JSON on stdout
   -f, --force                  No questions: 2048 MB, 2 vCPUs, 20G disk unless given
   -h, --help                   Show this help
 
-You install the OS yourself over VNC or the console.
+The VM boots its disk first and the ISO while the disk is empty, so an
+installer's reboot lands in the installed OS and the VM keeps running. You
+install the OS over VNC or the console, or the ISO installs itself (an
+unattended or autoinstall ISO); with -u and your SSH key in the image,
+dcvm ssh/exec/cp work afterwards.
 
 Examples:
   dcvm create web -o /srv/iso/debian-13.iso
@@ -53,35 +65,39 @@ parse_args() {
       ;;
     --iso | -o)
       ISO_PATH="$2"
-      shift 2
+      shift 2 || need_value "$1"
+      ;;
+    --iso=*)
+      ISO_PATH="${1#--iso=}"
+      shift
       ;;
     -m | --memory)
       MEMORY="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -c | --cpus)
       CPUS="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -d | --disk)
       DISK_SIZE="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --os-variant)
       OS_VARIANT="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --graphics)
       GRAPHICS="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --boot)
       BOOT_ORDER="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --ip)
       STATIC_IP="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     --copy-iso)
       COPY_ISO="true"
@@ -91,13 +107,29 @@ parse_args() {
       FORCE_MODE=true
       shift
       ;;
+    -u | --username)
+      LOGIN_USER="$2"
+      shift 2 || need_value "$1"
+      ;;
+    --uefi)
+      UEFI=true
+      shift
+      ;;
+    --json)
+      JSON=true
+      shift
+      ;;
+    --wait)
+      WAIT=true
+      shift
+      ;;
     --ttl)
       TTL="$2"
-      shift 2
+      shift 2 || need_value "$1"
       ;;
     -*)
-      print_warning "Unknown option ignored: $1"
-      shift
+      print_error "Unknown option: $1 (dcvm create-iso --help)"
+      exit 1
       ;;
     *)
       if [ -z "$VM_NAME" ]; then
@@ -156,11 +188,11 @@ interactive_prompt_boot_order() {
   cat <<-EOF
 	
 	Boot order determines which device boots first.
-	  cdrom,hd = CD-ROM first, then hard disk (default for install)
-	  hd,cdrom = Hard disk first, then CD-ROM
+	  hd,cdrom = the disk, or the ISO while the disk is empty (default)
+	  cdrom,hd = always the ISO first (the installer starts again on every boot)
 	EOF
-  read -p "Boot order [cdrom,hd]: " BOOT_ORDER || exit 1
-  BOOT_ORDER=${BOOT_ORDER:-cdrom,hd}
+  read -p "Boot order [hd,cdrom]: " BOOT_ORDER || exit 1
+  BOOT_ORDER=${BOOT_ORDER:-hd,cdrom}
 }
 
 interactive_prompt_copy_iso() {
@@ -230,10 +262,12 @@ prompt_iso_path() {
     print_error "Pass the ISO as a file: dcvm create-iso $VM_NAME --iso <file.iso>"
     exit 1
   fi
+  ISO_PATH="${ISO_PATH/#\~/$HOME}"
   if [ ! -f "$ISO_PATH" ]; then
     print_error "ISO file not found: $ISO_PATH"
     exit 1
   fi
+  ISO_PATH=$(realpath "$ISO_PATH")
 }
 
 show_iso_header() {
@@ -301,11 +335,9 @@ copy_iso_if_needed() {
 }
 
 validate_iso_size() {
-  local iso_size
-  iso_size=$(stat -c%s "$INSTALL_ISO" 2>/dev/null || stat -f%z "$INSTALL_ISO" 2>/dev/null || echo 0)
-  if [ "$iso_size" -lt 10485760 ]; then
-    print_warning "ISO file is smaller than expected ($(($iso_size / 1048576))MB). It may not be a valid installer ISO."
-    print_info "Some netinstall ISOs can be small, but verify the file is correct before continuing."
+  # ISO 9660 (also the bridge in UDF installer ISOs) puts CD001 at byte 32769.
+  if [ "$(dd if="$INSTALL_ISO" bs=1 skip=32769 count=5 2>/dev/null)" != CD001 ]; then
+    print_warning "$(basename "$INSTALL_ISO") doesn't look like an ISO 9660 image; the VM may not boot it"
   fi
 }
 
@@ -313,9 +345,10 @@ check_iso_accessibility() {
   local check_path="${ISO_PATH:-$INSTALL_ISO}"
   local iso_realpath
   iso_realpath=$(realpath "$check_path" 2>/dev/null || echo "$check_path")
-  if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]]; then
+  # virt-install splits its options on commas, so such a path can't be passed.
+  if [[ "$iso_realpath" =~ ^/root/ ]] || [[ "$iso_realpath" =~ ^/home/[^/]+/ ]] || [[ "$iso_realpath" == *,* ]]; then
     if [ "$COPY_ISO" != "true" ]; then
-      ui_step warn "ISO" "in a home folder libvirt cannot read; copying it next to the disk"
+      ui_step warn "ISO" "in a home folder or a path with a comma; copying it next to the disk"
       COPY_ISO="true"
       copy_iso_if_needed
     fi
@@ -337,7 +370,7 @@ create_vm_disk() {
 
 # --boot and --graphics reach virt-install's option parser: free text can name host files.
 validate_iso_options() {
-  GRAPHICS=${GRAPHICS:-vnc} BOOT_ORDER=${BOOT_ORDER:-cdrom,hd}
+  GRAPHICS=${GRAPHICS:-vnc} BOOT_ORDER=${BOOT_ORDER:-hd,cdrom}
   case "$GRAPHICS" in none | vnc | spice) ;; *)
     print_error "Graphics must be none, vnc or spice"
     exit 1
@@ -356,18 +389,39 @@ validate_iso_options() {
     print_error "Invalid static IP: $STATIC_IP"
     exit 1
   fi
+  if [[ ! "$LOGIN_USER" =~ ^([a-z_][a-z0-9_-]{0,31})?$ ]]; then
+    print_error "Invalid username: $LOGIN_USER"
+    exit 1
+  fi
+  DISK_SIZE=${DISK_SIZE^^}
+  if [[ ! "$MEMORY" =~ ^[0-9]+$ ]] || [ "$MEMORY" -lt 512 ]; then
+    print_error "Memory must be at least 512 (MB)"
+    exit 1
+  fi
+  if [[ ! "$CPUS" =~ ^[1-9][0-9]{0,2}$ ]]; then
+    print_error "vCPUs must be a number from 1"
+    exit 1
+  fi
+  if [[ ! "$DISK_SIZE" =~ ^[1-9][0-9]*[GMT]$ ]]; then
+    print_error "Disk size must look like 20G"
+    exit 1
+  fi
 }
 
 build_virt_install_opts() {
   validate_iso_options
+  # Windows installers have no virtio drivers; libosinfo picks buses they know.
+  local bus=",bus=virtio" nic=",model=virtio"
+  [[ "$OS_VARIANT" == win* ]] && bus="" nic=""
   VIRT_INSTALL_OPTS=(
     --name "$VM_NAME"
     --memory "$MEMORY"
     --vcpus "$CPUS"
-    --disk "path=$DISK_PATH,format=qcow2,bus=virtio"
-    --network "network=$NETWORK_NAME,model=virtio"
-    --cdrom "$INSTALL_ISO"
-    --boot "$BOOT_ORDER"
+    --disk "path=$DISK_PATH,format=qcow2$bus"
+    --disk "path=$INSTALL_ISO,device=cdrom,readonly=on"
+    --network "network=$NETWORK_NAME$nic"
+    --boot "$([ "$UEFI" = true ] && echo uefi,)$BOOT_ORDER"
+    --import
     --noautoconsole
   )
 
@@ -388,11 +442,15 @@ run_virt_install() {
   ui_run "Starting VM" "${cmd[@]}" || {
     ui_step fail "VM" "virt-install failed"
     sed 's/^/    /' "$UI_RUN_LOG" | tail -10
+    grep -qi 'uefi\|firmware' "$UI_RUN_LOG" && [ "$UEFI" = true ] &&
+      echo -e "  ${DIM}UEFI needs OVMF on the host: ovmf (Debian, Ubuntu) or edk2-ovmf (Fedora, Arch)${NC}"
     exit 1
   }
-  register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")" \
+  DEFINED=true
+  virsh autostart "$VM_NAME" >/dev/null 2>&1 || true
+  register_vm "$VM_NAME" "source=iso" "user=$LOGIN_USER" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")" \
     "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
-  ui_step ok "VM" "defined and booting the installer"
+  ui_step ok "VM" "defined and booting the ISO"
   [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
 }
 
@@ -420,12 +478,48 @@ show_post_creation_info() {
     ui_box "$VM_NAME is running the installer" "$(printf '%-11s%s' Network "DHCP on $NETWORK_NAME")"
   fi
   if [ "$GRAPHICS" = "none" ]; then
-    ui_next "dcvm console $VM_NAME" "the installer, on the serial console" \
-      "dcvm network ports setup" "after the install: reach it from other machines"
+    ui_next "dcvm console $VM_NAME" "the installer, on the serial console (if the ISO uses one)" \
+      "dcvm network ports add $VM_NAME" "after the install: reach it from other machines"
   else
     ui_next "dcvm network vnc status $VM_NAME" "the VNC port of the installer (127.0.0.1 only)" \
-      "dcvm network ports setup" "after the install: reach it from other machines"
+      "dcvm network ports add $VM_NAME" "after the install: reach it from other machines"
   fi
+}
+
+print_result() {
+  local ip="" ready=null vnc=""
+  if [ "$WAIT" = true ]; then
+    if ip=$(wait_for_vm "$VM_NAME" 1800); then
+      ready=true
+      ui_step ok "Ready" "SSH answers on $ip"
+    else
+      ready=false
+      ui_step warn "Ready" "SSH did not answer within 30 minutes; the VM exists (dcvm info $VM_NAME)"
+    fi
+  fi
+  [ "$JSON" = true ] || {
+    show_post_creation_info
+    [ "$ready" != false ]
+    return
+  }
+  [ -n "$ip" ] || ip=$(get_vm_ip "$VM_NAME")
+  valid_vm_ip "$ip" || ip=""
+  [ "$GRAPHICS" = none ] || vnc=$(virsh vncdisplay "$VM_NAME" 2>/dev/null | head -1)
+  printf '{"name":"%s","state":"%s","ip":%s,"user":%s,"expires":%s,"ready":%s,"vnc":%s,"vnc_password":%s}\n' \
+    "$VM_NAME" "$(get_vm_state "$VM_NAME")" "$([ -n "$ip" ] && echo "\"$ip\"" || echo null)" \
+    "$([ -n "$LOGIN_USER" ] && echo "\"$LOGIN_USER\"" || echo null)" "$(registry_get "$VM_NAME" expires | grep . || echo null)" \
+    "$ready" "$([ -n "$vnc" ] && echo "\"$vnc\"" || echo null)" "$([ -n "${VNC_PW:-}" ] && echo "\"$VNC_PW\"" || echo null)" >&3
+  [ "$ready" != false ]
+}
+
+# Undo a create that stopped half way: everything here was made by this run.
+undo_on_failure() {
+  [ $? -ne 0 ] && [ "${STARTED:-false}" = true ] && [ "${DEFINED:-false}" = false ] || return
+  virsh destroy "$VM_NAME" >/dev/null 2>&1
+  virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1
+  rm -f "$DATACENTER_BASE/config/network/$VM_NAME.conf" "${DISK_PATH:-}"
+  [ "$COPY_ISO" = true ] || [ "$ISO_PATH" = "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ] && rm -f "$DATACENTER_BASE/vms/$VM_NAME/installer.iso"
+  rmdir "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
 }
 
 main() {
@@ -436,11 +530,13 @@ main() {
     exit 1
   fi
   [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && FORCE_MODE=true
+  [ "$JSON" = true ] && exec 3>&1 1>&2
 
   if [ -z "$VM_NAME" ]; then
     show_usage
     exit 1
   fi
+  validate_vm_name "$VM_NAME" || exit 1
 
   prompt_iso_path
   validate_vm_not_exists
@@ -454,6 +550,12 @@ main() {
     confirm_creation
   fi
   within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
+  validate_iso_options
+  STARTED=true
+  trap undo_on_failure EXIT
+  if [ -n "$STATIC_IP" ]; then
+    claim_static_ip "$VM_NAME" "$STATIC_IP" || exit 1
+  fi
   check_iso_dependencies
   prepare_vm_directory
   copy_iso_if_needed
@@ -463,7 +565,7 @@ main() {
   build_virt_install_opts
   run_virt_install
   save_vm_info
-  show_post_creation_info
+  print_result
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

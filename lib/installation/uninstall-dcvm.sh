@@ -37,7 +37,7 @@ main() {
     [[ -z "$vm_name" ]] && continue
     if virsh domiflist "$vm_name" 2>/dev/null | grep -q "$NETWORK_NAME"; then
       virsh destroy "$vm_name" >/dev/null 2>&1 || true
-      virsh undefine "$vm_name" --remove-all-storage >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
+      virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
       deleted_count=$((deleted_count + 1))
     fi
   done

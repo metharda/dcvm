@@ -2265,6 +2265,29 @@ test_backup_exact_id_visibility() {
   rm -rf "$t"
 }
 
+test_iso_create_options() {
+  local t r="" opts
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\nprintf " Type Device Target Source\\n----\\n file cdrom hda /srv/iso/x.iso\\n file disk vda /srv/vm/vm-disk.qcow2\\n"\n' >"$t/bin/virsh"
+  chmod +x "$t/bin/virsh"
+  iso() { (source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1 && "$@") 2>&1; }
+  opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
+  grep -q -- '--disk path=/i,device=cdrom,readonly=on' <<<"$opts" && grep -q -- '--boot hd,cdrom' <<<"$opts" && grep -q -- '--import' <<<"$opts" &&
+    ! grep -q -- '--cdrom' <<<"$opts" && r+="boot "
+  opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G UEFI=true OS_VARIANT=win10 build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
+  grep -q -- '--boot uefi,hd,cdrom' <<<"$opts" && grep -q -- '--disk path=/d,format=qcow2 ' <<<"$opts" && grep -q -- '--network network=n ' <<<"$opts" && r+="uefi-win "
+  grep -q 'needs a value' <<<"$(timeout 5 bash -c 'source "$1/../core/custom-iso.sh" >/dev/null 2>&1; parse_args web --iso' _ "$SCRIPT_DIR" 2>&1)" && r+="no-loop "
+  grep -q 'Unknown option' <<<"$(iso parse_args web --bogus)" && r+="unknown "
+  [ "$(PATH="$t/bin:$PATH" get_vm_disk_path vm)" = /srv/vm/vm-disk.qcow2 ] && r+="disk-not-iso "
+  if [ "$r" = "boot uefi-win no-loop unknown disk-not-iso " ]; then
+    log_test "PASS" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors"
+  else
+    log_test "FAIL" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors" "$r | $(tr '\n' ' ' <<<"$opts" | cut -c1-300)"
+  fi
+  rm -rf "$t"
+}
+
 test_list_owner_column() {
   local t out_root out_user out_json
   t=$(mktemp -d)
@@ -2929,6 +2952,7 @@ test_common_functions() {
   test_help_never_acts
   test_forward_cleanup_exact_ip
   test_backup_exact_id_visibility
+  test_iso_create_options
   test_base_builds
   test_doctor_report
   test_backup_list_columns

@@ -313,10 +313,10 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2 python3)
-  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2 python)
+  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2 python3 ovmf)
+  local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2 python edk2-ovmf)
 
-  local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz python3)
+  local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz python3 edk2-ovmf)
 
   local family manager
   family=$(distro_family)
