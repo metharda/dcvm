@@ -12,6 +12,15 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `backup export` refuses a descriptor that isn't a regular file opened for writing (#82).
+- Ctrl-C exits 130 and a module killed by a signal 128+N, not 241; a client outside the `dcvm` group exits 77 (#73).
+- VMs created by a `dcvm-admin` get the admin's SSH key (#74).
+- A cancelled create no longer leaves a VM marked ready; its name, quota and staged ISO are freed (#80).
+- In-place `backup restore` checks the quota (#79).
+- `dcvm backup export ... --full` works over the socket (#71).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
