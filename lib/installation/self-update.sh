@@ -13,7 +13,7 @@ BACKUP_DIR="/var/lib/dcvm/backups"
 LOG_FILE="/var/log/dcvm-update.log"
 KEEP_UPDATE_BACKUPS=3
 
-require_root
+case " $* " in *" --help "* | *" -h "*) ;; *) require_root ;; esac
 
 create_backup_dir() {
   if [[ ! -d "$BACKUP_DIR" ]]; then

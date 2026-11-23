@@ -2234,6 +2234,31 @@ STUB
   rm -rf "$t"
 }
 
+test_help_never_acts() {
+  local t f out bad=""
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  for f in virsh virt-install iptables qemu-img ssh systemctl; do
+    printf '#!/bin/bash\necho "%s $*" >>"%s/ran"\n' "$f" "$t" >"$t/bin/$f"
+    chmod +x "$t/bin/$f"
+  done
+  for f in "delete web --help" "start web -h" "stop all --help" "backup create web --help" "restore web --help" \
+    "network stop --help" "network ports clear --help" "network dhcp renew --help" "network vnc enable web -h" \
+    "fix-lock web --help" "storage --help" "uninstall --help" "reap --help" "owner web bob --help" \
+    "template download ubuntu --help" "create web -p x --help" "self-update --help" "list --help"; do
+    # shellcheck disable=SC2086
+    out=$(PATH="$t/bin:$PATH" DCVM_LIB_DIR="$SCRIPT_DIR/.." bash "$SCRIPT_DIR/../../dcvm" $f </dev/null 2>&1) &&
+      grep -qi 'usage\|dcvm ' <<<"$out" || bad+="$f; "
+  done
+  [ -f "$t/ran" ] && bad+="ran: $(tr '\n' ' ' <"$t/ran")"
+  if [ -z "$bad" ]; then
+    log_test "PASS" "a help flag anywhere shows help and runs nothing"
+  else
+    log_test "FAIL" "a help flag anywhere shows help and runs nothing" "$bad"
+  fi
+  rm -rf "$t"
+}
+
 test_registry_visibility() {
   local t r=""
   t=$(mktemp -d)
@@ -2841,6 +2866,7 @@ test_common_functions() {
   test_socket_policy
   test_registry_visibility
   test_list_owner_column
+  test_help_never_acts
   test_base_builds
   test_doctor_report
   test_backup_list_columns

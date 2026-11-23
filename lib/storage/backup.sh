@@ -1755,7 +1755,7 @@ main() {
     exit 0
   fi
 
-  if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
+  if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" || "${2:-}" == "--help" ]]; then
     show_help
     exit 0
   fi

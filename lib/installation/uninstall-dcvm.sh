@@ -6,6 +6,10 @@ source "$SCRIPT_DIR/../utils/common.sh"
 CONFIG_FILE="/etc/dcvm-install.conf"
 
 main() {
+  if [ "${1:-}" = --help ]; then
+    echo "Usage: dcvm uninstall     Delete every dcvm VM, all backups, the network, the services and dcvm itself (asks first)"
+    exit 0
+  fi
   if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
   else

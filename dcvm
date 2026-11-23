@@ -17,7 +17,31 @@ if [ ! -f "$LIB_DIR/utils/common.sh" ]; then
 fi
 source "$LIB_DIR/utils/common.sh"
 
-if [ "$(id -u)" -ne 0 ]; then
+wants_help() {
+  local a
+  for a in "$@"; do
+    [ "$a" = -- ] && return 1
+    case "$a" in -h | --help) return 0 ;; esac
+  done
+  return 1
+}
+
+# A help flag anywhere shows only help: other arguments must never run an action.
+DCVM_HELP=false
+case "${1:-}" in
+"" | help | -h | --help | version | -v | --version | ssh | exec | cp) ;;
+*)
+  if wants_help "${@:2}"; then
+    DCVM_HELP=true
+    case "$1:${2:-}" in
+    network:ports | network:dhcp | network:vnc) set -- network "$2" --help ;;
+    *) set -- "$1" --help ;;
+    esac
+  fi
+  ;;
+esac
+
+if [ "$(id -u)" -ne 0 ] && [ "$DCVM_HELP" = false ]; then
   case "${1:-}" in
   "" | help | -h | --help | version | -v | --version | ssh | exec | cp) ;;
   *) exec python3 -I -S "$LIB_DIR/server/dcvm-client.py" "$@" ;;

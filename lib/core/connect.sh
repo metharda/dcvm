@@ -46,11 +46,12 @@ main() {
   case "$cmd" in
   ssh | exec)
     local vm="${1:-}"
-    [ -n "$vm" ] && [ "$vm" != --help ] || {
+    case "$vm" in "" | -h | --help)
       usage
       [ -n "$vm" ]
       return
-    }
+      ;;
+    esac
     shift
     [ "${1:-}" = -- ] && shift
     if [ "$cmd" = exec ] && [ $# -eq 0 ]; then
@@ -66,6 +67,11 @@ main() {
     exec ssh "${opts[@]}" -t "$VM_USER@$VM_IP" "$@"
     ;;
   cp)
+    case "${1:-}" in -h | --help)
+      usage
+      return 0
+      ;;
+    esac
     [ $# -eq 2 ] || {
       usage
       return 1

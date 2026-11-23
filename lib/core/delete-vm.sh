@@ -183,6 +183,18 @@ delete_all_vms() {
 }
 
 main() {
+  if [ "${1:-}" = --help ]; then
+    ui_help <<EOF
+dcvm delete - delete a VM with its disk, DHCP lease, port forwards and static IP
+
+Usage:
+  dcvm delete <vm> [--yes]    One VM; without a terminal, users need --yes
+  dcvm delete --all           Every dcvm VM (asks twice; admins only)
+
+Backups are kept. A protected VM is refused until: dcvm unprotect <vm>
+EOF
+    exit 0
+  fi
   load_dcvm_config
   [ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
 

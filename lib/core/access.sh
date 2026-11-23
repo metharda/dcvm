@@ -157,10 +157,25 @@ set_owner() {
   ui_done ok "$vm now belongs to $name" "its existing backups stay with their owner"
 }
 
+usage() {
+  case "$1" in
+  info) echo "Usage: dcvm info <vm> [--json]     State, IP, login user, owner, resources, expiry" ;;
+  whoami) echo "Usage: dcvm whoami [--json]        Your dcvm user and role (root, admin or user)" ;;
+  protect | unprotect) echo "Usage: dcvm protect <vm> | dcvm unprotect <vm>    A protected VM refuses delete and restore" ;;
+  reap) echo "Usage: dcvm reap                  Delete VMs whose --ttl has passed (admins; the timer runs it every 5 minutes)" ;;
+  user) echo "Usage: dcvm user add <user> [--admin] | remove <user> | list    Who may use dcvm without root (admins)" ;;
+  owner) echo "Usage: dcvm owner <vm> <user>     Hand a VM to another user (admins)" ;;
+  esac
+}
+
 main() {
-  load_dcvm_config
   local cmd="$1"
   shift
+  if [ "${1:-}" = --help ]; then
+    usage "$cmd"
+    exit 0
+  fi
+  load_dcvm_config
   case "$cmd" in
   whoami) show_whoami "$@" ;;
   info) [ -n "${1:-}" ] && show_info "$@" || print_error "Usage: dcvm info <vm> [--json]" ;;

@@ -21,9 +21,6 @@ phase_done() {
   PHASE_ERRORS=$step_errors
 }
 
-check_permissions
-check_dependencies virsh lsof
-
 fix_vm_locks() {
   local vm_name="$1"
   local step_errors=0
@@ -345,6 +342,12 @@ fix_vm_locks() {
 }
 
 main() {
+  if [ "${1:-}" = --help ]; then
+    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
+    exit 0
+  fi
+  check_permissions
+  check_dependencies virsh lsof
   VM_NAME="$1"
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1

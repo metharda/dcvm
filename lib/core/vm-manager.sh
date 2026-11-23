@@ -263,7 +263,25 @@ show_enhanced_status() {
   echo ""
 }
 
+usage() {
+  ui_help <<EOF
+dcvm list | status | start | stop | restart | console
+
+Usage:
+  dcvm list [--json]          VMs with owner, state, IP, vCPU and memory
+  dcvm status                 The same, plus the network and port forwards
+  dcvm start [vm|all]         One VM, or every dcvm VM (yours, without root)
+  dcvm stop [vm|all]          Shut down one VM, or every dcvm VM
+  dcvm restart [vm|all]       Restart one VM, or every dcvm VM
+  dcvm console [vm]           Serial console of a VM (exit with Ctrl+]); without a name, access hints
+EOF
+}
+
 main() {
+  if [ "${2:-}" = --help ]; then
+    usage
+    exit 0
+  fi
   load_dcvm_config
 
   case $1 in

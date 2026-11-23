@@ -335,6 +335,11 @@ def fd_ref(ctx, value):
 def decide_user(ctx, argv):
     if not argv:
         raise Denied("no command")
+    for a in argv:
+        if a == "--":
+            break
+        if a in ("-h", "--help"):
+            raise Denied("help is shown by your dcvm command itself: dcvm %s --help" % argv[0])
     cmd, args = argv[0], argv[1:]
     json_flag = [a for a in args if a == "--json"]
     plain = [a for a in args if a != "--json"]

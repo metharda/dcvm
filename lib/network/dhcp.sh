@@ -252,6 +252,11 @@ EOF
 }
 
 main() {
+  case "${1:-}" in help | --help | -h)
+    dhcp_help
+    exit 0
+    ;;
+  esac
   load_dcvm_config
   require_root
   check_dependencies virsh
