@@ -14,8 +14,10 @@ SSH and delete it, without root. Your account must be in the `dcvm` group
 - Set the password in `DCVM_PASSWORD`; `-p` works too, but other users can see
   it in `ps`. Without a terminal dcvm never asks questions: a missing value is
   an error that names the option, and defaults are used for the rest.
-- `--wait` returns once SSH answers, with `"ready":true`. If SSH doesn't answer
-  within 10 minutes it exits 1 with `"ready":false`; the VM still exists.
+- `--wait` returns once SSH accepts connections, with `"ready":true`; you can
+  log in then, but packages from `-k` may still be installing
+  (`dcvm exec t1 -- cloud-init status --wait` waits for them). If SSH doesn't
+  answer within 10 minutes it exits 1 with `"ready":false`; the VM still exists.
 - `--ttl` deletes the VM by itself (`90m`, `2h`, `3d`), so a crashed run leaves
   nothing behind. The reaper runs every 5 minutes.
 - `dcvm exec`, `dcvm ssh` and `dcvm cp` use your own SSH key (`~/.ssh`); dcvm
@@ -40,8 +42,8 @@ The ISO must install itself (an unattended or autoinstall ISO) and set up
 SSH with your public key for the user you name with `-u`; dcvm doesn't
 configure the OS inside. The VM boots its disk, or the ISO while the disk is
 empty, so the installer's reboot lands in the installed OS. `--wait` waits up
-to 30 minutes for SSH. The JSON adds `"vnc"` and `"vnc_password"` to watch
-the installer. Without `-u`, `"user"` is null and `ssh`/`exec`/`cp` refuse.
+to 30 minutes for SSH. The JSON adds `"display"` (e.g. `vnc://127.0.0.1:1`) and
+`"display_password"` to watch the installer. Without `-u`, `"user"` is null and `ssh`/`exec`/`cp` refuse.
 
 ## Read state as JSON
 
@@ -53,7 +55,7 @@ the installer. Without `-u`, `"user"` is null and `ssh`/`exec`/`cp` refuse.
 
 start, stop, restart, console, backup create|list|restore|delete|export,
 protect / unprotect (refuses delete and restore), network ports add|remove|show
-(forward SSH and HTTP from the host), network vnc enable|status (VNC with a
+(forward SSH and HTTP from the host), network vnc enable|disable|status (VNC with a
 password), fix-lock.
 
 ## Exit codes

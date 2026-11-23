@@ -50,10 +50,11 @@ The VM's `cloud-init/` folder is created with mode 700 (root only).
 `cloud-init.iso`, built from it, stays in the VM folder because QEMU has to
 read it; it contains the same `user-data`.
 
-**SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the host root
-user's `~/.ssh/id_rsa.pub` to the VM user's `authorized_keys`, creating a
-4096-bit RSA key pair without a passphrase first if there is none. Anyone who
-can use that private key can log in to every dcvm VM on the host.
+**SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the creator's
+public key to the VM user's `authorized_keys`: for root, `~/.ssh/id_rsa.pub`
+(a 4096-bit RSA key pair without a passphrase is created first if there is
+none); for a user, their own key, created as ed25519 if they have none.
+Anyone who can use root's private key can log in to every VM root created.
 
 ## Guest defaults
 
@@ -116,7 +117,7 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
   or `<file>.SHA256`, looked up on the mirror it came from and on the other
   mirrors that serve the same file name (the official servers publish them
-  for all eight images). A download that matches no published checksum is
+  for all nine images). A download that matches no published checksum is
   discarded and the next mirror is tried. If no mirror publishes a checksum,
   dcvm keeps the file and prints `download not verified`. GPG signatures are
   not checked, so a checksum file only proves the download is intact and is

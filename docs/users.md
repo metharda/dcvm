@@ -57,7 +57,7 @@ On their own VMs:
 | `protect`, `unprotect` | A protected VM refuses `delete` and `restore` |
 | `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `export` writes to a file in the user's own folder |
 | `network ports add`, `remove`, `show` | Forwards SSH and HTTP for one VM from dcvm's port ranges |
-| `network vnc enable`, `status` | VNC gets a random password, shown only to the VM's owner |
+| `network vnc enable`, `disable`, `status` | VNC gets a random password, shown only to the VM's owner |
 | `fix-lock` | Without restarting libvirt, which serves every user |
 | `template list` | A missing image is downloaded when `create` needs it |
 
@@ -106,7 +106,7 @@ would go over a limit is refused before anything is created.
 `dcvm help agents` prints a short guide written for agents. The usual flow:
 
 ```bash
-dcvm create t1 --ttl 2h --wait --json        # returns once SSH answers
+dcvm create t1 --ttl 2h --wait --json        # returns once SSH accepts connections
 dcvm cp ./project t1:/home/ubuntu/project
 dcvm exec t1 -- 'cd project && make test'    # exits with the test's status
 dcvm delete t1 --yes

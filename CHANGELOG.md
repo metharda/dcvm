@@ -58,13 +58,17 @@ history, so the commit or PR is listed for each release.
   empty, in a single definition: the installer's reboot lands in the
   installed OS and the VM keeps running. Before, the reboot powered the VM
   off, and restarting it mid-install lost the ISO.
+- `delete --all` no longer removes the folder and disk of a VM it refused
+  (a protected VM) or failed to delete, and `delete` keeps the disk when
+  libvirt won't remove the VM.
 - UEFI VMs can be deleted. Deleting a VM no longer lets libvirt remove
   storage, which could have taken a shared ISO with it.
 - An option without its value (`dcvm create web -m`) no longer loops
   forever. `create-iso` refuses unknown options; `create -o file.iso`
   refuses options only cloud images use.
 - A failed `create-iso` removes what it made; ISOs with a comma in their
-  path work; `win*` OS variants get devices Windows installers know.
+  path work; ISO VMs get the disk and network devices the detected OS has
+  drivers for, so Windows installers see their disk.
 
 ## [0.9.10] - 2026-11-23
 

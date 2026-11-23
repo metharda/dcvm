@@ -40,7 +40,7 @@ or an agent run by a user), dcvm never asks: a missing value is an error that
 names the option, and the password can come from `DCVM_PASSWORD`.
 
 ```bash
-dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH answers
+dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH accepts connections
 ```
 
 - `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
@@ -68,7 +68,7 @@ dcvm create myvm \
 - `-m, --memory`: Memory in MB (default: 2048)
 - `-c, --cpus`: Number of CPUs (default: 2)
 - `-d, --disk`: Disk size (default: 30G)
-- `-o, --os`: OS choice (1=Debian13, 2=Debian12, 3=Debian11, 4=Ubuntu24.04, 5=Ubuntu22.04, 6=Ubuntu20.04, 7=ArchLinux, 8=KaliLinux)
+- `-o, --os`: OS choice (1=Debian13, 2=Debian12, 3=Debian11, 4=Ubuntu24.04, 5=Ubuntu22.04, 6=Ubuntu20.04, 7=ArchLinux, 8=KaliLinux, 9=Fedora44)
 - `--ip`: Static IP address (e.g., 10.10.10.50) - uses DHCP if not specified
 
 Note about multiple VMs and `--ip`:
@@ -111,6 +111,11 @@ The wizard will prompt you for:
 - Boot order
 - Static IP (optional)
 
+The summary before "Create it?" shows the login user dcvm will use for
+`ssh`/`exec`/`cp`; the wizard doesn't ask for it, so pass `-u <user>` if the
+installed OS has one you want dcvm to use. `--uefi` and `--ttl` are options
+only.
+
 #### ISO Mode with Options
 ```bash
 dcvm create-iso archvm --iso /path/to/archlinux.iso \
@@ -123,14 +128,15 @@ dcvm create-iso archvm --iso /path/to/archlinux.iso \
 ```
 
 **ISO Options:**
-- `--iso`: Path to installer ISO (required; `-o` on `dcvm create`)
+- `--iso`: Path to installer ISO (`-o` on `dcvm create`; root is asked for it if missing)
 - `-m, --memory`: Memory in MB (default 2048)
 - `-c, --cpus`: Number of CPUs (default 2)
 - `-d, --disk`: Disk size, e.g. 20G (default 20G)
 - `--graphics`: vnc, spice, or none (default: vnc, on 127.0.0.1)
 - `--os-variant`: libosinfo variant (e.g., ubuntu24.04, win11, archlinux);
-  detected from the ISO when left out, generic if unknown. A `win*` variant
-  uses disk and network devices Windows installers know
+  detected from the ISO when left out, generic if unknown. The disk and
+  network devices are the ones that OS has drivers for (SATA and e1000e for
+  Windows and unknown ISOs, virtio for recognized Linux)
 - `--boot`: Boot order (default: hd,cdrom)
 - `--uefi`: UEFI firmware instead of BIOS (needs OVMF: `ovmf`, or
   `edk2-ovmf` on Fedora and Arch)
@@ -194,6 +200,9 @@ dcvm start myvm
 ```bash
 dcvm stop myvm
 ```
+
+`dcvm start`, `stop` and `restart` without a VM name act on every dcvm VM
+(for a user, every VM of theirs), without asking.
 
 ### Restarting a VM
 
@@ -634,7 +643,7 @@ dcvm uninstall
 > [!WARNING]
 > **Uninstalling DCVM is destructive and cannot be undone.** `dcvm uninstall` asks for confirmation first, then will:
 >
-> - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
+> - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks under the install directory. Disks or ISOs a VM uses from elsewhere on the host are left in place.
 > - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`.
 > - Remove the dcvm network, port-forwarding rules, DHCP leases, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
 > - Delete `/var/log/datacenter-startup.log`.
