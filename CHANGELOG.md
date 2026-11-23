@@ -65,7 +65,11 @@ history, so the commit or PR is listed for each release.
   storage, which could have taken a shared ISO with it.
 - An option without its value (`dcvm create web -m`) no longer loops
   forever. `create-iso` refuses unknown options; `create -o file.iso`
-  refuses options only cloud images use.
+  refuses options only cloud images use, including `-p`.
+- `dcvm fix-lock --all` no longer stops libvirt VMs that aren't dcvm's.
+  Declining `dcvm network dhcp renew` no longer renews every lease anyway.
+  Restore refuses to replace a protected VM for root and admins too.
+- `-k default-mysql-server` on Fedora installs MariaDB.
 - A failed `create-iso` removes what it made; ISOs with a comma in their
   path work; ISO VMs get the disk and network devices the detected OS has
   drivers for, so Windows installers see their disk.

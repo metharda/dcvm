@@ -127,7 +127,7 @@ backup puts the VM back exactly as it was.
   keeps its MAC address and IP. `dcvm backup restore web latest web2` creates
   a second VM with new MACs, hostname, machine-id and SSH host keys.
 - **Portable.** `dcvm backup export` packs a backup into a `.tar.gz` without
-  your `authorized_keys`; `dcvm backup import` restores it on another dcvm
+  your `authorized_keys` (with libguestfs-tools installed); `dcvm backup import` restores it on another dcvm
   host.
 - The 5 most recent backups of each VM are kept.
 

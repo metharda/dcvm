@@ -46,8 +46,8 @@ dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once S
 - `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
   minutes by `dcvm-reaper.timer`).
 - `--wait` returns only once the VM answers on SSH.
-- `--json` prints one JSON object on stdout (`name`, `state`, `ip`, `user`,
-  `expires`); progress goes to stderr.
+- `--json` prints one JSON object per VM on stdout (`name`, `state`, `ip`,
+  `user`, `expires`, `ready`); progress goes to stderr.
 
 #### Custom Configuration
 ```bash
@@ -134,9 +134,10 @@ dcvm create-iso archvm --iso /path/to/archlinux.iso \
 - `-d, --disk`: Disk size, e.g. 20G (default 20G)
 - `--graphics`: vnc, spice, or none (default: vnc, on 127.0.0.1)
 - `--os-variant`: libosinfo variant (e.g., ubuntu24.04, win11, archlinux);
-  detected from the ISO when left out, generic if unknown. The disk and
-  network devices are the ones that OS has drivers for (SATA and e1000e for
-  Windows and unknown ISOs, virtio for recognized Linux)
+  detected from the ISO when left out, generic if unknown. dcvm sets no disk
+  bus or network model: virt-install picks devices the OS variant has
+  drivers for (virtio for a recognized Linux, older emulated devices such as
+  IDE or SATA and e1000 for Windows or an unknown ISO)
 - `--boot`: Boot order (default: hd,cdrom)
 - `--uefi`: UEFI firmware instead of BIOS (needs OVMF: `ovmf`, or
   `edk2-ovmf` on Fedora and Arch)
@@ -167,8 +168,9 @@ dcvm create-iso runner --iso ./runner.iso -u runner --uefi --ttl 4h --wait --jso
 dcvm exec runner -- 'uname -a'
 ```
 
-`-k`, `-r`, `--enable-root` and `--tailscale-authkey` configure cloud images
-and are refused with an ISO.
+`-p`, `-k`, `-r`, `--enable-root` and `--tailscale-authkey` configure cloud
+images and are refused with an ISO. Secrets in the environment
+(`DCVM_PASSWORD` and the others) are ignored for an ISO create.
 
 ### Listing VMs
 
@@ -232,7 +234,10 @@ dcvm delete --all    # every dcvm VM; asks you to type yes and a random number
 > [!WARNING]
 > `dcvm delete <vm>` does not ask for confirmation. It stops the VM and removes
 > its disk, cloud-init files, DHCP lease and reservation, port forwards and
-> static IP record. Backups are kept.
+> static IP record. Backups are kept. If libvirt refuses to remove the VM
+> (for example, because it has snapshots), the VM stays defined and stopped
+> with its disk, without its forwards and lease, and delete exits 1 with
+> libvirt's reason.
 
 ## Network Management
 
@@ -298,7 +303,7 @@ dcvm backup create myvm
 ```
 
 Shuts the VM down, copies its disk and configuration to
-`$DATACENTER_BASE/backups`, and starts it again. The 5 most recent backups of
+`$DATACENTER_BASE/backups`, and starts it again if it was running. The 5 most recent backups of
 each VM are kept.
 
 ### Restore a VM
@@ -410,8 +415,8 @@ sftp ubuntu@<vm-ip>
 If you enabled the NFS share when installing (the installer asks; the default
 is no), VMs mount `$DATACENTER_BASE/nfs-share` at `/mnt/shared`. Every user
 of every VM reads and writes there as one unprivileged account (`dcvm-nfs`),
-so any VM can change or delete any file in it. On the host the folder is
-readable by root only. Read [Security](security.md#network-exposure) before
+so any VM can change or delete any file in it. On the host the folder
+belongs to `dcvm-nfs` with mode 700, so no other host user can read it. Read [Security](security.md#network-exposure) before
 enabling it.
 
 ```bash
@@ -451,6 +456,7 @@ Database server installed:
 | Ubuntu 20.04/22.04/24.04 | MySQL (`mysql-server`, service `mysql`) | `default-mysql-server` (MySQL, service `mysql`) |
 | Debian 11/12/13, Kali Linux | MariaDB (`mariadb-server`, service `mariadb`) | `default-mysql-server` (MariaDB, service `mariadb`) |
 | Arch Linux | MariaDB (`mariadb`, service `mariadb`) | MariaDB (`mariadb`, service `mariadb`) |
+| Fedora 44 | MariaDB (`mariadb-server`, service `mariadb`) | MariaDB (`mariadb-server`, service `mariadb`) |
 
 Database accounts:
 

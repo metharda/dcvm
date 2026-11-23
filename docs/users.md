@@ -115,7 +115,9 @@ dcvm delete t1 --yes
 - Without a terminal dcvm never asks: a missing value is an error that names
   the option. The password comes from `DCVM_PASSWORD`.
 - `--ttl` (`90m`, `2h`, `3d`) deletes the VM by itself; `dcvm-reaper.timer`
-  checks every 5 minutes, so a crashed agent leaves nothing behind.
+  checks every 5 minutes, so a crashed agent leaves nothing behind (a
+  protected VM is skipped, and a VM busy with another command waits for the
+  next run).
 - `dcvm list --json`, `dcvm info <vm> --json` and `dcvm whoami --json` give
   state for scripts.
 - An agent in a sandbox that blocks `sudo` (the "no new privileges" flag)
