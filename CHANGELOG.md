@@ -12,6 +12,14 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `backup restore` checks the backup, base build and quota before it touches the existing VM, stops a paused VM too, and puts the old VM back if define fails (#75).
+- In-place `backup restore` checks the quota (#79).
+- `backup import` refuses to overwrite an existing backup and never deletes one it did not create (#75).
+- `backup export` writes to the caller's file through the descriptor, never by reopening it as root (#82).
+- `backup export` accepts `latest` and `<vm>-<id>` (#71).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
