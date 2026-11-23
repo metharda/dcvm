@@ -61,7 +61,12 @@ set_protected() {
 }
 
 reap_expired() {
-  local f vm expires now count=0
+  local f vm expires now names count=0
+  # One listing, not a lookup per VM: without libvirt every VM looks gone, and its record would be lost.
+  names=$(virsh list --all --name 2>/dev/null) || {
+    echo "dcvm reap: libvirt is not answering; trying again next run" >&2
+    return 1
+  }
   now=$(date +%s)
   for f in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
     [ -f "$f" ] || continue
@@ -71,7 +76,7 @@ reap_expired() {
     if [ "$(registry_get "$vm" protected)" = 1 ]; then
       continue
     fi
-    if check_vm_exists "$vm"; then
+    if grep -qxF -- "$vm" <<<"$names"; then
       # The server holds this lock while a user works on the VM; a busy VM waits for the next run.
       mkdir -p -m 700 /run/dcvm/locks
       if flock -n "/run/dcvm/locks/vm-$vm" "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1; then
@@ -175,7 +180,13 @@ main() {
   load_dcvm_config
   case "$cmd" in
   whoami) show_whoami "$@" ;;
-  info) [ -n "${1:-}" ] && show_info "$@" || print_error "Usage: dcvm info <vm> [--json]" ;;
+  info)
+    [ -n "${1:-}" ] || {
+      print_error "Usage: dcvm info <vm> [--json]"
+      return 1
+    }
+    show_info "$@"
+    ;;
   protect) set_protected "${1:?Usage: dcvm protect <vm>}" 1 ;;
   unprotect) set_protected "${1:?Usage: dcvm unprotect <vm>}" 0 ;;
   reap)

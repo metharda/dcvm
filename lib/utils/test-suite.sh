@@ -3079,6 +3079,148 @@ test_doctor_report() {
   fi
 }
 
+# shellcheck disable=SC2317,SC2030,SC2031,SC2034 # stubs; globals read by doctor.sh
+test_doctor_lock_checks() {
+  local t f out
+  t=$(mktemp -d)
+  mkdir -p "$t/bin" "$t/templates" "$t/state/vms"
+  for f in good bad unreadable; do : >"$t/templates/$f.qcow2"; done
+  : >"$t/locked.qcow2"
+  : >"$t/denied.qcow2"
+  cat >"$t/bin/qemu-img" <<'STUB'
+#!/bin/bash
+case "$1 ${*: -1}" in
+"check "*bad*) exit 2 ;;
+"check "*unreadable*) exit 1 ;;
+"info "*locked*) echo "qemu-img: Could not open 'x': Failed to get shared \"write\" lock" >&2 && exit 1 ;;
+"info "*denied*) echo "qemu-img: Could not open 'x': Permission denied" >&2 && exit 1 ;;
+esac
+STUB
+  chmod +x "$t/bin/qemu-img"
+  out=$(
+    source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+    PATH="$t/bin:$PATH" TERM=dumb QUIET=true DATACENTER_BASE="$t" DCVM_STATE_DIR="$t/state"
+    templates_dir() { echo "$t/templates"; }
+    vm_disks() { printf 'locked\t%s\t-\ndenied\t%s\t-\n' "$t/locked.qcow2" "$t/denied.qcow2"; }
+    is_vm_in_network() { :; }
+    get_vm_state() { echo "shut off"; }
+    base_status() { echo "ok|fine"; }
+    virsh() { :; }
+    check_vms
+    check_storage
+  ) 2>&1
+  if grep -q 'locked.*disk is locked although the VM is off' <<<"$out" && grep -q 'denied.*cannot read its disk: .*Permission denied' <<<"$out" &&
+    ! grep -q 'denied.*fix-lock' <<<"$out" && grep -q 'corrupt: bad.qcow2 ' <<<"$out" && grep -q 'could not check unreadable.qcow2' <<<"$out"; then
+    log_test "PASS" "doctor calls a disk locked or a template corrupt only when qemu-img says so"
+  else
+    log_test "FAIL" "doctor calls a disk locked or a template corrupt only when qemu-img says so" "$(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_reap_needs_libvirt() {
+  local t r=""
+  t=$(mktemp -d)
+  r=$(
+    DCVM_STATE_DIR="$t"
+    eval "$(sed -n '/^reap_expired()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    registry_set gone "expires=1"
+    registry_set alive "expires=1"
+    mkdir() { :; }
+    flock() {
+      echo "${*: -1}" >"$t/flocked"
+      return 1
+    }
+    virsh() { return 1; }
+    reap_expired 2>/dev/null
+    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && echo kept
+    virsh() { [ "$*" = "list --all --name" ] && echo alive; }
+    reap_expired
+    [ -f "$t/vms/gone" ] || echo gone-removed
+    [ -f "$t/vms/alive" ] && [ "$(cat "$t/flocked")" = alive ] && echo alive-kept
+  )
+  if [ "$(tr '\n' ' ' <<<"$r")" = "kept gone-removed alive-kept " ]; then
+    log_test "PASS" "the TTL reaper keeps every owner record while libvirt is not answering"
+  else
+    log_test "FAIL" "the TTL reaper keeps every owner record while libvirt is not answering" "$(tr '\n' ' ' <<<"$r")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_info_and_connect_exit() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/a/b" "$t/bin"
+  printf '#!/bin/bash\n[ -n "$FAKE_OK" ] && echo %s && exit 0\necho "you have no VM named $2" >&2\nexit 77\n' \
+    "'{\"name\":\"t1\",\"state\":\"running\",\"ip\":\"10.0.0.5\",\"user\":\"u\",\"created\":1}'" >"$t/dcvm"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s/argv"\n' "$t" >"$t/bin/ssh"
+  chmod +x "$t/dcvm" "$t/bin/ssh"
+  (
+    eval "$(sed -n '/^show_info()/,/^}/p; /^main()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    load_dcvm_config() { :; }
+    virsh() { return 1; }
+    main info nosuch >/dev/null 2>&1 || echo missing-fails
+    main info >/dev/null 2>&1 || echo usage-fails
+  ) >"$t/out"
+  conn() { (eval "$(sed -n '/^resolve_vm()/,/^}/p; /^ssh_opts()/,/^}/p; /^main()/,/^}/p' "$SCRIPT_DIR/../core/connect.sh")" &&
+    SCRIPT_DIR="$t/a/b" HOME="$t" PATH="$t/bin:$PATH" && main "$@") 2>&1 </dev/null; }
+  out=$(conn exec t1 -- true)
+  [ $? -eq 77 ] && ! grep -qi 'json\|traceback' <<<"$out" && echo exit-77 >>"$t/out"
+  (export FAKE_OK=1 && conn exec t1 -- -oProxyCommand=evil) >/dev/null
+  [ "$(grep -A2 -x 'u@10.0.0.5' "$t/argv" | tr '\n' ' ')" = "u@10.0.0.5 -- -oProxyCommand=evil " ] && echo exec-ends-options >>"$t/out"
+  rm -f "$t/argv"
+  (export FAKE_OK=1 && conn ssh t1 -oProxyCommand=evil) >/dev/null
+  [ "$(grep -A2 -x 'u@10.0.0.5' "$t/argv" | tr '\n' ' ')" = "u@10.0.0.5 -- -oProxyCommand=evil " ] && echo ssh-ends-options >>"$t/out"
+  r=$(tr '\n' ' ' <"$t/out")
+  if [ "$r" = "missing-fails usage-fails exit-77 exec-ends-options ssh-ends-options " ]; then
+    log_test "PASS" "dcvm info fails for a missing VM; ssh/exec keep its exit code and pass nothing as an ssh option"
+  else
+    log_test "FAIL" "dcvm info fails for a missing VM; ssh/exec keep its exit code and pass nothing as an ssh option" "$r"
+  fi
+  rm -rf "$t"
+}
+
+test_fix_lock_definition() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "fix-lock definition repair (python3 not installed)"
+    return
+  fi
+  local t r="" out
+  t=$(mktemp -d)
+  cat >"$t/vm.xml" <<'XML'
+<domain type='kvm'>
+  <name>web</name>
+  <metadata><libosinfo:libosinfo xmlns:libosinfo='http://libosinfo.org/xmlns/libvirt/domain/1.0'><libosinfo:os id='http://ubuntu.com/ubuntu/24.04'/></libosinfo:libosinfo></metadata>
+  <devices>
+    <disk type='file' device='disk'><driver name='qemu' type='raw' cache='writeback'/><source file='/srv/vms/web/web-disk.qcow2'/><target dev='sda' bus='sata'/><address type='drive' controller='0' bus='0' target='0' unit='0'/></disk>
+    <disk type='file' device='disk'><driver name='qemu' type='raw' cache='none'/><source file='/srv/data.img'/><target dev='sdb' bus='sata'/></disk>
+    <disk type='file' device='cdrom'><source file='/srv/vms/web/cloud-init.iso'/><target dev='sdc' bus='sata'/></disk>
+  </devices>
+</domain>
+XML
+  cp "$t/vm.xml" "$t/iso.xml"
+  (
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" = "CD-ROM removed, cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
+    cp "$t/vm.xml" "$t/again.xml"
+    [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
+    [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false)" = "cache setting removed, disk read as qcow2" ] && echo iso
+  ) >"$t/out"
+  out=$(tr -d '\n' <"$t/vm.xml")
+  grep -q "target dev=.vda. bus=.virtio." <<<"$out" && ! grep -q "cdrom\|writeback\|type=.drive." <<<"$out" &&
+    grep -q "cache=.none.*target dev=.sdb. bus=.sata." <<<"$out" && grep -q "libosinfo:os" <<<"$out" && echo xml >>"$t/out"
+  grep -q "cdrom" "$t/iso.xml" && grep -q "dev=.sda. bus=.sata." "$t/iso.xml" && echo iso-xml >>"$t/out"
+  r=$(tr '\n' ' ' <"$t/out")
+  if [ "$r" = "cloud unchanged iso xml iso-xml " ]; then
+    log_test "PASS" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed"
+  else
+    log_test "FAIL" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed" "$r"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -3282,6 +3424,10 @@ test_common_functions() {
   test_iso_create_options
   test_base_builds
   test_doctor_report
+  test_doctor_lock_checks
+  test_reap_needs_libvirt
+  test_info_and_connect_exit
+  test_fix_lock_definition
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
