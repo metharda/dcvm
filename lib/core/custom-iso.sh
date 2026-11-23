@@ -32,9 +32,11 @@ Options:
   --boot <order>               Boot order (default cdrom,hd)
   --ip <address>               Static IP to configure in the installer
   --copy-iso                   Copy the ISO next to the VM's disk
+  --ttl <90m|2h|3d>            Delete the VM after this long
+  -f, --force                  No questions: 2048 MB, 2 vCPUs, 20G disk unless given
   -h, --help                   Show this help
 
-You install the OS yourself over VNC or the console, so there is no -f mode.
+You install the OS yourself over VNC or the console.
 
 Examples:
   dcvm create web -o /srv/iso/debian-13.iso
@@ -89,6 +91,10 @@ parse_args() {
       FORCE_MODE=true
       shift
       ;;
+    --ttl)
+      TTL="$2"
+      shift 2
+      ;;
     -*)
       print_warning "Unknown option ignored: $1"
       shift
@@ -116,7 +122,7 @@ interactive_prompt_graphics() {
 	  3) None (text console only)
 	EOF
   while true; do
-    read -p "Select graphics [1]: " choice
+    read -p "Select graphics [1]: " choice || exit 1
     choice=${choice:-1}
     case "$choice" in
     1)
@@ -143,7 +149,7 @@ interactive_prompt_os_variant() {
 	Common variants: ubuntu22.04, ubuntu20.04, debian12, debian11, fedora39, centos9, win10, win11
 	Leave empty for generic settings, or run 'osinfo-query os' for full list.
 	EOF
-  read -p "OS variant (optional): " OS_VARIANT
+  read -p "OS variant (optional): " OS_VARIANT || exit 1
 }
 
 interactive_prompt_boot_order() {
@@ -153,14 +159,14 @@ interactive_prompt_boot_order() {
 	  cdrom,hd = CD-ROM first, then hard disk (default for install)
 	  hd,cdrom = Hard disk first, then CD-ROM
 	EOF
-  read -p "Boot order [cdrom,hd]: " BOOT_ORDER
+  read -p "Boot order [cdrom,hd]: " BOOT_ORDER || exit 1
   BOOT_ORDER=${BOOT_ORDER:-cdrom,hd}
 }
 
 interactive_prompt_copy_iso() {
   [ "$(caller_role)" = root ] || return 0
   echo ""
-  read -p "Copy ISO to VM directory? (y/N): " copy_choice
+  read -p "Copy ISO to VM directory? (y/N): " copy_choice || exit 1
   if [[ "$copy_choice" =~ ^[Yy]$ ]]; then
     COPY_ISO="true"
   else
@@ -178,7 +184,7 @@ interactive_prompt_static_ip() {
   echo ""
 
   while true; do
-    read -p "Use static IP? (y/N, default: DHCP): " use_static
+    read -p "Use static IP? (y/N, default: DHCP): " use_static || exit 1
     use_static=${use_static:-n}
 
     if [[ "$use_static" =~ ^[Nn]$ ]]; then
@@ -187,7 +193,7 @@ interactive_prompt_static_ip() {
       break
     elif [[ "$use_static" =~ ^[Yy]$ ]]; then
       while true; do
-        read -p "Enter static IP (e.g., ${subnet}.50): " STATIC_IP
+        read -p "Enter static IP (e.g., ${subnet}.50): " STATIC_IP || exit 1
         if [ -z "$STATIC_IP" ]; then
           print_error "IP address cannot be empty"
           continue
@@ -218,7 +224,7 @@ prompt_iso_path() {
       exit 1
     fi
     echo ""
-    read -p "Enter path to ISO file: " ISO_PATH
+    read -p "Enter path to ISO file: " ISO_PATH || exit 1
   fi
   if [ "$(caller_role)" != root ] && [ "$ISO_PATH" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
     print_error "Pass the ISO as a file: dcvm create-iso $VM_NAME --iso <file.iso>"
@@ -370,7 +376,7 @@ build_virt_install_opts() {
   else
     VIRT_INSTALL_OPTS+=(--graphics "$GRAPHICS,listen=127.0.0.1") # VNC listens on 127.0.0.1 for security - use SSH tunnel for remote access
   fi
-  [ -n "$OS_VARIANT" ] && VIRT_INSTALL_OPTS+=(--os-variant "$OS_VARIANT")
+  VIRT_INSTALL_OPTS+=(--os-variant "${OS_VARIANT:-detect=on,require=off}")
 }
 
 run_virt_install() {
@@ -384,7 +390,8 @@ run_virt_install() {
     sed 's/^/    /' "$UI_RUN_LOG" | tail -10
     exit 1
   }
-  register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")"
+  register_vm "$VM_NAME" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")" \
+    "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
   ui_step ok "VM" "defined and booting the installer"
   [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
 }
@@ -424,11 +431,11 @@ show_post_creation_info() {
 main() {
   load_dcvm_config
   parse_args "$@"
-
-  if [ "$FORCE_MODE" = true ]; then
-    print_error "-f does not work with an ISO: you install the OS yourself. Run it again without -f."
+  if [ -n "${TTL:-}" ] && ! TTL_SECONDS=$(ttl_seconds "$TTL"); then
+    print_error "--ttl must look like 90m, 2h or 3d"
     exit 1
   fi
+  [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && FORCE_MODE=true
 
   if [ -z "$VM_NAME" ]; then
     show_usage
@@ -438,9 +445,15 @@ main() {
   prompt_iso_path
   validate_vm_not_exists
   show_iso_header
-  collect_vm_options
-  show_vm_summary
-  confirm_creation
+  if [ "$FORCE_MODE" = true ]; then
+    MEMORY=${MEMORY:-2048} CPUS=${CPUS:-2} DISK_SIZE=${DISK_SIZE:-20G} COPY_ISO=${COPY_ISO:-false}
+    show_vm_summary
+  else
+    collect_vm_options
+    show_vm_summary
+    confirm_creation
+  fi
+  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
   check_iso_dependencies
   prepare_vm_directory
   copy_iso_if_needed

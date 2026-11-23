@@ -565,6 +565,11 @@ main() {
   done
   load_dcvm_config
   require_root
+  # Modules run doctor after a failure; its checks cover every user's VMs.
+  if [ "$(caller_role)" = user ]; then
+    echo -e "  ${DIM}If this keeps failing, an admin can check the host: dcvm doctor${NC}"
+    return 0
+  fi
 
   local area
   if $SUMMARY; then

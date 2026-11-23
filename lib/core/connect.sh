@@ -20,14 +20,18 @@ Examples:
 EOF
 }
 
-VM_IP="" VM_USER="" VM_ALIAS=""
+VM_IP="" VM_USER="" VM_ALIAS="" VM_STATE=""
 resolve_vm() {
   local info
   info=$("$(command -v dcvm || echo "$SCRIPT_DIR/../../dcvm")" info "$1" --json) || exit 1
-  read -r VM_IP VM_USER VM_ALIAS < <(python3 -I -S -c '
+  read -r VM_IP VM_USER VM_ALIAS VM_STATE < <(python3 -I -S -c '
 import json, sys
 i = json.loads(sys.stdin.read())
-print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i.get("created") or 0))' <<<"$info")
+print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i.get("created") or 0), (i.get("state") or "-").replace(" ", "_"))' <<<"$info")
+  if [ "$VM_STATE" != running ]; then
+    print_error "$1 is ${VM_STATE//_/ }; start it first: dcvm start $1"
+    exit 1
+  fi
   if [ "$VM_IP" = - ]; then
     print_error "$1 has no address yet; wait for it to boot (dcvm info $1)"
     exit 1
@@ -64,7 +68,7 @@ main() {
     if [ "$cmd" = exec ]; then
       exec ssh "${opts[@]}" -o BatchMode=yes -T "$VM_USER@$VM_IP" "$@"
     fi
-    exec ssh "${opts[@]}" -t "$VM_USER@$VM_IP" "$@"
+    exec ssh "${opts[@]}" "$([ -t 0 ] && echo -t || echo -T)" "$VM_USER@$VM_IP" "$@"
     ;;
   cp)
     case "${1:-}" in -h | --help)

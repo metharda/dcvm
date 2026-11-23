@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -24,21 +25,28 @@ def fail(msg, code=1):
 
 def pull_secrets(argv):
     out, secrets, i = [], {}, 0
+    creating = argv[:1] in (["create"], ["create-iso"])
     while i < len(argv):
         a = argv[i]
         opt, eq, val = a.partition("=")
-        if opt in SECRET_OPTS and argv[:1] in (["create"], ["create-iso"]):
+        if opt not in SECRET_OPTS and a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--"):
+            opt, eq, val = a[:2], "=", a[2:]
+        if opt in SECRET_OPTS:
+            if not creating:
+                fail("%s only goes with create" % opt)
             if not eq:
-                if i + 1 >= len(argv):
-                    fail("%s needs a value" % opt)
+                if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                    fail("%s needs a value (or use %s=VALUE)" % (opt, opt))
                 val = argv[i + 1]
                 i += 1
+            if not val or "\n" in val or len(val) > 4096:
+                fail("%s must be 1-4096 characters on one line" % opt)
             secrets[SECRET_OPTS[opt]] = val
         else:
             out.append(a)
         i += 1
     for var, key in SECRET_ENV.items():
-        if os.environ.get(var) and key not in secrets and argv[:1] in (["create"], ["create-iso"]):
+        if os.environ.get(var) and key not in secrets and creating:
             secrets[key] = os.environ[var]
     return out, secrets
 
@@ -46,7 +54,6 @@ def pull_secrets(argv):
 class Files:
     def __init__(self):
         self.fds = [0, 1, 2]
-        self.cleanup = []
         self.rename = None
 
     def add(self, fd):
@@ -56,9 +63,13 @@ class Files:
 
 def open_input(files, path, what):
     try:
-        fd = os.open(os.path.expanduser(path), os.O_RDONLY)
+        # O_NONBLOCK so a FIFO can't hang us; only regular files are passed on.
+        fd = os.open(os.path.expanduser(path), os.O_RDONLY | os.O_NONBLOCK)
     except OSError as e:
         fail("cannot open %s %s: %s" % (what, path, e.strerror))
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        fail("%s %s is not a regular file" % (what, path))
+    os.set_blocking(fd, True)
     return files.add(fd)
 
 
@@ -80,9 +91,17 @@ def attach_files(argv, files):
                         out[i + 1] = ref
                 break
     elif cmd == "create-iso":
+        seen = False
         for i, a in enumerate(out):
-            if a == "--iso" and i + 1 < len(out):
-                out[i + 1] = open_input(files, out[i + 1], "ISO")
+            opt, eq, val = a.partition("=")
+            if opt == "--iso" and (eq or i + 1 < len(out)):
+                if seen:
+                    fail("give --iso once")
+                seen = True
+                if eq:
+                    out[i] = "--iso=" + open_input(files, val, "ISO")
+                else:
+                    out[i + 1] = open_input(files, out[i + 1], "ISO")
     elif cmd in ("import",) or out[:2] == ["backup", "import"]:
         k = 1 if cmd == "import" else 2
         if len(out) > k:
@@ -90,17 +109,22 @@ def attach_files(argv, files):
     elif out[:2] == ["backup", "export"] and len(out) >= 3:
         rest = out[2:]
         dest = "."
-        if len(rest) >= 2 and os.path.isdir(os.path.expanduser(rest[-1])):
+        if len(rest) == 3 or (len(rest) == 2 and ("/" in rest[1] or rest[1] in (".", "..", "~"))):
             dest = rest.pop()
+            if not os.path.isdir(os.path.expanduser(dest)):
+                fail("%s is not a folder" % dest)
         vm = rest[0]
         label = rest[1] if len(rest) > 1 else "latest"
-        name = os.path.join(os.path.expanduser(dest), "%s-%s.tar.gz" % (vm, label))
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z", vm) or not re.match(r"^[0-9A-Za-z._:-]{1,64}\Z", label):
+            fail("usage: dcvm backup export <vm> [id|latest] [folder]")
+        name = os.path.join(os.path.expanduser(dest), "%s-%s.tar.gz" % (vm, label.replace(":", "")))
+        if os.path.exists(name):
+            fail("%s already exists" % name)
         tmp = name + ".part"
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except OSError as e:
             fail("cannot create %s: %s" % (tmp, e.strerror))
-        files.cleanup.append(tmp)
         files.rename = (tmp, name)
         out = out[:2] + rest + [files.add(fd)]
     return out
@@ -110,13 +134,18 @@ def public_key():
     home = os.path.expanduser("~")
     for name in ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"):
         path = os.path.join(home, ".ssh", name)
-        if os.path.isfile(path):
+        try:
             with open(path) as f:
                 return f.read(16384).strip()
+        except OSError:
+            continue
     key = os.path.join(home, ".ssh", "id_ed25519")
-    os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
+    if os.path.exists(key):
+        print("dcvm: %s has no readable .pub file; the VM gets no SSH key of yours" % key, file=sys.stderr)
+        return None
     try:
-        made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key],
+        os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
+        made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key], stdin=subprocess.DEVNULL,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except OSError:
         made = False
@@ -160,13 +189,25 @@ def main(argv):
         if key:
             req["pubkey"] = key
     data = json.dumps(req).encode()
+    if len(data) > 262144:
+        fail("the command is too long")
+    try:
+        sys.exit(talk(data, files))
+    finally:
+        if files.rename and os.path.exists(files.rename[0]):
+            os.unlink(files.rename[0])
+
+
+def talk(data, files):
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         conn.connect(SOCKET)
     except FileNotFoundError:
-        fail("the dcvm service is not running (%s missing); ask an admin to run: sudo dcvm doctor --fix" % SOCKET)
+        fail("the dcvm service is not running (%s missing); ask an admin to run: sudo dcvm doctor --fix" % SOCKET, 70)
     except PermissionError:
         fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"))
+    except OSError as e:
+        fail("cannot reach the dcvm service at %s: %s; ask an admin to run: sudo dcvm doctor --fix" % (SOCKET, e.strerror), 70)
     conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
     for fd in files.fds[3:]:
         os.close(fd)
@@ -182,21 +223,36 @@ def main(argv):
             print("\ndcvm: cancelling (an operation that changes a VM finishes safely first); Ctrl-C again to leave",
                   file=sys.stderr)
         else:
+            if files.rename and os.path.exists(files.rename[0]):
+                os.unlink(files.rename[0])
             os._exit(130)
 
+    def on_term(sig, _frame):
+        sys.exit(128 + sig)
+
     signal.signal(signal.SIGINT, on_int)
-    head = recv_exact(conn, 4)
-    resp = json.loads(recv_exact(conn, struct.unpack(">I", head)[0]).decode()) if head else {"exit": 1}
-    rc = resp.get("exit", 1)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGHUP, on_term)
+    try:
+        head = recv_exact(conn, 4)
+        resp = json.loads(recv_exact(conn, struct.unpack(">I", head)[0]).decode())
+        rc = resp["exit"]
+        if not isinstance(rc, int):
+            raise ValueError
+    except (ValueError, TypeError, KeyError, AttributeError, OSError, struct.error):
+        fail("the dcvm service ended without an answer; ask an admin to check: journalctl -u 'dcvm@*'", 70)
+    if rc == 70 and resp.get("error"):
+        print("error: %s" % resp["error"], file=sys.stderr)
     if files.rename:
         tmp, name = files.rename
         if rc == 0 and os.path.getsize(tmp) > 0:
             os.replace(tmp, name)
             print("dcvm: exported to %s" % name, file=sys.stderr)
-        else:
-            os.unlink(tmp)
-    sys.exit(rc if isinstance(rc, int) else 1)
+    return rc
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except KeyboardInterrupt:
+        sys.exit(130)

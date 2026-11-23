@@ -23,6 +23,12 @@ delete_single_vm() {
   local VM_NAME="$1"
 
   if ! check_vm_exists "$VM_NAME"; then
+    # A record left by a create that never finished still holds the name and quota.
+    if [ -f "$(registry_file "$VM_NAME")" ] && [ ! -d "$DATACENTER_BASE/vms/$VM_NAME" ]; then
+      registry_remove "$VM_NAME"
+      ui_done ok "$VM_NAME deleted" "only its record was left"
+      return 0
+    fi
     print_error "VM $VM_NAME does not exist"
     return 1
   fi
@@ -126,7 +132,7 @@ delete_single_vm() {
     fi
   fi
 
-  return 0
+  ! check_vm_exists "$VM_NAME"
 }
 delete_all_vms() {
   local vms vm count failed=0
@@ -147,10 +153,10 @@ delete_all_vms() {
   print_warning "Deletes these VMs with their disks, DHCP leases, port forwards and static IPs. Backups are kept."
   echo ""
   local confirm code
-  read -r -p "  Type 'yes' to continue: " confirm
+  read -r -p "  Type 'yes' to continue: " confirm || exit 1
   [ "$confirm" != "yes" ] && echo "  Cancelled." && return 0
   code=$(shuf -i 1000-9999 -n 1)
-  read -r -p "  Type $code to confirm: " confirm
+  read -r -p "  Type $code to confirm: " confirm || exit 1
   [ "$confirm" != "$code" ] && echo "  Cancelled." && return 0
 
   while read -r vm <&3; do
@@ -206,6 +212,7 @@ EOF
     delete_single_vm "$1"
     ;;
   esac
+  local rc=$?
 
   prune_builds >/dev/null
 
@@ -213,6 +220,7 @@ EOF
   remaining=$(list_datacenter_vms | awk -F': ' '{ gsub(/^ +| +$/, "", $1); printf "%s%s (%s)", sep, $1, $2; sep = ", " }')
   echo -e "  ${DIM}Remaining VMs: ${remaining:-none}${NC}"
   echo ""
+  return "$rc"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

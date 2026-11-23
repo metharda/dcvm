@@ -79,8 +79,12 @@ reap_expired() {
       continue
     fi
     if check_vm_exists "$vm"; then
-      "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1 && count=$((count + 1))
-      log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
+      # The server holds this lock while a user works on the VM; a busy VM waits for the next run.
+      mkdir -p -m 700 /run/dcvm/locks
+      if flock -n "/run/dcvm/locks/vm-$vm" "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1; then
+        count=$((count + 1))
+        log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
+      fi
     else
       registry_remove "$vm"
     fi

@@ -81,6 +81,10 @@ get_backup_disk_path() {
   local date_part="$2"
   local folder
   folder=$(get_backup_folder_path "$vm_name" "$date_part")
+  backup_visible "$folder" || {
+    echo ""
+    return 1
+  }
   if [ -d "$folder" ]; then
     if [ -f "$folder/${vm_name}-disk-${date_part}.qcow2.gz" ]; then
       echo "$folder/${vm_name}-disk-${date_part}.qcow2.gz"
@@ -108,6 +112,10 @@ get_backup_config_path() {
   local date_part="$2"
   local folder
   folder=$(get_backup_folder_path "$vm_name" "$date_part")
+  backup_visible "$folder" || {
+    echo ""
+    return 1
+  }
   if [ -d "$folder" ] && [ -f "$folder/${vm_name}-config-${date_part}.xml" ]; then
     echo "$folder/${vm_name}-config-${date_part}.xml"
     return 0
@@ -398,7 +406,7 @@ delete_backups() {
       print_warning "No backups to delete for VM: $vm_name"
       return 0
     fi
-    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection
+    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection || exit 1
     selection=$(echo "$selection" | tr -d ' ')
     if [ -z "$selection" ]; then
       echo "  Cancelled."
@@ -452,6 +460,7 @@ delete_backups() {
     local MM=$(echo "$hms" | cut -d':' -f2)
     local SS=$(echo "$hms" | cut -d':' -f3)
     resolved_ts="${yyyymmdd}_${HH}${MM}${SS}"
+    backup_visible "$(get_backup_folder_path "$vm_name" "$resolved_ts")" || resolved_ts=""
   elif [ -n "$indexN" ]; then
     local selector="${dd}.${mm}.${yyyy}-${indexN}"
     resolved_ts=$(resolve_backup_selector "$vm_name" "$selector") || true
@@ -1225,7 +1234,7 @@ restore_vm() {
     if [ "$force_restore" != "true" ]; then
       print_warning "This will COMPLETELY REPLACE the existing VM!"
       print_warning "All current data in the VM will be LOST!"
-      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm
+      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm || exit 1
       echo ""
 
       if [ "$confirm" != "yes" ]; then
@@ -1348,6 +1357,16 @@ restore_vm() {
     return 1
   fi
 
+  local cpus mem_kib disk_bytes mem_mb disk_gb
+  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
+  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
+  disk_bytes=$(qemu-img info -U --output=json "$vm_disk_path" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
+  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
+  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
+    rm -f "$temp_config"
+    return 1
+  fi
+
   if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
@@ -1358,6 +1377,7 @@ restore_vm() {
     if [ $? -eq 0 ]; then
       ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
       [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name" "user=$(get_vm_username "$vm_name")"
+      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi
@@ -1522,7 +1542,7 @@ restore_vm() {
   if [ "$from_import" = "true" ] && [ -n "$static_ip_copy" ]; then
     echo "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
   elif [ "$from_import" = "true" ]; then
-    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh
+    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh || exit 1
     setup_ssh=${setup_ssh:-y}
     if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
       ssh_setup_vm "$vm_name"
@@ -1559,7 +1579,7 @@ ssh_setup_vm() {
   fi
 
   ui_title "SSH key for $vm_name" "copies this host's public key with ssh-copy-id"
-  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user
+  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user || exit 1
   target_user=${target_user:-root}
 
   if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then

@@ -221,6 +221,10 @@ cmd_add() {
     print_error "$vm has no address yet; start it and wait for it to boot"
     return 1
   }
+  if ip_held_by_other_vm "$ip" "$vm"; then
+    print_error "$ip is leased to another VM; check the address set inside $vm"
+    return 1
+  fi
   for ((port = SSH_PORT_START; port <= 2299; port++)); do
     read_port_mappings 2>/dev/null | awk -v p="$port" '$3 == p { f = 1 } END { exit !f }' && continue
     ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
