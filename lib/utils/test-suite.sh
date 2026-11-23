@@ -1212,13 +1212,13 @@ test_root_username_userdata() {
   generate_test_userdata root n "$key" "$t/root.yaml"
   local users_block
   users_block=$(sed -n '/^users:/,/^$/p' "$t/root.yaml")
-  if [ "$(echo "$users_block" | grep -c -- '- name:')" = "1" ] && echo "$users_block" | grep -q '^  - name: root$' &&
+  if [ "$(echo "$users_block" | grep -c -- '- name:')" = "1" ] && echo "$users_block" | grep -q '^  - name: "root"$' &&
     ! echo "$users_block" | grep -qE '^    (sudo|shell|passwd|groups):'; then
     log_test "PASS" "username root (one root entry, no create/sudo fields)"
   else
     log_test "FAIL" "username root (one root entry, no create/sudo fields)"
   fi
-  if echo "$users_block" | grep -q "^      - $key\$" && grep -qxF "    root:$(test_hash testpass123)" "$t/root.yaml" &&
+  if echo "$users_block" | grep -q "^      - \"$key\"\$" && grep -qxF "    root:$(test_hash testpass123)" "$t/root.yaml" &&
     ! grep -q 'testpass123' "$t/root.yaml" && ! grep -q '^bootcmd:' "$t/root.yaml"; then
     log_test "PASS" "username root (SSH key and password for root)"
   else
@@ -1230,8 +1230,8 @@ test_root_username_userdata() {
   else
     log_test "FAIL" "username root (disable_root false, /root paths)"
   fi
-  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
-    if python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$t/root.yaml" 2>/dev/null; then
+  if command -v python3 >/dev/null 2>&1 && python3 -I -c 'import yaml' 2>/dev/null; then
+    if python3 -I -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$t/root.yaml" 2>/dev/null; then
       log_test "PASS" "username root (user-data parses as YAML)"
     else
       log_test "FAIL" "username root (user-data parses as YAML)"
@@ -1247,14 +1247,104 @@ test_root_username_userdata() {
   fi
 
   generate_test_userdata tester n "$key" "$t/user.yaml"
-  if grep -q '^  - name: tester$' "$t/user.yaml" && grep -q "^    sudo: \['ALL=(ALL) NOPASSWD:ALL'\]$" "$t/user.yaml" &&
+  if grep -q '^  - name: "tester"$' "$t/user.yaml" && grep -q "^    sudo: \['ALL=(ALL) NOPASSWD:ALL'\]$" "$t/user.yaml" &&
     grep -q '^    shell: /bin/bash$' "$t/user.yaml" && grep -qxF "    passwd: '$(test_hash testpass123)'" "$t/user.yaml" &&
-    grep -q "^      - $key\$" "$t/user.yaml" && grep -q '^disable_root: true$' "$t/user.yaml" &&
+    grep -q "^      - \"$key\"\$" "$t/user.yaml" && grep -q '^disable_root: true$' "$t/user.yaml" &&
     grep -q 'PermitRootLogin no' "$t/user.yaml" && grep -q '^  - chown -R tester:tester /home/tester$' "$t/user.yaml" &&
     ! grep -qE "^    root:|echo 'root:" "$t/user.yaml"; then
     log_test "PASS" "normal username user-data unchanged"
   else
     log_test "FAIL" "normal username user-data unchanged"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
+test_cloud_init_quoting() {
+  local t r="" key='ssh-ed25519 AAAAC3NzaTEST work: laptop #2 "x" \y'
+  t=$(mktemp -d)
+  printf '%s\n' 'not a key' "${key}"$'\xe2\x80\xa8' 'ssh-rsa AAAAB3second other' >"$t/id.pub"
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    generate_password_hash() { test_hash "$1"; }
+    FORCE_MODE=true VM_NAME=123 VM_USERNAME=yes VM_PASSWORD=testpass123
+    VM_MEMORY=2048 VM_CPUS=2 VM_DISK_SIZE=30G ENABLE_ROOT=n ROOT_PASSWORD="" SSH_KEY=$(first_ssh_key "$t/id.pub")
+    DATACENTER_BASE="$t" ADDITIONAL_PACKAGES="" VM_OS=debian12 TAILSCALE_AUTHKEY=""
+    mkdir -p "$t/vms/123/cloud-init"
+    generate_cloud_init_userdata >/dev/null 2>&1
+    generate_cloud_init_metadata >/dev/null 2>&1
+  )
+  local ud="$t/vms/123/cloud-init/user-data" md="$t/vms/123/cloud-init/meta-data"
+  grep -qx 'hostname: "123"' "$ud" && grep -qx '  - name: "yes"' "$ud" && grep -qx 'local-hostname: "123"' "$md" &&
+    grep -qxF '      - "ssh-ed25519 AAAAC3NzaTEST work: laptop #2 \"x\" \\y"' "$ud" && ! grep -q second "$ud" && r+="quoted "
+  [ "$(DATACENTER_BASE="$t" get_vm_username 123)" = yes ] && r+="login "
+  if has_pyyaml; then
+    python3 -I -c 'import sys, yaml
+u, m = yaml.safe_load(open(sys.argv[1])), yaml.safe_load(open(sys.argv[2]))
+assert u["hostname"] == "123" and m["local-hostname"] == "123" and u["users"][0]["name"] == "yes"
+assert u["users"][0]["ssh_authorized_keys"] == [sys.argv[3]]' "$ud" "$md" "$key" 2>/dev/null && r+="yaml "
+  else
+    r+="yaml "
+  fi
+  if [ "$r" = "quoted login yaml " ]; then
+    log_test "PASS" "cloud-init quotes hostname, user and SSH key (yes, 123, comments with : and #)"
+  else
+    log_test "FAIL" "cloud-init quotes hostname, user and SSH key (yes, 123, comments with : and #)" "$r"
+  fi
+
+  r=""
+  ts() {
+    (
+      source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+      FORCE_MODE=true FLAG_TAILSCALE_AUTHKEY="$1" ADDITIONAL_PACKAGES="$2"
+      setup_tailscale >/dev/null 2>&1 && echo "$ADDITIONAL_PACKAGES|$TAILSCALE_AUTHKEY"
+    )
+  }
+  [ "$(ts tskey-auth-k1_X tailscale-exporter)" = "tailscale-exporter,tailscale|tskey-auth-k1_X" ] && r+="exact "
+  [ -z "$(ts 'tskey-a;reboot' "")" ] && r+="key-refused "
+  [ "$(ts "" Tailscale)" = "Tailscale|" ] && r+="case "
+  if [ "$r" = "exact key-refused case " ]; then
+    log_test "PASS" "tailscale: exact package match, auth key must be tskey-[A-Za-z0-9_-]"
+  else
+    log_test "FAIL" "tailscale: exact package match, auth key must be tskey-[A-Za-z0-9_-]" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by create-vm.sh
+test_create_cancel_and_failure_cleanup() {
+  local t r="" rc
+  t=$(mktemp -d)
+  (source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1 && FORCE_MODE=false && confirm_vm_creation) <<<n >/dev/null 2>&1
+  rc=$?
+  [ "$rc" = 130 ] && r+="decline "
+  (source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1 && confirm_creation) <<<n >/dev/null 2>&1
+  rc=$?
+  [ "$rc" = 130 ] && r+="decline-iso "
+  if ! (
+    virsh() {
+      echo "$*" >>"$t/calls"
+      [ "$1" != start ]
+    }
+    fake_vi() { echo "<domain><name>vm1</name><devices><graphics type='vnc'/></devices></domain>"; }
+    virt_install_with_vnc_password pw fake_vi
+  ) >/dev/null 2>&1 && grep -q '^undefine vm1' "$t/calls"; then
+    r+="undefined "
+  fi
+  mkdir -p "$t/vms/live"
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    caller_role() { echo root; }
+    check_vm_exists() { return 0; }
+    virt-install() { return 1; }
+    SCRIPT_DIR=$t FORCE_MODE=true DATACENTER_BASE=$t VM_NAME=live VM_OS=debian12
+    install_vm
+  ) >/dev/null 2>&1
+  [ -d "$t/vms/live" ] && r+="disk-kept "
+  if [ "$r" = "decline decline-iso undefined disk-kept " ]; then
+    log_test "PASS" "create: declining exits 130, a failed start undefines, a defined VM's folder is never removed"
+  else
+    log_test "FAIL" "create: declining exits 130, a failed start undefines, a defined VM's folder is never removed" "$r"
   fi
   rm -rf "$t"
 }
@@ -1319,13 +1409,13 @@ test_root_username_setup() {
 }
 
 ud_py() {
-  python3 -c 'import sys, yaml
+  python3 -I -c 'import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 r = eval(sys.argv[2])
 print(r if isinstance(r, str) else repr(r), end="")' "$1" "$2"
 }
 
-has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
+has_pyyaml() { command -v python3 >/dev/null 2>&1 && python3 -I -c 'import yaml' 2>/dev/null; }
 
 ud_sql_expr='[__import__("base64").b64decode(w["content"]).decode() for w in d["write_files"] if w["path"] == "/root/dcvm-mysql-init.sql" and w.get("encoding") == "b64"][0]'
 
@@ -2739,7 +2829,9 @@ test_sanitize_domain_xml() {
   <qemu:commandline><qemu:arg value='-x'/></qemu:commandline>
 </domain>
 XML
-  sanitize_domain_xml "$t/vm.xml" new "/srv/datacenter/vms/new/new-disk.qcow2" true || {
+  # A planted xml.py in the working directory must not replace the sanitizer (#81).
+  mkdir "$t/cwd" && echo 'raise SystemExit(0)' >"$t/cwd/xml.py"
+  (cd "$t/cwd" && sanitize_domain_xml "$t/vm.xml" new "/srv/datacenter/vms/new/new-disk.qcow2" true) || {
     log_test "FAIL" "domain XML sanitizer" "returned an error"
     rm -rf "$t"
     return
@@ -3077,6 +3169,11 @@ test_common_functions() {
   run_test_expect_fail "trim+validate_vm_name (backslash)" "n=\$(trim_whitespace 'qa\\vm'); validate_vm_name \"\$n\""
   run_test_expect_fail "validate_vm_name_list (quote in list)" "validate_vm_name_list \"good-vm,qa'vm\""
   run_test "validate_vm_name_list (valid trimmed)" "validate_vm_name_list ' qa-vm '"
+  run_test "validate_vm_name_list (two names)" "validate_vm_name_list 'web1, web2'"
+  run_test_expect_fail "validate_vm_name_list (duplicate)" "validate_vm_name_list 'web1,web2, web1'"
+  run_test_expect_fail "validate_vm_name_list (newline)" "validate_vm_name_list \$'web1\\nweb2'"
+  run_test_expect_fail "validate_vm_name_list (empty entry)" "validate_vm_name_list 'web1,,web2'"
+  run_test_expect_fail "validate_vm_name_list (trailing comma)" "validate_vm_name_list 'web1,'"
   local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING -p tcp --dport 2221 -j DNAT --to-destination 10.10.10.50:22' | '-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }"
   run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "($pf_rules; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (no DNAT rule)" "(iptables() { case \"\$*\" in '-t nat'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
@@ -3152,6 +3249,8 @@ test_common_functions() {
   test_root_username_userdata
   test_root_username_setup
   test_root_mysql_userdata
+  test_cloud_init_quoting
+  test_create_cancel_and_failure_cleanup
   test_userdata_passwords
   test_userdata_per_os
   test_dhcp_clear_exact
