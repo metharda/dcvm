@@ -12,6 +12,13 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `dcvm create web,web` no longer overwrites the disk of the VM it just made: repeated names, newlines and empty entries are refused, and a failed create never removes a defined VM's folder (#78).
+- cloud-init quotes the hostname, user and SSH key, so names like `yes` or `123` and key comments with `: ` or `#` work; root uses only the first key of `~/.ssh/id_rsa.pub`; `--tailscale-authkey` must look like `tskey-...` and `-k tailscale-exporter` no longer counts as Tailscale (#70).
+- Declining "Create it?" exits 130, and a VM whose first start fails is undefined instead of left without a disk (#80).
+- Helpers that run Python no longer import modules from the working directory (#81).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
