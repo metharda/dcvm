@@ -272,7 +272,7 @@ usage() {
 dcvm list | status | start | stop | restart | console
 
 Usage:
-  dcvm list [--json]          VMs with owner, state, IP, vCPU and memory
+  dcvm list [--json]          VMs with state, IP, vCPU and memory (and owner, for admins)
   dcvm status                 The same, plus the network and port forwards
   dcvm start [vm|all]         One VM, or every dcvm VM without a name (yours, without root)
   dcvm stop [vm|all]          Shut down one VM, or every dcvm VM

@@ -10,7 +10,7 @@ elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
   source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
 fi
 
-case "${1:-}:${2:-}" in -h:* | --help:* | help:* | *:--help) ;; *) load_dcvm_config ;; esac
+[ "${1:-}" = help ] || wants_help "$@" || load_dcvm_config
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -664,6 +664,7 @@ export_backup() {
     print_error "Failed to copy config backup"
     return 1
   }
+  [ -f "$(dirname "$config_backup")/login" ] && cp "$(dirname "$config_backup")/login" "$tmpdir/login"
 
   local work_disk="$tmpdir/$(basename "$disk_backup")"
   local ssh_cleaned=false
@@ -830,6 +831,8 @@ import_backup() {
     return 1
   }
   caller_uid >"$backup_folder/owner"
+  local login
+  [ -f "$workdir/login" ] && login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$workdir/login") && echo "$login" >"$backup_folder/login"
   [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
 
   rm -rf "$workdir"
@@ -1229,6 +1232,10 @@ restore_vm() {
   local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
   rm -f "$staged"
   if check_vm_exists "$vm_name"; then
+    if [ "$(registry_get "$vm_name" protected)" = 1 ]; then
+      print_error "$vm_name is protected: dcvm unprotect $vm_name first"
+      return 1
+    fi
     local vm_state=$(get_vm_state "$vm_name")
     print_warning "VM '$vm_name' already exists (state: $vm_state)"
 
@@ -1383,10 +1390,14 @@ restore_vm() {
     if [ $? -eq 0 ]; then
       ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
       [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name"
-      local login_file
+      local login_file login
       login_file="$(dirname "$config_backup")/login"
-      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" \
-        "user=$([ -f "$login_file" ] && cat "$login_file" || vm_login "$vm_name")"
+      if [ "$(dirname "$config_backup")" != "$BACKUP_DIR" ] && [ -f "$login_file" ]; then
+        login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$login_file")
+      else
+        login=$(vm_login "$vm_name")
+      fi
+      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi
@@ -1784,7 +1795,7 @@ main() {
     exit 0
   fi
 
-  if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" || "${2:-}" == "--help" ]]; then
+  if [[ "$1" == "help" ]] || wants_help "$@"; then
     show_help
     exit 0
   fi

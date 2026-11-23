@@ -87,10 +87,11 @@ delete_single_vm() {
 
   # Not --remove-all-storage: an attached ISO may be a shared file of root's.
   # --nvram: libvirt refuses to undefine a UEFI VM that keeps its variables.
-  if virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1; then
+  local undefine_err
+  if undefine_err=$(virsh undefine "$VM_NAME" --nvram 2>&1) || undefine_err=$(virsh undefine "$VM_NAME" 2>&1); then
     [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
   else
-    print_error "libvirt would not remove $VM_NAME; its disk is kept"
+    print_error "libvirt would not remove $VM_NAME, so its disk is kept: $undefine_err"
     return 1
   fi
 
@@ -187,7 +188,7 @@ delete_all_vms() {
   # A VM that was refused (protected) or failed keeps its folder and disk.
   local dir
   for dir in "$DATACENTER_BASE"/vms/*/; do
-    [ -d "$dir" ] && ! check_vm_exists "$(basename "$dir")" && rm -rf "$dir"
+    [ -d "$dir" ] && ! check_vm_exists "$(basename "$dir")" && [ "$(registry_get "$(basename "$dir")" state)" != creating ] && rm -rf "$dir"
   done
 
   if [ "$failed" -eq 0 ] && [ -z "$(list_datacenter_vms)" ]; then
@@ -199,7 +200,7 @@ delete_all_vms() {
 }
 
 main() {
-  if [ "${1:-}" = --help ]; then
+  if wants_help "$@"; then
     ui_help <<EOF
 dcvm delete - delete a VM with its disk, DHCP lease, port forwards and static IP
 

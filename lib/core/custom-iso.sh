@@ -33,7 +33,7 @@ Options:
   -d, --disk <SIZE>            Disk size, e.g. 20G (asked if missing)
   --os-variant <name>          libosinfo variant, e.g. debian12 (default: detected, else generic)
   --graphics <vnc|spice|none>  Display (default vnc, on 127.0.0.1)
-  --boot <order>               Boot order (default hd,cdrom)
+  --boot <order>               hd,cdrom (default), cdrom,hd, cdrom or hd
   --uefi                       UEFI firmware instead of BIOS
   --ip <address>               Static IP you set in the installer
   -u, --username <name>        Login user the installed OS has, for dcvm ssh/exec/cp
@@ -294,7 +294,7 @@ show_vm_summary() {
     "$(printf '%-11s%s' Display "$GRAPHICS")"
     "$(printf '%-11s%s' OS "${OS_VARIANT:-generic}")"
     "$(printf '%-11s%s' Boot "$([ "$UEFI" = true ] && echo "UEFI, ")$BOOT_ORDER")"
-    "$(printf '%-11s%s' Login "${LOGIN_USER:-not known to dcvm (-u <user> to set it)}")"
+    "$(printf '%-11s%s' Login "${LOGIN_USER:-not known to dcvm (pass -u <user> to name it)}")"
   )
   [ -n "${TTL:-}" ] && rows+=("$(printf '%-11s%s' Deleted "after $TTL")")
   [ -n "$STATIC_IP" ] && rows+=("$(printf '%-11s%s' Address "$STATIC_IP (set it in the installer)")")
@@ -334,11 +334,12 @@ copy_iso_if_needed() {
       print_error "$INSTALL_ISO is left over from another run; remove it first"
       exit 1
     fi
+    # Set first: undo must also remove a copy that failed half way.
+    ISO_COPIED=true
     ui_run "Copying ISO" sh -c 'umask 077 && cp -- "$1" "$2"' _ "$ISO_PATH" "$INSTALL_ISO" || {
       ui_step fail "ISO" "copy failed"
       exit 1
     }
-    ISO_COPIED=true
     ui_step ok "ISO" "copied to $INSTALL_ISO (${UI_RUN_SECS}s)"
   fi
 }
@@ -370,11 +371,11 @@ check_iso_accessibility() {
 }
 
 create_vm_disk() {
+  DISK_MADE=true
   (umask 077 && qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE") >/dev/null 2>&1 || {
     ui_step fail "Disk" "qemu-img create failed"
     exit 1
   }
-  DISK_MADE=true
   ui_step ok "Disk" "$DISK_SIZE, $DISK_PATH"
 }
 
@@ -574,8 +575,8 @@ main() {
   trap 'exit 143' TERM HUP
   prepare_vm_directory
   copy_iso_if_needed
-  validate_iso_size
   check_iso_accessibility
+  validate_iso_size
   create_vm_disk
   build_virt_install_opts
   run_virt_install

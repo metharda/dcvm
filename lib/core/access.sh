@@ -38,7 +38,7 @@ show_info() {
     return 0
   fi
   echo ""
-  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm" | grep . || echo "unknown (ISO install; create it with -u)")" \
+  ui_kv "VM" "$vm" "State" "$state" "IP" "${ip:-none yet}" "Login" "$(vm_login "$vm" | grep . || echo "not known to dcvm (an ISO install, or a VM without its cloud-init files)")" \
     "Owner" "${owner:-root}" "Resources" "${cpus:-?} vCPU, ${mem:-?} MB" \
     "Protected" "$([ "$protected" = 1 ] && echo yes || echo no)" \
     "Expires" "$([ -n "$expires" ] && date -d "@$expires" '+%Y-%m-%d %H:%M' || echo never)"

@@ -17,14 +17,6 @@ if [ ! -f "$LIB_DIR/utils/common.sh" ]; then
 fi
 source "$LIB_DIR/utils/common.sh"
 
-wants_help() {
-  local a
-  for a in "$@"; do
-    case "$a" in -h | --help) return 0 ;; esac
-  done
-  return 1
-}
-
 # A help flag anywhere shows only help: other arguments must never run an action.
 DCVM_HELP=false
 case "${1:-}" in
@@ -66,14 +58,14 @@ VMs:
   status                        The same, plus the network and port forwards
   start | stop | restart [vm]   One VM, or every dcvm VM without a name
   console [vm]                  Serial console of a VM; without a name, access hints
-  delete <vm> | --all           Delete a VM with its disk, leases and forwards
+  delete <vm> | --all           Delete a VM with its disk, leases and forwards (backups stay)
   info <vm> [--json]            State, IP, login user, owner of one VM
   ssh | exec | cp               Use a VM over SSH with your key (dcvm ssh --help)
   protect | unprotect <vm>      Refuse delete and restore until unprotected
 
 Network:
   network                       Network, DHCP leases, static IPs and port forwards
-  network ports <command>       Forward host ports to VMs: setup, show, test, apply, clear
+  network ports <command>       Forward host ports to VMs: add, remove, show, setup, test, apply, clear
   network dhcp <command>        DHCP leases: show, clear, cleanup, renew
   network vnc <action> <vm>     VNC on a VM: enable, disable, status
 
@@ -91,6 +83,7 @@ System:
   whoami                        Your dcvm user and role
   uninstall                     Remove dcvm, its VMs and data
   version                       Show the version
+  help agents                   A short guide for AI agents using dcvm
 
 Examples:
   dcvm create web -f -p "\$VM_PASSWORD"

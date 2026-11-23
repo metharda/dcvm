@@ -47,7 +47,12 @@ def pull_secrets(argv):
         else:
             out.append(a)
         i += 1
+    iso = any((a.partition("=")[0] in ("-o", "--os")) and not re.match(r"^[1-9]\Z", a.partition("=")[2] or (argv[n + 1] if n + 1 < len(argv) else "1"))
+              for n, a in enumerate(argv))
     for var, key in SECRET_ENV.items():
+        # An agent's environment may carry these for cloud images; an ISO create would refuse them.
+        if iso:
+            continue
         if os.environ.get(var) and key not in secrets and creating:
             if "\n" in os.environ[var] or len(os.environ[var]) > 4096:
                 fail("%s must be at most 4096 characters on one line" % var)
@@ -116,7 +121,8 @@ def attach_files(argv, files):
     elif out[:2] == ["backup", "export"] and len(out) >= 3:
         rest = out[2:]
         dest = "."
-        if len(rest) == 3 or (len(rest) == 2 and (os.path.isdir(os.path.expanduser(rest[1])) or "/" in rest[1])):
+        looks_like_id = re.match(r"^(latest|[0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?)\Z", rest[1]) if len(rest) == 2 else None
+        if len(rest) == 3 or (len(rest) == 2 and not looks_like_id and (os.path.isdir(os.path.expanduser(rest[1])) or "/" in rest[1])):
             dest = rest.pop()
             if not os.path.isdir(os.path.expanduser(dest)):
                 fail("%s is not a folder" % dest)

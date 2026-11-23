@@ -105,7 +105,8 @@ ui_bar() {
 }
 
 ui_watch() {
-  local _w_pid=$1 _w_tick=$2 _w_rc=0
+  local _w_pid=$1 _w_tick=$2 _w_rc=0 _w_traps
+  _w_traps=$(trap -p INT TERM)
   trap 'ui_spin_clear; printf "\033[?25h" >&2; pkill -P "$_w_pid" 2>/dev/null; kill "$_w_pid" 2>/dev/null; exit 130' INT TERM
   printf '\033[?25l' >&2
   while kill -0 "$_w_pid" 2>/dev/null; do
@@ -115,7 +116,9 @@ ui_watch() {
   wait "$_w_pid" || _w_rc=$?
   ui_spin_clear
   printf '\033[?25h' >&2
+  # Put back the caller's handlers (custom-iso's undo relies on its own).
   trap - INT TERM
+  eval "$_w_traps"
   return "$_w_rc"
 }
 
@@ -1125,7 +1128,7 @@ get_vm_disk_path() {
   local vm_name="$1"
   local disk_path=""
   # Disks only: an attached ISO is never "the VM's disk" to back up or delete.
-  disk_path=$(virsh domblklist "$vm_name" --details 2>/dev/null | awk '$2 == "disk" { print $4; exit }')
+  disk_path=$(virsh domblklist "$vm_name" --details 2>/dev/null | awk '$2 == "disk" { sub(/^ *[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print; exit }')
   echo "$disk_path"
 }
 
@@ -1227,7 +1230,7 @@ backup_file() {
 
 confirm_action() {
   local default="${2:-n}" answer
-  read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=""
+  read -r -p "  $1 ($([ "$default" = y ] && echo Y/n || echo y/N)): " answer || answer=n
   [[ "${answer:-$default}" =~ ^[Yy] ]] && return 0
   echo "  Cancelled."
   return 1
@@ -1338,13 +1341,21 @@ ip_held_by_other_vm() {
 }
 
 # `shift 2` fails without shifting when the value is missing; looping on it never ends.
+wants_help() {
+  local a
+  for a in "$@"; do
+    case "$a" in -h | --help) return 0 ;; esac
+  done
+  return 1
+}
+
 need_value() {
   print_error "$1 needs a value"
   exit 1
 }
 
 no_input() {
-  print_error "No answer (end of input): run it in a terminal, or pass the options (-f takes the defaults)"
+  print_error "No answer (end of input): run it in a terminal, or give the answer as an option (see --help)"
   exit 1
 }
 

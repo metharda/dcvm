@@ -28,12 +28,15 @@ resolve_vm() {
 import json, sys
 i = json.loads(sys.stdin.read())
 print(i.get("ip") or "-", i.get("user") or "-", "dcvm-%s-%s" % (i.get("name"), i.get("created") or 0), (i.get("state") or "-").replace(" ", "_"))' <<<"$info")
-  if [ "$VM_STATE" != running ]; then
-    print_error "$1 is ${VM_STATE//_/ }; start it first: dcvm start $1"
+  if [ "$VM_STATE" = shut_off ]; then
+    print_error "$1 is shut off; start it first: dcvm start $1"
+    exit 1
+  elif [ "$VM_STATE" != running ]; then
+    print_error "$1 is ${VM_STATE//_/ }, not running (dcvm info $1)"
     exit 1
   fi
   if [ "$VM_USER" = - ]; then
-    print_error "dcvm doesn't know $1's login user (an ISO install); create it with -u <user>, or use ssh yourself"
+    print_error "dcvm doesn't know $1's login user (an ISO install, or a VM without its cloud-init files); use ssh yourself"
     exit 1
   fi
   if [ "$VM_IP" = - ]; then
@@ -101,7 +104,7 @@ main() {
     fi
     if [[ "$dst" == *:* && "$dst" != /* && "$dst" != .* ]]; then
       [ -n "$vm" ] && {
-        print_error "Copy between your machine and one VM"
+        print_error "dcvm cp copies between this machine and one VM, not from VM to VM"
         return 1
       }
       vm=${dst%%:*}

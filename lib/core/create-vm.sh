@@ -112,7 +112,7 @@ parse_arguments() {
       shift 2 || need_value "$1"
       ;;
     -p | --password)
-      FLAG_PASSWORD="$2"
+      FLAG_PASSWORD="$2" PASSWORD_GIVEN=true
       shift 2 || need_value "$1"
       ;;
     --enable-root)
@@ -169,8 +169,8 @@ parse_arguments() {
       case "$FLAG_GRAPHICS" in
       none | vnc | spice | vnc,* | spice,*) ;;
       *)
-        echo "Error: Invalid graphics mode '$FLAG_GRAPHICS'."
-        echo "Supported values: none, vnc, vnc,listen=..., spice, spice,listen=..."
+        echo "Error: Invalid graphics mode '$FLAG_GRAPHICS'." >&2
+        echo "Supported values: none, vnc, vnc,listen=..., spice, spice,listen=..." >&2
         exit 1
         ;;
       esac
@@ -201,8 +201,7 @@ parse_arguments() {
       exit 0
       ;;
     -*)
-      echo "Unknown option: $1"
-      show_usage
+      echo "Unknown option: $1 (dcvm create --help)" >&2
       exit 1
       ;;
     *)
@@ -210,9 +209,8 @@ parse_arguments() {
         VM_NAME="$1"
         shift
       } || {
-        echo "Error: Unexpected argument '$1'"
-        echo "If you want to install packages, use: -k <package1,package2,...>"
-        show_usage
+        echo "Error: Unexpected argument '$1'" >&2
+        echo "If you want to install packages, use: -k <package1,package2,...>" >&2
         exit 1
       }
       ;;
@@ -267,6 +265,7 @@ check_dependencies() {
 iso_handoff_check() {
   local opt
   for opt in "${ADDITIONAL_PACKAGES:+-k}" "${FLAG_ROOT_PASSWORD:+-r}" "${FLAG_TAILSCALE_AUTHKEY:+--tailscale-authkey}" \
+    "$([ "${PASSWORD_GIVEN:-false}" = true ] && echo -p)" \
     "$([ "$FLAG_ENABLE_ROOT" = y ] && echo --enable-root)"; do
     [ -z "$opt" ] && continue
     print_error "$opt does nothing with an ISO: the installer sets up the OS"
@@ -671,7 +670,7 @@ setup_tailscale() {
 
 interactive_prompt_username() {
   while true; do
-    read -p "Enter username for VM (default: $(default_username "$VM_OS")): " VM_USERNAME
+    read -p "Enter username for VM (default: $(default_username "$VM_OS")): " VM_USERNAME || no_input
     VM_USERNAME=${VM_USERNAME:-$(default_username "$VM_OS")}
     if validate_username "$VM_USERNAME"; then
       print_success "Username set to: $VM_USERNAME"
@@ -882,7 +881,7 @@ NETINFO
           print_error "IP address cannot be empty"
           continue
         fi
-        if validate_ip_in_subnet "$FLAG_STATIC_IP"; then
+        if claim_static_ip "$VM_NAME" "$FLAG_STATIC_IP"; then
           print_success "Static IP set to: $FLAG_STATIC_IP"
           break 2
         fi
@@ -1107,7 +1106,7 @@ generate_cloud_init_userdata() {
       fi
       if [ "$package" = mysql-server ] || [ "$package" = default-mysql-server ]; then
         MYSQL_REQUESTED=true
-        if [ "$package" = mysql-server ] || [ "$VM_OS" = archlinux ]; then
+        if [ "$package" = mysql-server ] || [ "$VM_OS" = archlinux ] || [[ "$VM_OS" == fedora* ]]; then
           package=$mysql_package
         fi
       fi
@@ -1619,7 +1618,8 @@ main() {
 
   parse_arguments "$@"
   read_dcvm_secrets
-  [ -n "${DCVM_SECRET_PASSWORD:-}" ] && FLAG_PASSWORD="$DCVM_SECRET_PASSWORD"
+  # For an ISO create the client sends no environment secrets, so one here was typed with -p.
+  [ -n "${DCVM_SECRET_PASSWORD:-}" ] && FLAG_PASSWORD="$DCVM_SECRET_PASSWORD" PASSWORD_GIVEN=true
   [ -z "$FLAG_PASSWORD" ] && [ "$(caller_role)" = root ] && FLAG_PASSWORD="${DCVM_PASSWORD:-}"
   if [ -n "${DCVM_SECRET_ROOT_PASSWORD:-}" ]; then
     FLAG_ROOT_PASSWORD="$DCVM_SECRET_ROOT_PASSWORD"

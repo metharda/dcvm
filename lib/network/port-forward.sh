@@ -165,7 +165,7 @@ cmd_setup() {
     {
       printf 'VM\tIP\tSSH\tHTTP\n'
       read_port_mappings | while read -r vm ip sp hp; do
-        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(get_vm_username "$vm")@$HOST_IP" "http://$HOST_IP:$hp"
+        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(vm_login "$vm" | grep . || echo '<user>')@$HOST_IP" "http://$HOST_IP:$hp"
       done
     } | ui_table
   fi
@@ -247,7 +247,7 @@ cmd_add() {
   echo "$vm $ip $ssh_port $http_port" >>"$map_file"
   iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
   save_iptables_rules
-  ui_done ok "$vm forwarded" "ssh -p $ssh_port $(get_vm_username "$vm")@$host_ip, http://$host_ip:$http_port"
+  ui_done ok "$vm forwarded" "ssh -p $ssh_port $(vm_login "$vm" | grep . || echo '<user>')@$host_ip, http://$host_ip:$http_port"
 }
 
 cmd_remove() {

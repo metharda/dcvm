@@ -342,7 +342,7 @@ fix_vm_locks() {
 }
 
 main() {
-  if [ "${1:-}" = --help ]; then
+  if wants_help "$@"; then
     echo "Usage: dcvm fix-lock <vm> [--verbose] | --all    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
     exit 0
   fi
@@ -364,6 +364,8 @@ main() {
     failed_vms=0
 
     for vm in $VM_LIST; do
+      # Only dcvm's VMs: other libvirt VMs on the host are not ours to stop.
+      is_vm_in_network "$vm" || continue
       total_vms=$((total_vms + 1))
       fix_vm_locks "$vm" || failed_vms=$((failed_vms + 1))
     done

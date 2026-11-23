@@ -57,7 +57,8 @@ def redact(argv):
     out, hide = [], False
     for a in argv:
         if not isinstance(a, str):
-            out.append(repr(a))
+            out.append("***" if hide else "<not text>")
+            hide = False
         elif hide:
             out.append("***")
             hide = False
@@ -75,8 +76,8 @@ def redact(argv):
 def redact_text(text, argv):
     # Errors quote what the caller typed; a secret must not reach the log through them.
     for raw, shown in zip(argv, redact(argv)):
-        if isinstance(raw, str) and raw != shown and len(raw) > 2:
-            text = text.replace(raw, shown)
+        if isinstance(raw, str) and raw and raw != shown:
+            text = re.sub(r"(?<![^\s'\"=:(])%s(?![^\s'\",:)])" % re.escape(raw), lambda _m: shown, text)
     return text
 
 
@@ -269,6 +270,7 @@ ISO_FLAGS = {"-f", "--force", "--json", "--wait", "--uefi"}
 def parse_create(ctx, args, iso_mode):
     out, vm, i = [], None, 0
     cpus, memory, disk = 2, 2048, 20 if iso_mode else 30
+    disk_given = False
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
@@ -292,7 +294,7 @@ def parse_create(ctx, args, iso_mode):
                 raise Denied("--disk must look like 30G")
             if v.upper().endswith("T") and int(v[:-1]) > 10:
                 raise Denied("--disk is at most 10T")
-            disk = size_gb(v, disk)
+            disk, disk_given = size_gb(v, disk), True
             out += ["-d", v.upper()]
         elif opt in ("-u", "--username"):
             v, i = take_value(args, i, opt)
@@ -353,6 +355,8 @@ def parse_create(ctx, args, iso_mode):
         raise Denied("VM name required")
     if ctx.get("iso_fd") is not None:
         out = (["--iso"] if iso_mode else ["-o"]) + ["@ISO@"] + out
+        if not disk_given:
+            disk = 20
     check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
     ctx.update(vm=vm, new_vm=True, mutating=True, quota=(cpus, memory, disk))
     return [vm] + out
@@ -566,11 +570,11 @@ def stage_iso(ctx, fd, vm):
     base = read_config()["DATACENTER_BASE"]
     vm_dir = os.path.join(base, "vms", vm)
     # Users' names were checked when reserved; anyone else must not stage into (or later remove) a folder in use.
-    if not ctx.get("reserved") and (vm_exists(vm) or os.path.exists(vm_dir)):
+    if not ctx.get("reserved") and (vm_exists(vm) or os.path.lexists(vm_dir)):
         raise Denied("VM %s already exists (or %s is left over)" % (vm, vm_dir))
     fs = os.statvfs(base)
     if fs.f_bavail * fs.f_frsize < st.st_size + 2 * 1024 ** 3:
-        raise Denied("not enough free space in %s for the ISO and a disk; ask an admin" % base)
+        raise Denied("not enough free space in %s for the ISO (and 2 GB to spare); ask an admin" % base)
     vm_dir = os.path.join(base, "vms", vm)
     os.makedirs(vm_dir, mode=0o711, exist_ok=True)
     os.chmod(vm_dir, 0o711)
@@ -578,11 +582,19 @@ def stage_iso(ctx, fd, vm):
     out = os.open(dest + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
         os.lseek(fd, 0, os.SEEK_SET)
+        copied = 0
         while True:
             chunk = os.read(fd, 4 * 1024 * 1024)
             if not chunk:
                 break
+            copied += len(chunk)
+            # The caller's file may grow after the size check.
+            if copied > st.st_size:
+                raise Denied("the ISO changed while it was being copied")
             os.write(out, chunk)
+    except BaseException:
+        os.unlink(dest + ".part")
+        raise
     finally:
         os.close(out)
     os.replace(dest + ".part", dest)
@@ -593,7 +605,7 @@ def stage_iso(ctx, fd, vm):
 def audit(ctx, argv, decision, rc=None, reason=None, started=None):
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "uid": ctx.get("uid"), "user": ctx.get("user"),
            "role": ctx.get("role"), "origin": ctx.get("origin"), "pid": ctx.get("pid"),
-           "argv": redact(argv) if isinstance(argv, list) else argv, "decision": decision}
+           "argv": redact(argv) if isinstance(argv, list) else "<malformed>", "decision": decision}
     if rc is not None:
         rec["exit"] = rc
     if reason:
@@ -794,7 +806,7 @@ def execute(ctx, conn, argv, req, fds):
         if ctx.get("new_vm") and vm and ctx["role"] == "user":
             held.append(lock("global"))
             vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
-            if vm_exists(vm) or registry_read(vm) is not None or os.path.exists(vm_dir):
+            if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
                 raise Denied("the name %s is taken" % vm)
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
             ctx["staged_dir"] = vm_dir
