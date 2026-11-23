@@ -119,30 +119,50 @@ dcvm create-iso archvm --iso /path/to/archlinux.iso \
   -d 50G \
   --graphics vnc \
   --os-variant archlinux \
-  --boot cdrom,hd
+  --uefi
 ```
 
 **ISO Options:**
-- `--iso, -o`: Path to installer ISO (required)
-- `-m, --memory`: Memory in MB
-- `-c, --cpus`: Number of CPUs
-- `-d, --disk`: Disk size (formats: 20G, 512M, 1T)
-- `--graphics`: vnc, spice, or none (default: vnc)
-- `--os-variant`: libosinfo variant (e.g., ubuntu22.04, win10, archlinux)
-- `--boot`: Boot order (default: cdrom,hd)
-- `--ip`: Static IP address (manual configuration required in VM)
-- `--copy-iso`: Copy ISO to VM directory
+- `--iso`: Path to installer ISO (required; `-o` on `dcvm create`)
+- `-m, --memory`: Memory in MB (default 2048)
+- `-c, --cpus`: Number of CPUs (default 2)
+- `-d, --disk`: Disk size, e.g. 20G (default 20G)
+- `--graphics`: vnc, spice, or none (default: vnc, on 127.0.0.1)
+- `--os-variant`: libosinfo variant (e.g., ubuntu24.04, win11, archlinux);
+  detected from the ISO when left out, generic if unknown. A `win*` variant
+  uses disk and network devices Windows installers know
+- `--boot`: Boot order (default: hd,cdrom)
+- `--uefi`: UEFI firmware instead of BIOS (needs OVMF: `ovmf`, or
+  `edk2-ovmf` on Fedora and Arch)
+- `--ip`: Static IP you set in the installer; refused if another VM has it
+- `-u, --username`: The login user the installed OS has, so `dcvm ssh`,
+  `exec` and `cp` work
+- `--ttl`, `--wait`, `--json`, `-f`: as for `dcvm create`. `-f` answers
+  every question with the defaults; `--wait` waits up to 30 minutes for SSH
+- `--copy-iso`: Copy ISO to VM directory (root; users' ISOs are always copied)
+
+**How the ISO boots:** the VM boots its disk first and falls back to the ISO
+while the disk is empty. The installer runs on first boot, and when it
+reboots, the VM keeps running and boots the installed OS. The ISO stays
+attached until the VM is deleted; backups and restored copies leave it out.
 
 **Connecting to Installer:**
 ```bash
-# Get VNC display port
-virsh vncdisplay myvm
-
-# Console (for --graphics none)
-dcvm console myvm
+dcvm network vnc status myvm   # VNC port (and password for users)
+dcvm console myvm              # for --graphics none, if the ISO uses a serial console
 ```
 
-**Note:** Force mode (-f) is not supported for ISO installations as they require interactive setup.
+**Unattended ISOs (agents):** an ISO that installs itself, such as an
+Ubuntu autoinstall or a custom image with SSH and your public key baked in,
+works without a terminal:
+
+```bash
+dcvm create-iso runner --iso ./runner.iso -u runner --uefi --ttl 4h --wait --json
+dcvm exec runner -- 'uname -a'
+```
+
+`-k`, `-r`, `--enable-root` and `--tailscale-authkey` configure cloud images
+and are refused with an ISO.
 
 ### Listing VMs
 

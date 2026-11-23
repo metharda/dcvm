@@ -12,6 +12,13 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Added
+
+- ISO VMs for agents: `create-iso` (and `create -o file.iso`) take
+  `--json`, `--wait`, `--ttl` and `-u <login user>`, so an unattended ISO
+  (an agent's own image) can be created, reached over SSH and thrown away.
+- `--uefi` for ISO and cloud VMs. The installer adds the OVMF firmware.
+
 ### Security
 
 - A user could restore or export another user's backup by its exact id,
@@ -47,6 +54,17 @@ history, so the commit or PR is listed for each release.
 - Users can run `backup delete <vm> <id>` and use ids as `backup list`
   prints them; `--json` and `--verbose` work in any position.
 - The `--ttl` reaper no longer races a command on the same VM.
+- An ISO VM boots its disk and falls back to the ISO while the disk is
+  empty, in a single definition: the installer's reboot lands in the
+  installed OS and the VM keeps running. Before, the reboot powered the VM
+  off, and restarting it mid-install lost the ISO.
+- UEFI VMs can be deleted. Deleting a VM no longer lets libvirt remove
+  storage, which could have taken a shared ISO with it.
+- An option without its value (`dcvm create web -m`) no longer loops
+  forever. `create-iso` refuses unknown options; `create -o file.iso`
+  refuses options only cloud images use.
+- A failed `create-iso` removes what it made; ISOs with a comma in their
+  path work; `win*` OS variants get devices Windows installers know.
 
 ## [0.9.10] - 2026-11-23
 

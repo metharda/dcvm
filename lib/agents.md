@@ -32,6 +32,17 @@ SSH and delete it, without root. Your account must be in the `dcvm` group
 The login user is the OS name (`ubuntu`, `debian`, `archlinux`, `kali`, `fedora`),
 or `-u`. Packages on first boot: `-k nginx,docker.io`.
 
+## Your own image (ISO)
+
+    dcvm create-iso r1 --iso ./runner.iso -u runner --uefi --ttl 4h --wait --json
+
+The ISO must install itself (an unattended or autoinstall ISO) and set up
+SSH with your public key for the user you name with `-u`; dcvm doesn't
+configure the OS inside. The VM boots its disk, or the ISO while the disk is
+empty, so the installer's reboot lands in the installed OS. `--wait` waits up
+to 30 minutes for SSH. The JSON adds `"vnc"` and `"vnc_password"` to watch
+the installer. Without `-u`, `"user"` is null and `ssh`/`exec`/`cp` refuse.
+
 ## Read state as JSON
 
     dcvm list --json          # [{"name","owner","state","ip","vcpus","memory_mb"}]

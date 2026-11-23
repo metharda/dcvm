@@ -33,8 +33,10 @@ ordinary libvirt domain.
   reachable.
 - **Break it, get it back.** Backups, restore in place or as a copy,
   export/import between hosts.
-- **Any installer ISO.** `dcvm create-iso` boots Windows or any other
-  installer with VNC, SPICE or a serial console.
+- **Any installer ISO.** `dcvm create-iso` boots Linux, BSD or Windows 10
+  installers, BIOS or UEFI, with VNC, SPICE or a serial console; unattended
+  ISOs install without anyone watching. (Windows 11's TPM and Secure Boot
+  are not set up.)
 - **For you and your agents, without root.** Members of the `dcvm` group
   run dcvm from their own accounts and see only their own VMs, within quotas.
   `--wait`, `--json`, `--ttl` and `dcvm exec` let an agent create a VM, test
