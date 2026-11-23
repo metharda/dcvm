@@ -373,7 +373,7 @@ select_os() {
       local force_flag=()
       [ "$FORCE_MODE" = true ] && force_flag=(-f)
       iso_handoff_check
-    [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
+      [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
       exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
         ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
         ${FLAG_CPUS:+-c "$FLAG_CPUS"} \

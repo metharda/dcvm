@@ -2255,7 +2255,7 @@ test_backup_exact_id_visibility() {
   : >"$t/backups/web-20260101_120000/web-disk-20260101_120000.qcow2"
   : >"$t/backups/web-20260101_120000/web-config-20260101_120000.xml"
   echo 1001 >"$t/backups/web-20260101_120000/owner"
-  look() { (source "$SCRIPT_DIR/../storage/backup.sh" >/dev/null 2>&1 && BACKUP_DIR="$t/backups" &&
+  look() { (load_backup_sh_for_test "$t" >/dev/null 2>&1 && BACKUP_DIR="$t/backups" &&
     get_backup_disk_path web 20260101_120000 && get_backup_config_path web 20260101_120000) 2>/dev/null; }
   [ "$(DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001 look | grep -c .)" = 2 ] && r+="owner "
   [ -z "$(DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1002 look)" ] && r+="other "
