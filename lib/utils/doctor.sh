@@ -336,13 +336,16 @@ base_status() {
 check_vms() {
   section "VMs"
   local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 err noip=()
-  local entry stale=()
-  for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
-    [ -f "$entry" ] || continue
-    vm=${entry##*/}
-    [ "$(registry_get "$vm" state)" = creating ] && [ -n "$(find "$entry" -mmin -60)" ] && continue
-    check_vm_exists "$vm" || stale+=("$vm")
-  done
+  local entry stale=() defined
+  # Without libvirt every record would look stale, and --fix would drop the owners of live VMs.
+  if defined=$(virsh list --all --name 2>/dev/null); then
+    for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
+      [ -f "$entry" ] || continue
+      vm=${entry##*/}
+      [ "$(registry_get "$vm" state)" = creating ] && [ -n "$(find "$entry" -mmin -60)" ] && continue
+      grep -qxF -- "$vm" <<<"$defined" || stale+=("$vm")
+    done
+  fi
   if [ ${#stale[@]} -gt 0 ] && $FIX; then
     for vm in "${stale[@]}"; do registry_remove "$vm"; done
     report fixed "Owners" "removed owner records of deleted VMs: ${stale[*]}"

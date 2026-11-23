@@ -1359,7 +1359,8 @@ restore_vm() {
     prev_xml=$(mktemp)
     virsh dumpxml --inactive --security-info "$vm_name" >"$prev_xml" 2>/dev/null
     print_info "Removing existing VM definition (keeping storage)..."
-    virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
+    # Keep a UEFI VM's variables: a rollback redefines it with the same NVRAM file.
+    virsh undefine "$vm_name" --keep-nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
 
     print_info "Running fix-lock.sh for comprehensive cleanup..."
     if [ -x "$FIX_LOCK_SCRIPT" ]; then
