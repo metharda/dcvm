@@ -3386,13 +3386,13 @@ XML
   cp "$t/vm.xml" "$t/iso.xml"
   (
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
-    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" = "CD-ROM removed, cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
+    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" = "cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
     cp "$t/vm.xml" "$t/again.xml"
     [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
     [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false)" = "cache setting removed, disk read as qcow2" ] && echo iso
   ) >"$t/out"
   out=$(tr -d '\n' <"$t/vm.xml")
-  grep -q "target dev=.vda. bus=.virtio." <<<"$out" && ! grep -q "cdrom\|writeback\|type=.drive." <<<"$out" &&
+  grep -q "target dev=.vda. bus=.virtio." <<<"$out" && grep -q "cloud-init.iso" <<<"$out" && ! grep -q "writeback\|type=.drive." <<<"$out" &&
     grep -q "cache=.none.*target dev=.sdb. bus=.sata." <<<"$out" && grep -q "libosinfo:os" <<<"$out" && echo xml >>"$t/out"
   grep -q "cdrom" "$t/iso.xml" && grep -q "dev=.sda. bus=.sata." "$t/iso.xml" && echo iso-xml >>"$t/out"
   r=$(tr '\n' ' ' <"$t/out")

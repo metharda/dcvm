@@ -1304,7 +1304,7 @@ restore_vm() {
     return 1
   fi
 
-  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed"; then
+  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed" 2>/dev/null; then
     print_error "The backup's VM configuration could not be read"
     rm -f "$temp_config" "$staged"
     return 1

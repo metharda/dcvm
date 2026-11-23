@@ -33,11 +33,7 @@ devices = tree.getroot().find("devices")
 if devices is None:
     sys.exit(1)
 done = []
-cdroms = [d for d in devices.findall("disk") if d.get("device") == "cdrom"] if cloud else []
-for d in cdroms:
-    devices.remove(d)
-if cdroms:
-    done.append("CD-ROM removed")
+# CD-ROMs stay: on a cloud VM it is the cloud-init seed, and without it cloud-init disables itself.
 for d in devices.findall("disk"):
     src = d.find("source")
     if d.get("device", "disk") != "disk" or src is None or src.get("file") != disk:
