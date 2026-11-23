@@ -577,12 +577,14 @@ export_backup() {
       backup_date=""
     fi
   fi
+  [ "$backup_date" = "latest" ] && backup_date=""
+  [[ "$backup_date" == "$vm_name-"* ]] && backup_date="${backup_date#"$vm_name-"}"
 
   if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
     local _resolved
     _resolved=$(resolve_backup_selector "$vm_name" "$backup_date")
     if [ -z "$_resolved" ]; then
-      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS or dd.mm.yyyy[-N])"
+      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS, [<vm>-]dd.mm.yyyy[-N] or latest)"
       return 1
     fi
     backup_date="$_resolved"
@@ -626,7 +628,6 @@ export_backup() {
 
   local pkg_name="${vm_name}-${backup_date}.tar.gz"
   local pkg_path="$export_base/$pkg_name"
-  [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]] && pkg_path="/dev/fd/$DCVM_EXPORT_FD"
 
   local tmpdir
   tmpdir=$(mktemp -d)
@@ -636,7 +637,7 @@ export_backup() {
       rm -rf "$tmpdir"
       return 1
     }
-    if ! ui_run "Flattening disk" qemu-img convert -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
+    if ! ui_run "Flattening disk" qemu-img convert -f qcow2 -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
       rm -rf "$tmpdir"
       ui_step fail "Disk" "flattening failed"
       return 1
@@ -720,7 +721,12 @@ EOF
 
   [ -d "$tmpdir/cloud-init" ] && ui_step ok "cloud-init" "meta-data and network-config (user-data holds secrets and stays here)"
 
-  ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" . || {
+  if [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]]; then
+    # /dev/fd/N would be reopened by path as root; write through the caller's descriptor.
+    ui_run "Packing" bash -c 'tar -czf - -C "$1" . >&"$2"' _ "$tmpdir" "$DCVM_EXPORT_FD"
+  else
+    ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" .
+  fi || {
     rm -rf "$tmpdir"
     ui_step fail "Archive" "tar failed"
     print_error "Failed to create export archive"
@@ -806,7 +812,12 @@ import_backup() {
     return 1
   }
   local backup_folder="$(get_backup_folder_path "$vm_target" "$date_part")"
-  mkdir -p "$backup_folder" || {
+  if [ -e "$backup_folder" ]; then
+    rm -rf "$workdir"
+    print_error "A backup of $vm_target from $(pretty_ts "$date_part") already exists: $backup_folder"
+    return 1
+  fi
+  mkdir "$backup_folder" || {
     rm -rf "$workdir"
     print_error "Cannot create backup folder: $backup_folder"
     return 1
@@ -821,12 +832,12 @@ import_backup() {
   ui_quiet
   ui_title "Importing $vm_target" "$(basename "$pkg_path")"
   cp "$disk_file" "$tgt_disk" || {
-    rm -rf "$workdir"
+    rm -rf "$workdir" "$backup_folder"
     print_error "Failed to import disk file"
     return 1
   }
   cp "$config_file" "$tgt_cfg" || {
-    rm -rf "$workdir"
+    rm -rf "$workdir" "$backup_folder"
     print_error "Failed to import config file"
     return 1
   }
@@ -1155,6 +1166,16 @@ stage_backup_disk() {
   }
 }
 
+# A restore that fails after replacing a VM puts the old definition and disk back.
+undo_restore() {
+  local vm_name="$1" prev_xml="$2" prev_disk="$3" disk="$4"
+  [ -n "$prev_disk" ] && mv -f "$prev_disk" "$disk"
+  if [ -s "$prev_xml" ] && virsh define "$prev_xml" >/dev/null 2>&1; then
+    print_warning "Restore failed: the previous $vm_name is back"
+  fi
+  rm -f "$prev_xml"
+}
+
 restore_vm() {
   ui_quiet
   local source_name="$1"
@@ -1230,13 +1251,14 @@ restore_vm() {
   fi
 
   local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
-  rm -f "$staged"
+  local vm_exists=false vm_state=""
   if check_vm_exists "$vm_name"; then
+    vm_exists=true
     if [ "$(registry_get "$vm_name" protected)" = 1 ]; then
       print_error "$vm_name is protected: dcvm unprotect $vm_name first"
       return 1
     fi
-    local vm_state=$(get_vm_state "$vm_name")
+    vm_state=$(get_vm_state "$vm_name")
     print_warning "VM '$vm_name' already exists (state: $vm_state)"
 
     if [ "$force_restore" != "true" ]; then
@@ -1250,9 +1272,69 @@ restore_vm() {
         return 0
       fi
     fi
+  fi
 
-    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
+  stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
 
+  local vm_dir="$DATACENTER_BASE/vms/$vm_name"
+  local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
+
+  local backup_vm_name renamed=false static_ip_copy=""
+  backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
+  if [[ ! "$backup_vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+    backup_vm_name="" renamed=true
+  elif [ "$backup_vm_name" != "$vm_name" ]; then
+    renamed=true
+    local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
+    if [ -f "$source_net_conf" ]; then
+      static_ip_copy=$(grep '^IP=' "$source_net_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+      [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
+      print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
+      print_info "'$vm_name' will not be started or set to autostart"
+    fi
+  fi
+
+  print_info "Restoring VM configuration..."
+
+  local temp_config=$(mktemp)
+
+  if ! cp "$config_backup" "$temp_config"; then
+    print_error "Failed to prepare temporary config file"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed"; then
+    print_error "The backup's VM configuration could not be read"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  local cpus mem_kib disk_bytes mem_mb disk_gb
+  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
+  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
+  disk_bytes=$(qemu-img info -U --output=json "$staged" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
+  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
+  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
+    print_error "Could not read the backup's size to check your quota"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  print_info "Preparing VM directory..."
+  if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
+    print_error "Failed to create VM directory: $vm_dir"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  local prev_xml="" prev_disk=""
+  if [ "$vm_exists" = true ]; then
+    vm_state=$(get_vm_state "$vm_name")
     if [ "$vm_state" = "running" ]; then
       print_info "Stopping existing VM..."
       virsh shutdown "$vm_name" >/dev/null 2>&1
@@ -1264,8 +1346,18 @@ restore_vm() {
         sleep 5
         ui_step warn "Stopped VM" "forced after ${SHUTDOWN_TIMEOUT}s"
       fi
+    elif [ "$vm_state" != "shut off" ]; then
+      virsh destroy "$vm_name" >/dev/null 2>&1
+      ui_step ok "Stopped VM" "was $vm_state"
+    fi
+    if [ "$(get_vm_state "$vm_name")" != "shut off" ]; then
+      print_error "Could not stop $vm_name; it was left as it is"
+      rm -f "$temp_config" "$staged"
+      return 1
     fi
 
+    prev_xml=$(mktemp)
+    virsh dumpxml --inactive --security-info "$vm_name" >"$prev_xml" 2>/dev/null
     print_info "Removing existing VM definition (keeping storage)..."
     virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
 
@@ -1279,24 +1371,14 @@ restore_vm() {
     fi
   fi
 
-  if [ ! -f "$staged" ]; then
-    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
-  fi
-
-  local vm_dir="$DATACENTER_BASE/vms/$vm_name"
-  local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
-
-  print_info "Preparing VM directory..."
-  if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
-    print_error "Failed to create VM directory: $vm_dir"
-    return 1
-  fi
-
   if [ -f "$vm_disk_path" ]; then
-    print_info "Removing existing disk file..."
+    print_info "Setting the existing disk aside until the restored VM is defined..."
     lsof "$vm_disk_path" 2>/dev/null && sleep 3
-    rm -f "$vm_disk_path" || {
-      print_error "Failed to remove existing disk file: $vm_disk_path"
+    prev_disk="$vm_disk_path.pre-restore"
+    mv -f "$vm_disk_path" "$prev_disk" || {
+      print_error "Failed to move the existing disk file aside: $vm_disk_path"
+      undo_restore "$vm_name" "$prev_xml" "" "$vm_disk_path"
+      rm -f "$temp_config" "$staged"
       return 1
     }
   fi
@@ -1306,11 +1388,15 @@ restore_vm() {
   else
     rm -f "$staged"
     print_error "Could not move the restored disk into place: $vm_disk_path"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    rm -f "$temp_config"
     return 1
   fi
 
   if [ ! -f "$vm_disk_path" ] || [ ! -s "$vm_disk_path" ]; then
     print_error "Restored disk file is missing or empty: $vm_disk_path"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    rm -f "$temp_config"
     return 1
   fi
 
@@ -1334,57 +1420,11 @@ restore_vm() {
 
   print_success "File permissions and ownership set"
 
-  local backup_vm_name renamed=false static_ip_copy=""
-  backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
-  if [[ ! "$backup_vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
-    backup_vm_name="" renamed=true
-  elif [ "$backup_vm_name" != "$vm_name" ]; then
-    renamed=true
-    local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
-    if [ -f "$source_net_conf" ]; then
-      static_ip_copy=$(grep '^IP=' "$source_net_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
-      [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
-      print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
-      print_info "'$vm_name' will not be started or set to autostart"
-    fi
-  fi
-
-  print_info "Restoring VM configuration..."
-
-  local temp_config=$(mktemp)
-
-  if ! cp "$config_backup" "$temp_config"; then
-    print_error "Failed to prepare temporary config file"
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed"; then
-    print_error "The backup's VM configuration could not be read"
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  local cpus mem_kib disk_bytes mem_mb disk_gb
-  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
-  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
-  disk_bytes=$(qemu-img info -U --output=json "$vm_disk_path" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
-  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
-  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
-    print_error "Could not read the backup's size to check your quota"
-    rm -f "$temp_config"
-    return 1
-  fi
-  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
-    rm -f "$temp_config"
-    return 1
-  fi
-
   if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
 
-  local define_output attempt=1 max_attempts=3
+  local define_output attempt=1 max_attempts=3 defined=false
   while [ $attempt -le $max_attempts ]; do
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
@@ -1399,6 +1439,7 @@ restore_vm() {
       fi
       registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
+      defined=true
       break
     fi
     if echo "$define_output" | grep -q "must be model='pci-root'"; then
@@ -1435,16 +1476,18 @@ restore_vm() {
       fi
     else
       print_error "Define failed (attempt $attempt): $define_output"
-      if [ $attempt -eq $max_attempts ]; then
-        print_error "Giving up after $max_attempts attempts"
-        sed -n '1,30p' "$temp_config"
-        rm -f "$temp_config"
-        return 1
-      fi
     fi
     attempt=$((attempt + 1))
     [ $attempt -le $max_attempts ] && print_info "Retrying define (attempt $attempt)..." && sleep 1
   done
+  if [ "$defined" != true ]; then
+    print_error "Giving up after $max_attempts attempts"
+    sed -n '1,30p' "$temp_config"
+    rm -f "$temp_config"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    return 1
+  fi
+  rm -f "$prev_disk" "$prev_xml"
 
   rm -f "$temp_config"
 
