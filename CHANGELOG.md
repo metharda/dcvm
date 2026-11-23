@@ -28,6 +28,10 @@ history, so the commit or PR is listed for each release.
 - cloud-init quotes the hostname, user and SSH key, so names like `yes` or `123` and key comments with `: ` or `#` work; root uses only the first key of `~/.ssh/id_rsa.pub`; `--tailscale-authkey` must look like `tskey-...` and `-k tailscale-exporter` no longer counts as Tailscale (#70).
 - Declining "Create it?" exits 130, and a VM whose first start fails is undefined instead of left without a disk (#80).
 - Helpers that run Python no longer import modules from the working directory (#81).
+- DHCP lease cleanup reports a matched lease without an IPv4 address as not released, works on a stopped network without `dhcp_release`, and rewrites a 0-byte status file as `[]` (uninstall too) (#42).
+- `dcvm network dhcp cleanup` goes on after a failed release and reports how many were released (#42).
+- Lease MAC completion reads the `.status` file; nothing lists or truncates the unused `.leases` file any more (#43).
+- `delete` no longer ends with "No DHCP leases found" after a failed release; the missing `dhcp_release` error names the package for every distro and shows only when a lease needs releasing (#44).
 - `dcvm reap` keeps owner records while libvirt is not answering (#72).
 - `dcvm info <missing vm>` exits 1; `dcvm ssh/exec/cp` keep its exit code and work without `/usr/local/bin` in `PATH` (#73).
 - `dcvm exec`/`ssh`: remote command arguments can no longer be read as ssh options.
