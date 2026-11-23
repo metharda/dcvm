@@ -689,12 +689,14 @@ stub_backup_tools() {
       cp "$2" "$t/defined.xml"
       printf ' -    %s    shut off\n' "$(sed -n 's|.*<name>\(.*\)</name>.*|\1|p' "$2" | head -1)" >>"$t/list"
       ;;
-    domstate) echo running ;;
+    domstate) cat "$t/state" 2>/dev/null || echo running ;;
+    shutdown | destroy) echo "shut off" >"$t/state" ;;
+    start) echo running >"$t/state" ;;
     esac
     return 0
   }
   # shellcheck disable=SC2317
-  qemu-img() { :; }
+  qemu-img() { echo "qemu-img $*" >>"$t/calls"; }
   # shellcheck disable=SC2317
   check_disk_image() { :; }
   # shellcheck disable=SC2317
@@ -971,6 +973,153 @@ NET
     log_test "FAIL" "backup import <pkg> <new_name> (invalid name rejected before use)" "something was created or called"
   fi
 
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_restore_safety() {
+  local t ts=20260101_120000 cfg
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  cfg="$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  cat >"$cfg" <<EOF
+<domain type='kvm'>
+  <name>vm1</name>
+  <memory unit='KiB'>16777216</memory>
+  <vcpu placement='static'>8</vcpu>
+  <devices>
+    <disk type='file' device='disk'><source file='$t/vms/vm1/vm1-disk.qcow2'/></disk>
+  </devices>
+</domain>
+EOF
+  cp "$cfg" "$t/good.xml"
+  run() {
+    echo original >"$t/vms/vm1/vm1-disk.qcow2"
+    printf ' 1    vm1    running\n' >"$t/list"
+    echo "$1" >"$t/state"
+    : >"$t/calls"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      qemu-img() { echo '{"virtual-size": 10737418240}'; }
+      eval "$2"
+      restore_vm vm1 "$ts" true >"$t/out" 2>&1
+    )
+  }
+  untouched() { [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && ! grep -qE '^virsh (shutdown|destroy|undefine)' "$t/calls"; }
+
+  : >"$cfg"
+  if ! run running "" && untouched; then
+    log_test "PASS" "backup restore (empty config refused before the VM is touched)"
+  else
+    log_test "FAIL" "backup restore (empty config refused before the VM is touched)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  cp "$t/good.xml" "$cfg"
+
+  if ! run running 'DCVM_QUOTA_LEFT="1 1024 20"' && untouched && grep -q 'Over your quota' "$t/out"; then
+    log_test "PASS" "backup restore in place (quota checked before the VM is touched)"
+  else
+    log_test "FAIL" "backup restore in place (quota checked before the VM is touched)" "$(tail -2 "$t/out")"
+  fi
+
+  if run paused "" && grep -qx 'virsh destroy vm1' "$t/calls" &&
+    [ "$(grep -n 'destroy vm1$' "$t/calls" | head -1 | cut -d: -f1)" -lt "$(grep -n 'undefine vm1' "$t/calls" | head -1 | cut -d: -f1)" ]; then
+    log_test "PASS" "backup restore (paused VM is stopped before undefine)"
+  else
+    log_test "FAIL" "backup restore (paused VM is stopped before undefine)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+
+  rm -f "$t/redefined.xml"
+  if ! run "shut off" 'virsh() {
+      echo "virsh $*" >>"$t/calls"
+      case "$1" in
+      dominfo) return 0 ;;
+      domstate) cat "$t/state" ;;
+      dumpxml) echo "<domain><name>vm1</name><!-- previous --></domain>" ;;
+      define) grep -q previous "$2" && cp "$2" "$t/redefined.xml" || { echo "error: bad config"; return 1; } ;;
+      esac
+    }' && [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && grep -q previous "$t/redefined.xml" 2>/dev/null &&
+    [ ! -e "$t/vms/vm1/vm1-disk.qcow2.pre-restore" ]; then
+    log_test "PASS" "backup restore (failed define puts the previous VM and disk back)"
+  else
+    log_test "FAIL" "backup restore (failed define puts the previous VM and disk back)" "$(tail -3 "$t/out" | tr '\n' ';')"
+  fi
+
+  mkdir -p "$t/pkg"
+  cp "$t/backups/vm1-$ts/"* "$t/pkg/"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  echo keep >"$t/backups/vm1-$ts/owner"
+  if ! (
+    load_backup_sh_for_test "$t"
+    restore_vm() {
+      echo called >"$t/restored"
+      return 1
+    }
+    import_backup "$t/pkg.tar.gz" </dev/null >/dev/null 2>&1
+  ) && [ "$(cat "$t/backups/vm1-$ts/owner" 2>/dev/null)" = keep ] && [ ! -e "$t/restored" ]; then
+    log_test "PASS" "backup import (refuses an existing backup folder, never deletes it)"
+  else
+    log_test "FAIL" "backup import (refuses an existing backup folder, never deletes it)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_export_selectors() {
+  local t ts=20260101_120000 sel r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  for sel in latest vm1-01.01.2026-1; do
+    rm -rf "$t/out"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      export_backup vm1 "$sel" "$t/out" </dev/null >/dev/null 2>&1
+    )
+    [ -f "$t/out/vm1-$ts.tar.gz" ] && r+="$sel "
+  done
+  if [ "$r" = "latest vm1-01.01.2026-1 " ]; then
+    log_test "PASS" "backup export (latest and <vm>-dd.mm.yyyy-N selectors)"
+  else
+    log_test "FAIL" "backup export (latest and <vm>-dd.mm.yyyy-N selectors)" "resolved: $r"
+  fi
+
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    wget() { :; }
+    main export vm1 latest "$t/full" --full </dev/null >/dev/null 2>&1
+  )
+  if tar -xzOf "$t/full/vm1-$ts.tar.gz" ./manifest.txt 2>/dev/null | grep -qx 'disk=full' &&
+    grep -q '^qemu-img convert -f qcow2 ' "$t/calls"; then
+    log_test "PASS" "backup export --full (after the selector; convert names its input format)"
+  else
+    log_test "FAIL" "backup export --full (after the selector; convert names its input format)" "$(grep convert "$t/calls")"
+  fi
+
+  echo untouched >"$t/target"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    exec 7<"$t/target"
+    DCVM_EXPORT_FD=7 export_backup vm1 </dev/null >/dev/null 2>&1
+  )
+  echo -n >"$t/target2"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    exec 7>"$t/target2"
+    DCVM_EXPORT_FD=7 export_backup vm1 </dev/null >/dev/null 2>&1
+  )
+  if [ "$(cat "$t/target")" = untouched ] && tar -tzf "$t/target2" 2>/dev/null | grep -q manifest.txt; then
+    log_test "PASS" "backup export to a descriptor (writes through it, never reopens /dev/fd/N)"
+  else
+    log_test "FAIL" "backup export to a descriptor (writes through it, never reopens /dev/fd/N)" "$(head -c 20 "$t/target" | od -c | head -1)"
+  fi
   rm -rf "$t"
 }
 
@@ -2923,6 +3072,8 @@ test_common_functions() {
   test_hosts_rename_sed_expr
   test_backup_restore_new_name
   test_backup_restore_in_place
+  test_backup_restore_safety
+  test_backup_export_selectors
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
   test_root_username_userdata
