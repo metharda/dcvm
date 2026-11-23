@@ -1676,15 +1676,17 @@ filter_lease_lines() {
 # libvirt's dnsmasq with dhcp_release, and drop it from the libvirt status
 # file. libvirt runs dnsmasq with --leasefile-ro, so the status file is the
 # only lease store, and SIGHUP does not drop leases. Never restarts the
-# network. Runs under a lock so parallel cleanups do not undo each other's
-# edits.
-# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed).
+# network; on a stopped network only the status file is edited, which dnsmasq
+# reads when it starts. Runs under a lock so parallel cleanups do not undo
+# each other's edits.
+# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed, a matched lease without an IPv4 address or MAC).
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
   if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
     cleanup_dhcp_lease_unlocked "$@"
     return
   fi
+  # libvirt's lease helper locks its pidfile with fcntl, which flock does not share; the write order below keeps its write last.
   (
     flock -w 30 9 || {
       print_error "Timed out waiting for $lock"
@@ -1699,16 +1701,14 @@ cleanup_dhcp_lease_unlocked() {
   # The guest picks its own DHCP hostname; with a MAC, a hostname match could free another VM's lease.
   [ -n "$mac" ] && host=""
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local tmp matches lmac ip n rc=0
+  local tmp matches lmac ip n released=0 skipped=0 active=true rc=0
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
 
-  if ! command_exists dhcp_release; then
-    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian/Ubuntu, dnsmasq on Arch)"
-    return 2
-  fi
   if [ ! -s "$status_file" ]; then
+    # Older versions left 0 bytes; jq-based readers need valid JSON (libvirt accepts both).
+    [ -f "$status_file" ] && printf '[]\n' >"$status_file"
     print_info "No matching DHCP lease found"
     return 1
   fi
@@ -1735,6 +1735,13 @@ cleanup_dhcp_lease_unlocked() {
     print_info "No matching DHCP lease found"
     return 1
   fi
+  # A stopped network has no dnsmasq to release from; dhcp_release would fail.
+  [ "$(virsh net-info "$NETWORK_NAME" 2>/dev/null | awk '/^Active:/ { print $2 }')" = no ] && active=false
+  if [ "$active" = true ] && ! command_exists dhcp_release; then
+    rm -f "$tmp"
+    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian, Ubuntu, Kali and Fedora, dnsmasq on Arch)"
+    return 2
+  fi
 
   # Write the status file first: dnsmasq's release makes libvirt's lease
   # helper rewrite it, and that write must come last.
@@ -1745,17 +1752,28 @@ cleanup_dhcp_lease_unlocked() {
     return 2
   fi
   rm -f "$tmp"
+  if [ "$active" = false ]; then
+    print_info "$NETWORK_NAME is not running; removed $n lease(s) from $status_file"
+    return 0
+  fi
   while IFS=$'\t' read -r lmac ip; do
-    [[ "$ip" == *.* ]] && [ -n "$lmac" ] || continue
-    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null || {
+    if [[ ! "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || [ -z "$lmac" ]; then
+      skipped=$((skipped + 1))
+    elif dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null; then
+      released=$((released + 1))
+    else
       print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
       rc=2
-    }
+    fi
   done <<<"$matches"
+  if [ "$skipped" -gt 0 ]; then
+    print_error "$skipped lease(s) without an IPv4 address or MAC cannot be released with dhcp_release; dnsmasq keeps them until they expire"
+    rc=2
+  fi
   if [ "$rc" = 0 ]; then
     print_info "Released and removed $n lease(s) from $status_file"
   else
-    print_info "Removed $n lease(s) from $status_file"
+    print_info "Removed $n lease(s) from $status_file, $released released in dnsmasq"
   fi
   return "$rc"
 }

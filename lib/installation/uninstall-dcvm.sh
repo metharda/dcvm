@@ -43,10 +43,8 @@ main() {
   done
   ui_step ok "VMs" "$deleted_count deleted"
 
-  local lease_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases"
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
-  [[ -f "$lease_file" ]] && : >"$lease_file"
-  [[ -f "$status_file" ]] && : >"$status_file"
+  [[ -f "$status_file" ]] && printf '[]\n' >"$status_file"
 
   local port line
   for port in {2220..2299} {8080..8179}; do

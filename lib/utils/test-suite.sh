@@ -2070,9 +2070,131 @@ run_cleanup_fixture() {
   (
     DNSMASQ_DIR="$t" BRIDGE_NAME=br TMPDIR="$t/tmp"
     dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
+    virsh() { :; }
     eval "$extra"
     cleanup_dhcp_lease "$@"
   ) </dev/null 2>&1
+}
+
+# shellcheck disable=SC2016,SC2034,SC2317,SC1090,SC1091 # stub code is eval'd later; stubs
+test_dhcp_lease_edge_cases() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "DHCP lease edge cases (#42, #43, #44)" "jq not available"
+    return
+  fi
+  local t out rc lib="$SCRIPT_DIR/.."
+  local inactive='virsh() { echo "virsh $*" >>"$t/calls"; [ "$1" = net-info ] && printf "Name:           net\nActive:         no\n"; return 0; }'
+  local nostub='unset -f dhcp_release; command_exists() { [ "$1" != dhcp_release ] && command -v "$1" >/dev/null; }'
+  t=$(mktemp -d)
+
+  cat >"$t/br.status" <<'EOF'
+[
+  {"ip-address": "fd00::11", "mac-address": "52:54:00:00:00:01", "hostname": "vm1", "iaid": "1", "expiry-time": 1893456000},
+  {"ip-address": "10.10.10.11", "mac-address": "52:54:00:00:00:01", "hostname": "vm1", "expiry-time": 1893456000},
+  {"ip-address": "fd00::12", "mac-address": "52:54:00:00:00:02", "hostname": "vm1-copy", "iaid": "2", "expiry-time": 1893456000}
+]
+EOF
+  out=$(run_cleanup_fixture "$t" "" 52:54:00:00:00:01 vm1)
+  rc=$?
+  if [ "$rc" = 2 ] && [ "$(status_hosts "$t")" = '["vm1-copy"]' ] &&
+    [ "$(cat "$t/calls")" = "dhcp_release br 10.10.10.11 52:54:00:00:00:01" ] &&
+    echo "$out" | grep -qF "1 lease(s) without an IPv4 address" && echo "$out" | grep -qF "1 released in dnsmasq"; then
+    log_test "PASS" "cleanup_dhcp_lease: a matched IPv6 lease is dropped, reported as not released, exit 2; other IPv6 leases kept (#42)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease: a matched IPv6 lease is dropped, reported as not released, exit 2; other IPv6 leases kept (#42)" "exit $rc; $(status_hosts "$t"); $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  : >"$t/br.status"
+  run_cleanup_fixture "$t" "" 52:54:00:00:00:01 vm1 >/dev/null
+  rc=$?
+  if [ "$rc" = 1 ] && [ "$(cat "$t/br.status")" = "[]" ]; then
+    log_test "PASS" "cleanup_dhcp_lease rewrites a 0-byte status file as [] (#42)"
+  else
+    log_test "FAIL" "cleanup_dhcp_lease rewrites a 0-byte status file as [] (#42)" "exit $rc; $(wc -c <"$t/br.status") bytes"
+  fi
+
+  local extra label
+  for extra in "$inactive" "$inactive; $nostub"; do
+    label=""
+    [ "$extra" = "$inactive" ] || label=", even without dhcp_release"
+    rm -rf "${t:?}"/*
+    write_lease_fixture "$t"
+    out=$(run_dhcp_fixture "$t" "$extra" clear 52:54:00:00:00:01)
+    rc=$?
+    if [ "$rc" = 0 ] && [ "$(status_hosts "$t")" = '["vm10","vm1-copy","web","gone"]' ] &&
+      ! grep -q '^dhcp_release' "$t/calls" && ! echo "$out" | grep -qi error; then
+      log_test "PASS" "dhcp clear on a stopped network edits the status file only, exit 0$label (#42)"
+    else
+      log_test "FAIL" "dhcp clear on a stopped network edits the status file only, exit 0$label (#42)" "exit $rc; $(status_hosts "$t"); $(echo "$out" | tr '\n' ';')"
+    fi
+  done
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  printf 'vm10\nvm1\nvm1-copy\n' >"$t/vms"
+  out=$(run_dhcp_fixture "$t" 'dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; [ "$2" != 10.10.10.254 ]; }' clear --stale)
+  rc=$?
+  if [ "$rc" = 1 ] && [ "$(grep -c '^dhcp_release' "$t/calls")" = 2 ] && echo "$out" | grep -qF "Released 1 of 2 stale leases"; then
+    log_test "PASS" "dhcp cleanup goes on after a failed release, counts it and exits 1 (#42)"
+  else
+    log_test "FAIL" "dhcp cleanup goes on after a failed release, counts it and exits 1 (#42)" "exit $rc; $(tr '\n' ';' <"$t/calls"); $(echo "$out" | tr '\n' ';')"
+  fi
+
+  rm -rf "${t:?}"/*
+  write_lease_fixture "$t"
+  out=$(run_dhcp_fixture "$t" "$nostub" clear 52:54:00:99:99:99)
+  rc=$?
+  local hint
+  hint=$(grep -o 'install dnsmasq-utils on [^)]*' "$lib/utils/common.sh")
+  if [ "$rc" = 0 ] && echo "$out" | grep -qF "No matching DHCP lease found" && ! echo "$out" | grep -q "dhcp_release not found" &&
+    [[ "$hint" == *Kali* && "$hint" == *Fedora* && "$hint" == *"dnsmasq on Arch"* ]]; then
+    log_test "PASS" "dhcp clear without dhcp_release and no lease says none found; the install hint names every distro (#44)"
+  else
+    log_test "FAIL" "dhcp clear without dhcp_release and no lease says none found; the install hint names every distro (#44)" "exit $rc; $hint; $(echo "$out" | tr '\n' ';')"
+  fi
+
+  out=$(
+    HOME="$t"
+    source "$lib/core/delete-vm.sh" >/dev/null 2>&1
+    DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t"
+    virsh() {
+      [ "$1" = undefine ] && : >"$t/gone"
+      return 0
+    }
+    cleanup_dhcp_lease() { return 2; }
+    check_vm_exists() { [ ! -e "$t/gone" ]; }
+    registry_get() { :; }
+    registry_remove() { :; }
+    get_vm_mac() { echo 52:54:00:00:00:01; }
+    get_vm_disk_path() { :; }
+    get_vm_ip() { :; }
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    stop_vm_gracefully() { :; }
+    cleanup_port_forwarding_for_vm() { :; }
+    sleep() { :; }
+    delete_single_vm vm1 2>&1
+  )
+  if ! echo "$out" | grep -q "No DHCP leases found" && echo "$out" | grep -qF "DHCP lease may stay in dnsmasq"; then
+    log_test "PASS" "delete with a failed lease release does not end with 'No DHCP leases found' (#44)"
+  else
+    log_test "FAIL" "delete with a failed lease release does not end with 'No DHCP leases found' (#44)" "$(echo "$out" | grep -i lease | tr '\n' ';')"
+  fi
+
+  printf '[{"ip-address": "10.10.10.11", "mac-address": "52:54:00:AB:00:01"}, {"ip-address": "fd00::2", "mac-address": "52:54:00:00:00:02"}]\n' >"$t/br.status"
+  out=$(source "$SCRIPT_DIR/dcvm-completion.sh" && DNSMASQ_DIR="$t" BRIDGE_NAME=br _dcvm_lease_macs | tr '\n' ' ')
+  if [ "$out" = "52:54:00:00:00:02 52:54:00:ab:00:01 " ] &&
+    ! grep -rlF '.leases' "$lib" --include='*.sh' | grep -v test-suite.sh | grep -q .; then
+    log_test "PASS" "completion reads lease MACs from the .status file; nothing reads .leases (#43)"
+  else
+    log_test "FAIL" "completion reads lease MACs from the .status file; nothing reads .leases (#43)" "macs '$out'; $(grep -rlF '.leases' "$lib" --include='*.sh' | grep -v test-suite.sh | tr '\n' ' ')"
+  fi
+  if ! grep -qE ':[[:space:]]*>[[:space:]]*"\$status_file"' "$lib/installation/uninstall-dcvm.sh"; then
+    log_test "PASS" "uninstall leaves [] in the status file, not 0 bytes (#42)"
+  else
+    log_test "FAIL" "uninstall leaves [] in the status file, not 0 bytes (#42)"
+  fi
+  rm -rf "$t"
 }
 
 # shellcheck disable=SC2016 # stub code is eval'd later
@@ -3631,6 +3753,7 @@ test_common_functions() {
   test_userdata_per_os
   test_dhcp_clear_exact
   test_cleanup_dhcp_lease_failures
+  test_dhcp_lease_edge_cases
   test_cleanup_dhcp_lease_parallel
   test_dhcp_cleanup_nits
   test_get_vm_ip_subnet_dots
