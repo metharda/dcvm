@@ -71,7 +71,8 @@ A user who tries anything else gets exit status 77 and a message that says why.
 
 Every VM has an owner, kept in `/var/lib/dcvm/vms/<vm>` (owner, resources,
 login user, `--ttl` expiry, protection). Users see only the VMs and backups
-they own. VMs from before 0.9.10 belong to root, so only admins see them;
+they own. Root and admins see an OWNER column in `dcvm list` and
+`dcvm status`, and `dcvm list --json` has an `owner` field. VMs from before 0.9.10 belong to root, so only admins see them;
 `sudo dcvm owner <vm> <user>` hands one over. VM names stay global: two users
 can't both have a VM called `web`.
 

@@ -33,7 +33,8 @@ with `sudo dcvm user add <user> [--admin]` and hand VMs over with
   descriptors and secrets through a pipe, never as paths or command-line
   arguments. Members of `dcvm-admin` can do everything root can.
 - VM owners (`/var/lib/dcvm/vms`) and backup owners: users see and change only
-  their own VMs and backups.
+  their own VMs and backups. `dcvm list` and `dcvm status` show an OWNER
+  column to root and admins, and `list --json` includes each VM's owner.
 - Quotas per user (`/etc/dcvm/limits.conf`; defaults 5 VMs, 8 vCPUs, 16 GB
   memory, 200 GB disk).
 - An audit log of every request through the socket
