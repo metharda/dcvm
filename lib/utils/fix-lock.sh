@@ -21,6 +21,47 @@ phase_done() {
   PHASE_ERRORS=$step_errors
 }
 
+# ISO installs ($3 false) keep their installer and their disk bus: Windows has no virtio driver.
+clean_definition() {
+  python3 -I -S - "$@" <<'PY'
+import sys, xml.etree.ElementTree as ET
+path, disk, cloud = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
+    ET.register_namespace(prefix, uri)
+tree = ET.parse(path)
+devices = tree.getroot().find("devices")
+if devices is None:
+    sys.exit(1)
+done = []
+cdroms = [d for d in devices.findall("disk") if d.get("device") == "cdrom"] if cloud else []
+for d in cdroms:
+    devices.remove(d)
+if cdroms:
+    done.append("CD-ROM removed")
+for d in devices.findall("disk"):
+    src = d.find("source")
+    if d.get("device", "disk") != "disk" or src is None or src.get("file") != disk:
+        continue
+    drv = d.find("driver")
+    if drv is not None and "cache" in drv.attrib:
+        del drv.attrib["cache"]
+        done.append("cache setting removed")
+    if drv is not None and drv.get("name") == "qemu" and drv.get("type") != "qcow2":
+        drv.set("type", "qcow2")
+        done.append("disk read as qcow2")
+    tgt = d.find("target")
+    if cloud and tgt is not None and (tgt.get("dev"), tgt.get("bus")) != ("vda", "virtio"):
+        tgt.attrib = {"dev": "vda", "bus": "virtio"}
+        addr = d.find("address")
+        if addr is not None:
+            d.remove(addr)
+        done.append("disk on virtio")
+if done:
+    tree.write(path)
+print(", ".join(done))
+PY
+}
+
 fix_vm_locks() {
   local vm_name="$1"
   local step_errors=0
@@ -76,12 +117,8 @@ fix_vm_locks() {
   print_verbose "Current VM state: $vm_state"
 
   if [ "$vm_state" = "running" ]; then
-    print_info "Attempting graceful shutdown first"
-    virsh shutdown "$vm_name" >/dev/null 2>&1
-    sleep 3
-
-    vm_state=$(get_vm_state "$vm_name")
-    [ "$vm_state" = "running" ] && print_warning "Graceful shutdown failed, forcing destruction"
+    print_info "Shutting down $vm_name (forced off after 60 seconds)"
+    stop_vm_gracefully "$vm_name"
   fi
 
   virsh destroy "$vm_name" >/dev/null 2>&1 || print_verbose "VM destroy command failed or VM was not running"
@@ -234,38 +271,27 @@ fix_vm_locks() {
 
   phase_done "Permissions" "${target_owner:-unchanged}, mode 600"
 
-  local temp_xml=$(mktemp)
-  if virsh dumpxml "$vm_name" >"$temp_xml" 2>/dev/null; then
-    print_verbose "Successfully dumped VM XML configuration"
-
-    grep -qi 'device="cdrom"' "$temp_xml" && sed -i '/<disk[^>]*device="cdrom"[^>]*>/,/<\/disk>/d' "$temp_xml" && print_verbose "Removed CD-ROM device blocks"
-    sed -i '/<target dev="hd[ab]".*bus="ide"\/>/d' "$temp_xml"
-    grep -q 'controller type="ide"' "$temp_xml" && sed -i '/<controller type="ide"/,/<\/controller>/d' "$temp_xml" && print_verbose "Removed IDE controllers from configuration"
-
-    local old_path=$(grep -o "file='[^']*'" "$temp_xml" | head -1 | sed "s/file='//;s/'//")
-    [ -n "$old_path" ] && [ "$old_path" != "$VM_DISK_PATH" ] && sed -i "s|<source file='[^']*'/>|<source file='$VM_DISK_PATH'/>|g" "$temp_xml" && print_verbose "Updated disk path from $old_path to $VM_DISK_PATH"
-
-    grep -q 'cache=' "$temp_xml" && sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml" && print_verbose "Removed cache settings from disk configuration"
-
-    sed -i 's/<driver name="qemu"[^>]*>/<driver name="qemu" type="qcow2">/g' "$temp_xml"
-    grep -q '<target dev=' "$temp_xml" && sed -i 's/<target dev="\([a-z]*\)[0-9]*" bus="[^"]*"\/>/<target dev="vda" bus="virtio"\/>/g' "$temp_xml"
-
-    if virsh define --validate "$temp_xml" >/dev/null 2>&1; then
-      print_success "VM configuration cleaned and redefined with validation"
-    elif virsh define "$temp_xml" >/dev/null 2>&1; then
-      print_success "VM configuration cleaned and redefined (validation skipped)"
-    else
-      print_error "Failed to redefine VM configuration"
-      [ "$VERBOSE" = true ] && print_verbose "Problematic XML content:" && cat "$temp_xml"
-      step_errors=$((step_errors + 1))
-    fi
-  else
-    print_error "Failed to dump VM XML configuration"
+  local temp_xml changes cloud=false
+  temp_xml=$(mktemp)
+  [ -f "${DATACENTER_BASE:-/srv/datacenter}/vms/$vm_name/cloud-init/user-data" ] && cloud=true
+  # --security-info keeps VNC passwords, which a redefinition would otherwise drop.
+  if ! virsh dumpxml --security-info "$vm_name" >"$temp_xml" 2>/dev/null || ! changes=$(clean_definition "$temp_xml" "$VM_DISK_PATH" "$cloud"); then
+    print_error "Failed to read the VM's XML configuration"
     step_errors=$((step_errors + 1))
+    changes="not changed"
+  elif [ -z "$changes" ]; then
+    changes="nothing to change"
+  elif virsh define --validate "$temp_xml" >/dev/null 2>&1 || virsh define "$temp_xml" >/dev/null 2>&1; then
+    changes+=", redefined"
+  else
+    print_error "Failed to redefine VM configuration ($changes)"
+    [ "$VERBOSE" = true ] && print_verbose "Problematic XML content:" && cat "$temp_xml"
+    step_errors=$((step_errors + 1))
+    changes="not changed"
   fi
   rm -f "$temp_xml"
 
-  phase_done "Definition" "CD-ROM and IDE removed, disk on virtio, redefined"
+  phase_done "Definition" "$changes"
 
   local restart_success=false
   if [ "$(caller_role)" = user ]; then

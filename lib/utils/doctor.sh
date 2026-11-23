@@ -335,7 +335,7 @@ base_status() {
 
 check_vms() {
   section "VMs"
-  local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 noip=()
+  local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 err noip=()
   local entry stale=()
   for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
     [ -f "$entry" ] || continue
@@ -379,8 +379,12 @@ check_vms() {
         report warn "$vm" "does not start with the host: --fix turns autostart on"
       fi
     fi
-    if [ "$state" = "shut off" ] && [ -f "$disk" ] && ! qemu-img info "$disk" >/dev/null 2>&1; then
-      report fail "$vm" "its disk is locked although the VM is off: dcvm fix-lock $vm"
+    if [ "$state" = "shut off" ] && [ -f "$disk" ] && command_exists qemu-img && ! err=$(qemu-img info "$disk" 2>&1 >/dev/null); then
+      if [[ "$err" == *'"write" lock'* ]]; then
+        report fail "$vm" "its disk is locked although the VM is off: dcvm fix-lock $vm"
+      else
+        report warn "$vm" "qemu-img cannot read its disk: $(head -1 <<<"$err")"
+      fi
     fi
   done < <(vm_disks)
   if [ -z "$rows" ]; then
@@ -470,16 +474,23 @@ check_storage() {
   fi
 
   $FAST && return 0
-  local img corrupt=""
+  if ! command_exists qemu-img; then
+    report skip "Templates" "not checked: qemu-img is not installed"
+    return 0
+  fi
+  local img corrupt="" unchecked=""
   for img in "$(templates_dir)"/*; do
     [ -f "$img" ] || continue
-    qemu-img check -U "$img" >/dev/null 2>&1 || corrupt+="${corrupt:+, }${img##*/}"
+    qemu-img check -U "$img" >/dev/null 2>&1
+    # Only 2 means corrupt: 1 is a failed check, 3 leaked clusters, 63 a format without checks.
+    case $? in
+    2) corrupt+="${corrupt:+, }${img##*/}" ;;
+    1) unchecked+="${unchecked:+, }${img##*/}" ;;
+    esac
   done
-  if [ -n "$corrupt" ]; then
-    report fail "Templates" "corrupt: $corrupt (dcvm template download <image> --force)"
-  else
-    report ok "Templates" "all pass qemu-img check"
-  fi
+  [ -n "$corrupt" ] && report fail "Templates" "corrupt: $corrupt (dcvm template download <image> --force)"
+  [ -n "$unchecked" ] && report warn "Templates" "qemu-img could not check $unchecked"
+  [ -n "$corrupt$unchecked" ] || report ok "Templates" "all pass qemu-img check"
 }
 
 check_builds() {
