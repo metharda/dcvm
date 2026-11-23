@@ -940,7 +940,8 @@ backup_vm() {
   local how=uncompressed part rc=0
   [ "$COMPRESSION_ENABLED" = true ] && disk_backup+=".gz" && how=$(command -v pigz || echo gzip)
   part="$disk_backup.part"
-  trap 'rm -f "$part"' EXIT
+  # Interrupted mid-copy: drop the partial file and give the VM back.
+  trap 'rm -f "$part"; rmdir "$backup_folder_path" 2>/dev/null; [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1' EXIT
   if [ "$how" = uncompressed ]; then
     ui_run "Copying disk" cp --sparse=always "$vm_disk_path" "$part" || rc=$?
   else
