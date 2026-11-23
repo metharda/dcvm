@@ -12,6 +12,20 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Installer: `--network-name VALUE` works, the bridge name fits 15 bytes, and a
+  network that fails to define or start fails the install (#68).
+- Debian/Ubuntu install `iptables`; `dcvm doctor` checks for it (#68).
+- `dcvm network status` and `bridge` no longer abort when the bridge is missing (#69).
+- DHCP cleanup and `doctor --fix` keep every lease whose MAC belongs to a VM,
+  whatever the guest's hostname, and clean orphans without a hostname (#76).
+- Port forwards rewrite only traffic to the host, so VM egress to ports
+  2221+/8081+ is no longer redirected; `doctor --fix` or `dcvm network ports apply`
+  replaces older rules (#77).
+- `delete --all` removes only the deleted VMs' forwards and keeps a refused
+  VM's lease, mapping and rules (#77).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
