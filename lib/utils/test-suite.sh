@@ -1065,6 +1065,56 @@ EOF
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2317,SC2329 # stubs; DATE is read by backup_vm
+test_backup_create_streams_disk() {
+  local t
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  # 64 MiB apparent size, about 1 MiB allocated: the free-space check must use the allocated size.
+  head -c 1048576 /dev/urandom >"$t/disk.qcow2"
+  truncate -s 64M "$t/disk.qcow2"
+  run_backup() {
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    DATE=20260101_120000
+    free_bytes() { echo $((8 * 1048576)); }
+    get_vm_disk_path() { echo "$t/disk.qcow2"; }
+    prepare_vm_disk() { :; }
+    write_base_record() { :; }
+    vm_owner_uid() { echo 0; }
+    vm_login() { :; }
+    cp() {
+      echo "cp $*" >>"$t/calls"
+      command cp "$@"
+    }
+    backup_vm vm1 >"$t/out" 2>&1
+    echo "rc=$?" >>"$t/out"
+  }
+  printf ' 1    vm1    running\n' >"$t/list"
+  echo running >"$t/state"
+  (run_backup)
+  local f="$t/backups/vm1-20260101_120000/vm1-disk-20260101_120000.qcow2.gz"
+  if grep -q '^rc=0$' "$t/out" && gunzip -c "$f" 2>/dev/null | cmp -s - "$t/disk.qcow2" &&
+    [ "$(find "$t/backups" -name '*.qcow2' -o -name '*.part' | wc -l)" = 0 ] && ! grep -q '^cp ' "$t/calls"; then
+    log_test "PASS" "backup create (streams the disk into .qcow2.gz, sized by allocated blocks)"
+  else
+    log_test "FAIL" "backup create (streams the disk into .qcow2.gz, sized by allocated blocks)" "$(grep -E 'rc=|Free space|cp ' "$t/out" "$t/calls" | tr '\n' ';')"
+  fi
+
+  rm -rf "$t/backups" "$t/calls"
+  echo running >"$t/state"
+  printf '#!/bin/sh\necho partial\nexit 1\n' >"$t/bin/gzip"
+  chmod +x "$t/bin/gzip"
+  cp "$t/bin/gzip" "$t/bin/pigz"
+  (PATH="$t/bin:$PATH" run_backup)
+  if grep -q '^rc=1$' "$t/out" && [ -z "$(ls -A "$t/backups" 2>/dev/null)" ] && grep -q 'virsh start vm1' "$t/calls"; then
+    log_test "PASS" "backup create (failed compression leaves no partial file and restarts the VM)"
+  else
+    log_test "FAIL" "backup create (failed compression leaves no partial file and restarts the VM)" "$(tail -1 "$t/out"); $(find "$t/backups" 2>/dev/null | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2317 # stubs
 test_backup_export_selectors() {
   local t ts=20260101_120000 sel r=""
@@ -3569,6 +3619,7 @@ test_common_functions() {
   test_backup_restore_in_place
   test_backup_restore_safety
   test_backup_export_selectors
+  test_backup_create_streams_disk
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
   test_root_username_userdata

@@ -878,8 +878,11 @@ backup_vm() {
   ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
   mkdir -p -m 700 "$BACKUP_DIR"
-  if [ "$(free_bytes "$BACKUP_DIR")" -lt "$(file_bytes "$vm_disk_path")" ]; then
-    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the copy needs $(get_file_size "$vm_disk_path")"
+  # The disk streams into the backup file, so it never needs more than the disk's allocated blocks.
+  local need
+  need=$(du -B1 "$vm_disk_path" 2>/dev/null | cut -f1)
+  if [ "$(free_bytes "$BACKUP_DIR")" -lt "${need:-0}" ]; then
+    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the backup needs up to $(format_bytes "$need")"
     echo -e "      ${DIM}$vm_name was not stopped. Free some space (dcvm backup delete <vm>), then try again.${NC}"
     return 1
   fi
@@ -934,29 +937,30 @@ backup_vm() {
 
   local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
   local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
-
-  if ui_run "Copying disk" cp "$vm_disk_path" "$disk_backup"; then
-    ui_step ok "Copied disk" "$(get_file_size "$disk_backup") in ${UI_RUN_SECS}s"
+  local how=uncompressed part rc=0
+  [ "$COMPRESSION_ENABLED" = true ] && disk_backup+=".gz" && how=$(command -v pigz || echo gzip)
+  part="$disk_backup.part"
+  trap 'rm -f "$part"' EXIT
+  if [ "$how" = uncompressed ]; then
+    ui_run "Copying disk" cp --sparse=always "$vm_disk_path" "$part" || rc=$?
+  else
+    ui_run "Compressing disk" sh -c '"$1" -c "$2" >"$3"' _ "$how" "$vm_disk_path" "$part" || rc=$?
+  fi
+  [ "$rc" = 0 ] && mv -f "$part" "$disk_backup" || rc=1
+  trap - EXIT
+  if [ "$rc" = 0 ]; then
+    ui_step ok "Saved disk" "$(get_file_size "$disk_backup") (${how##*/}) in ${UI_RUN_SECS}s"
     log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk_backup")"
   else
-    ui_step fail "Copy disk" "failed"
+    rm -f "$part"
+    rmdir "$backup_folder_path" 2>/dev/null
+    ui_step fail "Save disk" "failed"
     cat "$UI_RUN_LOG"
     log "ERROR" "Failed to backup VM disk for $vm_name"
     if [ "$was_running" = true ]; then
       virsh start "$vm_name" >/dev/null 2>&1 && ui_step ok "Started VM" "running again"
     fi
     return 1
-  fi
-
-  if [ "$COMPRESSION_ENABLED" = true ]; then
-    if ui_run "Compressing" gzip "$disk_backup"; then
-      disk_backup="${disk_backup}.gz"
-      ui_step ok "Compressed" "$(get_file_size "$disk_backup") with gzip in ${UI_RUN_SECS}s"
-      log "INFO" "Compressed backup for $vm_name: $(get_file_size "$disk_backup")"
-    else
-      ui_step warn "Compress" "failed, kept the uncompressed copy"
-      log "ERROR" "Failed to compress backup for $vm_name"
-    fi
   fi
 
   write_base_record "$vm_disk_path" "$backup_folder_path"
@@ -995,30 +999,6 @@ backup_vm() {
 
   log "SUCCESS" "Backup completed successfully for VM: $vm_name"
   return 0
-}
-
-compress_backup() {
-  local file_path="$1"
-  local vm_name="$2"
-
-  if [ "$COMPRESSION_ENABLED" = true ]; then
-    print_info "Compressing backup..."
-    local compressed_file="${file_path}.gz"
-
-    if gzip "$file_path"; then
-      local original_size=$(get_file_size "$file_path")
-      local compressed_size=$(get_file_size "$compressed_file")
-      print_success "Compression completed (${compressed_size})"
-      log "INFO" "Compressed backup for $vm_name: $original_size -> $compressed_size"
-      echo "$compressed_file"
-    else
-      print_error "Compression failed, keeping uncompressed backup"
-      log "ERROR" "Failed to compress backup for $vm_name"
-      echo "$file_path"
-    fi
-  else
-    echo "$file_path"
-  fi
 }
 
 hosts_rename_sed_expr() {
