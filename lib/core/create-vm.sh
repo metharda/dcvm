@@ -82,7 +82,7 @@ Options:
   --graphics <none|vnc|spice>    Display (default: none, VNC for OSes that need it)
   --uefi                         UEFI firmware instead of BIOS
   --ttl <90m|2h|3d>              Delete the VM after this long
-  --wait                         Return once SSH answers (up to 10 minutes)
+  --wait                         Return once SSH answers (up to 10 minutes, 30 for an ISO)
   --json                         Print the result as JSON on stdout
   -h, --help                     Show this help
 
@@ -311,7 +311,7 @@ select_os() {
 			  3  Debian 11       6  Ubuntu 20.04             9  Fedora 44
 			  or the path to an ISO file
 			EOF
-      read -r -p "Choose [4]: " VM_OS_CHOICE || exit 1
+      read -r -p "Choose [4]: " VM_OS_CHOICE || no_input
       VM_OS_CHOICE=${VM_OS_CHOICE:-4}
       break
     done
@@ -640,18 +640,18 @@ setup_tailscale() {
     echo ""
     print_info "Tailscale VPN installation detected!"
     while true; do
-      read -p "Would you like to connect automatically with an auth key? (y/N): " use_authkey || exit 1
+      read -p "Would you like to connect automatically with an auth key? (y/N): " use_authkey || no_input
       use_authkey=${use_authkey:-n}
       if [[ "$use_authkey" =~ ^[Yy]$ ]]; then
         while true; do
-          read -p "Enter Tailscale auth key: " TAILSCALE_AUTHKEY || exit 1
+          read -p "Enter Tailscale auth key: " TAILSCALE_AUTHKEY || no_input
           if [ -z "$TAILSCALE_AUTHKEY" ]; then
             print_error "Auth key cannot be empty"
             continue
           fi
           if [[ ! "$TAILSCALE_AUTHKEY" =~ ^tskey- ]]; then
             print_warning "Auth key doesn't start with 'tskey-', are you sure?"
-            read -p "Continue anyway? (y/N): " confirm_key || exit 1
+            read -p "Continue anyway? (y/N): " confirm_key || no_input
             [[ ! "$confirm_key" =~ ^[Yy]$ ]] && continue
           fi
           print_success "Tailscale will auto-connect with provided auth key"
@@ -717,7 +717,7 @@ interactive_prompt_password() {
 
 interactive_prompt_memory() {
   while true; do
-    read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY || exit 1
+    read -p "Memory in MB (default: 2048, available: ${HOST_MEMORY_MB}MB, max recommended: ${MAX_VM_MEMORY}MB): " VM_MEMORY || no_input
     VM_MEMORY=$(echo "$VM_MEMORY" | xargs)
     VM_MEMORY=${VM_MEMORY:-2048}
     [[ ! "$VM_MEMORY" =~ ^[0-9]+$ ]] && {
@@ -730,7 +730,7 @@ interactive_prompt_memory() {
     }
     if [ "$VM_MEMORY" -gt "$MAX_VM_MEMORY" ]; then
       print_warning "Warning: Requested ${VM_MEMORY}MB exceeds recommended ${MAX_VM_MEMORY}MB"
-      read -p "Continue anyway? (y/N): " continue_anyway || exit 1
+      read -p "Continue anyway? (y/N): " continue_anyway || no_input
       [[ ! "$continue_anyway" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -739,7 +739,7 @@ interactive_prompt_memory() {
 
 interactive_prompt_cpus() {
   while true; do
-    read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS || exit 1
+    read -p "Number of CPUs (default: 2, available: ${HOST_CPUS}, max recommended: ${MAX_VM_CPUS}): " VM_CPUS || no_input
     VM_CPUS=$(echo "$VM_CPUS" | xargs)
     VM_CPUS=${VM_CPUS:-2}
     [[ ! "$VM_CPUS" =~ ^[0-9]+$ ]] && {
@@ -752,7 +752,7 @@ interactive_prompt_cpus() {
     }
     if [ "$VM_CPUS" -gt "$MAX_VM_CPUS" ]; then
       print_warning "Warning: Requested ${VM_CPUS} CPUs exceeds recommended ${MAX_VM_CPUS}"
-      read -p "Continue anyway? (y/N): " continue_anyway || exit 1
+      read -p "Continue anyway? (y/N): " continue_anyway || no_input
       [[ ! "$continue_anyway" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -763,7 +763,7 @@ interactive_prompt_disk() {
   local default_disk=$(get_default_disk_size)
   local min_disk_gb="${MIN_DISK_SIZE_GB[$VM_OS]:-5}"
   while true; do
-    read -p "Disk size (default: ${default_disk}, min for $VM_OS: ${min_disk_gb}G, format: 10G, 500M, 2T): " VM_DISK_SIZE || exit 1
+    read -p "Disk size (default: ${default_disk}, min for $VM_OS: ${min_disk_gb}G, format: 10G, 500M, 2T): " VM_DISK_SIZE || no_input
     VM_DISK_SIZE=${VM_DISK_SIZE:-$default_disk}
     if validate_disk_size "$VM_DISK_SIZE"; then
       break
@@ -774,7 +774,7 @@ interactive_prompt_disk() {
 interactive_prompt_root() {
   ui_section "Root login"
   while true; do
-    read -p "Enable root login? (Y/n): " ENABLE_ROOT || exit 1
+    read -p "Enable root login? (Y/n): " ENABLE_ROOT || no_input
     ENABLE_ROOT=${ENABLE_ROOT:-y}
     [[ "$ENABLE_ROOT" =~ ^[YyNn]$ ]] && break
     print_error "Please enter 'y' for yes or 'n' for no"
@@ -782,7 +782,7 @@ interactive_prompt_root() {
   ROOT_PASSWORD=""
   if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
     while true; do
-      read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD || exit 1
+      read -p "Use same password for root? (Y/n): " SAME_ROOT_PASSWORD || no_input
       SAME_ROOT_PASSWORD=${SAME_ROOT_PASSWORD:-y}
       [[ "$SAME_ROOT_PASSWORD" =~ ^[YyNn]$ ]] && break
       print_error "Please enter 'y' for yes or 'n' for no"
@@ -824,7 +824,7 @@ interactive_prompt_root() {
 interactive_prompt_ssh_key() {
   SETUP_SSH_KEY=false
   while true; do
-    read -p "Setup SSH key for passwordless authentication? (Y/n): " ENABLE_SSH_KEY || exit 1
+    read -p "Setup SSH key for passwordless authentication? (Y/n): " ENABLE_SSH_KEY || no_input
     ENABLE_SSH_KEY=${ENABLE_SSH_KEY:-y}
     if [[ "$ENABLE_SSH_KEY" =~ ^[YyNn]$ ]]; then
       [[ "$ENABLE_SSH_KEY" =~ ^[Yy]$ ]] && SETUP_SSH_KEY=true
@@ -868,7 +868,7 @@ interactive_prompt_static_ip() {
 NETINFO
 
   while true; do
-    read -p "Use static IP? (y/N, default: DHCP): " use_static || exit 1
+    read -p "Use static IP? (y/N, default: DHCP): " use_static || no_input
     use_static=${use_static:-n}
 
     if [[ "$use_static" =~ ^[Nn]$ ]]; then
@@ -877,7 +877,7 @@ NETINFO
       break
     elif [[ "$use_static" =~ ^[Yy]$ ]]; then
       while true; do
-        read -p "Enter static IP (e.g., ${subnet}.50): " FLAG_STATIC_IP || exit 1
+        read -p "Enter static IP (e.g., ${subnet}.50): " FLAG_STATIC_IP || no_input
         if [ -z "$FLAG_STATIC_IP" ]; then
           print_error "IP address cannot be empty"
           continue
@@ -1597,6 +1597,10 @@ EOF
 }
 
 main() {
+  if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    show_usage
+    exit 0
+  fi
   load_dcvm_config
 
   [ -f /etc/dcvm-install.conf ] && source /etc/dcvm-install.conf || {
@@ -1716,6 +1720,7 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
+    [ -n "$FLAG_STATIC_IP" ] && save_static_ip "$VM_NAME" "$FLAG_STATIC_IP"
     [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"

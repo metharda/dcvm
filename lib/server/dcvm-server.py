@@ -37,7 +37,7 @@ DEFAULT_LIMITS = {"vms": 5, "vcpus": 8, "memory_mb": 16384, "disk_gb": 200}
 NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z")
 RESERVED = {"all", "latest", "help"}
 BACKUP_ID = re.compile(r"^([0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?|latest)\Z")
-SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMm]\Z")
+SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMmTt]\Z")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{2,31}\Z")
 PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+-]*)*\Z")
 IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}\Z")
@@ -56,17 +56,28 @@ SECRET_FLAGS = ("-p", "--password", "-r", "--root-password", "--tailscale-authke
 def redact(argv):
     out, hide = [], False
     for a in argv:
-        if hide:
+        if not isinstance(a, str):
+            out.append(repr(a))
+        elif hide:
             out.append("***")
             hide = False
         elif a in SECRET_FLAGS:
             out.append(a)
             hide = True
-        elif any(a.startswith(f + "=") for f in SECRET_FLAGS) or re.match(r"^-[pr].", a):
+        elif (a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--")) or \
+                any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
             out.append(a[:2] + "***")
         else:
             out.append(a)
     return out
+
+
+def redact_text(text, argv):
+    # Errors quote what the caller typed; a secret must not reach the log through them.
+    for raw, shown in zip(argv, redact(argv)):
+        if isinstance(raw, str) and raw != shown and len(raw) > 2:
+            text = text.replace(raw, shown)
+    return text
 
 
 def read_config():
@@ -201,7 +212,9 @@ def size_gb(value, default):
         return default
     v = value.upper()
     if v.endswith("M"):
-        return max(1, int(v[:-1]) // 1024)
+        return max(1, -(-int(v[:-1]) // 1024))
+    if v.endswith("T"):
+        return int(v[:-1]) * 1024
     return int(v.rstrip("G"))
 
 
@@ -250,6 +263,7 @@ def new_vm_name(vm):
 
 CREATE_FLAGS = {"-f", "--force", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key",
                 "--json", "--wait", "--uefi"}
+ISO_FLAGS = {"-f", "--force", "--json", "--wait", "--uefi"}
 
 
 def parse_create(ctx, args, iso_mode):
@@ -258,7 +272,7 @@ def parse_create(ctx, args, iso_mode):
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
-        if a in CREATE_FLAGS:
+        if a in CREATE_FLAGS and (not iso_mode or a in ISO_FLAGS):
             out.append(a)
         elif opt in ("-m", "--memory"):
             v, i = take_value(args, i, opt)
@@ -276,6 +290,8 @@ def parse_create(ctx, args, iso_mode):
             v, i = take_value(args, i, opt)
             if not SIZE.match(v):
                 raise Denied("--disk must look like 30G")
+            if v.upper().endswith("T") and int(v[:-1]) > 10:
+                raise Denied("--disk is at most 10T")
             disk = size_gb(v, disk)
             out += ["-d", v.upper()]
         elif opt in ("-u", "--username"):
@@ -483,7 +499,7 @@ def decide_backup(ctx, args):
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
         if len(rest) >= 2 and not rest[1].startswith("fd:") and not BACKUP_ID.match(rest[1]):
             raise Denied("invalid backup id")
-        if not rest[-1].startswith("fd:"):
+        if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
         ctx["export_fd"] = fd_ref(ctx, rest[-1])
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")]
@@ -547,9 +563,11 @@ def stage_iso(ctx, fd, vm):
         raise Denied("the ISO must be a regular file")
     if st.st_size > MAX_ISO:
         raise Denied("the ISO is larger than 16 GB")
-    if not ctx.get("reserved") and vm_exists(vm):
-        raise Denied("VM %s already exists" % vm)
     base = read_config()["DATACENTER_BASE"]
+    vm_dir = os.path.join(base, "vms", vm)
+    # Users' names were checked when reserved; anyone else must not stage into (or later remove) a folder in use.
+    if not ctx.get("reserved") and (vm_exists(vm) or os.path.exists(vm_dir)):
+        raise Denied("VM %s already exists (or %s is left over)" % (vm, vm_dir))
     fs = os.statvfs(base)
     if fs.f_bavail * fs.f_frsize < st.st_size + 2 * 1024 ** 3:
         raise Denied("not enough free space in %s for the ISO and a disk; ask an admin" % base)
@@ -579,7 +597,7 @@ def audit(ctx, argv, decision, rc=None, reason=None, started=None):
     if rc is not None:
         rec["exit"] = rc
     if reason:
-        rec["reason"] = reason
+        rec["reason"] = redact_text(reason, argv) if isinstance(argv, list) else reason
     if started:
         rec["seconds"] = round(time.time() - started, 1)
     line = json.dumps(rec, ensure_ascii=True)
@@ -729,7 +747,7 @@ def handle(conn):
         audit(ctx, argv, "allow", rc=rc, started=started)
         send(conn, {"exit": rc})
     except Denied as e:
-        say(fdmap_get(req, files, "stderr"), str(e))
+        say(fdmap_get(req, files, "stderr"), redact_text(str(e), argv) if isinstance(argv, list) else str(e))
         audit(ctx, argv, "deny", reason=str(e), started=started)
         send(conn, {"exit": 77, "error": str(e)})
     except Exception as e:

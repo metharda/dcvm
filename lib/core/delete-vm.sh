@@ -26,6 +26,7 @@ delete_single_vm() {
     # A record left by a create that never finished still holds the name and quota.
     if [ -f "$(registry_file "$VM_NAME")" ] && [ ! -d "$DATACENTER_BASE/vms/$VM_NAME" ]; then
       registry_remove "$VM_NAME"
+      rm -f "$DATACENTER_BASE/config/network/$VM_NAME.conf"
       ui_done ok "$VM_NAME deleted" "only its record was left"
       return 0
     fi
@@ -86,8 +87,12 @@ delete_single_vm() {
 
   # Not --remove-all-storage: an attached ISO may be a shared file of root's.
   # --nvram: libvirt refuses to undefine a UEFI VM that keeps its variables.
-  virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1 || true
-  [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
+  if virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1; then
+    [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && rm -f "$VM_DISK_PATH"
+  else
+    print_error "libvirt would not remove $VM_NAME; its disk is kept"
+    return 1
+  fi
 
   remove_vm_storage_pool "$VM_NAME"
 
@@ -153,10 +158,10 @@ delete_all_vms() {
   print_warning "Deletes these VMs with their disks, DHCP leases, port forwards and static IPs. Backups are kept."
   echo ""
   local confirm code
-  read -r -p "  Type 'yes' to continue: " confirm || exit 1
+  read -r -p "  Type 'yes' to continue: " confirm || no_input
   [ "$confirm" != "yes" ] && echo "  Cancelled." && return 0
   code=$(shuf -i 1000-9999 -n 1)
-  read -r -p "  Type $code to confirm: " confirm || exit 1
+  read -r -p "  Type $code to confirm: " confirm || no_input
   [ "$confirm" != "$code" ] && echo "  Cancelled." && return 0
 
   while read -r vm <&3; do
@@ -179,12 +184,17 @@ delete_all_vms() {
     iptables -D FORWARD "$rule_num" 2>/dev/null || true
   done
   save_iptables_rules
-  [ -d "$DATACENTER_BASE/vms" ] && find "$DATACENTER_BASE/vms" -maxdepth 1 -type d ! -path "$DATACENTER_BASE/vms" -exec rm -rf {} + 2>/dev/null
+  # A VM that was refused (protected) or failed keeps its folder and disk.
+  local dir
+  for dir in "$DATACENTER_BASE"/vms/*/; do
+    [ -d "$dir" ] && ! check_vm_exists "$(basename "$dir")" && rm -rf "$dir"
+  done
 
   if [ "$failed" -eq 0 ] && [ -z "$(list_datacenter_vms)" ]; then
     ui_done ok "All $(plural "$count" VM) deleted" "DHCP status, port mappings and forward rules cleared"
   else
     ui_done warn "$((count - failed)) of $count VMs deleted" "dcvm list shows what is left"
+    return 1
   fi
 }
 
@@ -194,7 +204,7 @@ main() {
 dcvm delete - delete a VM with its disk, DHCP lease, port forwards and static IP
 
 Usage:
-  dcvm delete <vm> [--yes]    One VM; without a terminal, users need --yes
+  dcvm delete <vm> [--yes]    One VM, without asking; users without a terminal must add --yes
   dcvm delete --all           Every dcvm VM (asks twice; admins only)
 
 Backups are kept. A protected VM is refused until: dcvm unprotect <vm>

@@ -49,8 +49,17 @@ ssh_opts() {
 }
 
 main() {
-  local cmd="${1:-}"
+  local cmd="${1:-}" a
   shift || true
+  # Help anywhere before "--"; after it, --help belongs to the remote command.
+  for a in "$@"; do
+    [ "$a" = -- ] && break
+    case "$a" in -h | --help)
+      usage
+      return 0
+      ;;
+    esac
+  done
   case "$cmd" in
   ssh | exec)
     local vm="${1:-}"

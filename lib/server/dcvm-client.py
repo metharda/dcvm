@@ -25,13 +25,15 @@ def fail(msg, code=1):
 
 def pull_secrets(argv):
     out, secrets, i = [], {}, 0
-    creating = argv[:1] in (["create"], ["create-iso"])
+    creating = argv[:1] == ["create"]
     while i < len(argv):
         a = argv[i]
         opt, eq, val = a.partition("=")
         if opt not in SECRET_OPTS and a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--"):
-            opt, eq, val = a[:2], "=", a[2:]
+            fail("write %s VALUE or %s=VALUE" % (a[:2], a[:2]))
         if opt in SECRET_OPTS:
+            if argv[:1] == ["create-iso"]:
+                fail("%s does nothing with an ISO: the installer sets up the OS" % opt)
             if not creating:
                 fail("%s only goes with create" % opt)
             if not eq:
@@ -47,6 +49,8 @@ def pull_secrets(argv):
         i += 1
     for var, key in SECRET_ENV.items():
         if os.environ.get(var) and key not in secrets and creating:
+            if "\n" in os.environ[var] or len(os.environ[var]) > 4096:
+                fail("%s must be at most 4096 characters on one line" % var)
             secrets[key] = os.environ[var]
     return out, secrets
 
@@ -83,25 +87,28 @@ def attach_files(argv, files):
             opt, eq, val = a.partition("=")
             if opt in ("-o", "--os"):
                 v = val if eq else (out[i + 1] if i + 1 < len(out) else "")
-                if v and not re.match(r"^[1-9]$", v) and ("/" in v or v.endswith(".iso") or os.path.exists(v)):
+                if v and not re.match(r"^[1-9]\Z", v) and ("/" in v or v.endswith(".iso") or os.path.exists(v)):
                     ref = open_input(files, v, "ISO")
                     if eq:
-                        out[i] = opt + "=" + ref
+                        out[i:i + 1] = [opt, ref]
                     else:
                         out[i + 1] = ref
                 break
     elif cmd == "create-iso":
-        seen = False
-        for i, a in enumerate(out):
-            opt, eq, val = a.partition("=")
+        rebuilt, i = [], 0
+        while i < len(out):
+            opt, eq, val = out[i].partition("=")
             if opt == "--iso" and (eq or i + 1 < len(out)):
-                if seen:
+                if "--iso" in rebuilt:
                     fail("give --iso once")
-                seen = True
-                if eq:
-                    out[i] = "--iso=" + open_input(files, val, "ISO")
-                else:
-                    out[i + 1] = open_input(files, out[i + 1], "ISO")
+                if not eq:
+                    i += 1
+                    val = out[i]
+                rebuilt += ["--iso", open_input(files, val, "ISO")]
+            else:
+                rebuilt.append(out[i])
+            i += 1
+        out = rebuilt
     elif cmd in ("import",) or out[:2] == ["backup", "import"]:
         k = 1 if cmd == "import" else 2
         if len(out) > k:
@@ -109,13 +116,13 @@ def attach_files(argv, files):
     elif out[:2] == ["backup", "export"] and len(out) >= 3:
         rest = out[2:]
         dest = "."
-        if len(rest) == 3 or (len(rest) == 2 and ("/" in rest[1] or rest[1] in (".", "..", "~"))):
+        if len(rest) == 3 or (len(rest) == 2 and (os.path.isdir(os.path.expanduser(rest[1])) or "/" in rest[1])):
             dest = rest.pop()
             if not os.path.isdir(os.path.expanduser(dest)):
                 fail("%s is not a folder" % dest)
         vm = rest[0]
         label = rest[1] if len(rest) > 1 else "latest"
-        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z", vm) or not re.match(r"^[0-9A-Za-z._:-]{1,64}\Z", label):
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z", vm) or not re.match(r"^[0-9A-Za-z._:-]{1,64}\Z", label) or label.startswith("fd:"):
             fail("usage: dcvm backup export <vm> [id|latest] [folder]")
         name = os.path.join(os.path.expanduser(dest), "%s-%s.tar.gz" % (vm, label.replace(":", "")))
         if os.path.exists(name):
@@ -184,21 +191,20 @@ def main(argv):
            "origin": os.environ.get("DCVM_ORIGIN") or ("terminal" if os.isatty(0) and os.isatty(1) else "agent")}
     if secrets:
         req["secrets"] = secrets
-    if argv[:1] in (["create"], ["create-iso"]) and "--without-ssh-key" not in argv:
+    if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
         key = public_key()
         if key:
             req["pubkey"] = key
-    data = json.dumps(req).encode()
-    if len(data) > 262144:
-        fail("the command is too long")
     try:
-        sys.exit(talk(data, files))
+        sys.exit(talk(json.dumps(req).encode(), files))
     finally:
         if files.rename and os.path.exists(files.rename[0]):
             os.unlink(files.rename[0])
 
 
 def talk(data, files):
+    if len(data) > 262144:
+        fail("the command is too long")
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         conn.connect(SOCKET)

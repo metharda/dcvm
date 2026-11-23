@@ -15,13 +15,6 @@ show_whoami() {
   echo ""
 }
 
-vm_login() {
-  local login
-  login=$(registry_get "$1" user)
-  [ -n "$login" ] || [ "$(registry_get "$1" source)" = iso ] || login=$(get_vm_username "$1")
-  echo "$login"
-}
-
 show_info() {
   local vm="$1" json="${2:-}" state ip cpus mem owner expires protected created
   if ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then

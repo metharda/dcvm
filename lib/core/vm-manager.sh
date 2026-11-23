@@ -14,7 +14,7 @@ show_enhanced_console() {
   {
     printf 'VM\tSSH\tHTTP\tCONSOLE\n'
     read_port_mappings | while read -r vm ip ssh_port http_port; do
-      [ -n "$vm" ] && vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "ssh -p $ssh_port $(get_vm_username "$vm")@$host" "http://$host:$http_port" "dcvm console $vm"
+      [ -n "$vm" ] && vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "ssh -p $ssh_port $(vm_login "$vm" | grep . || echo '<user>')@$host" "http://$host:$http_port" "dcvm console $vm"
     done
   } | ui_table
   echo -e "  ${DIM}Exit a console with Ctrl+]${NC}"
@@ -274,7 +274,7 @@ dcvm list | status | start | stop | restart | console
 Usage:
   dcvm list [--json]          VMs with owner, state, IP, vCPU and memory
   dcvm status                 The same, plus the network and port forwards
-  dcvm start [vm|all]         One VM, or every dcvm VM (yours, without root)
+  dcvm start [vm|all]         One VM, or every dcvm VM without a name (yours, without root)
   dcvm stop [vm|all]          Shut down one VM, or every dcvm VM
   dcvm restart [vm|all]       Restart one VM, or every dcvm VM
   dcvm console [vm]           Serial console of a VM (exit with Ctrl+]); without a name, access hints

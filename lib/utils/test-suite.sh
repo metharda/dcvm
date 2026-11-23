@@ -2195,7 +2195,8 @@ test_socket_policy() {
     grep -q '"argv": \["backup", "delete", "web-01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" && r+="backup-delete "
   grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$(ask backup restore web web-01.01.2026-1)" && r+="restore-id "
   grep -q 'only goes with create' <<<"$(ask start web -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" &&
-    grep -q '"secrets": \["password"\]' <<<"$(ask create web5 -phunter2 --os 4)" && ! grep -q hunter2 "$t/state/audit.log" && r+="secret-forms "
+    grep -q '"secrets": \["password"\]' <<<"$(ask create web5 -p=hunter2 --os 4)" && grep -q 'write -p VALUE' <<<"$(ask create web6 -phunter2)" &&
+    grep -q 'does nothing with an ISO' <<<"$(ask create-iso web7 --iso "$t/x.iso" -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" && r+="secret-forms "
   grep -q '"argv": \["fix-lock", "web", "--verbose"\]' <<<"$(ask fix-lock web --verbose)" &&
     grep -q '"argv": \["info", "web", "--json"\]' <<<"$(ask info --json web)" && r+="arg-order "
   grep -q 'help is shown by your dcvm command' <<<"$(ask delete web --help)" && r+="help-deny "
@@ -2212,8 +2213,10 @@ test_socket_policy() {
   stop_srv
   start_srv admin
   grep -q '"argv": \["self-update"\]' <<<"$(ask self-update)" && r+="admin "
+  mkdir -p "$t/base/vms/leftover" && echo keep >"$t/base/vms/leftover/disk.qcow2"
+  grep -q 'left over' <<<"$(ask create-iso leftover --iso "$t/x.iso")" && [ -f "$t/base/vms/leftover/disk.qcow2" ] && r+="admin-leftover "
   stop_srv
-  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin "
+  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-leftover "
   if [ "$r" = "$want" ]; then
     log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
   else
@@ -2321,14 +2324,15 @@ test_help_never_acts() {
   local t f out bad=""
   t=$(mktemp -d)
   mkdir -p "$t/bin"
-  for f in virsh virt-install iptables qemu-img ssh systemctl; do
+  for f in virsh virt-install iptables qemu-img ssh scp systemctl; do
     printf '#!/bin/bash\necho "%s $*" >>"%s/ran"\n' "$f" "$t" >"$t/bin/$f"
     chmod +x "$t/bin/$f"
   done
   for f in "delete web --help" "start web -h" "stop all --help" "backup create web --help" "restore web --help" \
     "network stop --help" "network ports clear --help" "network dhcp renew --help" "network vnc enable web -h" \
     "fix-lock web --help" "storage --help" "uninstall --help" "reap --help" "owner web bob --help" \
-    "template download ubuntu --help" "create web -p x --help" "self-update --help" "list --help"; do
+    "template download ubuntu --help" "create web -p x --help" "self-update --help" "list --help" \
+    "delete web -- --help" "cp web:/etc/hosts --help" "exec web --help" "ssh web -h"; do
     # shellcheck disable=SC2086
     out=$(PATH="$t/bin:$PATH" DCVM_LIB_DIR="$SCRIPT_DIR/.." bash "$SCRIPT_DIR/../../dcvm" $f </dev/null 2>&1) &&
       grep -qi 'usage\|dcvm ' <<<"$out" || bad+="$f; "

@@ -10,7 +10,7 @@ elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
   source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
 fi
 
-load_dcvm_config
+case "${1:-}:${2:-}" in -h:* | --help:* | help:* | *:--help) ;; *) load_dcvm_config ;; esac
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -406,7 +406,7 @@ delete_backups() {
       print_warning "No backups to delete for VM: $vm_name"
       return 0
     fi
-    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection || exit 1
+    read -r -p "  Number(s) to delete (e.g. 1 or 1,3): " selection || no_input
     selection=$(echo "$selection" | tr -d ' ')
     if [ -z "$selection" ]; then
       echo "  Cancelled."
@@ -947,6 +947,7 @@ backup_vm() {
 
   write_base_record "$vm_disk_path" "$backup_folder_path"
   vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
+  vm_login "$vm_name" >"$backup_folder_path/login"
   if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
     ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
@@ -1234,7 +1235,7 @@ restore_vm() {
     if [ "$force_restore" != "true" ]; then
       print_warning "This will COMPLETELY REPLACE the existing VM!"
       print_warning "All current data in the VM will be LOST!"
-      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm || exit 1
+      read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirm || no_input
       echo ""
 
       if [ "$confirm" != "yes" ]; then
@@ -1362,6 +1363,11 @@ restore_vm() {
   mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
   disk_bytes=$(qemu-img info -U --output=json "$vm_disk_path" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
   mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
+  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
+    print_error "Could not read the backup's size to check your quota"
+    rm -f "$temp_config"
+    return 1
+  fi
   if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
     rm -f "$temp_config"
     return 1
@@ -1376,8 +1382,11 @@ restore_vm() {
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
       ui_step ok "Defined VM" "libvirt config restored$([ "$attempt" -gt 1 ] && echo " (attempt $attempt)")"
-      [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name" "user=$(get_vm_username "$vm_name")"
-      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb"
+      [ -f "$(registry_file "$vm_name")" ] || register_vm "$vm_name"
+      local login_file
+      login_file="$(dirname "$config_backup")/login"
+      registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" \
+        "user=$([ -f "$login_file" ] && cat "$login_file" || vm_login "$vm_name")"
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       break
     fi
@@ -1542,7 +1551,7 @@ restore_vm() {
   if [ "$from_import" = "true" ] && [ -n "$static_ip_copy" ]; then
     echo "SSH key setup skipped (it starts the VM). After changing the IP: dcvm backup ssh-setup $vm_name"
   elif [ "$from_import" = "true" ]; then
-    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh || exit 1
+    read -r -p "Configure SSH keys for this VM? (recommended after import) (Y/n): " setup_ssh || setup_ssh=n
     setup_ssh=${setup_ssh:-y}
     if [[ "$setup_ssh" =~ ^[Yy]$ ]]; then
       ssh_setup_vm "$vm_name"
@@ -1579,7 +1588,7 @@ ssh_setup_vm() {
   fi
 
   ui_title "SSH key for $vm_name" "copies this host's public key with ssh-copy-id"
-  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user || exit 1
+  read -r -p "  User on the VM (e.g. ubuntu, debian, root): " target_user || no_input
   target_user=${target_user:-root}
 
   if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then

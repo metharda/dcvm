@@ -132,10 +132,12 @@ parse_args() {
       exit 1
       ;;
     *)
-      if [ -z "$VM_NAME" ]; then
-        VM_NAME="$1"
-        shift
-      else shift; fi
+      if [ -n "$VM_NAME" ]; then
+        print_error "One VM per ISO create (got $VM_NAME and $1)"
+        exit 1
+      fi
+      VM_NAME="$1"
+      shift
       ;;
     esac
   done
@@ -154,7 +156,7 @@ interactive_prompt_graphics() {
 	  3) None (text console only)
 	EOF
   while true; do
-    read -p "Select graphics [1]: " choice || exit 1
+    read -p "Select graphics [1]: " choice || no_input
     choice=${choice:-1}
     case "$choice" in
     1)
@@ -181,7 +183,7 @@ interactive_prompt_os_variant() {
 	Common variants: ubuntu22.04, ubuntu20.04, debian12, debian11, fedora39, centos9, win10, win11
 	Leave empty for generic settings, or run 'osinfo-query os' for full list.
 	EOF
-  read -p "OS variant (optional): " OS_VARIANT || exit 1
+  read -p "OS variant (optional): " OS_VARIANT || no_input
 }
 
 interactive_prompt_boot_order() {
@@ -191,14 +193,14 @@ interactive_prompt_boot_order() {
 	  hd,cdrom = the disk, or the ISO while the disk is empty (default)
 	  cdrom,hd = always the ISO first (the installer starts again on every boot)
 	EOF
-  read -p "Boot order [hd,cdrom]: " BOOT_ORDER || exit 1
+  read -p "Boot order [hd,cdrom]: " BOOT_ORDER || no_input
   BOOT_ORDER=${BOOT_ORDER:-hd,cdrom}
 }
 
 interactive_prompt_copy_iso() {
   [ "$(caller_role)" = root ] || return 0
   echo ""
-  read -p "Copy ISO to VM directory? (y/N): " copy_choice || exit 1
+  read -p "Copy ISO to VM directory? (y/N): " copy_choice || no_input
   if [[ "$copy_choice" =~ ^[Yy]$ ]]; then
     COPY_ISO="true"
   else
@@ -216,7 +218,7 @@ interactive_prompt_static_ip() {
   echo ""
 
   while true; do
-    read -p "Use static IP? (y/N, default: DHCP): " use_static || exit 1
+    read -p "Use static IP? (y/N, default: DHCP): " use_static || no_input
     use_static=${use_static:-n}
 
     if [[ "$use_static" =~ ^[Nn]$ ]]; then
@@ -225,7 +227,7 @@ interactive_prompt_static_ip() {
       break
     elif [[ "$use_static" =~ ^[Yy]$ ]]; then
       while true; do
-        read -p "Enter static IP (e.g., ${subnet}.50): " STATIC_IP || exit 1
+        read -p "Enter static IP (e.g., ${subnet}.50): " STATIC_IP || no_input
         if [ -z "$STATIC_IP" ]; then
           print_error "IP address cannot be empty"
           continue
@@ -256,7 +258,7 @@ prompt_iso_path() {
       exit 1
     fi
     echo ""
-    read -p "Enter path to ISO file: " ISO_PATH || exit 1
+    read -p "Enter path to ISO file: " ISO_PATH || no_input
   fi
   if [ "$(caller_role)" != root ] && [ "$ISO_PATH" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
     print_error "Pass the ISO as a file: dcvm create-iso $VM_NAME --iso <file.iso>"
@@ -291,8 +293,10 @@ show_vm_summary() {
     "$(printf '%-11s%s' Resources "$CPUS vCPU, $MEMORY MB RAM, $DISK_SIZE disk")"
     "$(printf '%-11s%s' Display "$GRAPHICS")"
     "$(printf '%-11s%s' OS "${OS_VARIANT:-generic}")"
-    "$(printf '%-11s%s' Boot "$BOOT_ORDER")"
+    "$(printf '%-11s%s' Boot "$([ "$UEFI" = true ] && echo "UEFI, ")$BOOT_ORDER")"
+    "$(printf '%-11s%s' Login "${LOGIN_USER:-not known to dcvm (-u <user> to set it)}")"
   )
+  [ -n "${TTL:-}" ] && rows+=("$(printf '%-11s%s' Deleted "after $TTL")")
   [ -n "$STATIC_IP" ] && rows+=("$(printf '%-11s%s' Address "$STATIC_IP (set it in the installer)")")
   ui_box "$VM_NAME" "${rows[@]}"
   echo ""
@@ -324,12 +328,17 @@ prepare_vm_directory() {
 
 copy_iso_if_needed() {
   INSTALL_ISO="$ISO_PATH"
-  if [ "$COPY_ISO" = "true" ]; then
+  if [ "$COPY_ISO" = "true" ] && [ "$ISO_PATH" != "$VM_DIR/installer.iso" ]; then
     INSTALL_ISO="$VM_DIR/installer.iso"
+    if [ -e "$INSTALL_ISO" ]; then
+      print_error "$INSTALL_ISO is left over from another run; remove it first"
+      exit 1
+    fi
     ui_run "Copying ISO" sh -c 'umask 077 && cp -- "$1" "$2"' _ "$ISO_PATH" "$INSTALL_ISO" || {
       ui_step fail "ISO" "copy failed"
       exit 1
     }
+    ISO_COPIED=true
     ui_step ok "ISO" "copied to $INSTALL_ISO (${UI_RUN_SECS}s)"
   fi
 }
@@ -365,6 +374,7 @@ create_vm_disk() {
     ui_step fail "Disk" "qemu-img create failed"
     exit 1
   }
+  DISK_MADE=true
   ui_step ok "Disk" "$DISK_SIZE, $DISK_PATH"
 }
 
@@ -410,16 +420,14 @@ validate_iso_options() {
 
 build_virt_install_opts() {
   validate_iso_options
-  # Windows installers have no virtio drivers; libosinfo picks buses they know.
-  local bus=",bus=virtio" nic=",model=virtio"
-  [[ "$OS_VARIANT" == win* ]] && bus="" nic=""
+  # No bus or NIC model: libosinfo picks what the detected OS has drivers for (Windows has no virtio).
   VIRT_INSTALL_OPTS=(
     --name "$VM_NAME"
     --memory "$MEMORY"
     --vcpus "$CPUS"
-    --disk "path=$DISK_PATH,format=qcow2$bus"
+    --disk "path=$DISK_PATH,format=qcow2"
     --disk "path=$INSTALL_ISO,device=cdrom,readonly=on"
-    --network "network=$NETWORK_NAME$nic"
+    --network "network=$NETWORK_NAME"
     --boot "$([ "$UEFI" = true ] && echo uefi,)$BOOT_ORDER"
     --import
     --noautoconsole
@@ -447,11 +455,12 @@ run_virt_install() {
     exit 1
   }
   DEFINED=true
+  [ -n "$STATIC_IP" ] && save_static_ip "$VM_NAME" "$STATIC_IP"
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || true
   register_vm "$VM_NAME" "source=iso" "user=$LOGIN_USER" "cpus=$CPUS" "memory_mb=$MEMORY" "disk_gb=$(size_gb "$DISK_SIZE")" \
     "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
   ui_step ok "VM" "defined and booting the ISO"
-  [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
+  [ -n "${VNC_PW:-}" ] && ui_step ok "${GRAPHICS^^}" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
 }
 
 save_vm_info() {
@@ -487,7 +496,7 @@ show_post_creation_info() {
 }
 
 print_result() {
-  local ip="" ready=null vnc=""
+  local ip="" ready=null display=""
   if [ "$WAIT" = true ]; then
     if ip=$(wait_for_vm "$VM_NAME" 1800); then
       ready=true
@@ -504,11 +513,11 @@ print_result() {
   }
   [ -n "$ip" ] || ip=$(get_vm_ip "$VM_NAME")
   valid_vm_ip "$ip" || ip=""
-  [ "$GRAPHICS" = none ] || vnc=$(virsh vncdisplay "$VM_NAME" 2>/dev/null | head -1)
-  printf '{"name":"%s","state":"%s","ip":%s,"user":%s,"expires":%s,"ready":%s,"vnc":%s,"vnc_password":%s}\n' \
+  [ "$GRAPHICS" = none ] || display=$(virsh domdisplay "$VM_NAME" 2>/dev/null | head -1)
+  printf '{"name":"%s","state":"%s","ip":%s,"user":%s,"expires":%s,"ready":%s,"display":%s,"display_password":%s}\n' \
     "$VM_NAME" "$(get_vm_state "$VM_NAME")" "$([ -n "$ip" ] && echo "\"$ip\"" || echo null)" \
     "$([ -n "$LOGIN_USER" ] && echo "\"$LOGIN_USER\"" || echo null)" "$(registry_get "$VM_NAME" expires | grep . || echo null)" \
-    "$ready" "$([ -n "$vnc" ] && echo "\"$vnc\"" || echo null)" "$([ -n "${VNC_PW:-}" ] && echo "\"$VNC_PW\"" || echo null)" >&3
+    "$ready" "$([ -n "$display" ] && echo "\"$display\"" || echo null)" "$([ -n "${VNC_PW:-}" ] && echo "\"$VNC_PW\"" || echo null)" >&3
   [ "$ready" != false ]
 }
 
@@ -517,14 +526,14 @@ undo_on_failure() {
   [ $? -ne 0 ] && [ "${STARTED:-false}" = true ] && [ "${DEFINED:-false}" = false ] || return
   virsh destroy "$VM_NAME" >/dev/null 2>&1
   virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1
-  rm -f "$DATACENTER_BASE/config/network/$VM_NAME.conf" "${DISK_PATH:-}"
-  [ "$COPY_ISO" = true ] || [ "$ISO_PATH" = "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ] && rm -f "$DATACENTER_BASE/vms/$VM_NAME/installer.iso"
+  [ "${DISK_MADE:-false}" = true ] && rm -f "$DISK_PATH"
+  [ "${ISO_COPIED:-false}" = true ] && rm -f "$VM_DIR/installer.iso"
   rmdir "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
 }
 
 main() {
-  load_dcvm_config
   parse_args "$@"
+  load_dcvm_config
   if [ -n "${TTL:-}" ] && ! TTL_SECONDS=$(ttl_seconds "$TTL"); then
     print_error "--ttl must look like 90m, 2h or 3d"
     exit 1
@@ -538,25 +547,31 @@ main() {
   fi
   validate_vm_name "$VM_NAME" || exit 1
 
+  check_iso_dependencies
   prompt_iso_path
   validate_vm_not_exists
+  if [ -e "$DATACENTER_BASE/vms/$VM_NAME/$VM_NAME-disk.qcow2" ]; then
+    print_error "$DATACENTER_BASE/vms/$VM_NAME already has a disk; remove it or pick another name"
+    exit 1
+  fi
   show_iso_header
   if [ "$FORCE_MODE" = true ]; then
     MEMORY=${MEMORY:-2048} CPUS=${CPUS:-2} DISK_SIZE=${DISK_SIZE:-20G} COPY_ISO=${COPY_ISO:-false}
-    show_vm_summary
   else
     collect_vm_options
-    show_vm_summary
-    confirm_creation
   fi
-  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
   validate_iso_options
-  STARTED=true
-  trap undo_on_failure EXIT
+  show_vm_summary
+  [ "$FORCE_MODE" = true ] || confirm_creation
+  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
   if [ -n "$STATIC_IP" ]; then
+    # ponytail: two creates naming the same new --ip at once can both pass; lock on the address if that matters.
     claim_static_ip "$VM_NAME" "$STATIC_IP" || exit 1
   fi
-  check_iso_dependencies
+  STARTED=true
+  trap undo_on_failure EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
   prepare_vm_directory
   copy_iso_if_needed
   validate_iso_size

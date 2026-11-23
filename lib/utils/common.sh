@@ -1126,10 +1126,15 @@ get_vm_disk_path() {
   local disk_path=""
   # Disks only: an attached ISO is never "the VM's disk" to back up or delete.
   disk_path=$(virsh domblklist "$vm_name" --details 2>/dev/null | awk '$2 == "disk" { print $4; exit }')
-  if [ -z "$disk_path" ]; then
-    disk_path=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -oP "source file='\K[^']+(?=')" | head -1)
-  fi
   echo "$disk_path"
+}
+
+vm_login() {
+  local login
+  login=$(registry_get "$1" user)
+  # Without cloud-init (an ISO install) dcvm can't know the user; get_vm_username would guess "admin".
+  [ -n "$login" ] || [ ! -f "${DATACENTER_BASE:-/srv/datacenter}/vms/$1/cloud-init/user-data" ] || login=$(get_vm_username "$1")
+  echo "$login"
 }
 
 get_vm_username() {
@@ -1173,7 +1178,7 @@ read_password() {
   local var_name="$2"
   local password=""
   echo -n "$prompt"
-  IFS= read -rs password || exit 1
+  IFS= read -rs password || no_input
   echo
   printf -v "$var_name" '%s' "$password"
 }
@@ -1338,6 +1343,11 @@ need_value() {
   exit 1
 }
 
+no_input() {
+  print_error "No answer (end of input): run it in a terminal, or pass the options (-f takes the defaults)"
+  exit 1
+}
+
 claim_static_ip() {
   local vm="$1" ip="$2"
   validate_ip_in_subnet "$ip" || return 1
@@ -1345,6 +1355,11 @@ claim_static_ip() {
     print_error "$ip is already used by another VM"
     return 1
   fi
+}
+
+# Only once the VM is defined: a record left by a cancelled create would hold the address forever.
+save_static_ip() {
+  local vm="$1" ip="$2"
   mkdir -p "$DATACENTER_BASE/config/network" &&
     printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       >"$DATACENTER_BASE/config/network/$vm.conf"
@@ -1724,7 +1739,7 @@ interactive_prompt_memory_common() {
   local result=""
 
   while true; do
-    read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " result || exit 1
+    read -p "Memory in MB (available: ${host_mem}MB, recommended max: ${max_mem}MB) [2048]: " result || no_input
     result=${result:-2048}
     if [[ ! "$result" =~ ^[0-9]+$ ]]; then
       print_error "Memory must be a number"
@@ -1736,7 +1751,7 @@ interactive_prompt_memory_common() {
     fi
     if [ "$result" -gt "$max_mem" ]; then
       print_warning "Requested ${result}MB exceeds recommended ${max_mem}MB"
-      read -p "Continue anyway? (y/N): " cont || exit 1
+      read -p "Continue anyway? (y/N): " cont || no_input
       [[ ! "$cont" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -1751,7 +1766,7 @@ interactive_prompt_cpus_common() {
   local result=""
 
   while true; do
-    read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " result || exit 1
+    read -p "Number of CPUs (available: ${host_cpus}, recommended max: ${max_cpus}) [2]: " result || no_input
     result=${result:-2}
     if [[ ! "$result" =~ ^[0-9]+$ ]]; then
       print_error "CPU count must be a number"
@@ -1763,7 +1778,7 @@ interactive_prompt_cpus_common() {
     fi
     if [ "$result" -gt "$max_cpus" ]; then
       print_warning "Requested ${result} CPUs exceeds recommended ${max_cpus}"
-      read -p "Continue anyway? (y/N): " cont || exit 1
+      read -p "Continue anyway? (y/N): " cont || no_input
       [[ ! "$cont" =~ ^[Yy]$ ]] && continue
     fi
     break
@@ -1776,7 +1791,7 @@ interactive_prompt_disk_common() {
   local result=""
 
   while true; do
-    read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " result || exit 1
+    read -p "Disk size (formats: 20G, 512M, 1T) [20G]: " result || no_input
     result=${result:-20G}
     result=${result^^}
     if [[ ! "$result" =~ ^[0-9]+[GMT]$ ]]; then
@@ -1875,7 +1890,7 @@ interactive_prompt_static_ip_common() {
   echo ""
 
   while true; do
-    read -p "Use static IP? (y/N, default: DHCP): " use_static || exit 1
+    read -p "Use static IP? (y/N, default: DHCP): " use_static || no_input
     use_static=${use_static:-n}
 
     if [[ "$use_static" =~ ^[Nn]$ ]]; then
@@ -1884,7 +1899,7 @@ interactive_prompt_static_ip_common() {
       break
     elif [[ "$use_static" =~ ^[Yy]$ ]]; then
       while true; do
-        read -p "Enter static IP (e.g., ${subnet}.50): " result || exit 1
+        read -p "Enter static IP (e.g., ${subnet}.50): " result || no_input
         if [ -z "$result" ]; then
           print_error "IP address cannot be empty"
           continue

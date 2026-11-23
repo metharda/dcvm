@@ -20,7 +20,6 @@ source "$LIB_DIR/utils/common.sh"
 wants_help() {
   local a
   for a in "$@"; do
-    [ "$a" = -- ] && return 1
     case "$a" in -h | --help) return 0 ;; esac
   done
   return 1
@@ -62,9 +61,10 @@ Usage: dcvm <command> [args]       dcvm <command> --help for its options
 
 VMs:
   create <name> [options]       Create a VM from a cloud image (or an ISO with -o)
+  create-iso <name> --iso <f>   Create a VM that boots an installer ISO
   list                          VMs with state, IP, vCPU and memory
   status                        The same, plus the network and port forwards
-  start | stop | restart [vm]   One VM, or every dcvm VM
+  start | stop | restart [vm]   One VM, or every dcvm VM without a name
   console [vm]                  Serial console of a VM; without a name, access hints
   delete <vm> | --all           Delete a VM with its disk, leases and forwards
   info <vm> [--json]            State, IP, login user, owner of one VM
