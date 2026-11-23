@@ -118,8 +118,9 @@ def attach_files(argv, files):
         k = 1 if cmd == "import" else 2
         if len(out) > k:
             out[k] = open_input(files, out[k], "archive")
-    elif out[:2] == ["backup", "export"] and len(out) >= 3:
-        rest = out[2:]
+    elif out[:2] == ["backup", "export"] and len(out) - out.count("--full") >= 3:
+        full = ["--full"] if "--full" in out else []
+        rest = [a for a in out[2:] if a != "--full"]
         dest = "."
         looks_like_id = re.match(r"^(latest|[0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?)\Z", rest[1]) if len(rest) == 2 else None
         if len(rest) == 3 or (len(rest) == 2 and not looks_like_id and (os.path.isdir(os.path.expanduser(rest[1])) or "/" in rest[1])):
@@ -129,7 +130,7 @@ def attach_files(argv, files):
         vm = rest[0]
         label = rest[1] if len(rest) > 1 else "latest"
         if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z", vm) or not re.match(r"^[0-9A-Za-z._:-]{1,64}\Z", label) or label.startswith("fd:"):
-            fail("usage: dcvm backup export <vm> [id|latest] [folder]")
+            fail("usage: dcvm backup export <vm> [id|latest] [folder] [--full]")
         name = os.path.join(os.path.expanduser(dest), "%s-%s.tar.gz" % (vm, label.replace(":", "")))
         if os.path.exists(name):
             fail("%s already exists" % name)
@@ -139,7 +140,7 @@ def attach_files(argv, files):
         except OSError as e:
             fail("cannot create %s: %s" % (tmp, e.strerror))
         files.rename = (tmp, name)
-        out = out[:2] + rest + [files.add(fd)]
+        out = out[:2] + rest + [files.add(fd)] + full
     return out
 
 
@@ -217,7 +218,7 @@ def talk(data, files):
     except FileNotFoundError:
         fail("the dcvm service is not running (%s missing); ask an admin to run: sudo dcvm doctor --fix" % SOCKET, 70)
     except PermissionError:
-        fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"))
+        fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"), 77)
     except OSError as e:
         fail("cannot reach the dcvm service at %s: %s; ask an admin to run: sudo dcvm doctor --fix" % (SOCKET, e.strerror), 70)
     conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
@@ -260,7 +261,9 @@ def talk(data, files):
         if rc == 0 and os.path.getsize(tmp) > 0:
             os.replace(tmp, name)
             print("dcvm: exported to %s" % name, file=sys.stderr)
-    return rc
+    if interrupts[0] and rc != 0:
+        return 130
+    return 128 - rc if rc < 0 else rc
 
 
 if __name__ == "__main__":

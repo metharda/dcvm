@@ -219,9 +219,9 @@ def size_gb(value, default):
     return int(v.rstrip("G"))
 
 
-def check_quota(uid, user, cpus, memory_mb, disk_gb):
+def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None):
     limits = limits_for(user)
-    mine = [e for e in registry_all().values() if e.get("owner_uid") == str(uid)]
+    mine = [e for n, e in registry_all().items() if e.get("owner_uid") == str(uid) and n != exclude]
     used = {
         "vms": len(mine),
         "vcpus": sum(int(e.get("cpus", "0") or 0) for e in mine),
@@ -495,19 +495,30 @@ def decide_backup(ctx, args):
         else:
             own_vm(ctx, rest[0])
             protected(rest[0])
-            ctx["vm"] = rest[0]
+            # The restore replaces the VM's own charge, so a backup of the same size always fits.
+            ctx.update(vm=rest[0], quota_left=check_quota(ctx["uid"], ctx["user"], 0, 0, 0, exclude=rest[0]))
         ctx.update(mutating=True, interactive=True)
         return ["backup", "restore"] + rest
-    if sub == "export" and 1 <= len(rest) <= 3:
+    if sub == "export" and 1 <= len(rest) - rest.count("--full") <= 3:
+        full = ["--full"] if "--full" in rest else []
+        rest = [a for a in rest if a != "--full"]
         check_backup_vm(ctx, rest[0])
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
         if len(rest) >= 2 and not rest[1].startswith("fd:") and not BACKUP_ID.match(rest[1]):
             raise Denied("invalid backup id")
         if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
-        ctx["export_fd"] = fd_ref(ctx, rest[-1])
-        return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")]
+        ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
+        return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
     raise Denied("'backup %s' needs a dcvm admin" % sub)
+
+
+def export_fd(fd):
+    # Root writes the package through this descriptor, so only the caller's own write access may count.
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    if not stat.S_ISREG(os.fstat(fd).st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
+        raise Denied("export writes to a regular file you opened for writing")
+    return fd
 
 
 def strip_vm(vm, bid):
@@ -724,7 +735,9 @@ def run_module(ctx, conn, argv, req, fds):
                         proc.wait(5)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
-    return proc.wait()
+    rc = proc.wait()
+    # A signal death is -N here; callers expect the shell's 128+N.
+    return 128 - rc if rc < 0 else rc
 
 
 def handle(conn):
@@ -782,7 +795,7 @@ def admin_argv(ctx, argv):
                 ctx["iso_fd"] = fd
                 final[i] = "@ISO@"
             elif final[:2] == ["backup", "export"]:
-                ctx["export_fd"] = fd
+                ctx["export_fd"] = export_fd(fd)
                 final[i] = None
             elif final[:2] == ["backup", "import"] or final[0] == "import":
                 final[i] = "/proc/self/fd/%d" % fd
@@ -822,7 +835,7 @@ def execute(ctx, conn, argv, req, fds):
                     raise Denied("VM name required")
                 path = stage_iso(ctx, ctx["iso_fd"], vm)
                 argv = [path if a == "@ISO@" else a for a in argv]
-            if ctx["role"] == "user" and argv[0] in ("create", "create-iso"):
+            if ctx["role"] != "root" and argv[0] in ("create", "create-iso"):
                 write_pubkey(ctx, req)
             rc = run_module(ctx, conn, argv, req, fds)
         except BaseException:
@@ -831,11 +844,12 @@ def execute(ctx, conn, argv, req, fds):
         finally:
             if rc is None and ctx.get("reserved"):
                 release_reservation(ctx, vm)
-        if rc != 0 and ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
+        # A declined or failed create may exit 0 too; only a defined domain makes the VM real.
+        if ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
             subprocess.run(["rm", "-rf", "--", ctx["staged_dir"]])
         if ctx.get("reserved"):
             entry = registry_read(vm) or {}
-            if rc != 0 and not vm_exists(vm):
+            if not vm_exists(vm):
                 release_reservation(ctx, vm)
             elif entry.get("state") == "creating":
                 entry["state"] = "ready"

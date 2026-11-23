@@ -2193,7 +2193,23 @@ test_socket_policy() {
   grep -q '"argv": \["backup", "delete", "web-01.01.2026-1"\]' <<<"$(ask backup delete web 01.01.2026-1)" &&
     grep -q '"argv": \["backup", "delete", "web-01.01.2026-12:00:00"\]' <<<"$(ask backup delete web 20260101_120000)" &&
     grep -q '"argv": \["backup", "delete", "web-01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" && r+="backup-delete "
-  grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$(ask backup restore web web-01.01.2026-1)" && r+="restore-id "
+  out=$(ask backup restore web web-01.01.2026-1)
+  grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" && r+="restore-id "
+  grep -q '"DCVM_QUOTA_LEFT": "8 16384 200"' <<<"$out" && r+="restore-quota "
+  grep -q '"argv": \["backup", "export", "web", "20260101_120000", "--full"\]' <<<"$(ask backup export web --full 20260101_120000 "$t")" &&
+    grep -q '"argv": \["backup", "export", "web", "--full"\]' <<<"$(ask backup export web "$t" --full)" && r+="export-full "
+  raw_export() {
+    python3 -I -S -c 'import json, os, socket, struct, sys
+fd = os.open(sys.argv[2], getattr(os, "O_PATH", 0) if sys.argv[3] == "path" else os.O_RDONLY)
+d = json.dumps({"v": 1, "argv": ["backup", "export", "web", "20260101_120000", "fd:3"], "stdin": 0, "stdout": 1, "stderr": 2}).encode()
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendmsg([struct.pack(">I", len(d)) + d], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("4i", 0, 1, 2, fd))])
+n = struct.unpack(">I", s.recv(4))[0]
+print(json.loads(s.recv(n))["exit"])' "$t/sock" "$@" 2>/dev/null | tail -1
+  }
+  [ "$(raw_export "$t/x.iso" path)" = 77 ] && [ "$(raw_export "$t/x.iso" read)" = 77 ] &&
+    grep -q '"DCVM_EXPORT_FD"' <<<"$(ask backup export web 20260101_120000 "$t")" && r+="export-fd "
   grep -q 'only goes with create' <<<"$(ask start web -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" &&
     grep -q '"secrets": \["password"\]' <<<"$(ask create web5 -p=hunter2 --os 4)" && grep -q 'write -p VALUE' <<<"$(ask create web6 -phunter2)" &&
     grep -q 'does nothing with an ISO' <<<"$(ask create-iso web7 --iso "$t/x.iso" -p hunter2)" && ! grep -q hunter2 "$t/state/audit.log" && r+="secret-forms "
@@ -2213,10 +2229,67 @@ test_socket_policy() {
   stop_srv
   start_srv admin
   grep -q '"argv": \["self-update"\]' <<<"$(ask self-update)" && r+="admin "
+  mkdir -p "$t/home/.ssh" && echo "ssh-ed25519 AAAAtest test@x" >"$t/home/.ssh/id_ed25519.pub"
+  grep -q '"DCVM_SSH_PUBKEY_FILE"' <<<"$(HOME="$t/home" ask create adminvm -f)" && r+="admin-key "
   mkdir -p "$t/base/vms/leftover" && echo keep >"$t/base/vms/leftover/disk.qcow2"
   grep -q 'left over' <<<"$(ask create-iso leftover --iso "$t/x.iso")" && [ -f "$t/base/vms/leftover/disk.qcow2" ] && r+="admin-leftover "
   stop_srv
-  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-leftover "
+  out=$(
+    python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, json, os, signal, socket, struct, sys, threading, time
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(sys.argv[1], name + ".py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+s, c, t = load("dcvm-server"), load("dcvm-client"), sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS = t + "/h", t + "/h/run", t + "/conf", t + "/limits"
+real_run = s.run_module
+defined = set()
+def fake_run(ctx, _conn, argv, *_a):
+    os.makedirs(os.path.join(ctx["staged_dir"], "installer.iso"))
+    defined.update(argv[1:2] if argv[1] == "real" else [])
+    return 0
+s.run_module, s.vm_exists = fake_run, lambda vm: vm in defined
+for vm in ("ghost", "real"):
+    ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+    s.execute(ctx, None, ["create"] + s.parse_create(ctx, [vm, "-f"], False), {}, {})
+ghost = s.registry_read("ghost") is None and not os.path.exists(t + "/base/vms/ghost")
+if ghost and (s.registry_read("real") or {}).get("state") == "ready":
+    print("create-release")
+s.DCVM = "/bin/sh"
+if real_run(ctx, socket.socketpair()[0], ["-c", "kill -TERM $$"], {}, {}) == 143:
+    print("signal-rc")
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(t + "/fake.sock")
+srv.listen(1)
+def serve():
+    conn, _ = srv.accept()
+    conn.recv(65536)
+    time.sleep(0.5)
+    os.kill(os.getpid(), signal.SIGINT)
+    while conn.recv(64):
+        pass
+    d = json.dumps({"exit": -15}).encode()
+    conn.sendall(struct.pack(">I", len(d)) + d)
+threading.Thread(target=serve, daemon=True).start()
+c.SOCKET = t + "/fake.sock"
+if c.talk(b'{"v": 1}', c.Files()) == 130:
+    print("client-int")
+class Refused(socket.socket):
+    def connect(self, _addr):
+        raise PermissionError
+c.socket.socket = Refused
+try:
+    c.talk(b"{}", c.Files())
+except SystemExit as e:
+    if e.code == 77:
+        print("client-group")
+PY
+  )
+  for w in create-release signal-rc client-int client-group; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  echo "$out" >>"$t/answers"
+  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id restore-quota export-full export-fd secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-key admin-leftover create-release signal-rc client-int client-group "
   if [ "$r" = "$want" ]; then
     log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
   else
