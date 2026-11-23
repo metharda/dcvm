@@ -113,11 +113,9 @@ cmd_restart() {
 cmd_leases() {
   ui_title "DHCP leases" "$NETWORK_NAME"
   leases_table
-  ui_section "Lease files"
-  local f
-  for f in "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"; do
-    ui_kv "${f##*.}" "$f $([ -f "$f" ] && echo "($(wc -l <"$f") lines)" || echo "(not found)")"
-  done
+  ui_section "Lease file"
+  local f="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  ui_kv "status" "$f $([ -f "$f" ] && echo "($(wc -l <"$f") lines)" || echo "(not found)")"
   echo ""
 }
 

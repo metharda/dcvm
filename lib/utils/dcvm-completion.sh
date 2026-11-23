@@ -78,9 +78,9 @@ _dcvm_backup_dates_for_vm() {
 
 _dcvm_lease_macs() {
   local bridge="${BRIDGE_NAME:-virbr-dc}"
-  local lease_file="/var/lib/libvirt/dnsmasq/${bridge}.leases"
-  [ -r "$lease_file" ] || return 0
-  awk '{print $2}' "$lease_file" | grep -E '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$' 2>/dev/null | sort -u
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${bridge}.status"
+  [ -r "$status_file" ] || return 0
+  jq -r '.[]? | ."mac-address" // empty | ascii_downcase' "$status_file" 2>/dev/null | sort -u
 }
 
 _dcvm_completion() {

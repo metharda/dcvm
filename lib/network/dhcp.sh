@@ -52,7 +52,7 @@ clear_all_leases() {
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
 
   echo ""
-  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+  # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
   [ -f "$status_file" ] && printf '[]\n' >"$status_file" && ui_step ok "Leases" "cleared $status_file"
 
   restart_network
@@ -85,7 +85,7 @@ clear_stale_leases() {
   ui_quiet
   ui_title "Stale DHCP leases" "$NETWORK_NAME"
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local removed_count=0 stale mac ip hostname reason
+  local removed_count=0 failed=0 rc stale mac ip hostname reason
 
   if ! command_exists jq; then
     print_error "jq not available; cannot read $status_file (install jq)"
@@ -102,12 +102,25 @@ clear_stale_leases() {
 
   while IFS='|' read -r mac ip hostname reason; do
     [ -n "$mac$hostname" ] || continue
-    ui_step ok "$ip" "$reason, ${hostname:-no hostname}, ${mac:-no MAC}"
-    cleanup_dhcp_lease "$mac" "$hostname" || [ $? -ne 2 ] || return 1
-    removed_count=$((removed_count + 1))
+    rc=0
+    cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
+    case "$rc" in
+    0)
+      ui_step ok "$ip" "$reason, ${hostname:-no hostname}, ${mac:-no MAC}"
+      removed_count=$((removed_count + 1))
+      ;;
+    2)
+      ui_step warn "$ip" "not released: $reason, ${hostname:-no hostname}, ${mac:-no MAC}"
+      failed=$((failed + 1))
+      ;;
+    esac
   done <<<"$stale"
 
-  if [ $removed_count -gt 0 ]; then
+  if [ "$failed" -gt 0 ]; then
+    ui_done warn "Released $removed_count of $(plural "$((removed_count + failed))" "stale lease")" "see the errors above"
+    echo ""
+    return 1
+  elif [ $removed_count -gt 0 ]; then
     ui_done ok "Removed $(plural "$removed_count" "stale lease")"
   else
     echo -e "  ${DIM}No stale leases found${NC}"
@@ -187,16 +200,13 @@ force_renew_all() {
 }
 
 show_lease_files() {
-  local dir="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}" f
-  ui_section "DHCP lease files" "$dir"
-  for f in "$dir/${BRIDGE_NAME}.leases" "$dir/${BRIDGE_NAME}.status"; do
-    ui_section "${f##*/}"
-    if [ -s "$f" ]; then
-      sed 's/^/  /' "$f"
-    else
-      echo -e "  ${DIM}$([ -f "$f" ] && echo empty || echo "not found")${NC}"
-    fi
-  done
+  local f="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+  ui_section "DHCP lease file" "$f"
+  if [ -s "$f" ]; then
+    sed 's/^/  /' "$f"
+  else
+    echo -e "  ${DIM}$([ -f "$f" ] && echo empty || echo "not found")${NC}"
+  fi
   echo ""
 }
 
@@ -213,7 +223,7 @@ Commands:
   cleanup              Same as clear --stale
   clear --all, -a      Release every lease and restart the network (asks first)
   renew                Clear all leases and ask running VMs to renew
-  files                Lease file locations and contents
+  files                Lease file location and contents
   help                 Show this help
 
 Examples:

@@ -73,13 +73,13 @@ delete_single_vm() {
     virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --config >/dev/null 2>&1 || true
     virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live >/dev/null 2>&1 || true
   fi
-  if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
-    if cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"; then
-      ui_step ok "DHCP lease" "released${VM_IP:+ ($VM_IP)}"
-    else
-      ui_step warn "DHCP lease" "not released (see the error above)"
-    fi
-  fi
+  local dhcp_rc=0
+  cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME" || dhcp_rc=$?
+  case "$dhcp_rc" in
+  0) ui_step ok "DHCP lease" "released${VM_IP:+ ($VM_IP)}" ;;
+  1) ui_step skip "DHCP lease" "none found" ;;
+  *) ui_step warn "DHCP lease" "not released (see the error above)" ;;
+  esac
 
   [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file"
 
@@ -123,6 +123,7 @@ delete_single_vm() {
   dhcp_check=$(filter_lease_lines "$VM_NAME" 6 <<<"$leases")
   [ -n "$MAC_ADDRESS" ] && dhcp_check+=$(filter_lease_lines "$MAC_ADDRESS" 3 <<<"$leases")
   [ -n "$dhcp_check" ] && left+=("DHCP leases still exist")
+  [ "$dhcp_rc" = 2 ] && [ -z "$dhcp_check" ] && left+=("DHCP lease may stay in dnsmasq until it expires")
   [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && left+=("Disk file still exists")
 
   if [ ${#left[@]} -eq 0 ]; then
@@ -133,7 +134,7 @@ delete_single_vm() {
     for item in "${left[@]}"; do print_warning "$item"; done
     if [ -n "$dhcp_check" ]; then
       echo -e "  ${DIM}They expire on their own; to remove stale leases now: dcvm network dhcp cleanup${NC}"
-    else
+    elif [ "$dhcp_rc" != 2 ]; then
       echo -e "  ${DIM}No DHCP leases found${NC}"
     fi
   fi
@@ -175,7 +176,7 @@ delete_all_vms() {
   # Shared state only once no VM is left: a refused (protected) or failed VM keeps its lease, mapping and rules.
   if [ -z "$(list_datacenter_vm_names)" ]; then
     local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-    # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+    # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
     [ -f "$status_file" ] && printf '[]\n' >"$status_file"
     local port_file rule_num ip ssh_port http_port
     port_file=$(get_port_mappings_file)
