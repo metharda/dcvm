@@ -14,6 +14,10 @@ history, so the commit or PR is listed for each release.
 
 ### Fixed
 
+- Arch guests initialise the pacman keyring before installing packages (#45).
+- Ubuntu MySQL keeps `root` on socket login, so `sudo mysql` works; a failed database setup is logged to `/var/log/dcvm-packages.log` (#45, #46).
+- Debian 11 guests install packages from archive.debian.org (#46).
+- `-k docker` installs `docker.io` on Debian, Ubuntu and Kali; `-k nginx,apache2` is refused (#46).
 - `backup export` refuses a descriptor that isn't a regular file opened for writing (#82).
 - Ctrl-C exits 130 and a module killed by a signal 128+N, not 241; a client outside the `dcvm` group exits 77 (#73).
 - VMs created by a `dcvm-admin` get the admin's SSH key (#74).
