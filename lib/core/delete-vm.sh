@@ -172,19 +172,22 @@ delete_all_vms() {
     fi
   done 3<<<"$vms"
 
-  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
-  [ -f "$status_file" ] && printf '[]\n' >"$status_file"
-  local port_file rule_num
-  port_file=$(get_port_mappings_file)
-  [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
-  for rule_num in $(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" | awk '{print $1}' | tac); do
-    iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null || true
-  done
-  for rule_num in $(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac); do
-    iptables -D FORWARD "$rule_num" 2>/dev/null || true
-  done
-  save_iptables_rules
+  # Shared state only once no VM is left: a refused (protected) or failed VM keeps its lease, mapping and rules.
+  if [ -z "$(list_datacenter_vm_names)" ]; then
+    local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+    # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
+    [ -f "$status_file" ] && printf '[]\n' >"$status_file"
+    local port_file rule_num ip ssh_port http_port
+    port_file=$(get_port_mappings_file)
+    while read -r _ ip ssh_port http_port; do
+      [ -n "$ip" ] && cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
+    done < <(read_port_mappings 2>/dev/null)
+    [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
+    for rule_num in $(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac); do
+      iptables -D FORWARD "$rule_num" 2>/dev/null || true
+    done
+    save_iptables_rules
+  fi
   # A VM that was refused (protected) or failed keeps its folder and disk.
   local dir
   for dir in "$DATACENTER_BASE"/vms/*/; do
