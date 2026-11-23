@@ -54,6 +54,10 @@ DCVM allows you to toggle VNC graphics for VMs. This is critical for saving reso
 When VNC is enabled (either by default for those OS types or via `--graphics vnc,listen=127.0.0.1`), **VNC listens on `127.0.0.1` (localhost only)**. This means:
 - VNC is only accessible from the host machine
 - To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
+- VNC set up by a user without root (`dcvm network vnc enable`, or `create
+  --graphics vnc`) gets a random password, because other local users could
+  otherwise connect to `127.0.0.1`; `dcvm network vnc status <vm>` shows it
+  to the VM's owner. VNC set up by root has no password, as before
 - This is a security feature to prevent unauthorized access
 
 ### Graphics Mode During Creation
@@ -141,6 +145,14 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
 - **firewalld** (Fedora): libvirt puts the dcvm bridge in its `libvirt`
   zone, which rejects NFS; the installer allows `nfs`, `rpc-bind` and
   `mountd` in it. Forwarded connections pass firewalld without extra rules.
+
+### One VM at a time
+
+`dcvm network ports add <vm>` forwards SSH and HTTP for one VM from the next
+free ports in dcvm's ranges (skipping ports something on the host already
+listens on); `dcvm network ports remove <vm>` takes them away. Users without
+root use these for their own VMs; `setup`, `apply` and `clear` are for admins,
+because they touch every VM's forwards.
 
 ### Command Reference
 

@@ -12,6 +12,60 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-11-23
+
+dcvm for people and agents without root, and Fedora 44. See
+[Users and agents](docs/users.md).
+
+**Upgrading:** `sudo dcvm self-update` installs the socket, the groups and the
+`--ttl` timer by itself. Existing VMs and backups belong to root; let others in
+with `sudo dcvm user add <user> [--admin]` and hand VMs over with
+`sudo dcvm owner <vm> <user>`. Nothing changes for root.
+
+### Added
+
+- Users without root: members of the `dcvm` group run `dcvm` from their own
+  accounts. A systemd socket starts one root process per request
+  (`lib/server/dcvm-server.py`, Python standard library only) that identifies
+  the caller from the kernel, checks every argument against what a user may
+  do, the VM's owner, protection and quotas, takes a lock on the VM and runs
+  the usual scripts with a clean environment. Files cross as file
+  descriptors and secrets through a pipe, never as paths or command-line
+  arguments. Members of `dcvm-admin` can do everything root can.
+- VM owners (`/var/lib/dcvm/vms`) and backup owners: users see and change only
+  their own VMs and backups.
+- Quotas per user (`/etc/dcvm/limits.conf`; defaults 5 VMs, 8 vCPUs, 16 GB
+  memory, 200 GB disk).
+- An audit log of every request through the socket
+  (`/var/log/dcvm/audit.log`).
+- For scripts and agents: `create --wait`, `--json` and `--ttl` (a timer
+  deletes the VM afterwards), `list --json`, `info <vm> [--json]`, `whoami`,
+  `ssh`, `exec` and `cp` with the caller's own key, `protect`/`unprotect`, and
+  `dcvm help agents`. Without a terminal dcvm never asks; `delete` from a
+  script by a non-root user needs `--yes`.
+- `dcvm user add|remove|list [--admin]` and `dcvm owner <vm> <user>` for admins.
+- `network ports add|remove <vm>`: forwards for one VM, without renumbering
+  the others.
+- VNC set up by a user without root gets a random password, shown only to the
+  owner.
+- Fedora 44 Cloud as OS 9, from ten mirrors, checked against Fedora's
+  `CHECKSUM` file, with dnf package names and services in cloud-init.
+- `dcvm doctor` checks that dcvm's files can't be changed by non-root users,
+  warns about users also in `libvirt`, `disk` or `docker`, and removes owner
+  records of deleted VMs.
+
+### Changed
+
+- Restored VMs and disks repaired by `fix-lock` are mode 600 (was 660, readable
+  by the `kvm` group on Debian), and their folders 711.
+- `self-update --revert` removes the socket before going back to an older
+  version.
+
+### Fixed
+
+- `fix-lock` printed "libvirtd not responding" and "VM not found in libvirt
+  after cleanup" after a successful run.
+
 ## [0.9.9.1] - 2026-11-22
 
 Security update. Hosts where other people use VMs, or that restore backups
@@ -732,7 +786,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10
 [0.9.9.1]: https://github.com/metharda/dcvm/pull/64
 [0.9.9]: https://github.com/metharda/dcvm/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/metharda/dcvm/compare/v0.9.7...v0.9.8

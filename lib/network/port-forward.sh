@@ -189,13 +189,81 @@ cmd_show() {
     {
       printf 'VM\tIP\tSSH PORT\tHTTP PORT\n'
       read_port_mappings | while read -r vm ip ssh_port http_port; do
-        [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
+        [ -n "$vm" ] && vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
       done
     } | ui_table
     echo ""
   else
     print_warning "No saved port mappings. Run: dcvm network ports setup"
   fi
+}
+
+cmd_add() {
+  local vm="${1:-}" map_file line ip ssh_port="" http_port="" port lockfd host_ip
+  if [ -z "$vm" ] || ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then
+    print_error "Usage: dcvm network ports add <your vm>"
+    return 1
+  fi
+  map_file=$(get_port_mappings_file)
+  exec {lockfd}>>"$map_file.lock"
+  flock -w 30 "$lockfd" || {
+    print_error "Another port change is running; try again"
+    return 1
+  }
+  line=$(read_port_mappings 2>/dev/null | awk -v v="$vm" '$1 == v' | head -1)
+  if [ -n "$line" ]; then
+    read -r _ ip ssh_port http_port <<<"$line"
+    ui_done ok "$vm is already forwarded" "SSH $ssh_port, HTTP $http_port"
+    return 0
+  fi
+  ip=$(get_vm_ip "$vm")
+  valid_vm_ip "$ip" || {
+    print_error "$vm has no address yet; start it and wait for it to boot"
+    return 1
+  }
+  for ((port = SSH_PORT_START; port <= 2299; port++)); do
+    read_port_mappings 2>/dev/null | awk -v p="$port" '$3 == p { f = 1 } END { exit !f }' && continue
+    ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
+    ssh_port=$port
+    break
+  done
+  for ((port = HTTP_PORT_START; port <= 8179; port++)); do
+    read_port_mappings 2>/dev/null | awk -v p="$port" '$4 == p { f = 1 } END { exit !f }' && continue
+    ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
+    http_port=$port
+    break
+  done
+  if [ -z "$ssh_port" ] || [ -z "$http_port" ]; then
+    print_error "No free ports left in dcvm's ranges (2221-2299, 8081-8179)"
+    return 1
+  fi
+  host_ip=$(detect_host_ip)
+  setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$host_ip" >/dev/null || return 1
+  [ -s "$map_file" ] || echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$map_file"
+  echo "$vm $ip $ssh_port $http_port" >>"$map_file"
+  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+  save_iptables_rules
+  ui_done ok "$vm forwarded" "ssh -p $ssh_port $(get_vm_username "$vm")@$host_ip, http://$host_ip:$http_port"
+}
+
+cmd_remove() {
+  local vm="${1:-}" map_file line ip ssh_port http_port lockfd
+  if [ -z "$vm" ] || ! is_vm_in_network "$vm"; then
+    print_error "Usage: dcvm network ports remove <your vm>"
+    return 1
+  fi
+  map_file=$(get_port_mappings_file)
+  exec {lockfd}>>"$map_file.lock"
+  flock -w 30 "$lockfd" || return 1
+  line=$(read_port_mappings 2>/dev/null | awk -v v="$vm" '$1 == v' | head -1)
+  if [ -z "$line" ]; then
+    ui_done ok "$vm has no port forwards"
+    return 0
+  fi
+  read -r _ ip ssh_port http_port <<<"$line"
+  cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
+  awk -v v="$vm" '$1 != v' "$map_file" >"$map_file.new" && mv -f "$map_file.new" "$map_file"
+  ui_done ok "$vm's port forwards removed" "SSH $ssh_port, HTTP $http_port"
 }
 
 cmd_rules() {
@@ -274,6 +342,8 @@ Usage: dcvm network ports <command>
 Commands:
   setup   Find running VMs, forward SSH ($SSH_PORT_START+) and HTTP ($HTTP_PORT_START+), save the mapping
   show    Saved mappings
+  add <vm>     Forward SSH and HTTP for one VM (users: their own VMs)
+  remove <vm>  Remove one VM's forwards
   test    Check each forward: rules in place and the VM port answers
   rules   Active DNAT rules
   apply   Recreate the rules from the saved mappings (after a reboot)
@@ -300,6 +370,14 @@ main() {
   show)
     shift
     cmd_show "$@"
+    ;;
+  add)
+    shift
+    cmd_add "$@"
+    ;;
+  remove)
+    shift
+    cmd_remove "$@"
     ;;
   rules)
     shift

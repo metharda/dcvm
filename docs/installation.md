@@ -101,7 +101,7 @@ The installer will:
 1. Install the packages with `apt` (Debian, Ubuntu and derivatives),
    `pacman` (Arch and derivatives) or `dnf` (Fedora): QEMU/KVM, libvirt, virt-install,
    genisoimage/cdrtools, libguestfs-tools, NFS utilities, `jq`, dnsmasq tools,
-   `aria2` (fast image downloads)
+   `aria2` (fast image downloads), Python 3 (the socket for users without root)
 2. Check that the CPU supports KVM and `/dev/kvm` exists
 3. Install `dcvm` to `/usr/local/bin` and its libraries to `/usr/local/lib/dcvm`
 4. Start libvirtd
@@ -112,8 +112,12 @@ The installer will:
 9. Offer tab completion and the NFS share
 10. Start stopped VMs on the dcvm network (other VMs on the host are left alone)
 11. Install `datacenter-storage.timer`, which runs `dcvm storage-cleanup` and a
-    quiet `dcvm doctor` hourly, and `dcvm-boot.service`, which brings the dcvm
-    network and port forwards back after a reboot
+    quiet `dcvm doctor` hourly, `dcvm-boot.service`, which brings the dcvm
+    network and port forwards back after a reboot, `dcvm.socket` with the
+    `dcvm` and `dcvm-admin` groups, for users without root, and
+    `dcvm-reaper.timer`, which deletes VMs whose `--ttl` has passed
+12. Offer to make the user who ran `sudo` a dcvm admin, so they can use dcvm
+    without sudo from their next login ([Users and agents](users.md))
 
 On a fresh Ubuntu 24.04 host (a GitHub runner, when recording the README
 demo) the package install took 47 seconds and the rest a few more.

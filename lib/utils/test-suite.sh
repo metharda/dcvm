@@ -2141,6 +2141,94 @@ test_delete_without_iptables_dir() {
 }
 
 # shellcheck disable=SC2317,SC2034 # stubs; globals read by do_update
+# shellcheck disable=SC2317 # helpers used in subshells
+test_socket_policy() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "socket server policy (python3 not installed)"
+    return
+  fi
+  local t r="" uid srv
+  t=$(mktemp -d)
+  uid=$(id -u)
+  mkdir -p "$t/base/backups" "$t/state/vms"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  printf 'vms=2\n' >"$t/limits"
+  printf 'owner_uid=99999\nowner=someone\n' >"$t/state/vms/rootvm"
+  echo "iso data" >"$t/x.iso"
+  start_srv() {
+    python3 -I -S "$SCRIPT_DIR/../server/dcvm-server.py" --listen "$t/sock" --dry-run --state "$t/state" \
+      --config "$t/conf" --limits "$t/limits" --role "$uid=$1" 2>"$t/server.log" &
+    srv=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ -S "$t/sock" ] && break
+      sleep 0.2
+    done
+  }
+  stop_srv() {
+    kill "$srv" 2>/dev/null
+    wait "$srv" 2>/dev/null
+    rm -f "$t/sock"
+  }
+  ask() { DCVM_SOCKET="$t/sock" DCVM_ORIGIN="${ORIGIN:-agent}" DATACENTER_BASE=/evil python3 -I -S "$SCRIPT_DIR/../server/dcvm-client.py" "$@" 2>&1 </dev/null | tee -a "$t/answers"; }
+  start_srv user
+  grep -q '"argv": \["list"\]' <<<"$(ask list)" && grep -q '"DCVM_CALLER_ROLE": "user"' <<<"$(ask list)" && r+="list "
+  local out
+  out=$(ask create web -f -p s3cret -m 1024 --json)
+  grep -q '"argv": \["create", "web", "-f", "-m", "1024", "--json"\]' <<<"$out" && grep -q '"secrets": \["password"\]' <<<"$out" &&
+    ! grep -q s3cret <<<"$out" && grep -q '^state=ready' "$t/state/vms/web" && grep -q "^owner_uid=$uid" "$t/state/vms/web" && r+="create "
+  grep -q 'invalid VM name' <<<"$(ask create all -f)" && r+="reserved "
+  grep -q 'graphics must be' <<<"$(ask create web2 --graphics vnc,listen=0.0.0.0)" && r+="graphics "
+  grep -q 'os must be 1-9' <<<"$(ask create web2 --os 12)" && r+="os-path "
+  grep -q 'not your VM' <<<"$(ask start rootvm)" && r+="foreign "
+  grep -q '"argv": \["start", "web"\]' <<<"$(ask start web)" && r+="own "
+  grep -q 'needs --yes' <<<"$(ask delete web)" && r+="yes-needed "
+  grep -q '"argv": \["delete", "web"\]' <<<"$(ask delete web --yes)" && r+="delete "
+  grep -q 'needs a dcvm admin' <<<"$(ask self-update)" && r+="admin-only "
+  out=$(ask create isovm -o "$t/x.iso")
+  grep -q "\"-o\", \"$t/base/vms/isovm/installer.iso\"" <<<"$out" && [ "$(cat "$t/base/vms/isovm/installer.iso" 2>/dev/null)" = "iso data" ] && r+="iso-fd "
+  grep -q 'over your VM quota' <<<"$(ask create web3 -f)" && r+="quota "
+  if [ "$uid" -eq 0 ]; then r+="iso-unreadable "; else grep -q 'cannot open ISO' <<<"$(ask create isovm2 -o /etc/shadow)" && r+="iso-unreadable "; fi
+  grep -q '"decision": "deny"' "$t/state/audit.log" && r+="audit "
+  stop_srv
+  start_srv none
+  grep -q 'not in the dcvm group' <<<"$(ask list)" && r+="no-group "
+  stop_srv
+  start_srv admin
+  grep -q '"argv": \["self-update"\]' <<<"$(ask self-update)" && r+="admin "
+  stop_srv
+  local want="list create reserved graphics os-path foreign own yes-needed delete admin-only iso-fd quota iso-unreadable audit no-group admin "
+  if [ "$r" = "$want" ]; then
+    log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
+  else
+    log_test "FAIL" "socket server: roles, ownership, quotas, secrets, files and --yes enforced" "missing: $(comm -13 <(tr ' ' '\n' <<<"$r" | sort) <(tr ' ' '\n' <<<"$want" | sort) | tr '\n' ' ') | $(tr '\n' ' ' <"$t/answers" | cut -c1-600)"
+  fi
+  rm -rf "$t"
+}
+
+test_registry_visibility() {
+  local t r=""
+  t=$(mktemp -d)
+  (
+    DCVM_STATE_DIR="$t"
+    DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001 DCVM_CALLER_USER=alice register_vm mine "cpus=2" "user=ubuntu"
+    registry_set theirs "owner_uid=1002" "owner=bob"
+    registry_set mine "protected=1"
+    export DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001
+    vm_visible mine && echo mine-visible
+    vm_visible theirs || echo theirs-hidden
+    vm_visible legacy || echo legacy-hidden
+    [ "$(registry_get mine owner_uid)" = 1001 ] && [ "$(registry_get mine cpus)" = 2 ] && [ "$(registry_get mine protected)" = 1 ] && echo merged
+    DCVM_CALLER_ROLE=admin vm_visible theirs && echo admin-sees
+  ) >"$t/out"
+  r=$(tr '\n' ' ' <"$t/out")
+  if [ "$r" = "mine-visible theirs-hidden legacy-hidden merged admin-sees " ]; then
+    log_test "PASS" "VM owner records: users see only their VMs, admins see all, keys merge"
+  else
+    log_test "FAIL" "VM owner records: users see only their VMs, admins see all, keys merge" "$r"
+  fi
+  rm -rf "$t"
+}
+
 test_self_update_keeps_backup() {
   local t
   t=$(mktemp -d)
@@ -2721,6 +2809,8 @@ test_common_functions() {
   test_sanitize_domain_xml
   test_check_disk_image
   test_import_rejects_hostile_archives
+  test_socket_policy
+  test_registry_visibility
   test_base_builds
   test_doctor_report
   test_backup_list_columns

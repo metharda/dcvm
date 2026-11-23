@@ -20,6 +20,7 @@ MIN_DISK_SIZE_GB["ubuntu24.04"]=10
 MIN_DISK_SIZE_GB["ubuntu22.04"]=10
 MIN_DISK_SIZE_GB["ubuntu20.04"]=10
 MIN_DISK_SIZE_GB["archlinux"]=10
+MIN_DISK_SIZE_GB["fedora44"]=10
 MIN_DISK_SIZE_GB["kali"]=30 # Kali template is 25 GiB, so minimum must be larger
 
 OS_REQUIRES_VNC=("kali" "debian13")
@@ -41,6 +42,9 @@ FLAG_STATIC_IP=""
 FLAG_GRAPHICS=""
 ADDITIONAL_PACKAGES=""
 FLAG_TAILSCALE_AUTHKEY=""
+FLAG_TTL=""
+FLAG_WAIT=false
+FLAG_JSON=false
 
 declare -A TEMPLATE_SHA256
 TEMPLATE_SHA256["ubuntu-24.04-server-cloudimg-amd64.img"]=""
@@ -170,6 +174,18 @@ parse_arguments() {
       FORCE_MODE=true
       shift
       ;;
+    --ttl)
+      FLAG_TTL="$2"
+      shift 2
+      ;;
+    --wait)
+      FLAG_WAIT=true
+      shift
+      ;;
+    --json)
+      FLAG_JSON=true
+      shift
+      ;;
     -h | --help)
       show_usage
       exit 0
@@ -259,7 +275,8 @@ select_os() {
       cat <<-EOF
 			  1  Debian 13       4  Ubuntu 24.04 (default)   7  Arch Linux
 			  2  Debian 12       5  Ubuntu 22.04             8  Kali Linux
-			  3  Debian 11       6  Ubuntu 20.04             or the path to an ISO file
+			  3  Debian 11       6  Ubuntu 20.04             9  Fedora 44
+			  or the path to an ISO file
 			EOF
       read -r -p "Choose [4]: " VM_OS_CHOICE
       VM_OS_CHOICE=${VM_OS_CHOICE:-4}
@@ -307,9 +324,19 @@ select_os() {
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/kali-linux-cloud-genericcloud-amd64.qcow2"
     OS_VARIANT="debian12"
     ;;
+  9)
+    VM_OS="fedora44"
+    TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Fedora-Cloud-Base-Generic-44.x86_64.qcow2"
+    OS_VARIANT="fedora-unknown"
+    osinfo-query os -f short-id 2>/dev/null | grep -qx fedora44 && OS_VARIANT="fedora44"
+    ;;
   *)
 
     if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
+      if [ "$(caller_role)" != root ] && [ "$VM_OS_CHOICE" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
+        print_error "Pass the ISO as a file instead: dcvm create $VM_NAME -o <file.iso>"
+        exit 1
+      fi
       print_info "Detected ISO file - switching to custom ISO installation mode..."
       local force_flag=()
       [ "$FORCE_MODE" = true ] && force_flag=(-f)
@@ -482,7 +509,10 @@ setup_ssh_key() {
 
   if [ "$SETUP_SSH_KEY" = true ]; then
     [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || ui_section "SSH key"
-    if [ -f ~/.ssh/id_rsa.pub ]; then
+    if [ "$(caller_role)" != root ]; then
+      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
+    elif [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       [ "$FORCE_MODE" = true ] && print_success "SSH key configured" || print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
@@ -774,7 +804,10 @@ interactive_prompt_ssh_key() {
   done
   if [ "$SETUP_SSH_KEY" = true ]; then
     ui_section "SSH key"
-    if [ -f ~/.ssh/id_rsa.pub ]; then
+    if [ "$(caller_role)" != root ]; then
+      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
+    elif [ -f ~/.ssh/id_rsa.pub ]; then
       SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
       print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
@@ -1013,11 +1046,15 @@ generate_cloud_init_userdata() {
   local ssh_service=ssh sftp_server=/usr/lib/openssh/sftp-server
   local base_packages="openssh-server openssh-sftp-server nfs-common"
   local nginx_root=/var/www/html apache_root=/var/www/html web_owner=www-data:www-data apache_service=apache2
+  local vim_package=vim
   if [ "$VM_OS" = archlinux ]; then
     ssh_service=sshd sftp_server=/usr/lib/ssh/sftp-server base_packages="openssh nfs-utils"
     nginx_root=/usr/share/nginx/html apache_root=/srv/http web_owner=http:http apache_service=httpd
+  elif [[ "$VM_OS" == fedora* ]]; then
+    ssh_service=sshd sftp_server=/usr/libexec/openssh/sftp-server base_packages="openssh-server nfs-utils"
+    nginx_root=/usr/share/nginx/html web_owner=apache:apache apache_service=httpd vim_package=vim-enhanced
   fi
-  base_packages="$base_packages htop curl wget net-tools rsync nano vim tree unzip"
+  base_packages="$base_packages htop curl wget net-tools rsync nano $vim_package tree unzip"
   case "$VM_OS" in debian*) base_packages="$base_packages unattended-upgrades" ;; esac
 
   # -k packages are installed one by one in runcmd, so one unavailable
@@ -1056,6 +1093,15 @@ generate_cloud_init_userdata() {
         package=apache
       fi
       [ "$VM_OS" = archlinux ] && [ "$package" = docker.io ] && package=docker
+      if [[ "$VM_OS" == fedora* ]]; then
+        case "$package" in
+        apache2)
+          APACHE_REQUESTED=true
+          package=httpd
+          ;;
+        docker.io) package=moby-engine ;;
+        esac
+      fi
       EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
     done
   fi
@@ -1067,6 +1113,8 @@ generate_cloud_init_userdata() {
     for pkg in __DCVM_PACKAGES__; do
       if command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "$pkg"
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y "$pkg"
       else
         pacman -S --noconfirm --needed "$pkg"
       fi || echo "dcvm: failed to install package: $pkg" | tee -a /var/log/dcvm-packages.log
@@ -1380,22 +1428,31 @@ install_vm() {
   elif os_requires_vnc "$VM_OS"; then
     GRAPHICS="vnc,listen=127.0.0.1"
   fi
-  virt_error=$(virt-install \
-    --name "$VM_NAME" \
-    --virt-type kvm \
-    --memory "$VM_MEMORY" \
-    --vcpus "$VM_CPUS" \
-    --boot hd,menu=on \
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk" \
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom" \
-    --graphics "$GRAPHICS" \
-    --os-variant "$OS_VARIANT" \
-    --network "network=$NETWORK_NAME" \
-    --console pty,target_type=serial \
-    --import \
-    --noautoconsole 2>&1)
+  [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ] && GRAPHICS="${GRAPHICS%%,*},listen=127.0.0.1"
+  VM_GRAPHICS_USED=$GRAPHICS
+  local vi=(virt-install
+    --name "$VM_NAME"
+    --virt-type kvm
+    --memory "$VM_MEMORY"
+    --vcpus "$VM_CPUS"
+    --boot hd,menu=on
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk"
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom"
+    --graphics "$GRAPHICS"
+    --os-variant "$OS_VARIANT"
+    --network "network=$NETWORK_NAME"
+    --console pty,target_type=serial
+    --import
+    --noautoconsole)
+  local rc=0
+  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+    VNC_PW=$(vnc_password)
+    virt_error=$(virt_install_with_vnc_password "$VNC_PW" "${vi[@]}" 2>&1) || rc=$?
+  else
+    virt_error=$("${vi[@]}" 2>&1) || rc=$?
+  fi
 
-  if [ $? -ne 0 ]; then
+  if [ "$rc" -ne 0 ]; then
     print_error "Failed to create VM"
     "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,storage || true
     echo ""
@@ -1527,6 +1584,28 @@ main() {
   fi
 
   parse_arguments "$@"
+  read_dcvm_secrets
+  [ -n "${DCVM_SECRET_PASSWORD:-}" ] && FLAG_PASSWORD="$DCVM_SECRET_PASSWORD"
+  [ -z "$FLAG_PASSWORD" ] && [ "$(caller_role)" = root ] && FLAG_PASSWORD="${DCVM_PASSWORD:-}"
+  if [ -n "${DCVM_SECRET_ROOT_PASSWORD:-}" ]; then
+    FLAG_ROOT_PASSWORD="$DCVM_SECRET_ROOT_PASSWORD"
+    FLAG_ENABLE_ROOT=y
+  fi
+  [ -n "${DCVM_SECRET_TAILSCALE_AUTHKEY:-}" ] && FLAG_TAILSCALE_AUTHKEY="$DCVM_SECRET_TAILSCALE_AUTHKEY"
+  if [ -n "$FLAG_TTL" ] && ! TTL_SECONDS=$(ttl_seconds "$FLAG_TTL"); then
+    print_error "--ttl must look like 90m, 2h or 3d"
+    exit 1
+  fi
+  if [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && [ "$FORCE_MODE" != true ]; then
+    FORCE_MODE=true
+    if [ -z "$FLAG_PASSWORD" ]; then
+      print_error "No terminal to ask on: pass -p <password> or set DCVM_PASSWORD (and -f for defaults)"
+      exit 1
+    fi
+  fi
+  if [ "$FLAG_JSON" = true ]; then
+    exec 3>&1 1>&2
+  fi
 
   if [ -z "$VM_NAME" ]; then
     print_error "VM name required. Usage: dcvm create <vm_name> [options]"
@@ -1547,7 +1626,7 @@ main() {
   for vm in "${VM_NAMES[@]}"; do
     vm=$(trim_whitespace "$vm")
     [ -z "$vm" ] && continue
-    if virsh list --all 2>/dev/null | grep -q " $vm "; then
+    if check_vm_exists "$vm" && [ "$(registry_get "$vm" state)" != creating ]; then
       print_error "VM $vm already exists"
       echo "Use: dcvm delete $vm (to delete it first)"
       exit 1
@@ -1606,12 +1685,28 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
+    [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
+    register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
+      "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
       ui_step ok "VM" "defined and started, starts with the host"
     else
       ui_step warn "VM" "defined and started, but autostart could not be set"
     fi
-    if [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
+    local vm_ip=""
+    if [ "$FLAG_WAIT" = true ]; then
+      if vm_ip=$(wait_for_vm "$VM_NAME" 600); then
+        ui_step ok "Ready" "SSH answers on $vm_ip"
+      else
+        ui_step warn "Ready" "SSH did not answer within 10 minutes"
+      fi
+    fi
+    if [ "$FLAG_JSON" = true ]; then
+      [ -n "$vm_ip" ] || vm_ip=$(get_vm_ip "$VM_NAME")
+      valid_vm_ip "$vm_ip" || vm_ip=""
+      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
+        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" >&3
+    elif [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
   done
 
   if [ ${#VM_NAMES[@]} -gt 1 ]; then

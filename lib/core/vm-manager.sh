@@ -207,7 +207,7 @@ restart_vms() {
 }
 
 show_vm_table() {
-  local vm state ip vcpu mem total=0 running=0 others=0
+  local vm state ip vcpu mem total=0 running=0 others=0 json="${1:-}"
   local rows
   rows=$(
     printf 'NAME\tSTATE\tIP\tVCPU\tMEMORY\n'
@@ -222,9 +222,13 @@ show_vm_table() {
       printf '%s\t%s\t%s\t%s\t%s MB\n' "$vm" "$state" "$ip" "$vcpu" "$mem"
     done < <(virsh list --all --name 2>/dev/null)
   )
+  if [ "$json" = --json ]; then
+    awk -F'\t' 'NR > 1 { sub(/ MB$/, "", $5); printf "%s{\"name\":\"%s\",\"state\":\"%s\",\"ip\":%s,\"vcpus\":%s,\"memory_mb\":%s}", (n++ ? "," : "["), $1, $2, ($3 == "" ? "null" : "\"" $3 "\""), ($4 == "" ? "null" : $4), ($5 == "" ? "null" : $5) } END { print (n ? "]" : "[]") }' <<<"$rows"
+    return 0
+  fi
   total=$(($(echo "$rows" | grep -c .) - 1))
   running=$(echo "$rows" | awk -F'\t' 'NR > 1 && $2 == "running"' | grep -c . || true)
-  others=$(($(virsh list --all --name 2>/dev/null | grep -c .) - total))
+  [ "$(caller_role)" = user ] || others=$(($(virsh list --all --name 2>/dev/null | grep -c .) - total))
   echo ""
   if [ "$total" -eq 0 ]; then
     echo -e "  No dcvm VMs yet. Create one: ${CYAN}dcvm create myvm${NC}"
@@ -250,7 +254,7 @@ show_enhanced_status() {
   else
     ui_step skip "Port forwards" "none (dcvm network ports setup)"
   fi
-  [ "$(id -u)" -eq 0 ] && "$SCRIPT_DIR/../utils/doctor.sh" --summary
+  [ "$(caller_role)" = user ] || "$SCRIPT_DIR/../utils/doctor.sh" --summary
   echo ""
 }
 
@@ -262,7 +266,7 @@ main() {
   stop) stop_vms "$2" ;;
   restart) restart_vms "$2" ;;
   status) show_enhanced_status ;;
-  list) show_vm_table ;;
+  list) show_vm_table "${2:-}" ;;
   console)
     if [ -z "${2:-}" ]; then
       show_enhanced_console
