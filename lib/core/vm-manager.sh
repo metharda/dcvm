@@ -207,10 +207,10 @@ restart_vms() {
 }
 
 show_vm_table() {
-  local vm state ip vcpu mem total=0 running=0 others=0 json="${1:-}"
+  local vm state ip vcpu mem owner total=0 running=0 others=0 json="${1:-}"
   local rows
   rows=$(
-    printf 'NAME\tSTATE\tIP\tVCPU\tMEMORY\n'
+    printf 'NAME\tOWNER\tSTATE\tIP\tVCPU\tMEMORY\n'
     while read -r vm; do
       [ -n "$vm" ] && is_vm_in_network "$vm" || continue
       state=$(get_vm_state "$vm")
@@ -218,22 +218,27 @@ show_vm_table() {
       if [ "$state" = running ]; then
         ip=$(get_vm_ip "$vm") || ip=""
       fi
+      owner=$(registry_get "$vm" owner)
       read -r vcpu mem < <(virsh dominfo "$vm" 2>/dev/null | awk '/^CPU\(s\)/ { c = $2 } /^Max memory/ { m = $3 } END { print c, int(m / 1024) }')
-      printf '%s\t%s\t%s\t%s\t%s MB\n' "$vm" "$state" "$ip" "$vcpu" "$mem"
+      printf '%s\t%s\t%s\t%s\t%s\t%s MB\n' "$vm" "${owner:-root}" "$state" "$ip" "$vcpu" "$mem"
     done < <(virsh list --all --name 2>/dev/null)
   )
   if [ "$json" = --json ]; then
-    awk -F'\t' 'NR > 1 { sub(/ MB$/, "", $5); printf "%s{\"name\":\"%s\",\"state\":\"%s\",\"ip\":%s,\"vcpus\":%s,\"memory_mb\":%s}", (n++ ? "," : "["), $1, $2, ($3 == "" ? "null" : "\"" $3 "\""), ($4 == "" ? "null" : $4), ($5 == "" ? "null" : $5) } END { print (n ? "]" : "[]") }' <<<"$rows"
+    awk -F'\t' 'NR > 1 { sub(/ MB$/, "", $6); printf "%s{\"name\":\"%s\",\"owner\":\"%s\",\"state\":\"%s\",\"ip\":%s,\"vcpus\":%s,\"memory_mb\":%s}", (n++ ? "," : "["), $1, $2, $3, ($4 == "" ? "null" : "\"" $4 "\""), ($5 == "" ? "null" : $5), ($6 == "" ? "null" : $6) } END { print (n ? "]" : "[]") }' <<<"$rows"
     return 0
   fi
   total=$(($(echo "$rows" | grep -c .) - 1))
-  running=$(echo "$rows" | awk -F'\t' 'NR > 1 && $2 == "running"' | grep -c . || true)
+  running=$(echo "$rows" | awk -F'\t' 'NR > 1 && $3 == "running"' | grep -c . || true)
   [ "$(caller_role)" = user ] || others=$(($(virsh list --all --name 2>/dev/null | grep -c .) - total))
   echo ""
   if [ "$total" -eq 0 ]; then
     echo -e "  No dcvm VMs yet. Create one: ${CYAN}dcvm create myvm${NC}"
   else
-    echo "$rows" | ui_table
+    if [ "$(caller_role)" = user ]; then
+      cut -f1,3- <<<"$rows" | ui_table
+    else
+      echo "$rows" | ui_table
+    fi
     echo ""
     echo -e "  ${DIM}$(plural "$total" VM) on $NETWORK_NAME ${SYM_DOT} $running running$([ "$others" -gt 0 ] && echo " ${SYM_DOT} $(plural "$others" "other libvirt VM") not shown (virsh list --all)")${NC}"
   fi

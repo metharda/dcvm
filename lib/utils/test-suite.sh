@@ -2205,6 +2205,35 @@ test_socket_policy() {
   rm -rf "$t"
 }
 
+test_list_owner_column() {
+  local t out_root out_user out_json
+  t=$(mktemp -d)
+  mkdir -p "$t/bin" "$t/state/vms"
+  cat >"$t/bin/virsh" <<'STUB'
+#!/bin/bash
+case "$*" in
+"list --all --name") printf 'web\ndb\n' ;;
+domiflist*) printf ' Interface Type Source Model MAC\n vnet0 network datacenter-net virtio 52:54:00:00:00:01\n' ;;
+domstate*) echo "shut off" ;;
+dominfo*) printf 'CPU(s):         2\nMax memory:     2097152 KiB\n' ;;
+esac
+STUB
+  chmod +x "$t/bin/virsh"
+  printf 'owner_uid=1001\nowner=alice\n' >"$t/state/vms/web"
+  table() { (PATH="$t/bin:$PATH" DCVM_STATE_DIR="$t/state" NETWORK_NAME=datacenter-net && source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null && show_vm_table "$@") 2>/dev/null; }
+  out_root=$(table)
+  out_user=$(DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001 table)
+  out_json=$(table --json)
+  if grep -q 'OWNER' <<<"$out_root" && grep -qE 'web +alice' <<<"$out_root" && grep -qE 'db +root' <<<"$out_root" &&
+    ! grep -q 'OWNER' <<<"$out_user" && grep -q 'web' <<<"$out_user" && ! grep -q 'db' <<<"$out_user" &&
+    grep -q '"name":"web","owner":"alice"' <<<"$out_json" && grep -q '"name":"db","owner":"root"' <<<"$out_json"; then
+    log_test "PASS" "dcvm list shows each VM's owner to root and admins, users see only theirs"
+  else
+    log_test "FAIL" "dcvm list shows each VM's owner to root and admins, users see only theirs" "$(tr '\n' '|' <<<"$out_root$out_user$out_json" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
 test_registry_visibility() {
   local t r=""
   t=$(mktemp -d)
@@ -2811,6 +2840,7 @@ test_common_functions() {
   test_import_rejects_hostile_archives
   test_socket_policy
   test_registry_visibility
+  test_list_owner_column
   test_base_builds
   test_doctor_report
   test_backup_list_columns
