@@ -870,7 +870,10 @@ EOF
   (
     load_backup_sh_for_test "$t"
     stub_backup_tools "$t"
-    mkisofs() { while [ $# -gt 0 ]; do [ "$1" = -output ] && echo seed >"$2"; shift; done; }
+    mkisofs() { while [ $# -gt 0 ]; do
+      [ "$1" = -output ] && echo seed >"$2"
+      shift
+    done; }
     DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1000 restore_vm vm1 "$ts" "" "" "vm1-ucopy" </dev/null >"$t/out-user" 2>&1
   )
   rm -f "$t/backups/vm1-$ts/owner"
@@ -2869,7 +2872,7 @@ test_uninstall_exact_matches() {
     for d in "" / /var /etc/ "$t/other" "$t/dc/../other"; do
       removable_data_dir "$d" >/dev/null && echo "accepted '$d'"
     done
-    virsh() { case "$1" in list) echo keep ;; domblklist) printf ' Type Device Target Source\n file disk vda %s/dc/vms/keep/keep-disk.qcow2\n' "$t" ;; esac; }
+    virsh() { case "$1" in list) echo keep ;; domblklist) printf ' Type Device Target Source\n file disk vda %s/dc/vms/keep/keep-disk.qcow2\n' "$t" ;; esac }
     [ "$(domains_using_dir "$t/dc")" = keep ] || echo "missed a VM still using $t/dc"
     [ -z "$(domains_using_dir "$t/other")" ] || echo "flagged $t/other"
   ) >"$t/out" 2>&1
@@ -4919,7 +4922,7 @@ test_create_os_choice_and_batch() {
       FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
       setup_root_access >/dev/null 2>&1
       setup_root_access >/dev/null 2>&1
-      echo "batch:$ENABLE_ROOT[$FLAG_ENABLE_ROOT]"
+      echo "batch:${ENABLE_ROOT}[$FLAG_ENABLE_ROOT]"
     )
   )
   r=$(tr '\n' ' ' <<<"$r")
