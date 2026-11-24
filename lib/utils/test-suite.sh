@@ -4448,7 +4448,8 @@ test_sanitize_domain_xml() {
   <name>old</name><uuid>1</uuid><memory unit='KiB'>1048576</memory><vcpu>1</vcpu>
   <metadata><x/></metadata><seclabel type='none'/>
   <memoryBacking><source type='file'/></memoryBacking>
-  <os><type arch='x86_64' machine='pc-q35-8.2'>hvm</type><kernel>/etc/shadow</kernel><loader>/etc/passwd</loader><nvram>/var/lib/libvirt/qemu/nvram/old.fd</nvram></os>
+  <sysinfo type='fwcfg'><entry name='opt/x' file='/etc/gshadow'/></sysinfo>
+  <os><type arch='x86_64' machine='pc-q35-8.2'>hvm</type><boot dev='network'/><boot dev='hd'/><kernel>/etc/shadow</kernel><loader>/etc/passwd</loader><nvram>/var/lib/libvirt/qemu/nvram/old.fd</nvram></os>
   <devices>
     <emulator>/tmp/evil</emulator>
     <disk type='block' device='disk'><driver name='qemu' type='raw'/><source dev='/dev/sda'/><target dev='vda' bus='virtio'/></disk>
@@ -4457,9 +4458,13 @@ test_sanitize_domain_xml() {
     <hostdev mode='subsystem' type='pci'/><filesystem type='mount'><source dir='/'/><target dir='r'/></filesystem>
     <interface type='ethernet'><script path='/tmp/x'/></interface>
     <interface type='network'><mac address='52:54:00:11:22:33'/><source network='datacenter-net'/></interface>
+    <interface type='bridge'><mac address='52:54:00:44:55:66'/><source bridge='br0'/><target dev='tapx'/><filterref filter='f'/><virtualport type='openvswitch'/><vlan><tag id='5'/></vlan><model type='vhost-user'/></interface>
+    <input type='evdev'><source dev='/dev/input/event0' grab='all'/></input><input type='tablet' bus='usb'/>
+    <video><driver name='vhostuser'/><model type='virtio' heads='1'><acceleration accel3d='yes' rendernode='/dev/dri/renderD128'/></model></video>
+    <tpm model='tpm-crb'><backend type='emulator' version='2.0'><source type='file' path='/etc/tpmstate'/></backend></tpm>
     <serial type='file'><source path='/etc/cron.d/x'/></serial><serial type='pty'/>
     <channel type='unix'><source mode='bind' path='/etc/x'/><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
-    <graphics type='vnc' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>
+    <graphics type='vnc' port='5901' autoport='no' passwd='knownpw' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>
     <audio id='1' type='file'><output path='/etc/y'/></audio>
     <controller type='ide' index='0'/><controller type='usb' index='0'/>
   </devices>
@@ -4475,13 +4480,98 @@ XML
   }
   out=$(cat "$t/vm.xml")
   local leaked
-  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35' <<<"$out" | sort -u | tr '\n' ' ')
+  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|<emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35|br0|tapx|filterref|virtualport|vlan|vhost|evdev|/dev/[a-z]+|accel|dev="network"|5901|knownpw|fwcfg' <<<"$out" | sort -u | tr '\n' ' ')
   if [ -z "$leaked" ] && grep -q '<name>new</name>' <<<"$out" && [ "$(grep -o '<disk ' <<<"$out" | wc -l)" -eq 1 ] &&
     grep -q 'file="/srv/datacenter/vms/new/new-disk.qcow2"' <<<"$out" && grep -q 'type="pty"' <<<"$out" &&
-    grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out"; then
-    log_test "PASS" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override"
+    grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out" &&
+    [ "$(grep -o '<source network="datacenter-net" />' <<<"$out" | wc -l)" -eq 2 ] && grep -q '<boot dev="hd" />' <<<"$out" &&
+    grep -qE '<graphics type="vnc" passwd="[A-Za-z0-9]{8}" autoport="yes" listen="127.0.0.1"><listen' <<<"$out" &&
+    grep -q '<input type="tablet" bus="usb" />' <<<"$out" && grep -q '<model type="virtio" heads="1" />' <<<"$out" &&
+    grep -q '<backend type="emulator" version="2.0" />' <<<"$out"; then
+    log_test "PASS" "domain XML sanitizer keeps one dcvm disk, puts NICs on dcvm's network, drops every host path, device and override"
   else
-    log_test "FAIL" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override" "leaked: $leaked"
+    log_test "FAIL" "domain XML sanitizer keeps one dcvm disk, puts NICs on dcvm's network, drops every host path, device and override" "leaked: $leaked"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh
+test_create_network_by_mac() {
+  local t r=""
+  t=$(mktemp -d)
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    virt-install() { printf '%s\n' "$@" >"$t/args"; }
+    virsh() { :; }
+    DATACENTER_BASE="$t" VM_NAME=nettest VM_OS=debian12 NETWORK_NAME=datacenter-net NETWORK_SUBNET=10.10.10
+    FORCE_MODE=true FLAG_GRAPHICS="" FLAG_UEFI=false VM_MEMORY=2048 VM_CPUS=2 OS_VARIANT=debian12
+    mkdir -p "$t/vms/nettest/cloud-init"
+    FLAG_STATIC_IP=10.10.10.50 generate_cloud_init_network && cp "$t/vms/nettest/cloud-init/network-config" "$t/static"
+    FLAG_STATIC_IP="" generate_cloud_init_network && install_vm >/dev/null 2>&1
+  )
+  local nc="$t/vms/nettest/cloud-init/network-config" mac
+  mac=$(sed -n 's/^      macaddress: "\(.*\)"$/\1/p' "$nc")
+  for f in "$t/static" "$nc"; do
+    grep -qE '^      macaddress: "52:54:00(:[0-9a-f]{2}){3}"$' "$f" && grep -q '^    set-name: enp1s0$' "$f" && ! grep -q 'name: "e\*"' "$f" && r+="config "
+  done
+  grep -q '^    dhcp4: false$' "$t/static" && grep -qxF -- "network=datacenter-net,mac=$mac" "$t/args" 2>/dev/null && r+="nic"
+  if [ "$r" = "config config nic" ]; then
+    log_test "PASS" "create: network-config matches the NIC by the MAC virt-install is given (cloud-init without netplan)"
+  else
+    log_test "FAIL" "create: network-config matches the NIC by the MAC virt-install is given (cloud-init without netplan)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh
+test_create_scrubs_seed() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/seedtest/cloud-init"
+  printf 'instance-id: seedtest-1\n' >"$t/vms/seedtest/cloud-init/meta-data"
+  printf 'version: 2\n' >"$t/vms/seedtest/cloud-init/network-config"
+  printf '#cloud-config\npasswd: secret-hash\n' >"$t/vms/seedtest/cloud-init/user-data"
+  echo first-seed >"$t/vms/seedtest/cloud-init.iso"
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    mkisofs() { cat "${!#}"/* >"$2"; }
+    wait_for_vm() { echo 10.10.10.9; }
+    virsh() {
+      if [ "$1" = domblklist ]; then printf ' Type   Device   Target   Source\n file   cdrom    sda      x\n'; else echo "$*" >>"$t/virsh"; fi
+    }
+    DATACENTER_BASE="$t" VM_NAME=seedtest
+    scrub_cloud_init_seed
+    wait
+  )
+  grep -q 'instance-id: seedtest-1' "$t/vms/seedtest/cloud-init.iso" && ! grep -q 'secret-hash\|first-seed' "$t/vms/seedtest/cloud-init.iso" &&
+    grep -q secret-hash "$t/vms/seedtest/cloud-init/user-data" && r+="iso "
+  [ "$(cat "$t/virsh" 2>/dev/null)" = "change-media seedtest sda --eject --live --force
+change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && r+="swap "
+  generate_test_userdata tester n "" "$t/ud"
+  grep -q '^  - rm -f /var/lib/cloud/instance/user-data.txt\* .*obj.pkl' "$t/ud" && r+="guest"
+  if [ "$r" = "iso swap guest" ]; then
+    log_test "PASS" "create: the cloud-init seed loses its user-data once the guest has read it"
+  else
+    log_test "FAIL" "create: the cloud-init seed loses its user-data once the guest has read it" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC1091 # the quota vars are read by within_quota
+test_numbers_leading_zeros() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms"
+  printf 'owner_uid=1001\nstate=creating\ncpus=0\nmemory_mb=0\ndisk_gb=0\n' >"$t/vms/z"
+  [ "$(size_gb 08G)/$(size_gb 010T)/$(size_gb 0900M)" = "8/10240/1" ] 2>/dev/null && r+="size "
+  (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 1000 100" && within_quota 08 0800 09 z) >/dev/null 2>&1 &&
+    [ "$(DCVM_STATE_DIR="$t" registry_get z cpus)/$(DCVM_STATE_DIR="$t" registry_get z memory_mb)" = 8/800 ] && r+="quota "
+  ! (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 900 100" && within_quota 1 01000 1 z) >/dev/null 2>&1 && r+="octal "
+  (source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1 && validate_disk_size 090G debian12) >/dev/null 2>&1 && r+="disk"
+  if [ "$r" = "size quota octal disk" ]; then
+    log_test "PASS" "sizes and quota read leading-zero numbers as decimal"
+  else
+    log_test "FAIL" "sizes and quota read leading-zero numbers as decimal" "$r"
   fi
   rm -rf "$t"
 }
@@ -5316,6 +5406,9 @@ test_common_functions() {
   test_vm_ip_sources
   test_network_trust
   test_sanitize_domain_xml
+  test_create_network_by_mac
+  test_create_scrubs_seed
+  test_numbers_leading_zeros
   test_check_disk_image
   test_import_rejects_hostile_archives
   test_socket_policy

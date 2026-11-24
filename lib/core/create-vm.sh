@@ -911,8 +911,8 @@ validate_disk_size() {
     print_error "Disk size format: number + G/M/T (e.g., 20G, 512M, 1T)"
     return 1
   }
-  local size_num=$(echo "$disk_size" | sed 's/[GMT]$//')
-  local size_unit=$(echo "$disk_size" | sed 's/^[0-9]*//')
+  local size_num=$((10#${disk_size%[GMT]}))
+  local size_unit=${disk_size: -1}
   local size_in_mb=0
   case "$size_unit" in
   "M") size_in_mb=$size_num ;;
@@ -1364,6 +1364,8 @@ TAILSCALE_EOF
   - 'echo "User: $VM_USERNAME configured" >> /var/log/cloud-init-final.log'
   - echo "SSH/SCP/SFTP ready for connections" >> /var/log/cloud-init-final.log
   - wall "VM $VM_NAME is ready! Login as $VM_USERNAME"
+  # cloud-init's copies of this file hold the password hashes and keys; the VM user has sudo.
+  - rm -f /var/lib/cloud/instance/user-data.txt* /var/lib/cloud/instance/cloud-config.txt /var/lib/cloud/instance/obj.pkl /var/lib/cloud/instance/scripts/runcmd
 
 final_message: |
   VM $VM_NAME setup completed!
@@ -1386,6 +1388,8 @@ METADATA_EOF
 
 generate_cloud_init_network() {
   local network_config="$DATACENTER_BASE/vms/$VM_NAME/cloud-init/network-config"
+  # Without netplan cloud-init ignores match.name and names the NIC after its key; a MAC always matches.
+  VM_MAC=$(od -An -N3 -tx1 /dev/urandom | awk '{ print "52:54:00:" $1 ":" $2 ":" $3 }')
   if [ -n "$FLAG_STATIC_IP" ]; then
     if [ "$VM_OS" = "archlinux" ]; then
       cat >"$network_config" <<NETWORK_EOF
@@ -1403,9 +1407,10 @@ NETWORK_EOF
       cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  id0:
+  enp1s0:
     match:
-      name: "e*"
+      macaddress: "$VM_MAC"
+    set-name: enp1s0
     dhcp4: false
     addresses:
       - ${FLAG_STATIC_IP}/24
@@ -1426,12 +1431,13 @@ ethernets:
       addresses: [8.8.8.8, 8.8.4.4]
 NETWORK_EOF
     else
-      cat >"$network_config" <<'NETWORK_EOF'
+      cat >"$network_config" <<NETWORK_EOF
 version: 2
 ethernets:
-  id0:
+  enp1s0:
     match:
-      name: "e*"
+      macaddress: "$VM_MAC"
+    set-name: enp1s0
     dhcp4: true
     dhcp-identifier: mac
     nameservers:
@@ -1452,6 +1458,25 @@ create_cloud_init_iso() {
     exit 1
   }
   chmod 600 cloud-init.iso cloud-init/*
+}
+
+# The seed holds password hashes and keys and the VM user has sudo, so once cloud-init has read it the
+# CD-ROM gets one without user-data. It stays attached with the same instance-id: cloud-init neither
+# disables itself nor runs again as a new instance, and fix-lock keeps the CD-ROM as it is.
+scrub_cloud_init_seed() {
+  local dir="$DATACENTER_BASE/vms/$VM_NAME" tool=genisoimage seed dev rc
+  command -v mkisofs >/dev/null 2>&1 && tool=mkisofs
+  seed=$(mktemp -d) || return 1
+  cp "$dir/cloud-init/meta-data" "$dir/cloud-init/network-config" "$seed/" && echo '#cloud-config' >"$seed/user-data" &&
+    (umask 077 && "$tool" -output "$dir/cloud-init.iso.new" -volid cidata -joliet -rock "$seed/") >/dev/null 2>&1 &&
+    mv -f "$dir/cloud-init.iso.new" "$dir/cloud-init.iso"
+  rc=$?
+  rm -rf "$seed" "$dir/cloud-init.iso.new"
+  [ "$rc" -eq 0 ] || return 1
+  # QEMU keeps the old file open across guest reboots; SSH answers only after cloud-init has read it.
+  dev=$(virsh domblklist "$VM_NAME" --details 2>/dev/null | awk '$2 == "cdrom" { print $3; exit }')
+  (wait_for_vm "$VM_NAME" 1800 && virsh change-media "$VM_NAME" "$dev" --eject --live --force &&
+    virsh change-media "$VM_NAME" "$dev" "$dir/cloud-init.iso" --insert --live) </dev/null >/dev/null 2>&1 3>&- &
 }
 
 create_vm_disk() {
@@ -1489,7 +1514,7 @@ install_vm() {
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom,format=raw"
     --graphics "$GRAPHICS"
     --os-variant "$OS_VARIANT"
-    --network "network=$NETWORK_NAME"
+    --network "network=$NETWORK_NAME${VM_MAC:+,mac=$VM_MAC}"
     --console pty,target_type=serial
     --import
     --noautoconsole)
@@ -1749,6 +1774,7 @@ main() {
     create_vm_disk
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
+    scrub_cloud_init_seed || print_warning "Could not replace $VM_NAME's cloud-init seed: the VM user can read its password hashes and keys"
     [ -n "$FLAG_STATIC_IP" ] && save_static_ip "$VM_NAME" "$FLAG_STATIC_IP"
     [ -n "${VNC_PW:-}" ] && ui_step ok "Display" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
