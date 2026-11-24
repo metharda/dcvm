@@ -12,6 +12,23 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Security
+
+- `dcvm delete` refuses a name with `../` instead of deleting the host file it points to; owner records check names too (#180)
+- `dcvm ssh`, `exec` and `cp` connect only to an address the host knows, never one the guest agent reports (#149)
+
+### Fixed
+
+- `dcvm delete --all` stops when libvirt stops answering instead of removing every VM folder, mapping and rule (#110)
+- `start`, `stop` and `restart` with an empty VM name fail instead of acting on every VM (#128)
+- `network vnc enable/disable` can offer to stop a running VM for users too (#144)
+- `dcvm owner` refuses an account that isn't a dcvm user (#146)
+- `dcvm user remove` hands the user's VMs to root, and `user add` does so for VMs of an earlier account with the same UID (#147)
+- The reaper and `delete` clear a VM gone from libvirt completely: record, folder, static IP and port forwards (#148)
+- `dcvm delete` refuses a libvirt domain that isn't on the dcvm network (#152)
+- `dcvm delete` refuses a protected VM even when its domain is already gone (#153)
+- `network vnc` leaves a SPICE display and its password alone (#181)
+
 ## [0.9.11] - 2026-11-24
 
 Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
