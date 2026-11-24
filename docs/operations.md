@@ -24,7 +24,7 @@ All commands need root.
 | :--- | :------ | :---- |
 | List VMs | `dcvm list` | Table of dcvm VMs (state, IP, vCPU, memory); other libvirt VMs are only counted |
 | Overview | `dcvm status` | The same table, plus the network and port-forward state (takes no VM name) |
-| Start / stop / restart | `dcvm start web`, `dcvm stop web`, `dcvm restart web` | Without a name: every dcvm VM. `stop` is a graceful ACPI shutdown |
+| Start / stop / restart | `dcvm start web`, `dcvm stop web`, `dcvm restart web` | `all` for every dcvm VM (`start` without a name too). `stop` is a graceful ACPI shutdown; `stop <vm> --force` powers off a guest that ignores it |
 | Find a VM's IP | `dcvm status`, or `dcvm network` | `dcvm network` also lists static IPs and saved port mappings |
 | SSH from the host | `ssh <user>@<vm-ip>` | `<user>` is `-u`, or the OS name (`ubuntu`, `debian`, `archlinux`, `kali`) |
 | Reach VMs from other machines | `dcvm network ports setup` | Run again after starting or adding VMs; see [Networking](networking.md#port-forwarding) |

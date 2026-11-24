@@ -18,6 +18,13 @@ history, so the commit or PR is listed for each release.
 - `self-update` handles a failed file list without leaving a backup, and `--revert` runs the old version's pre-revert step only once the saved version is staged, restoring the services if the swap fails (#100).
 - `uninstall` needs root, removes the NFS squash user, the storage pools and firewalld services it added, keeps the owner records until the VMs are gone, and never deletes the data folder while a VM still uses a disk in it (#101).
 - The test suite installs packages only with `--install-deps` (#103).
+- A shut-off VM has no IP: `info --json` no longer shows its old lease, `delete` no longer clears rules for an address another VM may hold now, and `network ports add` refuses a VM that isn't running.
+- `dcvm stop` and `restart` without a VM name refuse instead of acting on every VM; use `all`. `dcvm start` without a name still starts every VM.
+- `dcvm stop <vm> --force` powers off a guest that ignores the shutdown request, for the VM's owner too.
+- `start`, `status` and `console` hints name `network ports add <vm>` for users, and a user's `status` counts only their own port forwards.
+- `dcvm console` on a stopped VM says to start it first instead of claiming to connect.
+- `dcvm network vnc --help` shows VNC help, and an unknown `vnc` action is reported as such.
+- `delete`, `list`, `status` and `network show` refuse unknown options instead of ignoring them.
 
 - `backup create` builds the backup in a hidden folder and renames it only when disk, config, owner and base record are all saved; a failed `virsh dumpxml` fails the backup, and the VM is started again on every failure (#91).
 - `backup import` records this host's build for the backup, so pruning no longer deletes the base an imported backup needs (#92).

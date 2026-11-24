@@ -201,10 +201,12 @@ dcvm start myvm
 
 ```bash
 dcvm stop myvm
+dcvm stop myvm --force    # power it off when the guest ignores the shutdown request
 ```
 
-`dcvm start`, `stop` and `restart` without a VM name act on every dcvm VM
-(for a user, every VM of theirs), without asking.
+`stop` and `restart` need a VM name, or `all` for every dcvm VM (for a user,
+every VM of theirs). `dcvm start` without a name, or `dcvm start all`, starts
+every stopped one, without asking.
 
 ### Restarting a VM
 
