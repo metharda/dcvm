@@ -182,7 +182,8 @@ shows it.
   missing), and the package carries only the seed's `meta-data` and
   `network-config`: `user-data` holds the password hash and any Tailscale key
   or MySQL password, and stays on the host. Run `dcvm backup ssh-setup <vm>`
-  after import to add a key.
+  after import to add a key; it keeps the guest's host key in a throwaway
+  `known_hosts`, never in root's, and gives up on an sshd that stalls.
 - **Imports and restores treat the backup as untrusted.** An archive may
   contain only plain files (no links or devices), and its file names must
   give a valid VM name and backup date. The disk must be a plain qcow2 image:
@@ -238,7 +239,7 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
   holds, but it can't stop a guest's own network settings. That refusal
   tells a user an address is taken, which their own VM can already see by
   scanning the bridge. For port
-  forwards, deletes and the storage check dcvm takes a VM's address only
+  forwards, deletes, the storage check and `backup ssh-setup` dcvm takes a VM's address only
   from host-side records (its port mapping, its DHCP lease by MAC or its
   static IP), never from what the guest agent reports. The optional NFS
   share is one folder for every VM. Don't enable

@@ -81,7 +81,10 @@ can't both have a VM called `web`.
 
 Backups record the owner of the VM they were taken from, in an `owner` file
 next to the backup. A later VM with the same name never sees, restores or
-rotates away the previous owner's backups.
+rotates away the previous owner's backups. `dcvm owner` doesn't move them
+either: the previous owner keeps the VM's existing backups (they can still
+list, export and delete them, and restore them under a new name), and they
+stay on that owner's disk quota until deleted.
 
 ## Quotas
 
@@ -101,6 +104,13 @@ user.alice.memory_mb=32768
 
 The values above are the defaults when the file doesn't exist. A request that
 would go over a limit is refused before anything is created.
+
+`disk_gb` covers a user's backups too: the VMs' disk sizes plus what their
+backups take on disk (compressed, rounded up to whole GB). `dcvm backup create`
+needs room for the VM disk's allocated size until the backup is written (the
+finished backup is usually much smaller), and is checked before the oldest
+backup is rotated away. When it doesn't fit, free space with
+`dcvm backup delete <vm>`.
 
 ## Agents
 
