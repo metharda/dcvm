@@ -224,13 +224,15 @@ check_network() {
     report warn "IP forwarding" "$([ "$fwd" = 1 ] && echo "on but not persisted (off after a reboot)" || echo "off: VMs have no internet"): --fix turns it on"
   fi
 
-  local vm ip ssh_port http_port rules saved=0 lost=0 moved=""
+  local vm ip ssh_port http_port rules fwd saved=0 lost=0 moved=""
   rules=$(iptables -t nat -S PREROUTING 2>/dev/null)
+  fwd=$(iptables -S FORWARD 2>/dev/null)
   while read -r vm ip ssh_port http_port; do
     [ -n "$vm" ] || continue
     saved=$((saved + 1))
-    # An old rule without the LOCAL match also rewrites VM egress; ports apply replaces it.
-    grep -q -- "--dst-type LOCAL .*--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" || lost=$((lost + 1))
+    # Old rules (no LOCAL match on DNAT, no ctstate DNAT on FORWARD) are too broad; ports apply replaces them.
+    grep -q -- "--dst-type LOCAL .*--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" &&
+      grep -q -- "-d $ip/32 .*--dport 22 .*--ctstate DNAT" <<<"$fwd" || lost=$((lost + 1))
     if check_vm_exists "$vm" && [ "$(get_vm_state "$vm")" = running ]; then
       local now
       now=$(get_vm_ip_trusted "$vm" 2>/dev/null)
