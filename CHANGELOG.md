@@ -39,11 +39,24 @@ history, so the commit or PR is listed for each release.
 - A revert's `pre-revert.sh` fails when a dcvm unit stays active, and the revert then restores the services (#199)
 - `create` undoes a half-made VM on error or Ctrl-C (only what it made) and refuses a disk left in the folder (#199)
 - `create` and `create-iso` run by root take the per-VM lock; an ISO create's undo removes only the domain it defined (#199)
+- `-k docker` installs `moby-engine` on Fedora (#199).
+- The Arch pacman keyring setup is retried at boot until it works once (#199).
+- `-k mariadb` on Arch and `-k mariadb-server` set up and start the database like `mysql-server` (#199).
+- `template status` and `verify` call only real corruption corrupt; an image a VM holds shows as not checked (#199).
+- An interrupted `dhcp renew` brings the VM links it cut back up (#199).
+- `fix-lock --verbose <vm>` works, the missing-network error names the installer instead of `dcvm install`, and `backup --help` lists `--base` (#199).
+- `dcvm status <vm>` is refused with a pointer to `dcvm info` instead of ignoring the name (#199).
+- `backup import` stops when it can't make its temporary folder and passes `--yes` to the restore (#199).
+- `uninstall` also removes `/etc/dcvm`, the audit and storage logs and `/var/lib/dcvm`, and a cancel exits 1 (#199).
+- Docs: static IPs get a DHCP reservation, the create summary doesn't show the password, `--graphics` options are for admins, what uninstall leaves (#199).
 
 ### Security
 
 - `ports apply` (also run at boot by `dcvm doctor --fix`) skips rows of deleted VMs and addresses another VM holds, so a saved port can't reach someone else's VM (#123).
 - Guest-chosen DHCP hostnames are shown with control characters replaced, so they can't send escape sequences to the admin's terminal (#138).
+- Tables and step lines show control characters and backslash escapes in their text literally, so no guest-supplied text sends escape sequences (#199).
+- Bash completion offers only the caller's dcvm VMs (from `dcvm list --json`), not every libvirt domain (#199).
+- The storage check archives old guest files into a root-only folder on the host, not the NFS share every VM can read and plant links in (#199).
 - `doctor --fix` and base moves leave the disk of a paused or shutting-down VM alone (#113)
 - `doctor --fix` no longer turns on autostart for a restored copy that keeps another VM's static IP (#114)
 - `fix-lock <vm>` refuses libvirt VMs that aren't dcvm's and never declares a raw disk qcow2 (#118)

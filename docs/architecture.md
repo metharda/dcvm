@@ -147,7 +147,8 @@ flowchart LR
   internet through the host; nothing outside the host can reach a VM unless
   you forward a port.
 - **Static IPs.** `--ip` writes the address into the guest's
-  `network-config`; dnsmasq is not involved. The host keeps a record in
+  `network-config`, and a DHCP reservation in the network keeps dnsmasq from
+  leasing the address to another VM. The host keeps a record in
   `$DATACENTER_BASE/config/network/<vm>.conf`, which `dcvm network` lists
   and backup restore checks.
 - **IP discovery.** `get_vm_ip` asks the guest agent, then the libvirt lease

@@ -156,10 +156,12 @@ main() {
   fi
   id -u "$NFS_SQUASH_USER" >/dev/null 2>&1 && userdel "$NFS_SQUASH_USER" 2>/dev/null && ui_step ok "NFS user" "$NFS_SQUASH_USER removed"
 
-  rm -f /usr/local/bin/dcvm /etc/dcvm-install.conf /var/log/datacenter-startup.log /etc/bash_completion.d/dcvm /usr/local/share/dcvm/dcvm-completion.sh
-  rm -rf /usr/local/lib/dcvm
+  rm -f /usr/local/bin/dcvm /etc/dcvm-install.conf /var/log/datacenter-startup.log /var/log/datacenter-storage.log /etc/bash_completion.d/dcvm /usr/local/share/dcvm/dcvm-completion.sh
+  rm -rf /usr/local/lib/dcvm /etc/dcvm /var/log/dcvm
+  # Owner records stay with VMs it could not delete.
+  [ -n "$KEPT_VMS" ] || rm -rf /var/lib/dcvm
   rmdir /usr/local/share/dcvm 2>/dev/null || true
-  ui_step ok "dcvm" "command, libraries, settings, completion and log removed"
+  ui_step ok "dcvm" "command, libraries, settings, limits, completion and logs removed"
 
   local cleaned
   cleaned=$(remove_shell_lines "$DCVM_ALIAS_LINE|dcvm-completion\.sh" | sort -u | tr '\n' ' ')

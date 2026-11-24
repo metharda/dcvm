@@ -1803,16 +1803,18 @@ test_guest_setup_userdata() {
   local t r="" os
   t=$(mktemp -d)
   generate_test_userdata tester n "" "$t/arch.yaml" mariadb pw1234 archlinux
-  [ "$(ud_py "$t/arch.yaml" 'd["bootcmd"]' 2>/dev/null)" = "[\"cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'\"]" ] && r+="keyring "
+  [ "$(ud_py "$t/arch.yaml" 'd["bootcmd"]' 2>/dev/null)" = "[\"sh -c 'test -e /var/lib/dcvm-pacman-keyring && exit 0; for i in 1 2 3 4 5 6; do pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring && touch /var/lib/dcvm-pacman-keyring && exit 0; sleep 10; done; exit 1'\"]" ] && r+="keyring "
   generate_test_userdata tester n "" "$t/d11.yaml" "" pw1234 debian11
   generate_test_userdata tester n "" "$t/d12.yaml" "" pw1234 debian12
   ud_py "$t/d11.yaml" '[w["content"] for w in d["write_files"] if w["path"] == "/etc/apt/sources.list"][0]' 2>/dev/null |
     grep -qx 'deb http://archive.debian.org/debian-security bullseye-security main' &&
     ! grep -q 'sources.list\|bootcmd' "$t/d12.yaml" && r+="bullseye "
-  for os in debian12 ubuntu24.04 kali archlinux; do
+  for os in debian12 ubuntu24.04 kali archlinux fedora44; do
     generate_test_userdata tester n "" "$t/u.yaml" docker pw1234 "$os"
     if [ "$os" = archlinux ]; then
       grep -qx '    for pkg in docker; do' "$t/u.yaml" && r+="$os "
+    elif [ "$os" = fedora44 ]; then
+      grep -qx '    for pkg in moby-engine; do' "$t/u.yaml" && grep -qx '  - systemctl enable docker' "$t/u.yaml" && r+="$os "
     else
       grep -qx '    for pkg in docker.io; do' "$t/u.yaml" && grep -qx '  - systemctl enable docker' "$t/u.yaml" && r+="$os "
     fi
@@ -1829,10 +1831,15 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/myroot.yaml" "$ud_sql_expr" 2>/dev/null)"
     ADDITIONAL_PACKAGES="nginx, apache2" web_servers_clash && ADDITIONAL_PACKAGES="apache,nginx" web_servers_clash &&
       ! ADDITIONAL_PACKAGES="nginx,libapache2-mod-php,apache2-utils" web_servers_clash && ! ADDITIONAL_PACKAGES="apache2" web_servers_clash
   ) && r+="clash "
-  if [ "$r" = "keyring bullseye debian12 ubuntu24.04 kali archlinux socket reported clash " ]; then
-    log_test "PASS" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)"
+  grep -qx '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql' "$t/arch.yaml" &&
+    grep -qx '  - systemctl enable mariadb' "$t/arch.yaml" && grep -q dcvm-mysql-init "$t/arch.yaml" && r+="arch-mariadb "
+  generate_test_userdata tester n "" "$t/mdb.yaml" mariadb-server pw1234 ubuntu24.04
+  grep -qx '    for pkg in mariadb-server; do' "$t/mdb.yaml" && grep -qx '  - systemctl enable mariadb' "$t/mdb.yaml" &&
+    ud_py "$t/mdb.yaml" "$ud_sql_expr" 2>/dev/null | grep -q "IDENTIFIED VIA unix_socket" && r+="mariadb-server "
+  if [ "$r" = "keyring bullseye debian12 ubuntu24.04 kali archlinux fedora44 socket reported clash arch-mariadb mariadb-server " ]; then
+    log_test "PASS" "guest setup: Arch keyring retried, Debian 11 archive, docker is docker.io/moby-engine, MySQL root on auth_socket, -k mariadb set up, SQL failure logged, nginx+apache2 refused (#45, #46, #199)"
   else
-    log_test "FAIL" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)" "$r"
+    log_test "FAIL" "guest setup: Arch keyring retried, Debian 11 archive, docker is docker.io/moby-engine, MySQL root on auth_socket, -k mariadb set up, SQL failure logged, nginx+apache2 refused (#45, #46, #199)" "$r"
   fi
   rm -rf "$t"
 }
@@ -6020,14 +6027,18 @@ test_create_os_choice_and_batch() {
 test_storage_cleanup_reports() {
   local t r="" out
   t=$(mktemp -d)
+  mkdir -p "$t/fx/tmp" && echo old >"$t/fx/tmp/x" && tar -czf "$t/old.tar.gz" -C "$t/fx" tmp/x
   out=$(
     source "$SCRIPT_DIR/../storage/storage-manager.sh" >/dev/null 2>&1
     LOG_FILE="$t/storage.log" DATACENTER_BASE="$t" TERM=dumb
     RC=0
     ssh() {
       echo "$*" >>"$t/ssh"
-      [[ "$*" != *"bash -s"* ]] || cat >"$t/script"
-      return "$RC"
+      if [[ "$*" == *"bash -s"* ]]; then
+        cat >"$t/script"
+        [ "$RC" = 1 ] || cat "$t/old.tar.gz"
+      fi
+      [[ "$*" != *"bash -s"* ]] || return "$RC"
     }
     timeout() {
       echo "$1" >>"$t/timeout"
@@ -6047,16 +6058,185 @@ test_storage_cleanup_reports() {
   ) 2>&1
   grep -q 'bob@10.10.10.50 df -P /' "$t/ssh" && ! grep -q 'admin@' "$t/ssh" && r+="login "
   grep -q 'isovm.*login user unknown' <<<"$out" && r+="iso-skip "
-  [ "$(grep -c 'old logs compressed and archived' <<<"$out")" = 1 ] && grep -q '/mnt/shared is not mounted' <<<"$out" &&
+  [ "$(grep -c "old logs compressed; 1 old files archived to $t/archived-files/imported" <<<"$out")" = 1 ] &&
+    grep -q 'some logs could not be compressed; 1 old files archived' <<<"$out" &&
     grep -q 'cleanup failed (exit 1)' <<<"$out" && grep -q 'SSH to bob@10.10.10.50 did not connect' <<<"$out" && r+="status "
-  grep -q 'find /var/log -type f -name "\*.gz"' "$t/script" && grep -q 'mv -f .* && ln -sf ' "$t/script" && r+="links "
+  [ "$(find "$t/archived-files/imported" -name '*.tar.gz' | wc -l)" -ge 1 ] && [ -z "$(find "$t/archived-files" -name '*.part')" ] &&
+    [ "$(stat -c %a "$t/archived-files" "$t/archived-files/imported" | sort -u)" = 700 ] && r+="host-archive "
+  [ "$(grep -c 'xargs -0 rm -f -- </run/dcvm-archive.list' "$t/ssh")" = 2 ] && ! grep -q '/mnt/shared' "$t/script" &&
+    grep -q 'find tmp var/log -xdev -type f' "$t/script" && r+="removed-after "
   ! grep -qv 'ServerAliveInterval=15 -o ServerAliveCountMax=2' "$t/ssh" && [ "$(sort -u "$t/timeout")" = 600 ] && r+="bounded "
-  if [ "$r" = "login iso-skip status links bounded " ]; then
-    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links, never hangs on one guest"
+  if [ "$r" = "login iso-skip status host-archive removed-after bounded " ]; then
+    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, pulls old files into a root-only host folder (not the NFS share) and removes them only then, never hangs on one guest (#199)"
   else
-    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links, never hangs on one guest" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, pulls old files into a root-only host folder (not the NFS share) and removes them only then, never hangs on one guest (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by mirror-manager.sh
+test_template_check_codes() {
+  local out
+  out=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    qemu-img() {
+      [ "$2" = -U ] || return 9
+      return "${3##*/}"
+    }
+    for rc in 0 1 2 3 63; do printf '%s=%s ' "$rc" "$(template_state "/x/$rc")"; done
+  )
+  if [ "$out" = "0=ok 1=unchecked 2=corrupt 3=ok 63=ok " ]; then
+    log_test "PASS" "template status/verify: only qemu-img check exit 2 is corrupt, 1 is not checked, -U for images in use (#199)"
+  else
+    log_test "FAIL" "template status/verify: only qemu-img check exit 2 is corrupt, 1 is not checked, -U for images in use (#199)" "$out"
+  fi
+}
+
+# shellcheck disable=SC2016 # $t expands inside run_dhcp_fixture
+test_dhcp_renew_interrupted() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp renew brings the cut links back up when interrupted (#199)" "jq not available"
+    return
+  fi
+  local t out rc
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"
+    confirm_release() { :; }
+    is_vm_in_network() { :; }
+    get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    sleep() { [ "$1" != 5 ] || kill -INT "$BASHPID"; }' renew)
+  rc=$?
+  if [ "$rc" = 130 ] && grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 up' "$t/calls" &&
+    grep -qx 'virsh domif-setlink web 52:54:00:ab:c2:54 up' "$t/calls" && ! grep -q renewed <<<"$out"; then
+    log_test "PASS" "dhcp renew brings the cut links back up when interrupted (#199)"
+  else
+    log_test "FAIL" "dhcp renew brings the cut links back up when interrupted (#199)" "rc $rc; $(grep setlink "$t/calls" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by the modules
+test_cli_args_and_completion() {
+  local r="" out
+  out=$(
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    check_permissions() { :; }
+    check_dependencies() { :; }
+    fix_vm_locks() { echo "fixed $1 verbose=$VERBOSE"; }
+    main --verbose web
+  ) 2>&1
+  [ "$out" = "fixed web verbose=true" ] && r+="fix-lock-flag "
+  out=$(
+    source "$SCRIPT_DIR/dcvm-completion.sh"
+    dcvm() { [ "$*" = "list --json" ] && echo '[{"name":"web","owner":"root","state":"running","ip":null,"vcpus":2,"memory_mb":2048},{"name":"db2","owner":"bob"}]'; }
+    virsh() { echo foreign; }
+    _dcvm_vm_list | tr '\n' ' '
+    COMP_WORDS=(dcvm info "") COMP_CWORD=2
+    _dcvm_completion
+    echo "| ${COMPREPLY[*]} |"
+    _dcvm_commands
+  )
+  [[ "$out" == "web db2 | web db2 |"* ]] && [ "$(tail -1 <<<"$out" | tr ' ' '\n' | grep -cxE 'info|ssh|exec|cp|owner|restore')" = 6 ] && r+="completion "
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    exec 2>&1
+    load_dcvm_config() { :; }
+    show_enhanced_status() { echo shown; }
+    main status web
+  ) 2>&1
+  grep -q 'dcvm info web' <<<"$out" && ! grep -q shown <<<"$out" && r+="status-name "
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "terminal", "files": {}}
+print(s.decide_user(ctx, ["status"]))
+try:
+    s.decide_user(ctx, ["status", "web"])
+    print("allowed")
+except s.Denied as e:
+    print("denied", e)
+PY
+    )
+    [ "$(head -1 <<<"$out")" = "['status']" ] && grep -q '^denied .*dcvm info' <<<"$out" && r+="server-status "
+  else
+    r+="server-status "
+  fi
+  grep -q -- '--base <file>' <<<"$(bash "$SCRIPT_DIR/../storage/backup.sh" --help 2>&1)" && r+="base-help "
+  grep -q 'install-dcvm.sh --network-only' "$SCRIPT_DIR/../core/create-vm.sh" && ! grep -q "run 'dcvm install'" "$SCRIPT_DIR/../core/create-vm.sh" && r+="no-dcvm-install "
+  if [ "$r" = "fix-lock-flag completion status-name server-status base-help no-dcvm-install " ]; then
+    log_test "PASS" "fix-lock --verbose <vm>, completion lists dcvm's VMs and every command, status refuses a VM name, help names --base, no 'dcvm install' (#199)"
+  else
+    log_test "FAIL" "fix-lock --verbose <vm>, completion lists dcvm's VMs and every command, status refuses a VM name, help names --base, no 'dcvm install' (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+  fi
+}
+
+# shellcheck disable=SC2030,SC2031,SC2317 # stubs in subshells
+test_import_tmp_and_yes() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/pkg"
+  echo x >"$t/pkg/web-disk-20260101_000000.qcow2"
+  echo x >"$t/pkg/web-config-20260101_000000.xml"
+  (
+    load_backup_sh_for_test "$t"
+    BACKUP_DIR="$t/backups"
+    mktemp() { return 1; }
+    cp() { echo "cp $*" >>"$t/cp"; }
+    import_backup "$t/pkg" >/dev/null 2>&1 || echo refused >"$t/rc"
+  )
+  [ "$(cat "$t/rc" 2>/dev/null)" = refused ] && [ ! -e "$t/cp" ] && r+="mktemp "
+  (
+    load_backup_sh_for_test "$t"
+    BACKUP_DIR="$t/backups" ASSUME_YES=true
+    caller_uid() { echo 0; }
+    restore_vm() { echo "force=$3 $4" >"$t/restore"; }
+    import_backup "$t/pkg" >/dev/null 2>&1
+  )
+  [ "$(cat "$t/restore" 2>/dev/null)" = "force=true from_import" ] && r+="yes "
+  if [ "$r" = "mktemp yes " ]; then
+    log_test "PASS" "backup import stops when mktemp fails and passes --yes to the restore (#199)"
+  else
+    log_test "FAIL" "backup import stops when mktemp fails and passes --yes to the restore (#199)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC1091 # stubs
+test_uninstall_leftovers() {
+  local r="" main_text
+  main_text=$(sed -n '/^main()/,/^}/p' "$SCRIPT_DIR/../installation/uninstall-dcvm.sh")
+  grep -q 'rm -rf .* /etc/dcvm /var/log/dcvm' <<<"$main_text" && grep -qF '[ -n "$KEPT_VMS" ] || rm -rf /var/lib/dcvm' <<<"$main_text" && r+="removed "
+  (
+    source "$SCRIPT_DIR/common.sh" >/dev/null 2>&1
+    confirm_action() { return 1; }
+    require_confirmation "x" >/dev/null 2>&1
+    echo "unreached"
+  ) >/dev/null
+  [ $? = 1 ] && r+="cancel "
+  if [ "$r" = "removed cancel " ]; then
+    log_test "PASS" "uninstall removes limits, audit and storage logs and dcvm's state; a cancel exits 1 (#199)"
+  else
+    log_test "FAIL" "uninstall removes limits, audit and storage logs and dcvm's state; a cancel exits 1 (#199)" "$r"
+  fi
+}
+
+test_ui_escapes_guest_text() {
+  local out
+  out=$(TERM=xterm-256color LANG=C.UTF-8 bash -c 'source "$1" >/dev/null 2>&1
+    printf "NAME\tHOST\nweb\t%s\nweb2\t%s\n" "x\\033]52;c;aGk=\\a" "$(printf "y\033[2J")" | ui_table
+    ui_step ok "$(printf "n\033]0;t\007")" "$(printf "d\033[31m")"' _ "$SCRIPT_DIR/common.sh")
+  if ! grep -qE $'\033(\\]|\\[2J|\\[31m)' <<<"$out" && grep -qF 'x\033]52;c;aGk=\a' <<<"$out" && grep -qF 'y?[2J' <<<"$out" &&
+    grep -qF 'n?]0;t?' <<<"$out"; then
+    log_test "PASS" "ui_table and ui_step print guest text without escape sequences (#199)"
+  else
+    log_test "FAIL" "ui_table and ui_step print guest text without escape sequences (#199)" "$(tr '\n' '|' <<<"$out" | cat -v)"
+  fi
 }
 
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by fix-lock.sh
@@ -6667,6 +6847,12 @@ test_common_functions() {
   test_create_os_choice_and_batch
   test_storage_cleanup_reports
   test_fix_lock_counts_and_spares
+  test_template_check_codes
+  test_dhcp_renew_interrupted
+  test_cli_args_and_completion
+  test_import_tmp_and_yes
+  test_uninstall_leftovers
+  test_ui_escapes_guest_text
   test_doctor_seed_permissions
   test_backup_list_columns
   test_delete_without_iptables_dir
@@ -6822,7 +7008,7 @@ test_vm_listing() {
 
     local test_vm=$(virsh list --all --name 2>/dev/null | head -1)
     if [ -n "$test_vm" ]; then
-      run_test "dcvm status <vm>" "$dcvm_cmd status $test_vm" || true
+      run_test "dcvm status <vm> refuses the name, points to dcvm info" "! $dcvm_cmd status $test_vm >/dev/null 2>&1 && $dcvm_cmd status $test_vm 2>&1 | grep -q 'dcvm info'" || true
     fi
   fi
 }
@@ -6982,7 +7168,7 @@ test_vm_lifecycle() {
       log_test "FAIL" "VM exists in libvirt"
     fi
 
-    run_test "dcvm status $TEST_VM_NAME" "$dcvm_cmd status $TEST_VM_NAME" || true
+    run_test "dcvm info $TEST_VM_NAME" "$dcvm_cmd info $TEST_VM_NAME" || true
     run_test "dcvm stop $TEST_VM_NAME" "$dcvm_cmd stop $TEST_VM_NAME" || true
     sleep 3
     run_test "dcvm start $TEST_VM_NAME" "$dcvm_cmd start $TEST_VM_NAME" || true

@@ -34,7 +34,7 @@ treated as untrusted: see [Users without root](#users-without-root).
 password (and the root password, when root login is on) into a salted
 SHA-512 crypt hash (`openssl passwd -6`) and writes only the hash to the
 cloud-init `user-data`. The plain password never appears in a guest shell
-command, the YAML, or dcvm's output; the interactive summary prints `****`.
+command, the YAML, or dcvm's output; the interactive summary doesn't show it.
 Passwords are applied once, at first boot, so changing a password later
 inside the VM with `passwd` sticks.
 

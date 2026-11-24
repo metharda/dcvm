@@ -455,9 +455,7 @@ def decide_user(ctx, argv):
 
     if cmd in ("list",) and not plain:
         return argv
-    if cmd == "status" and len(plain) <= 1:
-        if plain:
-            own_vm(ctx, plain[0])
+    if cmd == "status" and not plain:
         return argv
     if cmd == "info" and len(plain) == 1:
         own_vm(ctx, plain[0])
@@ -546,7 +544,7 @@ SUBCOMMANDS = {
 }
 USAGE = {
     "list": "dcvm list [--json]",
-    "status": "dcvm status [vm]",
+    "status": "dcvm status (one VM: dcvm info <vm>)",
     "info": "dcvm info <vm> [--json]",
     "protect": "dcvm protect <vm>",
     "unprotect": "dcvm unprotect <vm>",

@@ -54,36 +54,44 @@ check_vm_storage() {
   fi
 }
 
+# Old files are pulled into a root-only folder on the host: on the NFS share every VM could read them and plant links in their path.
 cleanup_old_files() {
-  local vm_name="$1" target="$2" rc=0
-  ssh_vm "$vm_name" "$target" 'sudo -n bash -s' <<'EOSSH' || rc=$?
+  local vm_name="$1" target="$2" rc=0 dir file names n
+  dir="$DATACENTER_BASE/archived-files/$vm_name"
+  file="$dir/$(date +%Y%m%d_%H%M%S).tar.gz"
+  if ! mkdir -p -m 700 "$DATACENTER_BASE/archived-files" "$dir"; then
+    report fail "$vm_name" "cleanup failed: cannot create $dir"
+    return 1
+  fi
+  # The files are removed only after the host holds a readable archive of them.
+  ssh_vm "$vm_name" "$target" 'sudo -n bash -s' >"$file.part" <<'EOSSH' || rc=$?
         rc=0
-        find /var/log -type f -name "*.log" -mtime +7 -exec gzip {} + || rc=1
-        mountpoint -q /mnt/shared || exit 3
-        dest="/mnt/shared/archived-files/$(hostname)"
-        mkdir -p "$dest" || exit 1
-        archive='dest=$1; shift; rc=0
-            for file do
-                rel_path=${file#/}
-                mkdir -p "$dest/$(dirname "$rel_path")" && mv -f "$file" "$dest/$rel_path" && ln -sf "$dest/$rel_path" "$file" || rc=1
-            done
-            exit $rc'
-        # -type f: the links an earlier run left behind must not be archived again.
-        find /tmp -type f -mtime +30 -exec sh -c "$archive" sh "$dest" {} + || rc=1
-        find /var/log -type f -name "*.gz" -mtime +30 -exec sh -c "$archive" sh "$dest" {} + || rc=1
+        find /var/log -xdev -type f -name "*.log" -mtime +7 -exec gzip {} + || rc=3
+        cd / && find tmp var/log -xdev -type f \( -path "tmp/*" -o -name "*.gz" \) -mtime +30 -print0 >/run/dcvm-archive.list &&
+          tar --null --no-recursion -T /run/dcvm-archive.list -czf - || exit 1
         exit $rc
 EOSSH
-  case $rc in
-  0) report ok "$vm_name" "old logs compressed and archived" ;;
-  3) report warn "$vm_name" "old logs compressed; /mnt/shared is not mounted, nothing archived" ;;
-  255) report fail "$vm_name" "cleanup failed: SSH to $target did not connect" ;;
-  *) report fail "$vm_name" "cleanup failed (exit $rc): needs passwordless sudo in the VM, or a file could not be compressed or moved" ;;
-  esac
+  if [ "$rc" = 255 ]; then
+    report fail "$vm_name" "cleanup failed: SSH to $target did not connect"
+  elif { [ "$rc" != 0 ] && [ "$rc" != 3 ]; } || ! names=$(tar -tzf "$file.part" 2>/dev/null); then
+    report fail "$vm_name" "cleanup failed (exit $rc): needs passwordless sudo in the VM, or the old files could not be archived"
+  else
+    n=$(grep -c . <<<"$names" || true)
+    if [ "$n" -gt 0 ] && { ! mv -f "$file.part" "$file" ||
+      ! ssh_vm "$vm_name" "$target" 'sudo -n sh -c "cd / && xargs -0 rm -f -- </run/dcvm-archive.list && rm -f /run/dcvm-archive.list"' </dev/null; }; then
+      report fail "$vm_name" "$n old files archived to $file, but not removed from the VM"
+    elif [ "$rc" = 3 ]; then
+      report warn "$vm_name" "some logs could not be compressed; $n old files archived to $dir"
+    else
+      report ok "$vm_name" "old logs compressed; $n old files archived to $dir"
+    fi
+  fi
+  rm -f "$file.part"
 }
 
 main() {
   if [ "${2:-}" = --help ]; then
-    echo "Usage: dcvm storage     Disk usage inside each running VM over SSH; over the threshold, old logs move to the NFS share (admins)"
+    echo "Usage: dcvm storage     Disk usage inside each running VM over SSH; over the threshold, old logs move to a root-only folder on the host (admins)"
     exit 0
   fi
   load_dcvm_config
@@ -97,7 +105,7 @@ main() {
     checked=$((checked + 1))
   done 3< <(virsh list --name 2>/dev/null)
   [ "$checked" -gt 0 ] || echo -e "  ${DIM}No running dcvm VMs to check${NC}"
-  echo -e "\n  ${DIM}Over ${THRESHOLD}%, old logs are compressed and moved to the NFS share. Log: $LOG_FILE${NC}\n"
+  echo -e "\n  ${DIM}Over ${THRESHOLD}%, old logs are compressed and moved to $DATACENTER_BASE/archived-files. Log: $LOG_FILE${NC}\n"
   log_to_file "$LOG_FILE" "Storage management check completed"
 }
 

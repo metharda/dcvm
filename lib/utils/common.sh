@@ -45,7 +45,9 @@ ui_step() {
   fail) sym=$SYM_FAIL col=$RED ;;
   *) sym=$SYM_DOT col=$DIM ;;
   esac
-  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
+  # Names and details can come from guests: no escape sequences reach the terminal.
+  local name=${2//[[:cntrl:]]/?} detail=${3:-}
+  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$name" "$DIM" "${detail//[[:cntrl:]]/?}" "$NC"
 }
 
 ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; }
@@ -273,7 +275,9 @@ ui_table() {
       # Pad by characters: printf pads by bytes, which breaks on ✓ and ✗.
       pad=""
       [ "$col" -lt $((${#cells[@]} - 1)) ] && printf -v pad '%*s' $((widths[col] - ${#cells[col]})) ''
-      cell=${cells[col]}$pad
+      # Rows are printed with echo -e: data keeps its backslashes and loses control characters.
+      cell=${cells[col]//\\/\\\\}
+      cell=${cell//[[:cntrl:]]/?}$pad
       if [ "$i" -eq 0 ]; then
         cell="${DIM}${cell}${NC}"
       else
@@ -1892,7 +1896,7 @@ check_ping() {
 require_confirmation() {
   local message="$1"
   print_warning "$message"
-  confirm_action "Are you sure?" || exit 0
+  confirm_action "Are you sure?" || exit 1
 }
 
 validate_memory_size() {
