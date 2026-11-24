@@ -172,7 +172,7 @@ check_host() {
     report skip "NFS share" "not exported"
   elif nfs_share_secure "$share"; then
     report ok "NFS share" "VM users squashed and kept inside the share, closed to host users"
-  elif $FIX && secure_nfs_share "$share" "${NETWORK_SUBNET:-10.10.10}"; then
+  elif $FIX && secure_nfs_share "$share" "${NETWORK_SUBNET:-10.10.10}" && nfs_share_secure "$share"; then
     report fixed "NFS share" "VM users squashed and kept inside the share, closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
   else
     report fail "NFS share" "not squashed, not limited to the share (subtree_check) or open to host users: VMs may reach host files; --fix secures it"
@@ -299,9 +299,16 @@ open_deleted_base() {
   return 1
 }
 
+# Whether prepare_vm_disk really left <disk> on the current build of <img>: it returns 0 when the move fails.
+on_current_build() {
+  [ "$(disk_backing "$1")" = "$(current_build "$2" 2>/dev/null)" ]
+}
+
 base_status() {
-  local vm="$1" disk="$2" base="$3" state="$4" img cur fd build pending
+  local vm="$1" disk="$2" base="$3" state="$4" img cur fd build pending live=false
   pending="${DATACENTER_BASE}/vms/$vm/base.pending"
+  # Only a VM that is shut off may have its disk rewritten: paused or shutting down, QEMU still holds it.
+  [ "$state" = "shut off" ] || live=true
   case "$base" in
   "") echo "ok|standalone disk" ;;
   "$(builds_dir)"/*)
@@ -311,37 +318,44 @@ base_status() {
       echo "fail|base build missing: restore a backup"
     elif [ -z "$cur" ] || [ "$cur" = "$base" ]; then
       echo "ok|current build"
-    elif [ "$state" = running ]; then
+    elif $live; then
       echo "skip|moves to the current build at its next start"
-    elif $FIX && prepare_vm_disk "$vm" "$vm" >/dev/null; then
+    elif ! $FIX; then
+      echo "warn|on an older build: --fix moves it"
+    elif prepare_vm_disk "$vm" "$vm" >/dev/null && on_current_build "$disk" "$img"; then
       echo "ok|moved to the current build"
     else
-      echo "warn|on an older build: --fix moves it"
+      echo "warn|on an older build: could not move it to ${cur##*/} (dcvm start $vm shows why)"
     fi
     ;;
   "$(templates_dir)"/*)
     img=${base##*/}
-    if [ -f "$pending" ]; then
+    if [ -s "$pending" ]; then
       echo "ok|pinned at its next start to $(sed 's#.*/##' "$pending")"
     elif [ "$(stat -c %W "$disk" 2>/dev/null || echo 0)" -gt "$(stat -c %Y "$base" 2>/dev/null || echo 0)" ]; then
       if ! $FIX; then
         echo "warn|from before 0.9.9: --fix pins it to its build"
-      elif [ "$state" = running ]; then
-        current_build "$img" >"$pending" && echo "ok|pinned at its next start" || echo "fail|could not register its build"
+      elif $live; then
+        build=$(current_build "$img") && echo "$build" >"$pending" && echo "ok|pinned at its next start" || echo "fail|could not register its build"
+      elif ! prepare_vm_disk "$vm" "$vm" >/dev/null; then
+        echo "fail|could not pin"
+      elif on_current_build "$disk" "$img"; then
+        echo "ok|pinned and on the current build"
       else
-        prepare_vm_disk "$vm" "$vm" >/dev/null && echo "ok|pinned and on the current build" || echo "fail|could not pin"
+        echo "warn|pinned to its build; could not move it to the current build"
       fi
-    elif [ "$state" = running ] && fd=$(open_deleted_base "$vm"); then
+    elif $live && fd=$(open_deleted_base "$vm"); then
       if $FIX && build=$(register_build "$fd" "$img"); then
         echo "$build" >"$pending"
         echo "ok|original saved as ${build##*/}; pinned at its next start"
       else
         echo "warn|template replaced while it runs; the original is still open: --fix saves it"
       fi
-    elif [ "$state" = running ]; then
+    elif $live; then
       echo "fail|template replaced after creation, restarted since: likely broken; restore a backup"
     elif $FIX && prepare_vm_disk "$vm" "$vm" >/dev/null 2>&1; then
-      echo "ok|pinned to the build its disk fits, then moved to the current build"
+      on_current_build "$disk" "$img" && echo "ok|pinned to the build its disk fits, then moved to the current build" ||
+        echo "warn|pinned to the build its disk fits; could not move it to the current build"
     elif $FIX; then
       echo "fail|template replaced after creation; no build fits its disk: restore a backup"
     else
@@ -395,7 +409,9 @@ check_vms() {
       [ "${age:-0}" -gt 180 ] && noip+=("$vm:$age")
     fi
     if [ "$(virsh dominfo "$vm" 2>/dev/null | awk -F': *' '/^Autostart:/ { print $2 }')" = disable ]; then
-      if $FIX && virsh autostart "$vm" >/dev/null 2>&1; then
+      if [ "$(registry_get "$vm" autostart)" = off ]; then
+        report skip "$vm" "autostart left off: a restored copy with another VM's static IP (change it in the guest, then virsh autostart $vm)"
+      elif $FIX && virsh autostart "$vm" >/dev/null 2>&1; then
         report fixed "$vm" "autostart turned on (starts with the host)"
       else
         report warn "$vm" "does not start with the host: --fix turns autostart on"
@@ -460,13 +476,15 @@ check_backups() {
 check_storage() {
   section "Storage" "$DATACENTER_BASE"
   local free largest=0 f size
-  free=$(($(df -Pk "$DATACENTER_BASE" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024))
+  free=$(df -Pk "$DATACENTER_BASE" 2>/dev/null | awk 'NR == 2 { print $4 * 1024 }')
   for f in "$DATACENTER_BASE"/vms/*/*-disk.qcow2; do
     [ -f "$f" ] || continue
     size=$(file_bytes "$f")
     [ "$size" -gt "$largest" ] && largest=$size
   done
-  if [ "$largest" -gt 0 ] && [ "$free" -lt "$largest" ]; then
+  if [[ ! "$free" =~ ^[0-9]+$ ]]; then
+    report warn "Free space" "df could not read $DATACENTER_BASE"
+  elif [ "$largest" -gt 0 ] && [ "$free" -lt "$largest" ]; then
     report fail "Free space" "$(format_bytes "$free") free; a backup of the largest VM disk needs $(format_bytes "$largest")"
   elif [ "$largest" -gt 0 ] && [ "$free" -lt $((largest * 2)) ]; then
     report warn "Free space" "$(format_bytes "$free") free; little room for a backup of the largest VM disk ($(format_bytes "$largest"))"
@@ -482,14 +500,18 @@ check_storage() {
   done
   [ -n "$orphans" ] && report warn "VM folders" "no VM for $orphans in $DATACENTER_BASE/vms (remove them by hand if not needed)"
 
-  local stale=(find "$DATACENTER_BASE/vms" "$DATACENTER_BASE/backups" "$(templates_dir)" -maxdepth 2 -type f
-  \( -name '*.rebase' -o -name '.restore-*.qcow2' -o -name '*.tmp.*' -o -name '.fetch.*' -o -name '.rescue.tmp' \) -mmin +60)
-  local count
-  count=$("${stale[@]}" -printf . 2>/dev/null | wc -c)
+  # -cmin, not -mmin: cp -p gives a fresh copy (a rebase in progress) its source's old mtime.
+  local files=() open
+  open=$(find /proc/[0-9]*/fd -type l -printf '%l\n' 2>/dev/null)
+  while IFS= read -r -d '' f; do
+    grep -qxF -- "$f" <<<"$open" || files+=("$f")
+  done < <(find "$DATACENTER_BASE/vms" "$DATACENTER_BASE/backups" "$(templates_dir)" -maxdepth 2 -type f \
+    \( -name '*.rebase' -o -name '.restore-*.qcow2' -o -name '*.tmp.*' -o -name '.fetch.*' -o -name '.rescue.tmp' \) -cmin +60 -print0 2>/dev/null)
+  local count=${#files[@]}
   if [ "$count" -eq 0 ]; then
     report ok "Leftovers" "no files from interrupted operations"
   elif $FIX; then
-    "${stale[@]}" -delete 2>/dev/null
+    rm -f -- "${files[@]}"
     report fixed "Leftovers" "removed $(plural "$count" file) from interrupted operations"
   else
     report warn "Leftovers" "$(plural "$count" file) from interrupted downloads, restores or base moves: --fix removes them"
@@ -500,14 +522,14 @@ check_storage() {
     report skip "Templates" "not checked: qemu-img is not installed"
     return 0
   fi
-  local img corrupt="" unchecked=""
+  local img corrupt="" unchecked="" err
   for img in "$(templates_dir)"/*; do
     [ -f "$img" ] || continue
-    qemu-img check -U "$img" >/dev/null 2>&1
+    err=$(qemu-img check -U "$img" 2>&1 >/dev/null)
     # Only 2 means corrupt: 1 is a failed check, 3 leaked clusters, 63 a format without checks.
     case $? in
     2) corrupt+="${corrupt:+, }${img##*/}" ;;
-    1) unchecked+="${unchecked:+, }${img##*/}" ;;
+    1) unchecked+="${unchecked:+, }${img##*/}${err:+ ($(head -1 <<<"$err"))}" ;;
     esac
   done
   [ -n "$corrupt" ] && report fail "Templates" "corrupt: $corrupt (dcvm template download <image> --force)"

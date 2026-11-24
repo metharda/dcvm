@@ -967,7 +967,7 @@ NET
     grep -qi 'keeps static IP 10.10.10.50 from vm1' "$t/out-static" &&
     grep -qi "Not starting 'vm1-static'" "$t/out-static" &&
     ! grep -qE 'virsh start vm1-static$' "$t/calls" &&
-    ! grep -qE 'virsh autostart vm1-static$' "$t/calls"; then
+    ! grep -qE 'virsh autostart vm1-static$' "$t/calls" && [ "$(registry_get vm1-static autostart)" = off ]; then
     log_test "PASS" "backup restore <new_name> (static IP copy skips start/autostart)"
   else
     log_test "FAIL" "backup restore <new_name> (static IP copy skips start/autostart)" "$(tail -5 "$t/out-static")"
@@ -4385,6 +4385,10 @@ test_network_trust() {
       return 0
     }
     ssh() { echo "$*" >>"$t/ssh"; }
+    timeout() {
+      shift
+      "$@"
+    }
     registry_get() {
       [ "$2" = created ] && echo 123
       [ "$2" = owner ] && echo alice
@@ -4764,6 +4768,59 @@ STUB
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317,SC2030,SC2031,SC2034 # stubs; globals read by doctor.sh
+test_doctor_fix_guards() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/storage/templates/builds" "$t/vms/web" "$t/vms/tpl" "$t/state/vms"
+  : >"$t/storage/templates/builds/img-old.qcow2"
+  : >"$t/storage/templates/img.qcow2"
+  : >"$t/vms/tpl/base.pending"
+  touch -d '2 days ago' "$t/vms/web/web-disk.qcow2.rebase"
+  out=$(
+    source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+    TERM=dumb DATACENTER_BASE="$t" DCVM_STATE_DIR="$t/state" FIX=true FAST=true
+    (
+      get_vm_disk_path() { echo "$t/storage/templates/img.qcow2"; }
+      get_vm_state() { echo paused; }
+      disk_backing() { echo "prepared paused" >>"$t/calls"; }
+      prepare_vm_disk web
+    )
+    current_build() { echo "$t/storage/templates/builds/img-new.qcow2"; }
+    disk_backing() { echo "$t/storage/templates/builds/img-old.qcow2"; }
+    prepare_vm_disk() { echo "prepared $1" >>"$t/calls"; }
+    echo "paused=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" paused)"
+    echo "failed=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" "shut off")"
+    echo "pending=$(FIX=false base_status tpl "$t/vms/tpl/tpl-disk.qcow2" "$t/storage/templates/img.qcow2" "shut off")"
+    registry_set copy "autostart=off"
+    vm_disks() { printf 'copy\t%s\t\n' "$t/vms/copy/copy-disk.qcow2"; }
+    is_vm_in_network() { :; }
+    get_vm_state() { echo "shut off"; }
+    base_status() { echo "ok|fine"; }
+    virsh() {
+      echo "virsh $*" >>"$t/calls"
+      [ "$1" = dominfo ] && echo "Autostart:      disable"
+      [ "$1" = list ] && echo copy
+      return 0
+    }
+    check_vms
+    df() { return 1; }
+    check_vm_exists() { :; }
+    check_storage
+  ) 2>&1
+  grep -q '^paused=skip|' <<<"$out" && [ "$(grep -c prepared "$t/calls")" = 1 ] && r+="paused "
+  grep -q '^failed=warn|on an older build: could not move' <<<"$out" && r+="failed "
+  ! grep -q '^pending=ok|pinned' <<<"$out" && r+="pending "
+  grep -q 'autostart left off' <<<"$out" && ! grep -q 'virsh autostart' "$t/calls" && r+="autostart "
+  grep -q 'df could not read' <<<"$out" && grep -q 'no files from interrupted operations' <<<"$out" && [ -f "$t/vms/web/web-disk.qcow2.rebase" ] && r+="leftovers "
+  if [ "$r" = "paused failed pending autostart leftovers " ]; then
+    log_test "PASS" "doctor --fix leaves paused disks, copies in progress and restored static-IP copies alone, and reports failed repairs"
+  else
+    log_test "FAIL" "doctor --fix leaves paused disks, copies in progress and restored static-IP copies alone, and reports failed repairs" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2317,SC2034 # stubs; groups are read by manage_users
 test_user_remove_and_owner_hint() {
   local r
@@ -4889,20 +4946,22 @@ XML
   cp "$t/vm.xml" "$t/iso.xml"
   (
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
-    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" = "cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
+    cp "$t/vm.xml" "$t/raw.xml"
+    [ "$(clean_definition "$t/raw.xml" /srv/vms/web/web-disk.qcow2 false raw)" = "cache setting removed" ] && grep -q "type=.raw. */><source file=./srv/vms/web/web-disk" "$t/raw.xml" && echo raw
+    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true qcow2)" = "cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
     cp "$t/vm.xml" "$t/again.xml"
-    [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
-    [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false)" = "cache setting removed, disk read as qcow2" ] && echo iso
+    [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true qcow2)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
+    [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false qcow2)" = "cache setting removed, disk read as qcow2" ] && echo iso
   ) >"$t/out"
   out=$(tr -d '\n' <"$t/vm.xml")
   grep -q "target dev=.vda. bus=.virtio." <<<"$out" && grep -q "cloud-init.iso" <<<"$out" && ! grep -q "writeback\|type=.drive." <<<"$out" &&
     grep -q "cache=.none.*target dev=.sdb. bus=.sata." <<<"$out" && grep -q "libosinfo:os" <<<"$out" && echo xml >>"$t/out"
   grep -q "cdrom" "$t/iso.xml" && grep -q "dev=.sda. bus=.sata." "$t/iso.xml" && echo iso-xml >>"$t/out"
   r=$(tr '\n' ' ' <"$t/out")
-  if [ "$r" = "cloud unchanged iso xml iso-xml " ]; then
-    log_test "PASS" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed"
+  if [ "$r" = "raw cloud unchanged iso xml iso-xml " ]; then
+    log_test "PASS" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, never calls a raw disk qcow2, and says when nothing changed"
   else
-    log_test "FAIL" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed" "$r"
+    log_test "FAIL" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, never calls a raw disk qcow2, and says when nothing changed" "$r"
   fi
   rm -rf "$t"
 }
@@ -4955,6 +5014,11 @@ test_storage_cleanup_reports() {
       [[ "$*" != *"bash -s"* ]] || cat >"$t/script"
       return "$RC"
     }
+    timeout() {
+      echo "$1" >>"$t/timeout"
+      shift
+      "$@"
+    }
     registry_get() {
       [ "$2" = created ] && echo 123
       [ "$2" = user ] && [ "$1" = imported ] && echo bob
@@ -4971,10 +5035,11 @@ test_storage_cleanup_reports() {
   [ "$(grep -c 'old logs compressed and archived' <<<"$out")" = 1 ] && grep -q '/mnt/shared is not mounted' <<<"$out" &&
     grep -q 'cleanup failed (exit 1)' <<<"$out" && grep -q 'SSH to bob@10.10.10.50 did not connect' <<<"$out" && r+="status "
   grep -q 'find /var/log -type f -name "\*.gz"' "$t/script" && grep -q 'mv -f .* && ln -sf ' "$t/script" && r+="links "
-  if [ "$r" = "login iso-skip status links " ]; then
-    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links"
+  ! grep -qv 'ServerAliveInterval=15 -o ServerAliveCountMax=2' "$t/ssh" && [ "$(sort -u "$t/timeout")" = 600 ] && r+="bounded "
+  if [ "$r" = "login iso-skip status links bounded " ]; then
+    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links, never hangs on one guest"
   else
-    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links, never hangs on one guest" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
 }
@@ -4989,10 +5054,11 @@ test_fix_lock_counts_and_spares() {
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
     exec 2>&1
     TERM=dumb DATACENTER_BASE="$t" DCVM_CALLER_ROLE=user
-    HOLDER=""
+    HOLDER="" STATE="shut off"
     check_vm_exists() { :; }
+    is_vm_in_network() { [ "$1" = fixlocktest ]; }
     get_vm_disk_path() { echo "$t/fixlocktest.qcow2"; }
-    get_vm_state() { echo "shut off"; }
+    get_vm_state() { echo "$STATE"; }
     vm_qemu_pid() { return 1; }
     sleep() { :; }
     command_exists() { return 1; }
@@ -5001,9 +5067,10 @@ test_fix_lock_counts_and_spares() {
     chown() { :; }
     lsof() { [ -n "$HOLDER" ] && printf 'COMMAND PID\nqemu-img 2147483646\n'; }
     virsh() {
+      echo "virsh $*" >>"$t/virsh"
       [ "$1" = dumpxml ] && echo "<domain><devices/></domain>"
       [ "$1" = list ] && echo " Id Name State"
-      return 0
+      [ "$1" != destroy ]
     }
     rm() {
       [[ "$*" == *.lock* ]] && return 1
@@ -5014,6 +5081,13 @@ test_fix_lock_counts_and_spares() {
     HOLDER=1
     fix_vm_locks fixlocktest
     echo "rc2=$?"
+    HOLDER="" STATE=paused
+    vm_qemu_pid() { echo 2147483646; }
+    fix_vm_locks fixlocktest
+    echo "rc3=$?"
+    : >"$t/virsh"
+    fix_vm_locks foreign
+    echo "rc4=$?"
     check_permissions() { :; }
     check_dependencies() { :; }
     (main --all </dev/null)
@@ -5021,12 +5095,14 @@ test_fix_lock_counts_and_spares() {
   ) 2>&1
   sed -n '1,/^rc1=/p' <<<"$out" | grep -q 'Locks cleared on fixlocktest with 1 problem' && grep -q '^rc1=1' <<<"$out" && r+="counted "
   grep -q 'Still using the disk: qemu-img(2147483646)' <<<"$out" && grep -q '^rc2=1' <<<"$out" && [ ! -e "$t/kills" ] && r+="spared "
+  grep -q 'libvirt could not stop fixlocktest' <<<"$out" && grep -q '^rc3=1' <<<"$out" && [ ! -e "$t/kills" ] && r+="no-kill "
+  grep -q "'foreign' is not a dcvm VM" <<<"$out" && grep -q '^rc4=1' <<<"$out" && ! grep -qv 'virsh list' "$t/virsh" && r+="foreign "
   grep -q 'add --yes' <<<"$out" && grep -q '^all=1' <<<"$out" && r+="all-asks "
   ! grep -q 'virsh shutdown' "$SCRIPT_DIR/fix-lock.sh" && grep -q 'stop_vm_gracefully "$vm_name"' "$SCRIPT_DIR/fix-lock.sh" && r+="no-3s "
-  if [ "$r" = "counted spared all-asks no-3s " ]; then
-    log_test "PASS" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first"
+  if [ "$r" = "counted spared no-kill foreign all-asks no-3s " ]; then
+    log_test "PASS" "fix-lock counts a lock it could not remove, never kills another disk user or a VM libvirt could not stop, leaves other libvirt VMs alone, --all asks first"
   else
-    log_test "FAIL" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "fix-lock counts a lock it could not remove, never kills another disk user or a VM libvirt could not stop, leaves other libvirt VMs alone, --all asks first" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
 }
@@ -5341,6 +5417,7 @@ test_common_functions() {
   test_base_builds
   test_doctor_report
   test_doctor_lock_checks
+  test_doctor_fix_guards
   test_reap_needs_libvirt
   test_info_and_connect_exit
   test_fix_lock_definition

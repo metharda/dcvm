@@ -1489,6 +1489,7 @@ restore_vm() {
 
   if [ -n "$static_ip_copy" ]; then
     print_warning "Autostart not enabled: '$vm_name' keeps static IP $static_ip_copy from '$backup_vm_name'"
+    registry_set "$vm_name" "autostart=off"
   elif virsh autostart "$vm_name" >/dev/null 2>&1; then
     print_success "VM autostart enabled"
   else

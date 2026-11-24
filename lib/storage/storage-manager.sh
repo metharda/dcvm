@@ -17,7 +17,8 @@ report() {
 ssh_vm() {
   local vm_name="$1" target="$2"
   shift 2
-  ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+  # A guest that stalls must not hold up the hourly check of every other VM: keepalives drop a dead link, timeout a hung command.
+  timeout 600 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=accept-new \
     -o "HostKeyAlias=dcvm-$vm_name-$(registry_get "$vm_name" created | grep . || echo 0)" \
     -o 'UserKnownHostsFile=~/.ssh/dcvm_known_hosts' \
     "$target" "$@"
