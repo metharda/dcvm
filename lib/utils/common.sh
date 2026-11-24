@@ -579,13 +579,14 @@ tree.write(path)
 PY
 }
 
+build_file() { echo "$(builds_dir)/${1%.*}-${2:0:12}.${1##*.}"; }
+
 register_build() {
-  local file="$1" img="$2" dir sha b
+  local file="$1" img="$2" sha b
   valid_image_name "$img" || return 1
-  dir=$(builds_dir)
-  mkdir -p "$dir" || return 1
+  mkdir -p "$(builds_dir)" || return 1
   sha=$(sha256sum "$file" | cut -d' ' -f1) || return 1
-  b="$dir/${img%.*}-${sha:0:12}.${img##*.}"
+  b=$(build_file "$img" "$sha")
   if [ ! -e "$b" ]; then
     ln "$file" "$b" 2>/dev/null || cp -p --sparse=always "$file" "$b" || return 1
   fi
@@ -617,24 +618,38 @@ find_build() {
   return 1
 }
 
+# Fails when libvirt can't be asked: an empty list then means "unknown", not "no VMs".
 vm_disks() {
-  local vm disk
+  local vm disk vms
+  vms=$(virsh list --all --name 2>/dev/null) || return 1
   while read -r vm; do
     [ -n "$vm" ] || continue
     disk=$(get_vm_disk_path "$vm")
+    [ -n "$disk" ] || virsh domblklist "$vm" >/dev/null 2>&1 || return 1
     [ -n "$disk" ] && printf '%s\t%s\t%s\n' "$vm" "$disk" "$(disk_backing "$disk")"
-  done < <(virsh list --all --name 2>/dev/null)
+  done <<<"$vms"
 }
 
 backup_builds() {
-  sed -n 's/^build=//p' "${DATACENTER_BASE:-/srv/datacenter}"/backups/*/base 2>/dev/null
+  local f img sha
+  for f in "${DATACENTER_BASE:-/srv/datacenter}"/backups/*/base; do
+    [ -f "$f" ] || continue
+    if grep -q '^build=' "$f"; then
+      sed -n 's/^build=//p' "$f"
+      continue
+    fi
+    # Imported before build= was kept: the build is named after its image and sha256.
+    img=$(sed -n 's/^image=//p' "$f" | head -1) sha=$(sed -n 's/^sha256=//p' "$f" | head -1)
+    valid_image_name "$img" && valid_sha256 "$sha" && build_file "$img" "$sha"
+  done
 }
 
 # Whether a disk or backup from before 0.9.9 exists: they do not record the
 # build they need, so no build may be deleted while one does.
 legacy_references() {
-  local base="${DATACENTER_BASE:-/srv/datacenter}" f
-  vm_disks | cut -f3 | grep -q "^$(templates_dir)/[^/]*$" && return 0
+  local base="${DATACENTER_BASE:-/srv/datacenter}" f disks
+  disks=$(vm_disks) || return 0
+  cut -f3 <<<"$disks" | grep -q "^$(templates_dir)/[^/]*$" && return 0
   for f in "$base"/backups/*-????????_?????? "$base"/backups/*-disk-*.qcow2*; do
     [ -d "$f" ] && [ ! -f "$f/base" ] && return 0
     [ -f "$f" ] && return 0
@@ -643,12 +658,13 @@ legacy_references() {
 }
 
 prune_builds() {
-  local b used
+  local b used disks
   # ponytail: builds staged by a restore in flight aren't counted, so only root and admins prune; add a build lock if that races.
   [ "$(caller_role)" = user ] && return 0
+  disks=$(vm_disks) || return 0
   legacy_references && return 0
   used=$({
-    vm_disks | cut -f3
+    cut -f3 <<<"$disks"
     backup_builds
     cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
   } | sed 's#.*/##')

@@ -630,7 +630,8 @@ export_backup() {
   local pkg_path="$export_base/$pkg_name"
 
   local tmpdir
-  tmpdir=$(mktemp -d)
+  tmpdir=$(mktemp -d) || return 1
+  trap 'rm -rf "$tmpdir"' EXIT
   if [ "${EXPORT_FULL:-false}" = true ]; then
     local full_disk="$tmpdir/$(basename "${disk_backup%.gz}")"
     stage_backup_disk "$disk_backup" "$tmpdir/staged.qcow2" "$(dirname "$disk_backup")/base" || {
@@ -669,30 +670,30 @@ export_backup() {
   [ -f "$(dirname "$config_backup")/login" ] && cp "$(dirname "$config_backup")/login" "$tmpdir/login"
 
   local work_disk="$tmpdir/$(basename "$disk_backup")"
-  local ssh_cleaned=false
+  local ssh_cleaned=false img
   if command -v guestfish >/dev/null 2>&1; then
-    set +e
+    img=$work_disk
     if [[ "$work_disk" == *.gz ]]; then
-      local tmp_img="${work_disk%.gz}.tmp.$$"
-      if gunzip -c "$work_disk" >"$tmp_img" 2>/dev/null; then
-        if guestfish --rw --format=qcow2 -a "$tmp_img" -i <<'GFSCMDS' 2>/dev/null; then
--rm /root/.ssh/authorized_keys
--glob rm /home/*/.ssh/authorized_keys
-GFSCMDS
-          ssh_cleaned=true
-        fi
-        gzip -c "$tmp_img" >"$work_disk" 2>/dev/null
-        rm -f "$tmp_img" 2>/dev/null
-      fi
-    else
-      if guestfish --rw --format=qcow2 -a "$work_disk" -i <<'GFSCMDS' 2>/dev/null; then
--rm /root/.ssh/authorized_keys
--glob rm /home/*/.ssh/authorized_keys
-GFSCMDS
-        ssh_cleaned=true
+      img="$tmpdir/.disk.qcow2"
+      if ! gunzip -c "$work_disk" >"$img" 2>/dev/null; then
+        rm -rf "$tmpdir"
+        ui_step fail "Disk" "could not unpack $(basename "$work_disk") (corrupt, or no space in ${tmpdir%/*})"
+        return 1
       fi
     fi
-    set -e
+    guestfish --rw --format=qcow2 -a "$img" -i <<'GFSCMDS' 2>/dev/null && ssh_cleaned=true
+-rm /root/.ssh/authorized_keys
+-glob rm /home/*/.ssh/authorized_keys
+GFSCMDS
+    if [ "$img" != "$work_disk" ]; then
+      # Recompressed to a new name: a failed gzip must not leave a truncated disk in the package.
+      if [ "$ssh_cleaned" = true ] && ! { gzip -c "$img" >"$img.gz" && mv -f "$img.gz" "$work_disk"; }; then
+        rm -rf "$tmpdir"
+        ui_step fail "Disk" "could not compress it again (no space in ${tmpdir%/*}?)"
+        return 1
+      fi
+      rm -f "$img"
+    fi
     if [ "$ssh_cleaned" = true ]; then
       ui_step ok "SSH keys" "authorized_keys removed from the disk"
     else
@@ -734,6 +735,7 @@ EOF
     return 1
   }
   rm -rf "$tmpdir"
+  trap - EXIT
   if [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]]; then
     ui_step ok "Archive" "written to your file (${UI_RUN_SECS}s)"
     return 0
@@ -845,7 +847,13 @@ import_backup() {
   caller_uid >"$backup_folder/owner"
   local login
   [ -f "$workdir/login" ] && login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$workdir/login") && echo "$login" >"$backup_folder/login"
-  [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
+  if [ -f "$workdir/base" ]; then
+    grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
+    # The archive's build= is a path on the other host; prune_builds keeps the build this one names after image and sha256.
+    local img sha
+    img=$(sed -n 's/^image=//p' "$backup_folder/base" | head -1) sha=$(sed -n 's/^sha256=//p' "$backup_folder/base" | head -1)
+    valid_image_name "$img" && valid_sha256 "$sha" && echo "build=$(build_file "$img" "$sha")" >>"$backup_folder/base"
+  fi
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
@@ -854,6 +862,39 @@ import_backup() {
     rm -rf "$backup_folder"
     return 1
   fi
+}
+
+# Writes a stopped VM's disk, base record, owner, login and config into a new <folder>.
+write_backup_files() {
+  local vm_name="$1" vm_disk_path="$2" folder="$3" how=uncompressed disk config
+  disk="$folder/${vm_name}-disk-$DATE.qcow2" config="$folder/${vm_name}-config-$DATE.xml"
+  if ! mkdir -m 700 "$folder"; then
+    ui_step fail "Save disk" "cannot create $folder"
+    return 1
+  fi
+  [ "$COMPRESSION_ENABLED" = true ] && disk+=".gz" && how=$(command -v pigz || echo gzip)
+  if [ "$how" = uncompressed ]; then
+    ui_run "Copying disk" cp --sparse=always "$vm_disk_path" "$disk"
+  else
+    ui_run "Compressing disk" sh -c '"$1" -c "$2" >"$3"' _ "$how" "$vm_disk_path" "$disk"
+  fi || {
+    ui_step fail "Save disk" "failed"
+    cat "$UI_RUN_LOG"
+    return 1
+  }
+  ui_step ok "Saved disk" "$(get_file_size "$disk") (${how##*/}) in ${UI_RUN_SECS}s"
+  log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk")"
+  if ! write_base_record "$vm_disk_path" "$folder" || ! vm_owner_uid "$vm_name" >"$folder/owner" ||
+    ! vm_login "$vm_name" >"$folder/login"; then
+    ui_step fail "Save backup" "could not write the base, owner or login record"
+    return 1
+  fi
+  # --security-info keeps the VNC/SPICE password; without it a restore opens the console to every local user.
+  if ! (umask 077 && virsh dumpxml --security-info "$vm_name" >"$config") 2>/dev/null || [ ! -s "$config" ]; then
+    ui_step fail "Save config" "virsh dumpxml failed"
+    return 1
+  fi
+  ui_step ok "Saved config" "$(basename "$config")"
 }
 
 backup_vm() {
@@ -878,7 +919,10 @@ backup_vm() {
 
   ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
-  mkdir -p -m 700 "$BACKUP_DIR"
+  if ! mkdir -p -m 700 "$BACKUP_DIR"; then
+    print_error "Failed to create backup directory: $BACKUP_DIR"
+    return 1
+  fi
   # The disk streams into the backup file, so it never needs more than the disk's allocated blocks.
   local need
   need=$(du -B1 "$vm_disk_path" 2>/dev/null | cut -f1)
@@ -917,65 +961,19 @@ backup_vm() {
     fi
   fi
 
+  local backup_folder_path="$BACKUP_DIR/${vm_name}-$DATE" rc=0
+  # Built under a hidden name and renamed once complete, so a failed or interrupted backup never lists as one.
+  local tmp="$BACKUP_DIR/.${vm_name}-$DATE.part"
+  trap 'rm -rf "$tmp"; [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1' EXIT
   if ! prepare_vm_disk "$vm_name"; then
-    [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1
     log "ERROR" "Backup of $vm_name stopped: its base image could not be identified"
-    return 1
+    rc=1
+  elif ! write_backup_files "$vm_name" "$vm_disk_path" "$tmp" || ! mv -T "$tmp" "$backup_folder_path"; then
+    log "ERROR" "Backup of $vm_name failed"
+    rc=1
   fi
-
-  if ! mkdir -p -m 700 "$BACKUP_DIR"; then
-    print_error "Failed to create backup directory: $BACKUP_DIR"
-    log "ERROR" "Failed to create backup directory: $BACKUP_DIR"
-    return 1
-  fi
-
-  local backup_folder_name="${vm_name}-$DATE"
-  local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
-  mkdir -p -m 700 "$backup_folder_path" || {
-    print_error "Failed to create folder: $backup_folder_path"
-    return 1
-  }
-
-  local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
-  local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
-  local how=uncompressed part rc=0
-  [ "$COMPRESSION_ENABLED" = true ] && disk_backup+=".gz" && how=$(command -v pigz || echo gzip)
-  part="$disk_backup.part"
-  # Interrupted mid-copy: drop the partial file and give the VM back.
-  trap 'rm -f "$part"; rmdir "$backup_folder_path" 2>/dev/null; [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1' EXIT
-  if [ "$how" = uncompressed ]; then
-    ui_run "Copying disk" cp --sparse=always "$vm_disk_path" "$part" || rc=$?
-  else
-    ui_run "Compressing disk" sh -c '"$1" -c "$2" >"$3"' _ "$how" "$vm_disk_path" "$part" || rc=$?
-  fi
-  [ "$rc" = 0 ] && mv -f "$part" "$disk_backup" || rc=1
   trap - EXIT
-  if [ "$rc" = 0 ]; then
-    ui_step ok "Saved disk" "$(get_file_size "$disk_backup") (${how##*/}) in ${UI_RUN_SECS}s"
-    log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk_backup")"
-  else
-    rm -f "$part"
-    rmdir "$backup_folder_path" 2>/dev/null
-    ui_step fail "Save disk" "failed"
-    cat "$UI_RUN_LOG"
-    log "ERROR" "Failed to backup VM disk for $vm_name"
-    if [ "$was_running" = true ]; then
-      virsh start "$vm_name" >/dev/null 2>&1 && ui_step ok "Started VM" "running again"
-    fi
-    return 1
-  fi
-
-  write_base_record "$vm_disk_path" "$backup_folder_path"
-  vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
-  vm_login "$vm_name" >"$backup_folder_path/login"
-  # --security-info keeps the VNC/SPICE password; without it a restore opens the console to every local user.
-  if (umask 077 && virsh dumpxml --security-info "$vm_name" >"$config_backup") 2>/dev/null; then
-    ui_step ok "Saved config" "$(basename "$config_backup")"
-    log "INFO" "Configuration backup completed for $vm_name"
-  else
-    ui_step fail "Save config" "virsh dumpxml failed"
-    log "ERROR" "Failed to backup VM configuration for $vm_name"
-  fi
+  rm -rf "$tmp"
 
   if [ "$was_running" = true ]; then
     if virsh start "$vm_name" >/dev/null 2>&1; then
@@ -986,6 +984,7 @@ backup_vm() {
       log "ERROR" "Failed to restart VM $vm_name"
     fi
   fi
+  [ "$rc" = 0 ] || return 1
 
   local before after
   before=$(list_backup_timestamps_desc "$vm_name" | grep -c . || true)
@@ -1025,6 +1024,17 @@ customize_restored_guest() {
     print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
     print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
     return 1
+  fi
+
+  # A user's disk is guest-controlled: its libguestfs appliance runs as an sVirt-confined libvirt domain, never as root.
+  if [ "$(caller_role)" = user ]; then
+    if ! virsh capabilities 2>/dev/null | grep -qE '<model>(selinux|apparmor)</model>'; then
+      print_warning "Not customizing guest: libvirt confines VMs with neither SELinux nor AppArmor here; the copy keeps the hostname, machine-id and SSH host keys of '$old_name'"
+      print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
+      print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
+      return 1
+    fi
+    local -x LIBGUESTFS_BACKEND=libvirt:qemu:///system
   fi
 
   local -a args=(-q --format qcow2 -a "$disk_path" --hostname "$new_name")
@@ -1407,7 +1417,7 @@ restore_vm() {
 
   print_success "File permissions and ownership set"
 
-  if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
+  if [ "$renamed" = true ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
 

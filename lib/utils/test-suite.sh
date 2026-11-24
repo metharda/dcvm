@@ -692,6 +692,8 @@ stub_backup_tools() {
     domstate) cat "$t/state" 2>/dev/null || echo running ;;
     shutdown | destroy) echo "shut off" >"$t/state" ;;
     start) echo running >"$t/state" ;;
+    dumpxml) echo "<domain><name>${*: -1}</name></domain>" ;;
+    capabilities) cat "$t/caps" 2>/dev/null ;;
     esac
     return 0
   }
@@ -700,7 +702,7 @@ stub_backup_tools() {
   # shellcheck disable=SC2317
   check_disk_image() { :; }
   # shellcheck disable=SC2317
-  virt-customize() { echo "virt-customize $*" >>"$t/calls"; }
+  virt-customize() { echo "virt-customize ${LIBGUESTFS_BACKEND:+backend=$LIBGUESTFS_BACKEND }$*" >>"$t/calls"; }
   # shellcheck disable=SC2317
   sleep() { :; }
 }
@@ -849,6 +851,26 @@ EOF
     log_test "PASS" "backup restore <new_name> (hostname + machine-id + SSH host keys)"
   else
     log_test "FAIL" "backup restore <new_name> (hostname + machine-id + SSH host keys)" "$(grep virt-customize "$t/calls" | head -2)"
+  fi
+
+  local caps
+  for caps in selinux none; do
+    echo "<secmodel><model>$caps</model></secmodel>" >"$t/caps"
+    echo 1000 >"$t/backups/vm1-$ts/owner"
+    : >"$t/calls"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1000 restore_vm vm1 "$ts" "" "" "vm1-u$caps" </dev/null >"$t/out-$caps" 2>&1
+    )
+    rm -f "$t/backups/vm1-$ts/owner"
+    cp "$t/calls" "$t/calls-$caps"
+  done
+  if grep -q "^virt-customize backend=libvirt:qemu:///system .*--hostname vm1-uselinux" "$t/calls-selinux" &&
+    ! grep -q virt-customize "$t/calls-none" && grep -q "keeps the hostname, machine-id and SSH host keys" "$t/out-none"; then
+    log_test "PASS" "backup restore <new_name> by a user (customized under sVirt-confined libguestfs, else warns)"
+  else
+    log_test "FAIL" "backup restore <new_name> by a user (customized under sVirt-confined libguestfs, else warns)" "$(grep virt-customize "$t/calls-selinux" "$t/calls-none" | head -2)"
   fi
 
   if ! grep -qi '<nvram' "$t/defined.xml" 2>/dev/null; then
@@ -1087,6 +1109,7 @@ test_backup_create_streams_disk() {
       echo "cp $*" >>"$t/calls"
       command cp "$@"
     }
+    eval "${1:-}"
     backup_vm vm1 >"$t/out" 2>&1
     echo "rc=$?" >>"$t/out"
   }
@@ -1111,6 +1134,16 @@ test_backup_create_streams_disk() {
     log_test "PASS" "backup create (failed compression leaves no partial file and restarts the VM)"
   else
     log_test "FAIL" "backup create (failed compression leaves no partial file and restarts the VM)" "$(tail -1 "$t/out"); $(find "$t/backups" 2>/dev/null | tr '\n' ' ')"
+  fi
+
+  rm -rf "$t/backups" "$t/calls"
+  echo running >"$t/state"
+  (run_backup 'eval "$(declare -f virsh | sed "1s/virsh/stub_virsh/")"; virsh() { [ "$1" = dumpxml ] && return 1; stub_virsh "$@"; }')
+  if grep -q '^rc=1$' "$t/out" && ! grep -q 'Backup saved' "$t/out" && [ -z "$(ls -A "$t/backups" 2>/dev/null)" ] &&
+    grep -q 'virsh start vm1' "$t/calls"; then
+    log_test "PASS" "backup create (failed dumpxml is a failed backup: nothing kept, VM restarted)"
+  else
+    log_test "FAIL" "backup create (failed dumpxml is a failed backup: nothing kept, VM restarted)" "$(tail -1 "$t/out"); $(find "$t/backups" 2>/dev/null | tr '\n' ' ')"
   fi
   rm -rf "$t"
 }
@@ -1169,6 +1202,76 @@ test_backup_export_selectors() {
     log_test "PASS" "backup export to a descriptor (writes through it, never reopens /dev/fd/N)"
   else
     log_test "FAIL" "backup export to a descriptor (writes through it, never reopens /dev/fd/N)" "$(head -c 20 "$t/target" | od -c | head -1)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_export_recompress() {
+  local t ts=20260101_120000 real_gzip
+  real_gzip=$(command -v gzip)
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/bin"
+  echo backup-disk | gzip >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2.gz"
+  echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  printf '#!/bin/sh\nexit 0\n' >"$t/bin/guestfish"
+  # Fails only "gzip -c <file>" (the recompression); unpacking and tar's own gzip still work.
+  printf '#!/bin/sh\n[ "$1" = -c ] && [ -f "$2" ] && exit 1\nexec %s "$@"\n' "$real_gzip" >"$t/bin/gzip"
+  chmod +x "$t/bin/guestfish" "$t/bin/gzip"
+  export_run() {
+    (
+      PATH="$1:$PATH"
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      export_backup vm1 latest "$t/out" </dev/null >"$t/log" 2>&1
+    )
+  }
+  if ! export_run "$t/bin" && [ ! -e "$t/out/vm1-$ts.tar.gz" ]; then
+    log_test "PASS" "backup export (failed recompression fails the export, no truncated disk packed)"
+  else
+    log_test "FAIL" "backup export (failed recompression fails the export, no truncated disk packed)" "$(tail -2 "$t/log" | tr '\n' ';')"
+  fi
+  rm -f "$t/bin/gzip"
+  if export_run "$t/bin" && [ "$(tar -tzf "$t/out/vm1-$ts.tar.gz" | grep -c 'disk')" = 1 ] &&
+    tar -xzOf "$t/out/vm1-$ts.tar.gz" "./vm1-disk-$ts.qcow2.gz" | gunzip | grep -qx backup-disk; then
+    log_test "PASS" "backup export (cleaned disk recompressed in place, no temporary file packed)"
+  else
+    log_test "FAIL" "backup export (cleaned disk recompressed in place, no temporary file packed)" "$(tar -tzf "$t/out/vm1-$ts.tar.gz" 2>&1 | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_builds_kept() {
+  local t ts=20260101_120000 sha out
+  t=$(mktemp -d)
+  sha=$(printf 'a%.0s' {1..64})
+  mkdir -p "$t/pkg" "$t/storage/templates/builds" "$t/backups"
+  echo disk >"$t/pkg/vm1-disk-$ts.qcow2"
+  echo '<domain><name>vm1</name></domain>' >"$t/pkg/vm1-config-$ts.xml"
+  printf 'image=test.img\nbuild=/elsewhere/x.img\nsha256=%s\n' "$sha" >"$t/pkg/base"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  : >"$t/storage/templates/builds/test-aaaaaaaaaaaa.img"
+  out=$(
+    load_backup_sh_for_test "$t"
+    restore_vm() { :; }
+    import_backup "$t/pkg.tar.gz" >/dev/null 2>&1
+    grep -qx "build=$t/storage/templates/builds/test-aaaaaaaaaaaa.img" "$t/backups/vm1-$ts/base" && echo "import records the local build"
+    virsh() { :; }
+    [ -z "$(prune_builds)" ] && echo "imported backup keeps its build"
+    sed -i '/^build=/d' "$t/backups/vm1-$ts/base"
+    [ -z "$(prune_builds)" ] && echo "older import keeps its build"
+    rm -rf "$t/backups/vm1-$ts"
+    virsh() { return 1; }
+    [ -z "$(prune_builds)" ] && [ -f "$t/storage/templates/builds/test-aaaaaaaaaaaa.img" ] && echo "virsh failure keeps builds"
+    virsh() { :; }
+    [ "$(prune_builds)" = test-aaaaaaaaaaaa.img ] && echo "unused build deleted"
+  )
+  local want="import records the local build imported backup keeps its build older import keeps its build virsh failure keeps builds unused build deleted"
+  if [ "$(echo $out)" = "$want" ]; then
+    log_test "PASS" "builds: imported backups keep theirs, a failed virsh list prunes nothing"
+  else
+    log_test "FAIL" "builds: imported backups keep theirs, a failed virsh list prunes nothing" "got: $(echo $out)"
   fi
   rm -rf "$t"
 }
@@ -4276,6 +4379,8 @@ test_common_functions() {
   test_backup_restore_safety
   test_backup_export_selectors
   test_backup_create_streams_disk
+  test_backup_export_recompress
+  test_backup_builds_kept
   test_backup_ssh_setup_ip_wait
   test_create_extra_packages_userdata
   test_root_username_userdata
