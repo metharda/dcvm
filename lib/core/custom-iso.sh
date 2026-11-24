@@ -564,7 +564,7 @@ main() {
   validate_iso_options
   show_vm_summary
   [ "$FORCE_MODE" = true ] || confirm_creation
-  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
+  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" "$VM_NAME" || exit 1
   if [ -n "$STATIC_IP" ]; then
     # ponytail: two creates naming the same new --ip at once can both pass; lock on the address if that matters.
     claim_static_ip "$VM_NAME" "$STATIC_IP" || exit 1

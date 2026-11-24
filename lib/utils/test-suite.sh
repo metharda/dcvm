@@ -1017,7 +1017,7 @@ EOF
   fi
   cp "$t/good.xml" "$cfg"
 
-  if ! run running 'DCVM_QUOTA_LEFT="1 1024 20"' && untouched && grep -q 'Over your quota' "$t/out"; then
+  if ! run running 'DCVM_QUOTA_LIMITS="1 1024 20" DCVM_STATE_DIR="$t/qstate"' && untouched && grep -q 'Over your quota' "$t/out"; then
     log_test "PASS" "backup restore in place (quota checked before the VM is touched)"
   else
     log_test "FAIL" "backup restore in place (quota checked before the VM is touched)" "$(tail -2 "$t/out")"
@@ -2735,7 +2735,7 @@ test_socket_policy() {
   out=$(ask create web -f -p s3cret -m 1024 --json)
   grep -q '"argv": \["create", "web", "-f", "-m", "1024", "--json"\]' <<<"$out" && grep -q '"secrets": \["password"\]' <<<"$out" &&
     ! grep -q s3cret <<<"$out" && grep -q '^state=ready' "$t/state/vms/web" && grep -q "^owner_uid=$uid" "$t/state/vms/web" &&
-    grep -q '"DCVM_QUOTA_LEFT": "8 16384 200"' <<<"$out" && r+="create "
+    grep -q '"DCVM_QUOTA_LIMITS": "8 16384 200"' <<<"$out" && r+="create "
   grep -q 'invalid VM name' <<<"$(ask create all -f)" && r+="reserved "
   grep -q 'graphics must be' <<<"$(ask create web2 --graphics vnc,listen=0.0.0.0)" && r+="graphics "
   grep -q 'os must be 1-9' <<<"$(ask create web2 --os 12)" && r+="os-path "
@@ -2753,7 +2753,7 @@ test_socket_policy() {
     grep -q '"argv": \["backup", "delete", "web-01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" && r+="backup-delete "
   out=$(ask backup restore web web-01.01.2026-1)
   grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" && r+="restore-id "
-  grep -q '"DCVM_QUOTA_LEFT": "8 16384 200"' <<<"$out" && r+="restore-quota "
+  grep -q '"DCVM_QUOTA_LIMITS": "8 16384 200"' <<<"$out" && r+="restore-quota "
   grep -q '"argv": \["backup", "export", "web", "20260101_120000", "--full"\]' <<<"$(ask backup export web --full 20260101_120000 "$t")" &&
     grep -q '"argv": \["backup", "export", "web", "--full"\]' <<<"$(ask backup export web "$t" --full)" && r+="export-full "
   raw_export() {
@@ -2780,7 +2780,7 @@ print(json.loads(s.recv(n))["exit"])' "$t/sock" "$@" 2>/dev/null | tail -1
   grep -q "\"-o\", \"$t/base/vms/isovm/installer.iso\"" <<<"$out" && [ "$(cat "$t/base/vms/isovm/installer.iso" 2>/dev/null)" = "iso data" ] && r+="iso-fd "
   grep -q 'over your VM quota' <<<"$(ask create web3 -f)" && r+="quota "
   if [ "$uid" -eq 0 ]; then r+="iso-unreadable "; else grep -q 'cannot open ISO' <<<"$(ask create isovm2 -o /etc/shadow)" && r+="iso-unreadable "; fi
-  grep -q '"decision": "deny"' "$t/state/audit.log" && r+="audit "
+  grep -q '"decision": "deny"' "$t/state/audit.log" && grep -q '"argv": \["list"\], "decision": "start"' "$t/state/audit.log" && r+="audit "
   stop_srv
   start_srv none
   grep -q 'not in the dcvm group' <<<"$(ask list)" && r+="no-group "
@@ -2808,7 +2808,7 @@ def fake_run(ctx, _conn, argv, *_a):
     os.makedirs(os.path.join(ctx["staged_dir"], "installer.iso"))
     defined.update(argv[1:2] if argv[1] == "real" else [])
     return 0
-s.run_module, s.vm_exists = fake_run, lambda vm: vm in defined
+s.run_module, s.domain_known = fake_run, lambda vm: vm in defined
 for vm in ("ghost", "real"):
     ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
     s.execute(ctx, None, ["create"] + s.parse_create(ctx, [vm, "-f"], False), {}, {})
@@ -2854,6 +2854,171 @@ PY
     log_test "FAIL" "socket server: roles, ownership, quotas, secrets, files and --yes enforced" "missing: $(comm -13 <(tr ' ' '\n' <<<"$r" | sort) <(tr ' ' '\n' <<<"$want" | sort) | tr '\n' ' ') | $(tr '\n' ' ' <"$t/answers" | cut -c1-600)"
   fi
   rm -rf "$t"
+}
+
+test_socket_hardening() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "socket server hardening (python3 not installed)"
+    return
+  fi
+  local t out r="" w
+  t=$(mktemp -d)
+  mkdir -p "$t/h/vms" "$t/base/backups/web-20260101_120000"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  : >"$t/limits"
+  echo 4242 >"$t/base/backups/web-20260101_120000/owner"
+  printf 'owner_uid=9999\nowner=bob\n' >"$t/h/vms/web"
+  printf 'owner_uid=9999\nowner=bob\n' >"$t/h/vms/taken"
+  out=$(
+    timeout 120 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, json, os, socket, struct, sys, threading, time
+spec = importlib.util.spec_from_file_location("dcvm_server", os.path.join(sys.argv[1], "dcvm-server.py"))
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+t = sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS, s.AUDIT = t + "/h", t + "/h/run", t + "/conf", t + "/limits", t + "/h/audit.log"
+real_run, s.domain_known = s.run_module, lambda vm: False
+user = lambda: {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+def answer(sock):
+    n = struct.unpack(">I", sock.recv(4))[0]
+    return json.loads(sock.recv(n))
+if not s.IPV4.match("10.10.10.050") and not s.IPV4.match("10.10.10.256") and s.IPV4.match("10.10.10.50") \
+        and s.IPV4.match("10.0.0.0") and not s.OS_VARIANT.match("-x") and s.OS_VARIANT.match("win10"):
+    print("regex")
+s.REQUEST_TIMEOUT = 1
+a, b = socket.socketpair()
+def trickle():
+    b.send(struct.pack(">I", 100))
+    for _ in range(10):
+        time.sleep(0.3)
+        b.send(b"x")
+    b.close()
+threading.Thread(target=trickle, daemon=True).start()
+t0, msg = time.monotonic(), ""
+try:
+    s.recv_request(a)
+except s.Denied as e:
+    msg = str(e)
+if time.monotonic() - t0 < 2 and "too long" in msg:
+    print("deadline")
+s.REQUEST_TIMEOUT = 5
+s.ROLE_MAP[os.getuid()] = None
+a, b = socket.socketpair()
+t0 = time.monotonic()
+s.handle(a)
+resp = answer(b)
+if time.monotonic() - t0 < 1 and resp.get("show") and "not in the dcvm group" in resp["error"]:
+    print("role-first")
+s.ROLE_MAP[os.getuid()] = "user"
+slots = [s.take_slot(os.getuid()) for _ in range(s.MAX_PER_UID)]
+a, b = socket.socketpair()
+s.handle(a)
+if "already have" in answer(b).get("error", ""):
+    print("slots")
+for fd in slots:
+    os.close(fd)
+s.run_module = lambda *_a: 0
+ctx = user()
+argv = s.decide_user(ctx, ["backup", "delete", "web", "01.01.2026-1"])
+held, t0 = s.lock("vm-web"), time.monotonic()
+if s.execute(ctx, None, argv, {}, {}) == 0 and time.monotonic() - t0 < 5:
+    print("backup-lock")
+ctx = user()
+argv = ["create"] + s.parse_create(ctx, ["taken", "-f"], False)
+held, t0 = s.lock("vm-taken"), time.monotonic()
+try:
+    s.execute(ctx, None, argv, {}, {})
+except s.Denied as e:
+    if "taken" in str(e) and time.monotonic() - t0 < 5:
+        print("taken-first")
+up = [False]
+def fake_run(ctx, *_a):
+    os.makedirs(ctx["staged_dir"])
+    up[0] = None
+    return 0
+s.run_module, s.domain_known = fake_run, lambda vm: up[0]
+ctx = user()
+r, w = os.pipe()
+rc = s.execute(ctx, None, ["create"] + s.parse_create(ctx, ["limbo", "-f"], False), {}, {"stderr": w})
+if rc == 70 and s.registry_read("limbo") and os.path.isdir(t + "/base/vms/limbo") and b"libvirt did not answer" in os.read(r, 4096):
+    print("libvirt-down")
+s.audit(user(), ["create", "x" * 5000] + ["y"] * 100, "deny", reason="z" * 5000)
+with open(s.AUDIT) as f:
+    line = f.read().splitlines()[-1]
+if len(line) < 2000 and "(5000 bytes)" in line and "(38 more)" in line:
+    print("audit-clip")
+s.DCVM = "/bin/sh"
+out_r, out_w = os.pipe()
+err_r, err_w = os.pipe()
+conn, peer = socket.socketpair()
+script = "head -c 3000000 /dev/zero; echo done >&2; exit 3"
+pid = os.fork()
+if pid == 0:
+    os._exit(real_run(dict(user(), vm="web"), conn, ["-c", script], {}, {"stdout": out_w, "stderr": err_w}))
+for _ in range(300):
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+    time.sleep(0.1)
+os.set_blocking(err_r, False)
+if done and os.waitstatus_to_exitcode(status) == 3 and b"done" in os.read(err_r, 4096):
+    print("relay")
+PY
+  )
+  for w in regex deadline role-first slots backup-lock taken-first libvirt-down audit-clip relay; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  if [ "$r" = "regex deadline role-first slots backup-lock taken-first libvirt-down audit-clip relay " ]; then
+    log_test "PASS" "socket server: request deadline, per-user slots, locks, libvirt down, audit size, output relay, --ip/--os-variant"
+  else
+    log_test "FAIL" "socket server: request deadline, per-user slots, locks, libvirt down, audit size, output relay, --ip/--os-variant" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2016,SC2034 # snippets are evaluated in q; the quota vars are read by within_quota
+test_quota_atomic() {
+  local t r="" start
+  t=$(mktemp -d)
+  mkdir -p "$t/vms"
+  printf 'owner_uid=1001\ncpus=4\nmemory_mb=4096\ndisk_gb=50\n' >"$t/vms/old"
+  printf 'owner_uid=1002\ncpus=8\nmemory_mb=4096\ndisk_gb=50\n' >"$t/vms/other"
+  printf 'owner_uid=1001\nstate=creating\ncpus=2\nmemory_mb=2048\ndisk_gb=30\n' >"$t/vms/new1"
+  q() { (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 16384 200" && eval "$1") >"$t/out" 2>&1; }
+  g() { DCVM_STATE_DIR="$t" registry_get "$@"; }
+  q 'within_quota 4 1024 10 new1' && [ "$(g new1 cpus)/$(g new1 memory_mb)" = 4/2048 ] && r+="record "
+  printf 'owner_uid=1001\nstate=creating\ncpus=0\nmemory_mb=0\ndisk_gb=0\n' >"$t/vms/new2"
+  ! q 'within_quota 2 1024 10 new2' && grep -q "Over your quota" "$t/out" && [ "$(g new2 cpus)" = 0 ] && r+="refuse "
+  rm -f "$t/vms/new2"
+  q 'within_quota 3 8192 60 old && echo "$(registry_get old memory_mb)" && quota_release old' &&
+    [ "$(head -1 "$t/out")" = 8192 ] && [ "$(g old memory_mb)/$(g old disk_gb)" = 4096/50 ] && r+="restore-release "
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$t/run/locks"
+    flock "$t/run/locks/global" sleep 2 &
+    sleep 0.5
+    start=$SECONDS
+    q 'within_quota 0 0 0 new1'
+    [ $((SECONDS - start)) -ge 1 ] && r+="locked "
+    wait
+  else
+    r+="locked "
+  fi
+  (DCVM_STATE_DIR="$t" && unset DCVM_QUOTA_LIMITS && within_quota 100 100000 1000 rootvm) && [ ! -e "$t/vms/rootvm" ] && r+="root "
+  if [ "$r" = "record refuse restore-release locked root " ]; then
+    log_test "PASS" "quota: real sizes checked and recorded under the global lock; a failed restore gives the charge back"
+  else
+    log_test "FAIL" "quota: real sizes checked and recorded under the global lock; a failed restore gives the charge back" "$r | $(tr '\n' ' ' <"$t/out")"
+  fi
+  rm -rf "$t"
+}
+
+test_services_hardening() {
+  local units
+  units=$(declare -f install_dcvm_services dcvm_services_ok)
+  if grep -q '^TriggerLimitIntervalSec=0' <<<"$units" && grep -q "TriggerLimitIntervalSec=0' /etc/systemd/system/dcvm.socket" <<<"$units" &&
+    grep -q 'create 0640 root root' <<<"$units" && grep -q '/etc/logrotate.d/dcvm' <<<"$DCVM_UNITS"; then
+    log_test "PASS" "dcvm.socket has no trigger limit (doctor --fix upgrades it); the audit log is rotated"
+  else
+    log_test "FAIL" "dcvm.socket has no trigger limit (doctor --fix upgrades it); the audit log is rotated"
+  fi
 }
 
 test_forward_cleanup_exact_ip() {
@@ -3820,6 +3985,9 @@ test_common_functions() {
   test_check_disk_image
   test_import_rejects_hostile_archives
   test_socket_policy
+  test_socket_hardening
+  test_quota_atomic
+  test_services_hardening
   test_registry_visibility
   test_list_owner_column
   test_help_never_acts

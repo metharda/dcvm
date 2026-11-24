@@ -254,7 +254,7 @@ def talk(data, files):
             raise ValueError
     except (ValueError, TypeError, KeyError, AttributeError, OSError, struct.error):
         fail("the dcvm service ended without an answer; ask an admin to check: journalctl -u 'dcvm@*'", 70)
-    if rc == 70 and resp.get("error"):
+    if (rc == 70 or resp.get("show")) and resp.get("error"):
         print("error: %s" % resp["error"], file=sys.stderr)
     if files.rename:
         tmp, name = files.rename
