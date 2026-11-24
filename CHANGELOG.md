@@ -14,6 +14,11 @@ history, so the commit or PR is listed for each release.
 
 ### Fixed
 
+- Network names are matched exactly, so `uninstall`, `delete --all` and other VM lists no longer touch VMs on a network whose name merely contains dcvm's (#90).
+- `self-update` handles a failed file list without leaving a backup, and `--revert` runs the old version's pre-revert step only once the saved version is staged, restoring the services if the swap fails (#100).
+- `uninstall` needs root, removes the NFS squash user, the storage pools and firewalld services it added, keeps the owner records until the VMs are gone, and never deletes the data folder while a VM still uses a disk in it (#101).
+- The test suite installs packages only with `--install-deps` (#103).
+
 - `backup create` builds the backup in a hidden folder and renames it only when disk, config, owner and base record are all saved; a failed `virsh dumpxml` fails the backup, and the VM is started again on every failure (#91).
 - `backup import` records this host's build for the backup, so pruning no longer deletes the base an imported backup needs (#92).
 - `backup export` fails instead of packing a truncated disk or a temporary file when unpacking or recompressing the disk fails (#94).
