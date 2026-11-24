@@ -270,6 +270,23 @@ prompt_iso_path() {
     exit 1
   fi
   ISO_PATH=$(realpath "$ISO_PATH")
+  local kind
+  if [ "$(caller_role)" != root ] && kind=$(disk_image_kind "$ISO_PATH"); then
+    print_error "$(basename "$ISO_PATH") is a $kind disk image, not an ISO; dcvm only boots installer ISOs"
+    exit 1
+  fi
+}
+
+# A disk-image header can name host files as backing files or extents.
+disk_image_kind() {
+  case "$(head -c 21 -- "$1" | LC_ALL=C tr -c '[:print:]' '.')" in
+  QFI.*) echo qcow2 ;;
+  QED.*) echo qed ;;
+  KDMV* | COWD* | "# Disk DescriptorFile") echo vmdk ;;
+  vhdxfile*) echo vhdx ;;
+  conectix*) echo vhd ;;
+  *) [ "$(tail -c 512 -- "$1" | head -c 8 | tr -d '\0')" = conectix ] && echo vhd ;;
+  esac
 }
 
 show_iso_header() {
@@ -427,7 +444,7 @@ build_virt_install_opts() {
     --memory "$MEMORY"
     --vcpus "$CPUS"
     --disk "path=$DISK_PATH,format=qcow2"
-    --disk "path=$INSTALL_ISO,device=cdrom,readonly=on"
+    --disk "path=$INSTALL_ISO,device=cdrom,readonly=on,format=raw"
     --network "network=$NETWORK_NAME"
     --boot "$([ "$UEFI" = true ] && echo uefi,)$BOOT_ORDER"
     --import
@@ -444,7 +461,7 @@ build_virt_install_opts() {
 
 run_virt_install() {
   local cmd=(virt-install "${VIRT_INSTALL_OPTS[@]}")
-  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+  if [ "$GRAPHICS" != none ]; then
     VNC_PW=$(vnc_password)
     cmd=(virt_install_with_vnc_password "$VNC_PW" "${cmd[@]}")
   fi

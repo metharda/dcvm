@@ -2505,6 +2505,9 @@ test_published_checksum() {
     echo "tampered=$?"
     check_download x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" "" 2>/dev/null
     echo "tampered_check=$?"
+    (cd "$t/m2" && sha256sum img.qcow2 >SHA256SUMS)
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "self_vouched=$?"
     get_mirrors() { :; }
     verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
     echo "none=$?"
@@ -2514,7 +2517,7 @@ test_published_checksum() {
     verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
     echo "sha512=$?"
   ) >"$t/out"
-  for rc in same=0 other=0 tampered=1 tampered_check=1 none=2 none_check=0 sha512=0; do
+  for rc in same=0 other=0 tampered=1 tampered_check=1 self_vouched=1 none=2 none_check=0 sha512=0; do
     if grep -qx "$rc" "$t/out"; then
       log_test "PASS" "published checksum ($rc)"
     else
@@ -2989,7 +2992,7 @@ test_iso_create_options() {
   chmod +x "$t/bin/virsh"
   iso() { (source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1 && "$@") 2>&1; }
   opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
-  grep -q -- '--disk path=/i,device=cdrom,readonly=on' <<<"$opts" && grep -q -- '--boot hd,cdrom' <<<"$opts" && grep -q -- '--import' <<<"$opts" &&
+  grep -q -- '--disk path=/i,device=cdrom,readonly=on,format=raw ' <<<"$opts" && grep -q -- '--boot hd,cdrom' <<<"$opts" && grep -q -- '--import' <<<"$opts" &&
     ! grep -q -- '--cdrom' <<<"$opts" && r+="boot "
   opts=$(iso eval 'VM_NAME=vm DISK_PATH=/d INSTALL_ISO=/i NETWORK_NAME=n MEMORY=512 CPUS=1 DISK_SIZE=2G UEFI=true OS_VARIANT=win10 build_virt_install_opts && echo "${VIRT_INSTALL_OPTS[*]}"')
   grep -q -- '--boot uefi,hd,cdrom' <<<"$opts" && grep -q -- '--disk path=/d,format=qcow2 ' <<<"$opts" && grep -q -- '--network network=n ' <<<"$opts" && r+="uefi-win "
@@ -3000,6 +3003,81 @@ test_iso_create_options() {
     log_test "PASS" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors"
   else
     log_test "FAIL" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors" "$r | $(tr '\n' ' ' <<<"$opts" | cut -c1-300)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs; globals are read by the sourced scripts
+test_iso_and_display_safety() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/vm"
+  staged() {
+    (
+      source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1
+      DCVM_CALLER_ROLE=user DATACENTER_BASE=$t VM_NAME=vm ISO_PATH=$t/vms/vm/installer.iso
+      prompt_iso_path && echo accepted
+    ) 2>&1
+  }
+  printf 'QFI\xfb\0\0\0\3' >"$t/vms/vm/installer.iso"
+  grep -q 'qcow2 disk image' <<<"$(staged)" && r+="qcow2 "
+  { head -c 4096 /dev/zero && printf conectix && head -c 504 /dev/zero; } >"$t/vms/vm/installer.iso"
+  grep -q 'vhd disk image' <<<"$(staged)" && r+="vhd-footer "
+  head -c 40960 /dev/zero >"$t/vms/vm/installer.iso"
+  [ "$(staged)" = accepted ] && r+="iso "
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    mkisofs() {
+      umask >"$t/umask"
+      : >cloud-init.iso
+    }
+    umask 022
+    DATACENTER_BASE=$t VM_NAME=vm FORCE_MODE=true
+    create_cloud_init_iso
+  ) >/dev/null 2>&1
+  [ "$(cat "$t/umask" 2>/dev/null)" = 0077 ] && r+="seed-umask "
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    caller_role() { echo root; }
+    virt_install_with_vnc_password() { echo "$1" >"$t/create-pw"; }
+    virt-install() { echo none >"$t/create-pw"; }
+    virsh() { :; }
+    FLAG_GRAPHICS=vnc DATACENTER_BASE=$t VM_NAME=vm VM_OS=debian12 FORCE_MODE=true
+    install_vm
+  ) >/dev/null 2>&1
+  [[ "$(cat "$t/create-pw" 2>/dev/null)" =~ ^[A-Za-z0-9]{8}$ ]] && r+="create-pw "
+  (
+    source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1
+    caller_role() { echo root; }
+    ui_run() {
+      shift
+      "$@"
+    }
+    virt_install_with_vnc_password() { echo "$1" >"$t/iso-pw"; }
+    virt-install() { echo none >"$t/iso-pw"; }
+    virsh() { :; }
+    register_vm() { :; }
+    GRAPHICS=spice VM_NAME=vm VIRT_INSTALL_OPTS=()
+    run_virt_install
+  ) >/dev/null 2>&1
+  [[ "$(cat "$t/iso-pw" 2>/dev/null)" =~ ^[A-Za-z0-9]{8}$ ]] && r+="iso-pw "
+  out=$(
+    source "$SCRIPT_DIR/../network/network-manager.sh" >/dev/null 2>&1
+    caller_role() { echo root; }
+    check_vm_exists() { :; }
+    virsh() {
+      case "$1" in
+      dumpxml) echo "<domain><name>vm</name><devices></devices></domain>" ;;
+      define) cp "$2" "$t/vnc.xml" ;;
+      esac
+    }
+    cmd_vnc enable vm 2>&1
+  )
+  grep -q 'passwd="[A-Za-z0-9]\{8\}"' "$t/vnc.xml" 2>/dev/null && grep -q Password <<<"$out" && r+="vnc-enable-pw "
+  if [ "$r" = "qcow2 vhd-footer iso seed-umask create-pw iso-pw vnc-enable-pw " ]; then
+    log_test "PASS" "staged ISOs with disk-image headers refused, cloud-init seed made under umask 077, root's VNC/SPICE get a password"
+  else
+    log_test "FAIL" "staged ISOs with disk-image headers refused, cloud-init seed made under umask 077, root's VNC/SPICE get a password" "$r"
   fi
   rm -rf "$t"
 }
@@ -3265,10 +3343,18 @@ test_check_disk_image() {
   check_disk_image "$t/datafile.qcow2" || r+="datafile:refused "
   check_disk_image "$t/extent.qcow2" || r+="extent:refused "
   check_disk_image "$t/json.qcow2" || r+="json:refused "
-  if [ "$r" = "plain:ok datafile:refused extent:refused json:refused " ]; then
-    log_test "PASS" "backup disks: external data files, VMDK extents and json: backing refused"
+  qemu-img create -q -f qcow2 -b "$t/plain.qcow2" -F qcow2 "$t/overlay.qcow2" 16M
+  (
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    cp "$t/plain.qcow2" "$t/dl1" && place_template x "$t/dl1" "$t/tmpl1"
+    cp "$t/overlay.qcow2" "$t/dl2" && place_template x "$t/dl2" "$t/tmpl2"
+    cp "$t/extent.qcow2" "$t/dl3" && place_template x "$t/dl3" "$t/tmpl3"
+  ) 2>/dev/null
+  [ -f "$t/tmpl1" ] && [ ! -e "$t/tmpl2" ] && [ ! -e "$t/dl2" ] && [ ! -e "$t/tmpl3" ] && r+="templates "
+  if [ "$r" = "plain:ok datafile:refused extent:refused json:refused templates " ]; then
+    log_test "PASS" "backup disks and downloaded templates: external data files, backing files, VMDK extents and json: refused"
   else
-    log_test "FAIL" "backup disks: external data files, VMDK extents and json: backing refused" "$r"
+    log_test "FAIL" "backup disks and downloaded templates: external data files, backing files, VMDK extents and json: refused" "$r"
   fi
   rm -rf "$t"
 }
@@ -3317,6 +3403,7 @@ test_aria2c_download() {
     source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
     rank_mirrors() { printf 'https://m%s/img.qcow2\n' 1 2 3 4 5; }
     check_download() { return 0; }
+    plain_template() { return 0; }
     aria2c() {
       printf '%s\n' "$@" >"$t/args"
       local dir out a
@@ -3831,6 +3918,7 @@ test_common_functions() {
   test_network_status_no_bridge
   test_backup_exact_id_visibility
   test_iso_create_options
+  test_iso_and_display_safety
   test_base_builds
   test_doctor_report
   test_doctor_lock_checks

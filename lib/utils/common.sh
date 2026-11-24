@@ -1425,28 +1425,29 @@ vnc_password() { head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c
 # can read a root process's arguments, so it goes into the XML through the
 # environment: virt-install prints the domain, dcvm defines and starts it.
 virt_install_with_vnc_password() {
-  local pw="$1" xml name
+  local pw="$1" dir name
   shift
-  xml=$(mktemp) || return 1
-  if ! "$@" --print-xml >"$xml.all" || ! VNC_PW="$pw" python3 -I -S -c '
+  # A 0700 folder, so no file holding the password is ever readable by others.
+  dir=$(mktemp -d) || return 1
+  if ! "$@" --print-xml >"$dir/all" || ! VNC_PW="$pw" python3 -I -S -c '
 import os, re, sys, xml.etree.ElementTree as ET
 docs = re.findall(r"<domain[\s\S]*?</domain>", open(sys.argv[1]).read())
 d = ET.fromstring(docs[-1])
 for g in d.iter("graphics"):
     g.set("passwd", os.environ["VNC_PW"])
 open(sys.argv[2], "w").write(ET.tostring(d, encoding="unicode"))
-print(d.findtext("name"))' "$xml.all" "$xml" >"$xml.name"; then
-    rm -f "$xml" "$xml.all" "$xml.name"
+print(d.findtext("name"))' "$dir/all" "$dir/domain.xml" >"$dir/name"; then
+    rm -rf "$dir"
     return 1
   fi
-  name=$(cat "$xml.name")
+  name=$(cat "$dir/name")
   local rc=0
-  virsh define "$xml" >/dev/null || rc=1
+  virsh define "$dir/domain.xml" >/dev/null || rc=1
   if [ "$rc" -eq 0 ] && ! virsh start "$name" >/dev/null; then
     rc=1
     virsh undefine "$name" --nvram >/dev/null 2>&1 || virsh undefine "$name" >/dev/null 2>&1
   fi
-  rm -f "$xml" "$xml.all" "$xml.name"
+  rm -rf "$dir"
   return $rc
 }
 

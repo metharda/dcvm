@@ -192,9 +192,18 @@ checksum_for_file() {
     { n = $2; sub(/^\*/, "", n); if (n == f) { print tolower($1); exit } }'
 }
 
+# An https download may not be redirected to plain http, where anyone on the way could swap it.
+curl_tls() {
+  if [[ "${*: -1}" == https://* ]]; then
+    curl --proto =https --proto-redir =https "$@"
+  else
+    curl "$@"
+  fi
+}
+
 fetch_text() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 5 --max-time 20 "$1" 2>/dev/null
+    curl_tls -fsSL --connect-timeout 5 --max-time 20 "$1" 2>/dev/null
   else
     wget -q -T 20 -O - "$1" 2>/dev/null
   fi
@@ -202,8 +211,10 @@ fetch_text() {
 
 # Checks a downloaded image against the checksums its publisher puts next to
 # it: SHA256SUMS or SHA512SUMS in the same folder, or <file>.SHA256. Looks on
-# the mirror it came from, then on the other mirrors that serve the same file
-# name (most mirrors don't copy the checksum files; the official servers do).
+# the official server (the first mirror), then the mirror it came from, then
+# the other mirrors that serve the same file name (most mirrors don't copy the
+# checksum files). The first folder that publishes a checksum decides, so a
+# mirror can't vouch for its own file while the official server answers.
 # Returns 0 if a published checksum matches, 1 if checksums were found but
 # none matches, 2 if no mirror publishes one.
 verify_published_checksum() {
@@ -212,6 +223,7 @@ verify_published_checksum() {
   local -A digest=()
   local dirs
   dirs=$({
+    get_mirrors "$filename" 2>/dev/null | head -1
     echo "$url"
     get_mirrors "$filename" 2>/dev/null
   } | awk -v b="$base" 'NF { n = $0; sub(/.*\//, "", n); if (n == b) { sub(/\/[^\/]*$/, ""); if (!seen[$0]++) print } }')
@@ -231,8 +243,8 @@ verify_published_checksum() {
         return 0
       fi
     done
+    $found && return 1
   done <<<"$dirs"
-  $found && return 1
   return 2
 }
 
@@ -257,6 +269,29 @@ check_download() {
     return 0
     ;;
   esac
+}
+
+# Every VM's disk is backed by the template: it must be a qcow2 naming no other file.
+plain_template() { check_disk_image "$1" && [ -z "$(disk_backing "$1")" ]; }
+
+# Moves a checked download (Kali: its converted disk) into place; removes it if refused.
+place_template() {
+  local filename="$1" file="$2" target="$3"
+  if is_kali_image "$filename"; then
+    if ! extract_kali_image "$file" "$file.qcow2"; then
+      rm -f "$file" "$file.qcow2"
+      echo "WARNING: Kali image extraction failed, trying next mirror" >&2
+      return 1
+    fi
+    rm -f "$file"
+    file="$file.qcow2"
+  fi
+  if ! plain_template "$file"; then
+    rm -f "$file"
+    echo "WARNING: $filename is not a plain qcow2 image (backing file, data file or another format); refused" >&2
+    return 1
+  fi
+  mv "$file" "$target"
 }
 
 download_with_mirrors() {
@@ -325,18 +360,8 @@ download_with_mirrors() {
         rm -f "$tmp_file" 2>/dev/null
         rc=3
       fi
-      if [ "$rc" -eq 0 ]; then
-        if is_kali_image "$filename"; then
-          if ! extract_kali_image "$tmp_file" "$target_path"; then
-            rm -f "$tmp_file" 2>/dev/null
-            echo "WARNING: Kali image extraction failed, trying next mirror" >&2
-            rc=4
-          else
-            rm -f "$tmp_file" 2>/dev/null
-          fi
-        else
-          mv "$tmp_file" "$target_path"
-        fi
+      if [ "$rc" -eq 0 ] && ! place_template "$filename" "$tmp_file" "$target_path"; then
+        rc=4
       fi
       if [ "$rc" -eq 0 ]; then
         local avg_speed_mbs
@@ -363,7 +388,7 @@ download_with_mirrors() {
     local start_time end_time
     start_time=$(date +%s)
     if command -v curl >/dev/null 2>&1; then
-      curl -4 --http1.1 -L --fail -o "$tmp_file" "$url"
+      curl_tls -4 --http1.1 -L --fail -o "$tmp_file" "$url"
       rc=$?
     else
       wget --progress=bar:force -O "$tmp_file" "$url"
@@ -380,16 +405,7 @@ download_with_mirrors() {
           rm -f "$tmp_file" 2>/dev/null
           continue
         fi
-        if is_kali_image "$filename"; then
-          if ! extract_kali_image "$tmp_file" "$target_path"; then
-            rm -f "$tmp_file" 2>/dev/null
-            echo "WARNING: Kali image extraction failed, trying next mirror" >&2
-            continue
-          fi
-          rm -f "$tmp_file" 2>/dev/null
-        else
-          mv "$tmp_file" "$target_path"
-        fi
+        place_template "$filename" "$tmp_file" "$target_path" || continue
         local avg_speed_mbs size_mb
         if [ "$elapsed_time" -gt 0 ]; then
           avg_speed_mbs=$(awk "BEGIN{printf \"%.2f\", $file_size/1048576/$elapsed_time}")
@@ -448,7 +464,8 @@ fetch_archived_build() {
   fi
   mkdir -p "$(builds_dir)"
   tmp="$(builds_dir)/.fetch.$$"
-  if ! ui_run "Fetching base" curl -fsSL -o "$tmp" "$url" || [ "$(sha256sum "$tmp" | cut -d' ' -f1)" != "$sha256" ]; then
+  if ! ui_run "Fetching base" curl_tls -fsSL -o "$tmp" "$url" || [ "$(sha256sum "$tmp" | cut -d' ' -f1)" != "$sha256" ] ||
+    ! plain_template "$tmp"; then
     rm -f "$tmp"
     ui_step fail "Base image" "could not fetch the original build from ${url%/*}" >&2
     return 1

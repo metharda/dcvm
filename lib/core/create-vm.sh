@@ -1467,17 +1467,13 @@ NETWORK_EOF
 create_cloud_init_iso() {
   [ "$FORCE_MODE" = true ] && print_info "Creating cloud-init config" || print_info "Creating cloud-init configuration..."
   cd "$DATACENTER_BASE/vms/$VM_NAME"
-  if command -v mkisofs >/dev/null 2>&1; then
-    mkisofs -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || {
-      print_error "Failed to create cloud-init ISO"
-      exit 1
-    }
-  else
-    genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || {
-      print_error "Failed to create cloud-init ISO"
-      exit 1
-    }
-  fi
+  local tool=genisoimage
+  command -v mkisofs >/dev/null 2>&1 && tool=mkisofs
+  # It holds password hashes and keys: other users may open files in the 711 folder by name.
+  (umask 077 && "$tool" -output cloud-init.iso -volid cidata -joliet -rock cloud-init/) >/dev/null 2>&1 || {
+    print_error "Failed to create cloud-init ISO"
+    exit 1
+  }
   chmod 600 cloud-init.iso
 }
 
@@ -1513,7 +1509,7 @@ install_vm() {
     --vcpus "$VM_CPUS"
     --boot "$([ "$FLAG_UEFI" = true ] && echo uefi,)hd,menu=on"
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk"
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom"
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom,format=raw"
     --graphics "$GRAPHICS"
     --os-variant "$OS_VARIANT"
     --network "network=$NETWORK_NAME"
@@ -1521,7 +1517,8 @@ install_vm() {
     --import
     --noautoconsole)
   local rc=0
-  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+  VNC_PW=""
+  if [ "$GRAPHICS" != none ]; then
     VNC_PW=$(vnc_password)
     virt_error=$(virt_install_with_vnc_password "$VNC_PW" "${vi[@]}" 2>&1) || rc=$?
   else
@@ -1777,7 +1774,7 @@ main() {
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
     [ -n "$FLAG_STATIC_IP" ] && save_static_ip "$VM_NAME" "$FLAG_STATIC_IP"
-    [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
+    [ -n "${VNC_PW:-}" ] && ui_step ok "Display" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
@@ -1798,8 +1795,9 @@ main() {
     if [ "$FLAG_JSON" = true ]; then
       [ -n "$vm_ip" ] || vm_ip=$(get_vm_ip "$VM_NAME")
       valid_vm_ip "$vm_ip" || vm_ip=""
-      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s,"ready":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
-        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" "$ready" >&3
+      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s,"ready":%s,"display_password":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
+        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" "$ready" \
+        "$([ -n "$VNC_PW" ] && echo "\"$VNC_PW\"" || echo null)" >&3
     elif [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
   done
 
