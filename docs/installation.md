@@ -39,8 +39,9 @@ less install-dcvm.sh
 sudo bash install-dcvm.sh
 ```
 
-The installer downloads the rest of dcvm from the same repository and
-branch. To install from a fork or another branch, set:
+The installer downloads the rest of dcvm from the same repository, all from
+the commit the branch points to when it starts. To install from a fork or
+another branch, set:
 
 - `DCVM_REPO_SLUG`: `owner/repo` (default: `metharda/dcvm`)
 - `DCVM_REPO_BRANCH`: branch name (default: `main`)
@@ -75,6 +76,11 @@ cd dcvm
 ```bash
 sudo bash lib/installation/install-dcvm.sh
 ```
+
+It installs this checkout only when no other user can change it: the
+checkout and every folder above it must belong to root or to you (the
+`sudo` caller) and not be writable by group or others, and so must every
+file in it. Otherwise it prints a warning and installs from GitHub instead.
 
 ### 4. Follow the Installation Wizard
 
@@ -239,8 +245,8 @@ sudo bash /usr/local/lib/dcvm/installation/uninstall-dcvm.sh
 > **Uninstalling DCVM is destructive and cannot be undone.** `dcvm uninstall` asks for confirmation first, then will:
 >
 > - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
-> - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`.
-> - Remove the dcvm network, port-forwarding rules, DHCP leases, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
+> - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`. It is left alone if it has no `vms/` and `storage/` folders or is a system folder such as `/`, `/var` or `/home`.
+> - Remove the dcvm network, port-forwarding rules, DHCP leases, the NFS share's line in `/etc/exports`, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
 > - Delete `/var/log/datacenter-startup.log`.
 > - Remove `alias dcvm` and `dcvm-completion.sh` lines from `~/.bashrc`, `~/.zshrc`, `~/.bash_profile`, and `~/.profile` (leaving `.bak` copies), and remove the bash completion scripts.
 >
@@ -263,6 +269,10 @@ To check for updates without installing:
 ```bash
 dcvm self-update --check
 ```
+
+Every file comes from the same commit. If GitHub has an older version than
+the installed one, `dcvm self-update` changes nothing; `--force` installs it
+anyway, and `--revert` goes back to a version saved on this host.
 
 ### aria2 (0.9.8)
 

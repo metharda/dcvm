@@ -125,11 +125,18 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
 - **The installer** runs as root. The README's
   [review-first install](../README.md#quick-start) downloads it to a file so
   you can read it before running it; it then fetches the rest of dcvm from the
-  same repository and branch over HTTPS.
+  same repository over HTTPS, every file from the one commit the branch
+  pointed to when it started. It installs from the folder it sits in only
+  when that is a dcvm checkout (`lib/installation/install-dcvm.sh` next to
+  the `dcvm` script) that no other user can change: owned by root or the
+  `sudo` caller, with nothing in it and no folder above it up to `/`
+  writable by group or others. Otherwise, a copy run from `/tmp` or through
+  `bash -c` for example, it ignores the files around it and downloads.
 - **`dcvm self-update`** downloads the files from GitHub (`metharda/dcvm`,
   `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, with no
-  signature check, into a staging folder, and replaces the installed files in
-  one swap only when every file arrived. Every installed file is owned by root
+  signature check, all from one commit, into a staging folder, and replaces
+  the installed files in one swap only when every file arrived. It refuses a
+  version older than the installed one unless you pass `--force`. Every installed file is owned by root
   with fixed modes, never inherited from the folder (on Debian, `/usr/local`
   can be group `staff`). The version it replaced is kept in
   `/var/lib/dcvm/backups` for `--revert` (the last 3).
@@ -144,7 +151,9 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
 
 - Backups in `$DATACENTER_BASE/backups` are full copies of the VM disk
   overlay and contain everything in the guest (password hashes, keys, data).
-  Protect them like the VMs.
+  Protect them like the VMs. The saved VM configuration (mode `600`) keeps
+  the VNC/SPICE password, so a restored VM's console is as closed as before;
+  an exported package leaves it out.
 - **Export removes SSH access and secrets.** `dcvm backup export` deletes
   `/root/.ssh/authorized_keys` and `/home/*/.ssh/authorized_keys` from the
   exported disk (needs `guestfish` from libguestfs-tools; dcvm warns if it is

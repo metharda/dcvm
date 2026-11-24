@@ -55,6 +55,22 @@ history, so the commit or PR is listed for each release.
 - `delete --all` removes only the deleted VMs' forwards and keeps a refused
   VM's lease, mapping and rules (#77).
 
+### Security
+
+- The installer no longer sources or installs files from the folder it is run
+  from unless that is a dcvm checkout no other user can write to; another user
+  could plant `utils/common.sh` next to a download in `/tmp` and run code as root.
+- Backups keep the VM's VNC/SPICE password (config saved `600`), so a restore
+  no longer opens the console without one; exports leave it out.
+- The installer and `self-update` fetch every file from one commit;
+  `self-update` refuses an older version without `--force`; its staging
+  folders get random names.
+- `uninstall` deletes only VMs on the dcvm network itself (not `datacenter-net2`),
+  refuses to `rm -rf` a `DATACENTER_BASE` without dcvm's layout, and removes its
+  `/etc/exports` line.
+- The installer validates the directory and network name it writes to
+  `/etc/dcvm-install.conf` and makes the file `644`.
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
