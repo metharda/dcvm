@@ -4711,7 +4711,7 @@ test_doctor_seed_permissions() {
     FIX=false vm_permissions
   ) 2>&1
   grep -q 'open to other local users' <<<"$out" && grep -q '^problems=1' <<<"$out" && r+="found "
-  grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && grep -q '1 cloud-init seed and backups closed' <<<"$out" && r+="fixed "
+  grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && grep -q '1 cloud-init seed, backups and network records closed' <<<"$out" && r+="fixed "
   [ "$(stat -c %a "$t/vms/web/cloud-init" "$t/vms/web/cloud-init/user-data" | tr '\n' ' ')" = "700 600 " ] && r+="modes "
   if [ "$(id -u)" = 0 ]; then
     chown nobody "$t/vms/web/cloud-init/user-data"
