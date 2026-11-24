@@ -419,18 +419,17 @@ def decide_user(ctx, argv):
         return [cmd] + plain + json_flag
     if cmd in ("start", "stop", "restart"):
         force = ["--force"] if cmd == "stop" and "--force" in plain else []
-        plain = [a for a in plain if a not in force]
-        if len(plain) > 1:
-            raise Denied("%s takes one VM" % cmd)
-        if not plain and cmd != "start":
-            raise Denied("%s needs a VM name, or all for every VM of yours" % cmd)
-        if force and plain[0] == "all":
+        every = "--all" in plain
+        plain = [a for a in plain if a not in force and a != "--all"]
+        if len(plain) + every != 1:
+            raise Denied("%s takes one VM, or --all for every VM of yours" % cmd)
+        if force and every:
             raise Denied("stop --force takes one VM")
-        if plain and plain[0] != "all":
+        if plain:
             own_vm(ctx, plain[0])
             ctx["vm"] = plain[0]
         ctx["mutating"] = True
-        return [cmd] + plain + force
+        return [cmd] + (plain or ["--all"]) + force
     if cmd == "console":
         if len(plain) == 1:
             own_vm(ctx, plain[0])
@@ -1002,6 +1001,10 @@ def admin_argv(ctx, argv):
                 ctx["export_fd"] = export_fd(fd)
                 final[i] = None
             elif final[:2] == ["backup", "import"] or final[0] == "import":
+                # Root reopens it by path, so only a file the caller opened for reading may count.
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                if not stat.S_ISREG(st.st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) == os.O_WRONLY:
+                    raise Denied("import reads a regular file you opened for reading")
                 final[i] = "/proc/self/fd/%d" % fd
                 ctx.setdefault("keep_fds", []).append(fd)
             else:

@@ -339,7 +339,7 @@ delete_backups() {
     return 1
   fi
 
-  if [ "$arg" = "--all" ] || [ "$arg" = "all" ]; then
+  if [ "$arg" = "--all" ]; then
     mapfile -t __folders < <(ls -1 -d "$BACKUP_DIR"/*-????????_?????? 2>/dev/null | grep -vE '/exports$')
     mapfile -t __legacy_disks < <(ls -1 "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
 

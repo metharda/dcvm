@@ -3268,6 +3268,7 @@ threading.Thread(target=serve, daemon=True).start()
 c.SOCKET = t + "/fake.sock"
 if c.talk(b'{"v": 1}', c.Files(), c.connect()) == 130:
     print("client-int")
+real_socket = socket.socket
 class Refused(socket.socket):
     def connect(self, _addr):
         raise PermissionError
@@ -3283,11 +3284,28 @@ try:
 except SystemExit as e:
     if e.code == 77 and not os.path.exists(t + "/nokey/.ssh"):
         print("client-nokey")
+srv2 = real_socket(socket.AF_UNIX)
+srv2.bind(t + "/deny.sock")
+srv2.listen(1)
+def deny():
+    conn, _ = srv2.accept()
+    conn.recv(65536)
+    d = json.dumps({"exit": 77, "error": "over your VM quota", "show": True}).encode()
+    conn.sendall(struct.pack(">I", len(d)) + d)
+threading.Thread(target=deny, daemon=True).start()
+socket.socket = real_socket
+c.SOCKET = t + "/deny.sock"
+os.environ["HOME"] = t + "/denied"
+try:
+    c.main(["create", "k2", "-f"])
+except SystemExit as e:
+    if e.code == 77 and not os.listdir(t + "/denied/.ssh"):
+        print("client-refused-key")
 PY
   )
-  for w in create-release signal-rc client-int client-group client-nokey; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  for w in create-release signal-rc client-int client-group client-nokey client-refused-key; do grep -qx "$w" <<<"$out" && r+="$w "; done
   echo "$out" >>"$t/answers"
-  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id restore-quota export-full export-fd secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-key admin-leftover create-release signal-rc client-int client-group client-nokey "
+  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id restore-quota export-full export-fd secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-key admin-leftover create-release signal-rc client-int client-group client-nokey client-refused-key "
   if [ "$r" = "$want" ]; then
     log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
   else
@@ -3968,13 +3986,13 @@ test_stopped_vms_and_lifecycle_args() {
     stop_vms() { echo "stop:$*"; }
     restart_vms() { echo "restart:$*"; }
     show_vm_table() { echo "list:$*"; }
-    for a in "stop" "restart" "stop all --force" "stop web extra" "list --bogus" "start" "stop web --force" "restart all" "list --json"; do
+    for a in "stop" "restart" "start" "stop --all --force" "stop web extra" "list --bogus" "stop web --force" "restart --all" "list --json" "stop all"; do
       # shellcheck disable=SC2086
       (main $a 2>&1) | grep -oE '^(start|stop|restart|list):.*|Usage' | tr '\n' ' '
       echo "|"
     done
   )
-  [ "$out" = "$(printf '%s\n' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'start: false |' 'stop:web true |' 'restart:all false |' 'list:--json |')" ] && r+="no-name "
+  [ "$out" = "$(printf '%s\n' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'stop:web true |' 'restart:--all false |' 'list:--json |' 'stop:all false |')" ] && r+="no-name "
 
   out=$(
     source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
@@ -4019,18 +4037,18 @@ def ask(*argv):
         return " ".join(s.decide_user({"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}, list(argv)))
     except s.Denied:
         return "denied"
-print(ask("stop"), ask("restart"), ask("stop", "all", "--force"), "|", ask("start"), "|", ask("stop", "web", "--force"), "|", ask("restart", "all"), "|", ask("start", "web", "--force"))
+print(ask("stop"), ask("restart"), ask("start"), ask("stop", "--all", "--force"), "|", ask("stop", "web", "--force"), "|", ask("restart", "--all"), "|", ask("start", "web", "--force"), "|", ask("stop", "all"))
 PY
     )
-    [ "$out" = "denied denied denied | start | stop web --force | restart all | denied" ] && r+="server "
+    [ "$out" = "denied denied denied denied | stop web --force | restart --all | denied | stop all" ] && r+="server "
   else
     r+="server "
   fi
 
   if [ "$r" = "ip ports-add user-hints console no-name force vnc delete-args server " ]; then
-    log_test "PASS" "stopped VMs have no IP and no port forward; stop/restart need a name, stop --force; vnc and delete check their arguments"
+    log_test "PASS" "stopped VMs have no IP and no port forward; start/stop/restart need a name or --all, stop --force; vnc and delete check their arguments"
   else
-    log_test "FAIL" "stopped VMs have no IP and no port forward; stop/restart need a name, stop --force; vnc and delete check their arguments" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+    log_test "FAIL" "stopped VMs have no IP and no port forward; start/stop/restart need a name or --all, stop --force; vnc and delete check their arguments" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
   fi
   rm -rf "$t"
 }
@@ -5108,6 +5126,37 @@ test_get_vm_ip_exact() {
   rm -rf "$t"
 }
 
+test_import_fd_readable() {
+  command -v python3 >/dev/null 2>&1 || {
+    log_test "SKIP" "admin import takes only a descriptor opened for reading" "python3 not available"
+    return
+  }
+  local t out
+  t=$(mktemp -d)
+  echo data >"$t/a.tar.gz"
+  out=$(
+    python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" "$t/a.tar.gz" <<'PY' 2>&1
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+def ask(flags):
+    fd = os.open(sys.argv[2], flags)
+    try:
+        return " ".join(s.admin_argv({"uid": 0, "files": [fd]}, ["backup", "import", "fd:0", "vm1"]))
+    except s.Denied:
+        return "denied"
+print(ask(getattr(os, "O_PATH", os.O_WRONLY)), "|", ask(os.O_WRONLY), "|", ask(os.O_RDONLY).split()[2][:14])
+PY
+  )
+  rm -rf "$t"
+  if [ "$out" = "denied | denied | /proc/self/fd/" ]; then
+    log_test "PASS" "admin import takes only a descriptor opened for reading"
+  else
+    log_test "FAIL" "admin import takes only a descriptor opened for reading" "$out"
+  fi
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -5257,6 +5306,7 @@ test_common_functions() {
   test_help_never_acts
   test_usage_matches_parsers
   test_stopped_vms_and_lifecycle_args
+  test_import_fd_readable
   test_forward_cleanup_exact_ip
   test_dhcp_stale_by_mac
   test_forward_rules_scope

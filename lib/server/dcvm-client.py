@@ -145,18 +145,19 @@ def attach_files(argv, files):
 
 
 def public_key():
+    """Return (key, path of a key pair made now, or None)."""
     home = os.path.expanduser("~")
     for name in ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"):
         path = os.path.join(home, ".ssh", name)
         try:
             with open(path) as f:
-                return f.read(16384).strip()
+                return f.read(16384).strip(), None
         except OSError:
             continue
     key = os.path.join(home, ".ssh", "id_ed25519")
     if os.path.exists(key):
         print("dcvm: %s has no readable .pub file; the VM gets no SSH key of yours" % key, file=sys.stderr)
-        return None
+        return None, None
     try:
         os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
         made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key], stdin=subprocess.DEVNULL,
@@ -164,10 +165,9 @@ def public_key():
     except OSError:
         made = False
     if made:
-        print("dcvm: created an SSH key for you in %s" % key, file=sys.stderr)
         with open(key + ".pub") as f:
-            return f.read().strip()
-    return None
+            return f.read().strip(), key
+    return None, None
 
 
 def columns():
@@ -201,11 +201,22 @@ def main(argv):
     try:
         conn = connect()
         # After connecting: someone the socket turns away must not get a key made in ~/.ssh.
+        made = None
         if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
-            key = public_key()
+            key, made = public_key()
             if key:
                 req["pubkey"] = key
-        sys.exit(talk(json.dumps(req).encode(), files, conn))
+        rc = talk(json.dumps(req).encode(), files, conn)
+        if made and rc == 77:
+            # The server refused the create, so nothing uses the key made for it.
+            for path in (made, made + ".pub"):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        elif made:
+            print("dcvm: created an SSH key for you in %s" % made, file=sys.stderr)
+        sys.exit(rc)
     finally:
         if files.rename and os.path.exists(files.rename[0]):
             os.unlink(files.rename[0])

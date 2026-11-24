@@ -90,7 +90,7 @@ not_found() {
 start_vms() {
   local target="$1"
 
-  if [ "$target" = "all" ] || [ -z "$target" ]; then
+  if [ "$target" = --all ]; then
     local vms
     vms=$(vms_in_state "shut off")
     if [ -z "$vms" ]; then
@@ -129,7 +129,7 @@ start_vms() {
 stop_vms() {
   local target="$1" force="${2:-false}"
 
-  if [ "$target" = "all" ]; then
+  if [ "$target" = --all ]; then
     local vms
     vms=$(vms_in_state running)
     if [ -z "$vms" ]; then
@@ -170,7 +170,7 @@ stop_vms() {
 restart_vms() {
   local target="$1"
 
-  if [ "$target" = "all" ]; then
+  if [ "$target" = --all ]; then
     local running stopped rc=0
     running=$(vms_in_state running)
     stopped=$(vms_in_state "shut off")
@@ -287,10 +287,10 @@ dcvm list | status | start | stop | restart | console
 Usage:
   dcvm list [--json]          VMs with state, IP, vCPU and memory (and owner, for admins)
   dcvm status                 The same, plus the network and port forwards
-  dcvm start [vm|all]         One VM; without a name or with all, every dcvm VM (yours, without root)
-  dcvm stop <vm|all>          Shut down one VM, or every dcvm VM
+  dcvm start <vm> | --all     Start one VM, or every dcvm VM (yours, without root)
+  dcvm stop <vm> | --all      Shut down one VM, or every dcvm VM
   dcvm stop <vm> --force      Power off a VM whose guest ignores the shutdown request
-  dcvm restart <vm|all>       Restart one VM, or every dcvm VM
+  dcvm restart <vm> | --all   Restart one VM, or every dcvm VM
   dcvm console [vm]           Serial console of a VM (exit with Ctrl+]); without a name, access hints
 EOF
 }
@@ -304,21 +304,24 @@ main() {
 
   case $1 in
   start | stop | restart)
-    local cmd=$1 force=false a args=()
+    local cmd=$1 force=false every=false a args=()
     shift
     for a in "$@"; do
-      if [ "$a" = --force ] && [ "$cmd" = stop ]; then force=true; else args+=("$a"); fi
+      if [ "$a" = --force ] && [ "$cmd" = stop ]; then
+        force=true
+      elif [ "$a" = --all ]; then
+        every=true
+      else
+        args+=("$a")
+      fi
     done
-    if [ ${#args[@]} -gt 1 ] || [[ "${args[0]:-}" == -* ]] || { [ ${#args[@]} -eq 0 ] && [ "$cmd" != start ]; } ||
-      { [ "$force" = true ] && [ "${args[0]:-all}" = all ]; }; then
-      case "$cmd" in
-      start) print_error "Usage: dcvm start [vm|all]" ;;
-      stop) print_error "Usage: dcvm stop <vm|all>, or dcvm stop <vm> --force" ;;
-      restart) print_error "Usage: dcvm restart <vm|all>" ;;
-      esac
+    local n=${#args[@]}
+    [ "$every" = true ] && n=$((n + 1))
+    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$force" = true ] && [ "$every" = true ]; }; then
+      print_error "Usage: dcvm $cmd <vm> | --all$([ "$cmd" = stop ] && echo ", or dcvm stop <vm> --force")"
       exit 1
     fi
-    "${cmd}_vms" "${args[0]:-}" "$force"
+    "${cmd}_vms" "${args[0]:---all}" "$force"
     ;;
   status)
     [[ "${2:-}" != -* ]] || { print_error "Usage: dcvm status" && exit 1; }
