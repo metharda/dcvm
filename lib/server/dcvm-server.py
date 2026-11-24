@@ -235,22 +235,60 @@ def size_gb(value, default):
     return int(v.rstrip("G"))
 
 
-def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None):
+def gib(n):
+    return -(-n // 1024**3)
+
+
+def backup_bytes(uid):
+    """What uid's backups take on disk, plus what backups still being written have reserved."""
+    total = 0
+    d = os.path.join(read_config()["DATACENTER_BASE"], "backups")
+    for f in os.scandir(d) if os.path.isdir(d) else []:
+        if not re.search(r"-[0-9]{8}_[0-9]{6}\Z", f.name) or not f.is_dir(follow_symlinks=False):
+            continue
+        try:
+            with open(os.path.join(f.path, "owner")) as fh:
+                if fh.read().strip() != str(uid):
+                    continue
+            total += sum(e.stat(follow_symlinks=False).st_blocks * 512 for e in os.scandir(f.path))
+        except OSError:
+            continue
+    r = os.path.join(RUN, "reserve")
+    for n in os.listdir(r) if os.path.isdir(r) else []:
+        owner, _, pid = n.partition("-")
+        if owner != str(uid):
+            continue
+        try:
+            os.kill(int(pid), 0)
+            with open(os.path.join(r, n)) as fh:
+                total += int(fh.read().strip() or 0)
+        except (ValueError, ProcessLookupError):
+            # Its server process is gone, so nothing is being written for it.
+            os.unlink(os.path.join(r, n))
+        except OSError:
+            continue
+    return total
+
+
+def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None, vms=1):
     limits = limits_for(user)
     mine = [e for n, e in registry_all().items() if e.get("owner_uid") == str(uid) and n != exclude]
+    backups = gib(backup_bytes(uid))
     used = {
         "vms": len(mine),
         "vcpus": sum(int(e.get("cpus", "0") or 0) for e in mine),
         "memory_mb": sum(int(e.get("memory_mb", "0") or 0) for e in mine),
-        "disk_gb": sum(int(e.get("disk_gb", "0") or 0) for e in mine),
+        "disk_gb": sum(int(e.get("disk_gb", "0") or 0) for e in mine) + backups,
     }
-    want = {"vms": 1, "vcpus": cpus, "memory_mb": memory_mb, "disk_gb": disk_gb}
+    want = {"vms": vms, "vcpus": cpus, "memory_mb": memory_mb, "disk_gb": disk_gb}
     names = {"vms": "VM", "vcpus": "vCPU", "memory_mb": "memory (MB)", "disk_gb": "disk (GB)"}
     for k, n in want.items():
         if used[k] + n > limits[k]:
-            raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
-                         % (names[k], used[k], n, limits[k], LIMITS))
-    return "%d %d %d" % tuple(limits[k] for k in ("vcpus", "memory_mb", "disk_gb"))
+            of = " (%d of it backups: dcvm backup delete <vm>)" % backups if k == "disk_gb" and backups else ""
+            raise Denied("over your %s quota: %d used%s + %d requested > %d (ask an admin to raise it in %s)"
+                         % (names[k], used[k], of, n, limits[k], LIMITS))
+    # Backups hold part of the disk quota, so the module's own checks see only what is left for VMs.
+    return "%d %d %d" % (limits["vcpus"], limits["memory_mb"], max(0, limits["disk_gb"] - backups))
 
 
 def take_value(args, i, opt):
@@ -539,7 +577,13 @@ def decide_backup(ctx, args):
         yes, rest = ["--yes"], [a for a in rest if a not in ("-y", "--yes")]
     if sub == "create" and len(rest) == 1:
         own_vm(ctx, rest[0])
-        ctx.update(vm=rest[0], mutating=True, interactive=True)
+        # A backup is never larger than the disk's allocated blocks; that much is charged before it is written.
+        try:
+            need = os.stat(os.path.join(read_config()["DATACENTER_BASE"], "vms", rest[0], rest[0] + "-disk.qcow2")).st_blocks * 512
+        except OSError:
+            need = 0
+        check_quota(ctx["uid"], ctx["user"], 0, 0, gib(need), vms=0)
+        ctx.update(vm=rest[0], mutating=True, interactive=True, backup_need=need)
         return ["backup", "create", rest[0]]
     if sub == "list" and len(rest) <= 1:
         if rest:
@@ -549,7 +593,7 @@ def decide_backup(ctx, args):
         day = r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]+|[0-9]{2}:[0-9]{2}:[0-9]{2}))?"
         if len(rest) == 1:
             # Split with the module's own greedy regex for <vm>-<id>, so both name the same backup.
-            m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
+            m = re.match(r"^(.+)-([0-9]{8}_[0-9]{6}|latest|%s)\Z" % day, rest[0])
             if m:
                 vm, bid = m.group(1), m.group(2)
             elif NAME.match(rest[0]):
@@ -560,15 +604,15 @@ def decide_backup(ctx, args):
                 raise Denied("usage: %s" % USAGE["backup delete"])
         else:
             vm, bid = rest[0], strip_vm(rest[0], rest[1])
+        if bid is not None:
             t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
             if t:
                 bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
             if bid != "latest" and not re.match(r"^%s\Z" % day, bid):
                 raise Denied("usage: %s" % USAGE["backup delete"])
         check_backup_vm(ctx, vm)
-        # A stale backup of a name now owned by someone else must not take that VM's lock.
-        owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
-        ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
+        backup_lock(ctx, vm)
+        ctx["mutating"] = True
         return ["backup", "delete", vm] + ([] if bid is None else [bid])
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
@@ -596,8 +640,16 @@ def decide_backup(ctx, args):
         if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
         ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
+        # Not mutating: a client that goes away cancels the export.
+        backup_lock(ctx, rest[0])
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
     refuse(["backup"] + args)
+
+
+def backup_lock(ctx, vm):
+    # A stale backup of a name now owned by someone else must not take that VM's lock.
+    owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
+    ctx.update(vm=vm, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
 
 
 def export_fd(fd):
@@ -1043,6 +1095,15 @@ def execute(ctx, conn, argv, req, fds):
             decide_user(again, req["argv"])
             if again.get("lock") != ctx.get("lock"):
                 raise Denied("%s changed while this command waited; run it again" % vm)
+        if ctx.get("backup_need") is not None:
+            # Checked and reserved under the global lock: two backups can't both fit in the same free quota.
+            held.append(lock("global"))
+            check_quota(ctx["uid"], ctx["user"], 0, 0, gib(ctx["backup_need"]), vms=0)
+            os.makedirs(os.path.join(RUN, "reserve"), mode=0o700, exist_ok=True)
+            ctx["reservation"] = os.path.join(RUN, "reserve", "%d-%d" % (ctx["uid"], os.getpid()))
+            with open(ctx["reservation"], "w") as f:
+                f.write("%d\n" % ctx["backup_need"])
+            os.close(held.pop())
         if reserve:
             held.append(lock("global"))
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
@@ -1086,9 +1147,10 @@ def execute(ctx, conn, argv, req, fds):
     finally:
         for fd in held:
             os.close(fd)
-        if ctx.get("pubkey_file"):
+        for f in (ctx.get("pubkey_file"), ctx.get("reservation")):
             try:
-                os.unlink(ctx["pubkey_file"])
+                if f:
+                    os.unlink(f)
             except OSError:
                 pass
 
