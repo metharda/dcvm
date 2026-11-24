@@ -63,6 +63,19 @@ history, so the commit or PR is listed for each release.
 - Forward rules accept only port-forwarded (DNATed) traffic, and `RELATED,ESTABLISHED` is added once; run `sudo dcvm network ports apply` once to replace older rules.
 - The storage check skips VMs owned by users and pins each VM's SSH host key, not the address's.
 - The NFS share is exported with `subtree_check`, so a VM can't reach files outside it; `dcvm doctor` reports older exports and `--fix` rewrites them.
+- The installer no longer sources or installs files from the folder it is run
+  from unless that is a dcvm checkout no other user can write to; another user
+  could plant `utils/common.sh` next to a download in `/tmp` and run code as root.
+- Backups keep the VM's VNC/SPICE password (config saved `600`), so a restore
+  no longer opens the console without one; exports leave it out.
+- The installer and `self-update` fetch every file from one commit;
+  `self-update` refuses an older version without `--force`; its staging
+  folders get random names.
+- `uninstall` deletes only VMs on the dcvm network itself (not `datacenter-net2`),
+  refuses to `rm -rf` a `DATACENTER_BASE` without dcvm's layout, and removes its
+  `/etc/exports` line.
+- The installer validates the directory and network name it writes to
+  `/etc/dcvm-install.conf` and makes the file `644`.
 
 ## [0.9.10] - 2026-11-23
 

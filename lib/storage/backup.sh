@@ -660,7 +660,8 @@ export_backup() {
       ui_step warn "Base image" "not recorded (backup from before 0.9.9): the target needs the same build, or use --full"
     fi
   fi
-  cp "$config_backup" "$tmpdir/" || {
+  # The package leaves this host: no console password in it.
+  sed "s/ passwd='[^']*'//g; s/ passwd=\"[^\"]*\"//g" "$config_backup" >"$tmpdir/$(basename "$config_backup")" || {
     rm -rf "$tmpdir"
     print_error "Failed to copy config backup"
     return 1
@@ -930,7 +931,7 @@ backup_vm() {
 
   local backup_folder_name="${vm_name}-$DATE"
   local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
-  mkdir -p "$backup_folder_path" || {
+  mkdir -p -m 700 "$backup_folder_path" || {
     print_error "Failed to create folder: $backup_folder_path"
     return 1
   }
@@ -967,7 +968,8 @@ backup_vm() {
   write_base_record "$vm_disk_path" "$backup_folder_path"
   vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
   vm_login "$vm_name" >"$backup_folder_path/login"
-  if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
+  # --security-info keeps the VNC/SPICE password; without it a restore opens the console to every local user.
+  if (umask 077 && virsh dumpxml --security-info "$vm_name" >"$config_backup") 2>/dev/null; then
     ui_step ok "Saved config" "$(basename "$config_backup")"
     log "INFO" "Configuration backup completed for $vm_name"
   else

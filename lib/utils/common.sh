@@ -358,8 +358,20 @@ leases_table() {
   } | ui_table
 }
 
+# Every file comes from one commit: the branch can move mid-update and the raw
+# CDN caches each path on its own.
+repo_commit_sha() {
+  local url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/commits/${DCVM_REPO_BRANCH:-main}" sha
+  if command_exists curl; then
+    sha=$(curl -fsSL -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+  else
+    sha=$(wget -q -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+}
+
 fetch_repo_file() {
-  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_BRANCH:-main}"
+  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}"
   mkdir -p "$(dirname "$2")" 2>/dev/null || true
   if command_exists curl; then
     curl -fsSL -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
@@ -383,10 +395,10 @@ install_dcvm_tree() {
   local stage="$1" bin="$2" lib="$3" old
   [ -f "$stage/dcvm" ] && [ -d "$stage/lib" ] || return 1
   dcvm_tree_permissions "$stage/dcvm" "$stage/lib" || return 1
-  old="$lib.old.$$"
-  [ -d "$lib" ] && { mv "$lib" "$old" || return 1; }
+  old=$(mktemp -d "$lib.old.XXXXXX") || return 1
+  [ -d "$lib" ] && { mv "$lib" "$old/lib" || return 1; }
   if ! mv "$stage/lib" "$lib"; then
-    [ -d "$old" ] && mv "$old" "$lib"
+    [ -d "$old/lib" ] && mv "$old/lib" "$lib"
     return 1
   fi
   mv -f "$stage/dcvm" "$bin/dcvm" || return 1
@@ -394,7 +406,7 @@ install_dcvm_tree() {
 }
 
 list_repo_files() {
-  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_BRANCH:-main}?recursive=1"
+  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}?recursive=1"
   local response files
   if command_exists curl; then
     response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
