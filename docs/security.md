@@ -85,7 +85,9 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   (SSH from 2221, HTTP from 8081). If the host has a public address, those
   ports are reachable from the internet, where password SSH logins are
   allowed. Restrict them with your firewall, or do not run `ports setup` on
-  such a host and use the VM IPs from the host itself or over a VPN.
+  such a host and use the VM IPs from the host itself or over a VPN. The
+  matching `FORWARD` rules accept only that forwarded (DNATed) traffic, not
+  other traffic routed to a VM's ports 22 and 80.
 - **dcvm owns two port ranges.** `ports setup`, `ports apply` and
   `ports clear` delete every `PREROUTING` rule on host ports 2220-2299 and
   8080-8179, and every `FORWARD` rule that mentions the dcvm subnet, before
@@ -101,6 +103,12 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   node, on the host. The folder is mode `700` and owned by `dcvm-nfs`, so
   local users on the host can't open it (root can). Every VM can read, change
   and delete every file in it, so don't put anything private there.
+  The export uses `subtree_check`: without it, root in a VM that forges an NFS
+  file handle could reach any file on the same host file system as
+  `dcvm-nfs`. Before 1.0 it used `no_subtree_check`; `dcvm doctor` reports
+  that and `--fix` rewrites the line. Putting the share on a file system of
+  its own (a separate partition or LVM volume mounted at
+  `$DATACENTER_BASE/nfs-share`) is stronger still.
   Before 0.9.9.1 the export used `no_root_squash` and the folder was `1777`:
   root in any VM could leave a setuid-root program there that any local user
   on the host could run. `dcvm doctor` reports such an export as a failure,
@@ -204,7 +212,10 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
 - **What still connects users:** VMs share one bridge and can reach each
   other, and a guest can set any address on it, including another VM's.
   dcvm refuses a static `--ip` or a port forward to an address another VM
-  holds, but it can't stop a guest's own network settings. The optional NFS
+  holds, but it can't stop a guest's own network settings. For port
+  forwards, deletes and the storage check dcvm takes a VM's address only
+  from host-side records (its port mapping, its DHCP lease by MAC or its
+  static IP), never from what the guest agent reports. The optional NFS
   share is one folder for every VM. Don't enable
   the share on a host whose users don't trust each other. `dcvm-admin` is
   root-equivalent by design; so are the `libvirt`, `disk` and `docker` groups,

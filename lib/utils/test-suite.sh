@@ -3191,13 +3191,123 @@ test_vm_ip_sources() {
     AGENT="10.10.10.2;id"
     printf '%s ' "$(get_vm_ip web)"
     LEASE=10.10.10.50 AGENT=10.10.10.77
-    printf '%s' "$(get_vm_ip web)"
+    printf '%s ' "$(get_vm_ip web)"
+    LEASE="" AGENT=10.10.10.77
+    printf '%s ' "$(get_vm_ip web)"
+    printf '%s ' "$(get_vm_ip_trusted web)"
+    LEASE=10.10.10.050
+    printf '%s' "$(get_vm_ip_trusted web)"
   )
-  if [ "$out" = "N/A N/A 10.10.10.50" ]; then
-    log_test "PASS" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text"
+  if [ "$out" = "N/A N/A 10.10.10.50 10.10.10.77 N/A N/A" ]; then
+    log_test "PASS" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text; get_vm_ip_trusted never asks the agent"
   else
-    log_test "FAIL" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text" "$out"
+    log_test "FAIL" "VM addresses: host-side lease first, guest agent cannot claim the gateway or inject text; get_vm_ip_trusted never asks the agent" "$out"
   fi
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2329,SC2016,SC1090,SC1091 # stubs
+test_network_trust() {
+  local t out r=""
+  t=$(mktemp -d)
+  # The guest agent of vm1 claims 10.10.10.40, which vm2 holds.
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nvm1 10.10.10.5 2221 8081\nvm2 10.10.10.40 2222 8082\n' >"$t/port-mappings.txt"
+  run_delete() {
+    (
+      HOME="$t"
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t" NETWORK_NAME=datacenter-net BRIDGE_NAME=br DNSMASQ_DIR="$t" NETWORK_SUBNET=10.10.10
+      virsh() {
+        case "$1 $*" in
+        domiflist*) printf ' vnet0 network datacenter-net virtio 52:54:00:00:00:01\n' ;;
+        *"--source agent"*) printf ' vnet0 52:54:00:00:00:01 ipv4 10.10.10.40/24\n' ;;
+        esac
+        return 0
+      }
+      cleanup_dhcp_lease() { return 1; }
+      check_vm_exists() { return 0; }
+      registry_get() { :; }
+      registry_remove() { :; }
+      get_vm_mac() { echo 52:54:00:00:00:01; }
+      get_vm_disk_path() { :; }
+      get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+      stop_vm_gracefully() { :; }
+      cleanup_port_forwarding_for_vm() { echo "$*" >>"$t/cleanup"; }
+      sleep() { :; }
+      delete_single_vm "$1"
+    ) >/dev/null 2>&1
+  }
+  run_delete vm1
+  [ "$(cat "$t/cleanup" 2>/dev/null)" = "10.10.10.5 2221 8081" ] &&
+    [ "$(grep -v '^#' "$t/port-mappings.txt")" = "vm2 10.10.10.40 2222 8082" ] && [ -e "$t/port-mappings.txt.lock" ] && r+="mapping-ip "
+  rm -f "$t/cleanup"
+  run_delete vm3
+  [ ! -e "$t/cleanup" ] && r+="no-agent "
+  if [ "$r" = "mapping-ip no-agent " ]; then
+    log_test "PASS" "delete removes rules for the mapping's address under the mappings lock, never for what the guest agent reports"
+  else
+    log_test "FAIL" "delete removes rules for the mapping's address under the mappings lock, never for what the guest agent reports" "$r; $(tr '\n' '|' <"$t/cleanup" 2>/dev/null)"
+  fi
+
+  r=""
+  rm -f "$t/ssh"
+  out=$(
+    source "$SCRIPT_DIR/../storage/storage-manager.sh" >/dev/null 2>&1
+    LOG_FILE="$t/storage.log" NETWORK_NAME=datacenter-net NETWORK_SUBNET=10.10.10 DATACENTER_BASE="$t"
+    LEASE=""
+    virsh() {
+      case "$1 $*" in
+      domiflist*) printf ' vnet0 network datacenter-net virtio 52:54:00:00:00:01\n' ;;
+      net-dhcp-leases*) [ -n "$LEASE" ] && printf ' 2026-01-01 00:00:00 52:54:00:00:00:01 ipv4 %s/24 web -\n' "$LEASE" ;;
+      *"--source agent"*) printf ' vnet0 52:54:00:00:00:01 ipv4 10.10.10.40/24\n' ;;
+      esac
+      return 0
+    }
+    ssh() { echo "$*" >>"$t/ssh"; }
+    get_vm_username() { echo ubuntu; }
+    registry_get() { case "$2" in created) echo 123 ;; owner) echo alice ;; esac }
+    OWNER=1000
+    vm_owner_uid() { echo "$OWNER"; }
+    check_vm_storage web
+    OWNER=0
+    check_vm_storage web
+    LEASE=10.10.10.50
+    check_vm_storage web
+  )
+  [ "$(grep -c . "$t/ssh" 2>/dev/null)" = 1 ] && grep -q 'HostKeyAlias=dcvm-web-123 .*ubuntu@10.10.10.50' "$t/ssh" && grep -q 'owned by alice' <<<"$out" && r+="storage "
+  if [ "$r" = "storage " ]; then
+    log_test "PASS" "storage check skips users' VMs and the guest agent's address, pins host keys per VM"
+  else
+    log_test "FAIL" "storage check skips users' VMs and the guest agent's address, pins host keys per VM" "$(tr '\n' '|' <"$t/ssh" 2>/dev/null) $(tr '\n' '|' <<<"$out")"
+  fi
+
+  r=""
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\necho "$*" >>"${0%%/*}/calls"\n' >"$t/bin/iptables"
+  chmod +x "$t/bin/iptables"
+  (PATH="$t/bin:$PATH" && source "$SCRIPT_DIR/../network/port-forward.sh" && BRIDGE_NAME=br &&
+    setup_vm_forwarding web 10.10.10.5 2221 8081 192.0.2.1) >/dev/null 2>&1
+  [ "$(grep -cE -- '-I FORWARD -p tcp -d 10\.10\.10\.5 --dport (22|80) -m conntrack --ctstate DNAT -j ACCEPT' "$t/bin/calls")" = 2 ] && r+="dnat-only "
+  rm -f "$t/bin/calls"
+  (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.5 2221 8081) >/dev/null 2>&1
+  [ "$(grep -- '-D FORWARD' "$t/bin/calls")" = "$(printf '%s\n' \
+    '-D FORWARD -p tcp -d 10.10.10.5 --dport 22 -j ACCEPT' \
+    '-D FORWARD -p tcp -d 10.10.10.5 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
+    '-D FORWARD -p tcp -d 10.10.10.5 --dport 80 -j ACCEPT' \
+    '-D FORWARD -p tcp -d 10.10.10.5 --dport 80 -m conntrack --ctstate DNAT -j ACCEPT')" ] && r+="remove-both "
+  ! grep -qE '^ *iptables -I FORWARD -m state' "$SCRIPT_DIR/../network/port-forward.sh" && r+="related-once "
+  if [ "$r" = "dnat-only remove-both related-once " ]; then
+    log_test "PASS" "forward ACCEPT rules match only DNATed traffic; removal takes old and new rules; RELATED,ESTABLISHED added once"
+  else
+    log_test "FAIL" "forward ACCEPT rules match only DNATed traffic; removal takes old and new rules; RELATED,ESTABLISHED added once" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null)"
+  fi
+
+  if grep -qF 'subtree_check,all_squash' "$SCRIPT_DIR/common.sh" && ! grep -q 'no_subtree_check' "$SCRIPT_DIR/common.sh" &&
+    grep -qF '[(,]subtree_check[,)]' "$SCRIPT_DIR/common.sh"; then
+    log_test "PASS" "NFS share is exported with subtree_check, and doctor requires it"
+  else
+    log_test "FAIL" "NFS share is exported with subtree_check, and doctor requires it"
+  fi
+  rm -rf "$t"
 }
 
 test_sanitize_domain_xml() {
@@ -3717,10 +3827,11 @@ test_common_functions() {
   run_test_expect_fail "validate_vm_name_list (newline)" "validate_vm_name_list \$'web1\\nweb2'"
   run_test_expect_fail "validate_vm_name_list (empty entry)" "validate_vm_name_list 'web1,,web2'"
   run_test_expect_fail "validate_vm_name_list (trailing comma)" "validate_vm_name_list 'web1,'"
-  local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.50:22' |'-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }"
+  local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.50:22' |'-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT') return 0 ;; esac; return 1; }"
   run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "(BRIDGE_NAME=virbr-dc; $pf_rules; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (no DNAT rule)" "(iptables() { case \"\$*\" in '-t nat'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (no FORWARD rule)" "(iptables() { case \"\$*\" in '-C FORWARD'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
+  run_test_expect_fail "check_port_forward (old FORWARD rule without the DNAT match)" "(BRIDGE_NAME=virbr-dc; iptables() { case \"\$*\" in '-t nat'* | '-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (VM port closed)" "(iptables() { return 0; }; check_port_connectivity() { return 1; }; check_port_forward 2221 10.10.10.50 22)"
   run_test "validate_package_list (valid)" "validate_package_list 'nginx, python3-pip,g++,libc6.1'"
   run_test_expect_fail "validate_package_list (shell chars)" "validate_package_list 'nginx;reboot'"
@@ -3751,6 +3862,14 @@ test_common_functions() {
     run_test_expect_fail "validate_ip_in_subnet (gateway .1)" "NETWORK_SUBNET=10.10.10 validate_ip_in_subnet '10.10.10.1'"
     run_test_expect_fail "validate_ip_in_subnet (broadcast .255)" "NETWORK_SUBNET=10.10.10 validate_ip_in_subnet '10.10.10.255'"
     run_test_expect_fail "validate_ip_in_subnet (network .0)" "NETWORK_SUBNET=10.10.10 validate_ip_in_subnet '10.10.10.0'"
+    run_test_expect_fail "validate_ip_in_subnet (leading zero .050, octal .40 to iptables)" "NETWORK_SUBNET=10.10.10 validate_ip_in_subnet '10.10.10.050'"
+    run_test_expect_fail "validate_ip_in_subnet (leading zero in subnet part)" "NETWORK_SUBNET=10.10.10 validate_ip_in_subnet '10.010.10.50'"
+    run_test_expect_fail "valid_vm_ip (leading zero .050)" "NETWORK_SUBNET=10.10.10 valid_vm_ip '10.10.10.050'"
+    run_test_expect_fail "valid_vm_ip (.00)" "NETWORK_SUBNET=10.10.10 valid_vm_ip '10.10.10.00'"
+    run_test "valid_vm_ip (.50)" "NETWORK_SUBNET=10.10.10 valid_vm_ip '10.10.10.50'"
+    run_test_expect_fail "claim_static_ip (leading zero .050)" "(NETWORK_SUBNET=10.10.10; ip_held_by_other_vm() { return 1; }; claim_static_ip vm1 '10.10.10.050')"
+    run_test_expect_fail "valid_ipv4 (octet 256)" "valid_ipv4 10.10.10.256"
+    run_test "valid_ipv4 (0.0.0.0 and 255.255.255.255)" "valid_ipv4 0.0.0.0 && valid_ipv4 255.255.255.255"
   else
     log_test "SKIP" "validate_ip_in_subnet tests" "Function not available"
   fi
@@ -3816,6 +3935,7 @@ test_common_functions() {
   test_build_names_and_sums
   test_vm_name_reserved
   test_vm_ip_sources
+  test_network_trust
   test_sanitize_domain_xml
   test_check_disk_image
   test_import_rejects_hostile_archives

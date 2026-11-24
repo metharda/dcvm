@@ -325,16 +325,8 @@ load_dcvm_config() {
   BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
   NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
 
-  if [[ "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-    local oct1="${BASH_REMATCH[1]}"
-    local oct2="${BASH_REMATCH[2]}"
-    local oct3="${BASH_REMATCH[3]}"
-    if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
-      echo "WARNING: Invalid NETWORK_SUBNET octets ($NETWORK_SUBNET), using default 10.10.10" >&2
-      NETWORK_SUBNET="10.10.10"
-    fi
-  else
-    echo "WARNING: Invalid NETWORK_SUBNET format ($NETWORK_SUBNET), using default 10.10.10" >&2
+  if ! valid_ipv4 "$NETWORK_SUBNET.0"; then
+    echo "WARNING: Invalid NETWORK_SUBNET ($NETWORK_SUBNET), using default 10.10.10" >&2
     NETWORK_SUBNET="10.10.10"
   fi
 }
@@ -1094,16 +1086,21 @@ get_vm_state() {
   virsh domstate "$vm_name" 2>/dev/null || echo "not-found"
 }
 
+# Decimal octets only: iptables and inet_aton read 10.10.10.050 as octal, 10.10.10.40.
+valid_ipv4() {
+  [[ "$1" =~ ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$ ]]
+}
+
 valid_vm_ip() {
   local subnet="${NETWORK_SUBNET:-10.10.10}" host
-  [[ "$1" == "$subnet".* ]] || return 1
+  valid_ipv4 "$1" && [[ "$1" == "$subnet".* ]] || return 1
   host=${1#"$subnet".}
   [[ "$host" =~ ^[0-9]{1,3}$ ]] && [ "$host" -ge 2 ] && [ "$host" -le 254 ]
 }
 
 # Host-side sources first: the guest agent reports whatever the guest wants.
 get_vm_ip() {
-  local vm_name="$1" attempts="${2:-1}" ip="" count=0 mac
+  local vm_name="$1" attempts="${2:-1}" agent="${3:-agent}" ip="" count=0 mac
   local network_name="${NETWORK_NAME:-datacenter-net}"
   local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
 
@@ -1112,7 +1109,7 @@ get_vm_ip() {
     [ -n "$mac" ] && ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{ print $5 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=$([ -f "$static_conf" ] && grep '^IP=' "$static_conf" | head -1 | cut -d= -f2- | sed 's/^"//;s/"$//')
-    valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
+    [ "$agent" = agent ] && ! valid_vm_ip "$ip" && ip=$(virsh domifaddr -- "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=""
     [ -z "$ip" ] && [ "$attempts" -gt 1 ] && sleep 2
     count=$((count + 1))
@@ -1124,6 +1121,9 @@ get_vm_ip() {
   fi
   echo "$ip"
 }
+
+# For rules, deletes and root SSH: never what the guest reports about itself.
+get_vm_ip_trusted() { get_vm_ip "$1" "${2:-1}" host; }
 
 get_vm_mac() {
   local vm_name="$1"
@@ -1280,7 +1280,7 @@ check_port_forward() {
   local vm_ip="$2"
   local vm_port="$3"
   iptables -t nat -C PREROUTING ! -i "${BRIDGE_NAME:-virbr-dc}" -p tcp -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
-  iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -j ACCEPT 2>/dev/null || return 1
+  iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null || return 1
   check_port_connectivity "$vm_ip" "$vm_port"
 }
 
@@ -1468,8 +1468,13 @@ cleanup_port_forwarding_for_vm() {
     done < <(iptables -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
       $1 == "-A" { d = t = ""; for (i = 2; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
         if (d " " t == s || d " " t == h) print }')
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
+    local port state
+    for port in 22 80; do
+      for state in "" "-m conntrack --ctstate DNAT"; do
+        # shellcheck disable=SC2086 # $state is empty (old rule) or the match words
+        iptables -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
+      done
+    done
   else
     print_info "Searching and removing all rules with IP $vm_ip"
     local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
@@ -1528,7 +1533,7 @@ nfs_unsafe_files() {
 nfs_share_secure() {
   local share="$1" uid gid
   uid=$(id -u "$NFS_SQUASH_USER" 2>/dev/null) && gid=$(id -g "$NFS_SQUASH_USER") || return 1
-  awk -v p="$share" -v u="anonuid=$uid" '$1 == p && $2 ~ /all_squash/ && index($2, u) { f = 1 } END { exit !f }' /etc/exports 2>/dev/null || return 1
+  awk -v p="$share" -v u="anonuid=$uid" '$1 == p && $2 ~ /all_squash/ && $2 ~ /[(,]subtree_check[,)]/ && index($2, u) { f = 1 } END { exit !f }' /etc/exports 2>/dev/null || return 1
   [ "$(stat -c '%u %a' "$share" 2>/dev/null)" = "$uid 700" ] || return 1
   [ -z "$(nfs_unsafe_files "$share" "$uid" "$gid" -print -quit)" ]
 }
@@ -1551,7 +1556,8 @@ secure_nfs_share() {
   tmp=$(mktemp) || return 1
   {
     awk -v p="$share" '$1 != p' /etc/exports 2>/dev/null
-    echo "$share ${subnet}.0/24(rw,sync,no_subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
+    # subtree_check: without it a forged file handle reaches any file on the same host file system.
+    echo "$share ${subnet}.0/24(rw,sync,subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
   } >"$tmp" &&
     cat "$tmp" >/etc/exports
   rm -f "$tmp"
@@ -1923,20 +1929,11 @@ validate_ip_in_subnet() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_re="${subnet//./\\.}"
 
-  if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-    print_error "Invalid IP address format: $ip"
+  if ! valid_ipv4 "$ip"; then
+    print_error "Invalid IP address: $ip (four numbers 0-255, no leading zeros)"
     return 1
   fi
-
-  local oct1="${BASH_REMATCH[1]}"
-  local oct2="${BASH_REMATCH[2]}"
-  local oct3="${BASH_REMATCH[3]}"
-  local oct4="${BASH_REMATCH[4]}"
-
-  if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ] || [ "$oct4" -gt 255 ]; then
-    print_error "Invalid IP address: octets must be 0-255"
-    return 1
-  fi
+  local oct4="${ip##*.}"
 
   if [[ ! "$ip" =~ ^${subnet_re}\. ]]; then
     print_error "IP address $ip is not in subnet ${subnet}.0/24"
@@ -2006,7 +2003,7 @@ export -f print_info print_success print_warning print_error print_status ui_qui
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username valid_vm_ip
+export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
 export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
