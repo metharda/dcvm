@@ -52,6 +52,16 @@ history, so the commit or PR is listed for each release.
 - A downloaded image is checked only against the official server's checksum and refused when it gives none, so no mirror vouches for its own file (#136).
 - Mirrors that redirect to http are not ranked, so aria2c never downloads from them (#193).
 - The installer refuses a `DATACENTER_BASE` that another user owns or can write to, and makes the folders it uses inside it root-owned (#191).
+### Security
+
+- Backup restore moves every network interface onto dcvm's network and drops host bridges, `<target>`, `<filterref>`, `<virtualport>`, VLANs and network boot; graphics get autoport and a password (#115).
+- Backup restore keeps only listed attributes and child elements on every device, so `<input type='evdev'>`, a vhost-user video driver, a TPM state path or `<sysinfo type='fwcfg'>` file no longer survive (#190).
+- The cloud-init seed CD-ROM loses its `user-data` (password hashes, Tailscale key, MySQL password) once the guest has read it, and the guest deletes cloud-init's copies at the end of its first boot (#134).
+
+### Fixed
+
+- `--ip` and DHCP network-config match the NIC by its MAC, so they work on Debian, Kali and Fedora, not only with netplan (#130).
+- CPU, memory and disk sizes with a leading zero (`-c 08`, `-m 01000`) are read as decimal in the quota check and size parsing (#131).
 
 ## [0.9.11] - 2026-11-24
 

@@ -47,8 +47,12 @@ Exceptions to know about:
 | `--tailscale-authkey` | Plain text in `user-data` (`tailscale up --authkey=...`) | Use a one-off, short-lived or ephemeral auth key |
 
 The VM's `cloud-init/` folder is created with mode 700 (root only).
-`cloud-init.iso`, built from it, stays in the VM folder because QEMU has to
-read it; it contains the same `user-data`.
+`cloud-init.iso`, built from it, is the VM's seed CD-ROM. Once the VM is
+created, dcvm replaces it with a copy without `user-data` (same instance-id
+and network config, so cloud-init doesn't run again), and swaps it into the
+running VM as soon as SSH answers; until then (or until the VM is next powered
+off, if SSH never answers) the VM user can read the first seed. At the end of
+its first boot the guest deletes cloud-init's own copies of the `user-data`.
 
 **SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the creator's
 public key to the VM user's `authorized_keys`: for root, `~/.ssh/id_rsa.pub`
@@ -193,10 +197,12 @@ shows it.
   `templates/builds/` (or a template, for backups from before 0.9.9). The
   base record's image name and checksums are checked before use. The VM
   definition is rebuilt from an allowlist: one disk (the restored one),
-  network interfaces without scripts, pty serial ports, graphics on
-  127.0.0.1; host devices, shared folders, `qemu:commandline`, security
-  labels, kernel and initrd paths, file-backed memory or audio and any other
-  element dcvm doesn't know are dropped.
+  network interfaces moved onto dcvm's network, pty serial ports, graphics on
+  127.0.0.1 with a password (a new one when the backup has none); every
+  kept device keeps only the attributes and child elements dcvm lists, so
+  host devices, host bridges, shared folders, `qemu:commandline`, security
+  labels, kernel and initrd paths, network boot, file-backed memory, audio,
+  input or TPM state and any other element dcvm doesn't know are dropped.
 - **Restored copies get new identities.** `dcvm backup restore <vm> <date>
   <new_name>` gives the copy new MAC addresses and, with `virt-customize`, a
   new hostname, machine-id and SSH host keys, so two VMs don't share host keys.

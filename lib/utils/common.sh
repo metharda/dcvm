@@ -486,9 +486,9 @@ print(b)' <<<"$info") || return 1
 }
 
 sanitize_domain_xml() {
-  python3 -I -S - "$1" "$2" "$3" "$4" <<'PY'
-import os, sys, xml.etree.ElementTree as ET
-path, name, disk, renamed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+  python3 -I -S - "$1" "$2" "$3" "$4" "${NETWORK_NAME:-datacenter-net}" <<'PY'
+import os, secrets, string, sys, xml.etree.ElementTree as ET
+path, name, disk, renamed, network = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true", sys.argv[5]
 tree = ET.parse(path)
 dom = tree.getroot()
 if dom.tag != "domain":
@@ -496,8 +496,28 @@ if dom.tag != "domain":
 top = {"name", "title", "description", "memory", "currentMemory", "maxMemory", "vcpu", "vcpus", "iothreads",
        "cputune", "numatune", "memtune", "os", "features", "cpu", "clock", "on_poweroff", "on_reboot",
        "on_crash", "on_lockfailure", "pm", "devices", "genid", "sysinfo", "perf"}
-devs = {"disk", "controller", "interface", "input", "graphics", "video", "sound", "audio", "memballoon", "rng",
-        "watchdog", "panic", "tpm", "vsock", "hub", "serial", "console", "channel", "iommu"}
+# A kept device keeps only these attributes and children: any other can name a host file, device or network.
+devs = {
+    "disk": ({"type", "device"}, {"target", "address"}),
+    "controller": ({"type", "index", "model", "ports", "vectors"}, {"model", "target", "driver", "master", "address"}),
+    "interface": ({"type"}, {"mac", "model", "address"}),
+    "input": ({"type", "bus"}, {"address"}),
+    "graphics": ({"type", "passwd"}, set()),
+    "video": (set(), {"model", "address"}),
+    "sound": ({"model"}, {"address"}),
+    "audio": ({"id", "type"}, set()),
+    "memballoon": ({"model", "autodeflate", "freePageReporting"}, {"stats", "address"}),
+    "rng": ({"model"}, {"backend", "rate", "address"}),
+    "watchdog": ({"model", "action"}, {"address"}),
+    "panic": ({"model"}, {"address"}),
+    "tpm": ({"model"}, {"backend"}),
+    "vsock": ({"model"}, {"address"}),
+    "hub": ({"type"}, {"address"}),
+    "serial": ({"type"}, {"target", "address"}),
+    "console": ({"type"}, {"target", "address"}),
+    "channel": ({"type"}, {"source", "target", "address"}),
+    "iommu": ({"model"}, {"driver", "address"}),
+}
 for child in list(dom):
     if child.tag not in top:
         dom.remove(child)
@@ -505,11 +525,16 @@ for el in list(dom.iter()):
     for sub in [c for c in el if c.tag == "seclabel"]:
         el.remove(sub)
 dom.find("name").text = name
+sysinfo = dom.find("sysinfo")
+if sysinfo is not None and sysinfo.get("type") != "smbios":
+    dom.remove(sysinfo)
 osel = dom.find("os")
 if osel is not None:
     for child in list(osel):
         text = (child.text or "").strip()
         if child.tag in ("kernel", "initrd", "cmdline", "dtb", "acpi", "init", "initarg", "initenv", "initdir", "inituser", "initgroup", "shim"):
+            osel.remove(child)
+        elif child.tag == "boot" and child.get("dev") != "hd":
             osel.remove(child)
         elif child.tag == "loader" and (not text.startswith("/usr/share/") or ".." in text):
             osel.remove(child)
@@ -530,42 +555,77 @@ kept_disk = False
 for d in list(devices):
     tag = d.tag
     keep = tag in devs
+    if keep:
+        attrs, children = devs[tag]
+        d.attrib = {k: v for k, v in d.attrib.items() if k in attrs}
+        for c in [c for c in d if c.tag not in children]:
+            d.remove(c)
     if tag == "disk":
         keep = d.get("device", "disk") == "disk" and not kept_disk
         if keep:
             kept_disk = True
             d.set("type", "file")
             d.set("device", "disk")
-            for c in [c for c in d if c.tag in ("source", "backingStore", "driver", "auth", "mirror", "encryption", "reservations")]:
-                d.remove(c)
             ET.SubElement(d, "driver", {"name": "qemu", "type": "qcow2"})
             ET.SubElement(d, "source", {"file": disk})
     elif tag == "controller":
         keep = d.get("type") != "ide"
     elif tag == "interface":
+        # Every NIC goes on dcvm's network: a host bridge or another network is outside what dcvm manages.
         keep = d.get("type") in ("network", "bridge")
-        for c in [c for c in d if c.tag in ("script", "downscript", "backenddomain", "teaming", "portForward")]:
-            d.remove(c)
+        d.set("type", "network")
+        ET.SubElement(d, "source", {"network": network})
+        model = d.find("model")
+        if model is not None:
+            mtype = model.get("type")
+            model.attrib = {"type": mtype if mtype in ("virtio", "e1000e", "e1000", "rtl8139") else "virtio"}
+            for c in list(model):
+                model.remove(c)
         mac = d.find("mac")
+        if mac is not None:
+            mac.attrib = {"address": mac.get("address", "")}
         if keep and renamed and mac is not None:
             b = os.urandom(3)
             mac.set("address", "52:54:00:%02x:%02x:%02x" % (b[0], b[1], b[2]))
     elif tag == "graphics":
         keep = d.get("type") in ("vnc", "spice")
         if keep:
-            if d.get("listen") is not None:
-                d.set("listen", "127.0.0.1")
-            for c in [c for c in d if c.tag == "listen"]:
-                d.remove(c)
+            # Archives carry no password: without one any local user could open the console.
+            if renamed or not d.get("passwd"):
+                d.set("passwd", "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8)))
+            d.set("autoport", "yes")
+            d.set("listen", "127.0.0.1")
             ET.SubElement(d, "listen", {"type": "address", "address": "127.0.0.1"})
+    elif tag == "input":
+        keep = d.get("type") in ("tablet", "mouse", "keyboard")
+    elif tag == "video":
+        model = d.find("model")
+        keep = model is None or model.get("type") in ("virtio", "qxl", "vga", "cirrus", "bochs", "ramfb", "none")
+        if model is not None:
+            model.attrib = {k: v for k, v in model.attrib.items() if k in ("type", "vram", "ram", "vgamem", "vram64", "heads", "primary")}
+            for c in list(model):
+                model.remove(c)
+    elif tag == "watchdog":
+        if d.get("action") not in (None, "reset", "shutdown", "poweroff", "pause", "none", "inject-nmi"):
+            del d.attrib["action"]
+    elif tag == "vsock":
+        ET.SubElement(d, "cid", {"auto": "yes"})
     elif tag == "audio":
         keep = d.get("type") in ("none", "spice")
     elif tag == "rng":
         b = d.find("backend")
         keep = b is not None and b.get("model") == "random" and (b.text or "/dev/urandom").strip() in ("/dev/urandom", "/dev/random")
+        if keep:
+            b.attrib = {"model": "random"}
+            for c in list(b):
+                b.remove(c)
     elif tag == "tpm":
         b = d.find("backend")
         keep = b is not None and b.get("type") == "emulator"
+        if keep:
+            b.attrib = {k: v for k, v in b.attrib.items() if k in ("type", "version")}
+            for c in [c for c in b if c.tag != "active_pcr_banks"]:
+                b.remove(c)
     elif tag in ("serial", "console"):
         keep = d.get("type") == "pty"
     elif tag == "channel":
@@ -1430,6 +1490,8 @@ within_quota() {
     print_error "Could not check your quota"
     return 1
   fi
+  # A leading zero would make bash read octal: "08" is an error, "01000" is 512.
+  cpus=$((10#$cpus)) mem=$((10#$mem)) disk=$((10#$disk))
   if ! { mkdir -p "$locks" && exec {lockfd}>>"$locks/global" && flock -w 30 "$lockfd"; }; then
     print_error "Could not lock the quota check; try again"
     return 1
@@ -1522,10 +1584,10 @@ size_gb() {
     return
   }
   case "$v" in
-  *M) echo $(((${v%M} + 1023) / 1024)) ;;
-  *G) echo "${v%G}" ;;
-  *T) echo $((${v%T} * 1024)) ;;
-  *) echo "${v:-0}" ;;
+  *M) echo $(((10#${v%M} + 1023) / 1024)) ;;
+  *G) echo $((10#${v%G})) ;;
+  *T) echo $((10#${v%T} * 1024)) ;;
+  *) echo $((10#$v)) ;;
   esac
 }
 
