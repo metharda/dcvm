@@ -14,6 +14,9 @@ history, so the commit or PR is listed for each release.
 
 ### Fixed
 
+- `dcvm help` lists `backup ssh-setup`/`troubleshoot`, `template check`/`best`, `self-update --force` and `network ports rules`; `backup`'s unknown-subcommand message lists `ssh-setup`.
+- `dcvm create` without arguments exits 1 like `create-iso`; `dcvm doctor --only` or `--vm` without a value is refused instead of checking nothing.
+- Docs and `create --help` say that comma-separated names in one `create` are for root and admins; the user command lists in `docs/users.md` and the routing table in `docs/architecture.md` match the code.
 - Network names are matched exactly, so `uninstall`, `delete --all` and other VM lists no longer touch VMs on a network whose name merely contains dcvm's (#90).
 - `self-update` handles a failed file list without leaving a backup, and `--revert` runs the old version's pre-revert step only once the saved version is staged, restoring the services if the swap fails (#100).
 - `uninstall` needs root, removes the NFS squash user, the storage pools and firewalld services it added, keeps the owner records until the VMs are gone, and never deletes the data folder while a VM still uses a disk in it (#101).

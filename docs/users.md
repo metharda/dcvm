@@ -50,20 +50,21 @@ On their own VMs:
 | Command | Notes |
 | :------ | :---- |
 | `create`, `create-iso` | Options are checked against an allowlist (`--graphics` only `none`, `vnc` or `spice`; `--boot` only `cdrom,hd` or `hd,cdrom`). An ISO must be a file the user can read: `-o ./debian.iso`. One VM per command |
-| `list`, `status`, `info` | Only their VMs; `--json` for scripts |
+| `list`, `status`, `info`, `whoami` | Only their VMs; `--json` for scripts |
 | `start`, `stop`, `restart` | One VM, or `all` of theirs |
 | `console`, `ssh`, `exec`, `cp` | `ssh`, `exec` and `cp` use the user's own SSH key |
 | `delete` | Without a terminal it needs `--yes` |
 | `protect`, `unprotect` | A protected VM refuses `delete` and `restore` |
-| `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `export` writes to a file in the user's own folder |
+| `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `delete` takes a backup id (`<vm>-dd.mm.yyyy[-N]`), not the pick-from-a-list form. `export` writes to a file in the user's own folder |
 | `network ports add`, `remove`, `show` | Forwards SSH and HTTP for one VM from dcvm's port ranges |
 | `network vnc enable`, `disable`, `status` | VNC gets a random password, shown only to the VM's owner |
 | `fix-lock` | Without restarting libvirt, which serves every user |
-| `template list` | A missing image is downloaded when `create` needs it |
+| `template list`, `status` | A missing image is downloaded when `create` needs it |
 
-Admin only: `network` (start, stop, config, DHCP), `ports setup`/`apply`/`clear`,
-`template download`, `backup import`, `restore --base`, `storage`, `doctor`,
-`self-update`, `uninstall`, `user`, `owner`, `reap`, and `delete --all`.
+Admin only: `network` (start, stop, config, DHCP), `ports setup`/`rules`/`test`/`apply`/`clear`,
+`template download`/`check`/`best`/`verify`, `backup import`/`ssh-setup`/`troubleshoot`,
+`restore --base`, `storage`, `doctor`, `self-update`, `uninstall`, `user`, `owner`, `reap`,
+`fix-lock --all`, `delete --all`, and several VMs in one `create`.
 
 A user who tries anything else gets exit status 77 and a message that says why.
 A VM that isn't theirs gets the same answer as one that doesn't exist.

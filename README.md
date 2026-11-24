@@ -149,7 +149,7 @@ backup puts the VM back exactly as it was.
 | Task | Command |
 | :--- | :------ |
 | Create (wizard / one line) | `dcvm create myvm` · `dcvm create myvm -f -p "$PASS" -o 1 -m 4096 -c 4 -d 50G` |
-| Several at once | `dcvm create web,db,cache -f -p "$PASS"` |
+| Several at once (root and admins) | `dcvm create web,db,cache -f -p "$PASS"` |
 | From an installer ISO | `dcvm create-iso win --iso /isos/windows.iso -m 8192 -d 100G` |
 | List / overview | `dcvm list` · `dcvm status` |
 | Start, stop, restart (one or all) | `dcvm start web` · `dcvm stop` · `dcvm restart web` |
