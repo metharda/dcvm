@@ -571,16 +571,11 @@ compute_incremental_ip() {
   local idx="$2"
   local total="$3"
 
-  if ! [[ "$base_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    return 1
-  fi
+  # Its reason goes to stderr, which the caller's $(...) leaves on the terminal.
+  validate_ip_in_subnet "$base_ip" || return 1
   IFS='.' read -r a b c d <<<"$base_ip"
   local prefix="${a}.${b}.${c}"
   local base_last=$d
-
-  if [ "$base_last" -lt 2 ] || [ "$base_last" -gt 254 ]; then
-    return 1
-  fi
 
   local forward=$((base_last + idx))
   local assigned

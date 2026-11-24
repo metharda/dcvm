@@ -90,6 +90,14 @@ history, so the commit or PR is listed for each release.
 - Custom `SSH_PORT_START`/`HTTP_PORT_START` ranges are cleaned up, and `ports add` uses 79 SSH and 99 HTTP ports from them instead of stopping at 2299/8179 (#87).
 - `ports rules` no longer shows the previous rule's port next to a DNAT rule without one; `ports show` says there are none when a user has no forwards (#88).
 - `ports test`, `dcvm network` and `doctor` report libvirt's nftables rules that reject forwarded connections (#88).
+- `backup delete <vm> <id>` works (it used to open the pick-a-number menu), takes `latest` like restore, and fails when no backup matches or the VM has none.
+- `backup restore` takes `--yes` to replace a VM without a terminal; the docs say a restored VM is started whatever its state was.
+- `backup delete --all` takes `--yes`.
+- `dcvm user remove` fails for someone who isn't a dcvm user instead of saying they were removed.
+- `dcvm owner` tells the new owner that the VM still holds only the previous owner's SSH key.
+- `create --ip` says why the address is refused (gateway, broadcast, outside the subnet) instead of only "Failed to compute static IP".
+- `doctor` says when `/etc/sysctl.conf` turns IP forwarding on but systemd-sysctl doesn't read it at boot.
+- `fix-lock` names the right mode (600) when it can't set the disk's permissions.
 
 - Users: a mistyped command or wrong arguments get "unknown command" or a usage line; only commands that exist for admins say "needs a dcvm admin", naming the command only.
 - Users: `-k "nginx apache2"` is refused (separate packages with commas) instead of becoming one package `nginxapache2` past the nginx+apache2 check; `-o`/`--os` given twice is refused instead of dropping the ISO.
@@ -103,6 +111,9 @@ history, so the commit or PR is listed for each release.
 ### Security
 
 - `port-mappings.txt` and `config/network/` (VM names, addresses, host ports) are readable by root only; `doctor --fix` closes existing ones (#106).
+- A user's `backup export` no longer opens their guest-controlled disk with guestfish as root; the package keeps the VM's own `authorized_keys`.
+- Imported backups are `700`/`600` like created ones, and every file in a backup folder is `600`.
+- `$DATACENTER_BASE/vms` is `711`, so local users can't list VM names; the installer sets it and `doctor --fix` fixes it.
 
 - IP addresses with a leading zero (`--ip 10.10.10.050`, which iptables reads as octal `.40`) are refused everywhere, so a static IP or port forward can no longer reach another VM's address.
 - `delete`, the TTL reaper, port forwards and the hourly storage check take a VM's address from host-side records only (its mapping, DHCP lease or static IP), never from the guest agent; `delete` removes the rules of the address in the VM's mapping.

@@ -74,5 +74,6 @@ named ..."), and a create whose name is taken exits 77 too; check with
 ## Limits
 
 Each user has quotas (VMs, vCPUs, memory, disk; `/etc/dcvm/limits.conf`). You
-see and change only your own VMs and backups. `delete` without a terminal needs
-`--yes`. Admins (`dcvm-admin`) can do everything.
+see and change only your own VMs and backups. `delete`, and `backup restore` over
+an existing VM, need `--yes` without a terminal. Admins (`dcvm-admin`) can do
+everything.

@@ -528,6 +528,8 @@ check_directory_structure() {
     fi
   done
   chmod 700 "$DATACENTER_BASE/backups"
+  # Search only: libvirt reaches each VM's folder by name, other users cannot list the VM names.
+  chmod 711 "$DATACENTER_BASE/vms"
 
   print_status_log "SUCCESS" "Directory structure verified"
 }

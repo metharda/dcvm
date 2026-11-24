@@ -781,6 +781,21 @@ EOF
     fi
   done
 
+  echo original >"$t/vms/vm1/vm1-disk.qcow2"
+  printf ' 1    vm1    running\n' >"$t/list"
+  rm -f "$t/defined.xml"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    wget() { :; }
+    main restore vm1 "$ts" --yes </dev/null >"$t/out" 2>&1
+  )
+  if [ -f "$t/defined.xml" ]; then
+    log_test "PASS" "backup restore in place --yes replaces the VM without a terminal"
+  else
+    log_test "FAIL" "backup restore in place --yes replaces the VM without a terminal" "$(tail -2 "$t/out" | tr '\n' ' ')"
+  fi
+
   rm -f "$t/defined.xml"
   (
     load_backup_sh_for_test "$t"
@@ -2942,12 +2957,48 @@ test_backup_console_password() {
   ) >/dev/null 2>&1
   local cfg="$t/backups/vm1-$ts/vm1-config-$ts.xml"
   mode="$(stat -c %a "$cfg" 2>/dev/null) $(stat -c %a "$t/backups/vm1-$ts" 2>/dev/null)"
+  [ -z "$(find "$t/backups/vm1-$ts" -type f ! -perm 600)" ] || mode+=" open-files"
   if grep -q "passwd='s3cret'" "$cfg" 2>/dev/null && [ "$mode" = "600 700" ] &&
     tar -xzOf "$t/out/vm1-$ts.tar.gz" "./vm1-config-$ts.xml" 2>/dev/null | grep -q "<graphics type='vnc' port='-1' listen=" &&
     ! tar -xzOf "$t/out/vm1-$ts.tar.gz" 2>/dev/null | grep -q s3cret; then
-    log_test "PASS" "backup keeps the console password (600 file, 700 folder), export drops it"
+    log_test "PASS" "backup keeps the console password (600 files, 700 folder), export drops it"
   else
-    log_test "FAIL" "backup keeps the console password (600 file, 700 folder), export drops it" "modes: $mode; $(head -c 200 "$cfg" 2>/dev/null)"
+    log_test "FAIL" "backup keeps the console password (600 files, 700 folder), export drops it" "modes: $mode; $(head -c 200 "$cfg" 2>/dev/null)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_delete_ids_and_user_export() {
+  local t r="" a=20260101_100000 b=20260101_120000 ts
+  t=$(mktemp -d)
+  mkdir -p "$t/bin" "$t/pkg"
+  for ts in $a $b; do
+    mkdir -p "$t/backups/vm1-$ts"
+    echo disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+    echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  done
+  cp "$t/backups/vm1-$a/"* "$t/pkg/"
+  echo test >"$t/pkg/login"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  printf '#!/bin/sh\necho opened >>"%s/guestfish"\n' "$t" >"$t/bin/guestfish"
+  chmod +x "$t/bin/guestfish"
+  run() { (PATH="$t/bin:$PATH" && load_backup_sh_for_test "$t" && stub_backup_tools "$t" && wget() { :; } && prune_builds() { :; } && "$@") </dev/null >"$t/log" 2>&1; }
+  run eval 'DCVM_CALLER_ROLE=user export_backup vm1 latest "$t/u"'
+  [ -f "$t/u/vm1-$b.tar.gz" ] && [ ! -e "$t/guestfish" ] && grep -q 'your keys' "$t/log" && r+="user-export-no-guestfish "
+  run export_backup vm1 latest "$t/r"
+  [ -f "$t/r/vm1-$b.tar.gz" ] && [ -e "$t/guestfish" ] && r+="root-export-scrubs "
+  run main delete vm1 latest && [ ! -d "$t/backups/vm1-$b" ] && [ -d "$t/backups/vm1-$a" ] && r+="latest "
+  ! run main delete vm1 02.01.2026 && [ -d "$t/backups/vm1-$a" ] && r+="no-match-fails "
+  run main delete vm1 vm1-01.01.2026-1 --yes && [ ! -d "$t/backups/vm1-$a" ] && r+="two-args "
+  ! run main delete vm1 01.01.2026 && r+="nothing-left-fails "
+  run eval 'restore_vm() { :; }; import_backup "$t/pkg.tar.gz"'
+  [ "$(stat -c %a "$t/backups/vm1-$a" 2>/dev/null)" = 700 ] && [ -n "$(ls "$t/backups/vm1-$a")" ] &&
+    [ -z "$(find "$t/backups/vm1-$a" -type f ! -perm 600)" ] && r+="import-700-600 "
+  if [ "$r" = "user-export-no-guestfish root-export-scrubs latest no-match-fails two-args nothing-left-fails import-700-600 " ]; then
+    log_test "PASS" "backup delete <vm> <id|latest> without asking, fails when nothing matches; user exports never open the disk; imports are 700/600"
+  else
+    log_test "FAIL" "backup delete <vm> <id|latest> without asking, fails when nothing matches; user exports never open the disk; imports are 700/600" "$r | $(tail -2 "$t/log" | tr '\n' ' ')"
   fi
   rm -rf "$t"
 }
@@ -3129,11 +3180,13 @@ test_socket_policy() {
   echo "$uid" >"$t/base/backups/rootvm-x-20260101_120000/owner"
   echo "$uid" >"$t/base/backups/web-20260101_120000/owner"
   grep -q 'no backups of rootvm' <<<"$(ask backup export rootvm 20260101_120000 "$t")" && r+="backup-prefix "
-  grep -q '"argv": \["backup", "delete", "web-01.01.2026-1"\]' <<<"$(ask backup delete web 01.01.2026-1)" &&
-    grep -q '"argv": \["backup", "delete", "web-01.01.2026-12:00:00"\]' <<<"$(ask backup delete web 20260101_120000)" &&
-    grep -q '"argv": \["backup", "delete", "web-01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" && r+="backup-delete "
+  grep -q '"argv": \["backup", "delete", "web", "01.01.2026-1"\]' <<<"$(ask backup delete web 01.01.2026-1)" &&
+    grep -q '"argv": \["backup", "delete", "web", "01.01.2026-12:00:00"\]' <<<"$(ask backup delete web 20260101_120000)" &&
+    grep -q '"argv": \["backup", "delete", "web", "01.01.2026"\]' <<<"$(ask backup delete web-01.01.2026)" &&
+    grep -q '"argv": \["backup", "delete", "web", "latest"\]' <<<"$(ask backup delete web latest --yes)" && r+="backup-delete "
   out=$(ask backup restore web web-01.01.2026-1)
-  grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" && r+="restore-id "
+  grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" &&
+    grep -q '"argv": \["backup", "restore", "web", "latest", "--yes"\]' <<<"$(ask backup restore web --yes latest)" && r+="restore-id "
   grep -q '"DCVM_QUOTA_LIMITS": "8 16384 200"' <<<"$out" && r+="restore-quota "
   grep -q '"argv": \["backup", "export", "web", "20260101_120000", "--full"\]' <<<"$(ask backup export web --full 20260101_120000 "$t")" &&
     grep -q '"argv": \["backup", "export", "web", "--full"\]' <<<"$(ask backup export web "$t" --full)" && r+="export-full "
@@ -4682,6 +4735,46 @@ STUB
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317,SC2034 # stubs; groups are read by manage_users
+test_user_remove_and_owner_hint() {
+  local r
+  r=$(
+    eval "$(sed -n '/^manage_users()/,/^}/p; /^set_owner()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    require_admin() { :; }
+    gpasswd() { [ "$1 $2 $3" = "-d member dcvm" ]; }
+    DCVM_USER_GROUP=dcvm DCVM_ADMIN_GROUP=dcvm-admin
+    manage_users remove stranger >/dev/null 2>&1 || echo stranger-fails
+    manage_users remove member >/dev/null 2>&1 && echo member-ok
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    registry_set() { :; }
+    id() { echo 1001; }
+    set_owner web bob 2>&1 | grep -q 'dcvm console web' && echo owner-hint
+  )
+  if [ "$(tr '\n' ' ' <<<"$r")" = "stranger-fails member-ok owner-hint " ]; then
+    log_test "PASS" "user remove fails for a non-member; owner tells the new owner how to log in"
+  else
+    log_test "FAIL" "user remove fails for a non-member; owner tells the new owner how to log in" "$(tr '\n' ' ' <<<"$r")"
+  fi
+}
+
+# shellcheck disable=SC2034,SC1091 # NETWORK_SUBNET is read by validate_ip_in_subnet
+test_static_ip_reason() {
+  local out
+  out=$(
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    NETWORK_SUBNET=10.10.10
+    compute_incremental_ip 10.10.10.1 0 1 2>&1 >/dev/null
+    compute_incremental_ip 127.0.0.5 0 1 2>&1 >/dev/null
+    compute_incremental_ip 10.10.10.5 1 2 2>/dev/null
+  )
+  if grep -q 'Last octet' <<<"$out" && grep -q 'not in subnet' <<<"$out" && grep -qx '10.10.10.6' <<<"$out"; then
+    log_test "PASS" "create --ip names why a base address is refused"
+  else
+    log_test "FAIL" "create --ip names why a base address is refused" "$(tr '\n' ' ' <<<"$out")"
+  fi
+}
+
 # shellcheck disable=SC2317 # stubs
 test_reap_needs_libvirt() {
   local t r=""
@@ -4905,6 +4998,7 @@ test_doctor_seed_permissions() {
   local t r="" out
   t=$(mktemp -d)
   mkdir -p "$t/vms/web/cloud-init"
+  chmod 755 "$t/vms"
   chmod 711 "$t/vms/web"
   chmod 755 "$t/vms/web/cloud-init"
   echo secret >"$t/vms/web/cloud-init/user-data"
@@ -4922,7 +5016,7 @@ test_doctor_seed_permissions() {
   ) 2>&1
   grep -q 'open to other local users' <<<"$out" && grep -q '^problems=1' <<<"$out" && r+="found "
   grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && grep -q '1 cloud-init seed, backups and network records closed' <<<"$out" && r+="fixed "
-  [ "$(stat -c %a "$t/vms/web/cloud-init" "$t/vms/web/cloud-init/user-data" | tr '\n' ' ')" = "700 600 " ] && r+="modes "
+  [ "$(stat -c %a "$t/vms" "$t/vms/web/cloud-init" "$t/vms/web/cloud-init/user-data" | tr '\n' ' ')" = "711 700 600 " ] && r+="modes "
   if [ "$(id -u)" = 0 ]; then
     chown nobody "$t/vms/web/cloud-init/user-data"
     out=$(
@@ -4933,9 +5027,9 @@ test_doctor_seed_permissions() {
     grep -q 'closed VM disks' <<<"$out" && [ "$(stat -c %U "$t/vms/web/cloud-init/user-data")" = root ] || r+="owner-not-fixed "
   fi
   if [ "$r" = "found fixed modes " ]; then
-    log_test "PASS" "doctor checks cloud-init seeds (700/600, root's) and fixes them"
+    log_test "PASS" "doctor checks cloud-init seeds (700/600, root's) and the vms folder (711) and fixes them"
   else
-    log_test "FAIL" "doctor checks cloud-init seeds (700/600, root's) and fixes them" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "doctor checks cloud-init seeds (700/600, root's) and the vms folder (711) and fixes them" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
 }
@@ -5197,6 +5291,9 @@ test_common_functions() {
   test_network_name_exact
   test_suite_installs_only_on_request
   test_backup_console_password
+  test_backup_delete_ids_and_user_export
+  test_user_remove_and_owner_hint
+  test_static_ip_reason
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact

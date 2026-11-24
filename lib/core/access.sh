@@ -122,8 +122,13 @@ manage_users() {
       print_error "Usage: dcvm user remove <user>"
       return 1
     }
-    gpasswd -d "$name" "$DCVM_ADMIN_GROUP" >/dev/null 2>&1
-    gpasswd -d "$name" "$DCVM_USER_GROUP" >/dev/null 2>&1
+    member=false
+    gpasswd -d "$name" "$DCVM_ADMIN_GROUP" >/dev/null 2>&1 && member=true
+    gpasswd -d "$name" "$DCVM_USER_GROUP" >/dev/null 2>&1 && member=true
+    if [ "$member" = false ]; then
+      print_error "$name is not a dcvm user"
+      return 1
+    fi
     ui_done ok "$name can no longer use dcvm" "their VMs stay; dcvm owner <vm> <user> hands them to someone else"
     ;;
   list)
@@ -157,6 +162,7 @@ set_owner() {
   }
   registry_set "$vm" "owner_uid=$uid" "owner=$name"
   ui_done ok "$vm now belongs to $name" "its existing backups stay with their owner"
+  echo -e "      ${DIM}The VM still holds only the previous owner's SSH key: $name logs in with the VM's password (dcvm console $vm) and adds their key to ~/.ssh/authorized_keys.${NC}"
 }
 
 usage() {
