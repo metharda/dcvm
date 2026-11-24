@@ -1152,6 +1152,7 @@ stage_backup_disk() {
 # A restore that fails after replacing a VM puts the old definition and disk back.
 undo_restore() {
   local vm_name="$1" prev_xml="$2" prev_disk="$3" disk="$4"
+  quota_release "$vm_name"
   [ -n "$prev_disk" ] && mv -f "$prev_disk" "$disk"
   if [ -s "$prev_xml" ] && virsh define "$prev_xml" >/dev/null 2>&1; then
     print_warning "Restore failed: the previous $vm_name is back"
@@ -1298,12 +1299,12 @@ restore_vm() {
   mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
   disk_bytes=$(qemu-img info -U --output=json "$staged" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
   mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
-  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
+  if [ -n "${DCVM_QUOTA_LIMITS:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
     print_error "Could not read the backup's size to check your quota"
     rm -f "$temp_config" "$staged"
     return 1
   fi
-  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
+  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb" "$vm_name"; then
     rm -f "$temp_config" "$staged"
     return 1
   fi
@@ -1311,6 +1312,7 @@ restore_vm() {
   print_info "Preparing VM directory..."
   if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
     print_error "Failed to create VM directory: $vm_dir"
+    quota_release "$vm_name"
     rm -f "$temp_config" "$staged"
     return 1
   fi
@@ -1335,6 +1337,7 @@ restore_vm() {
     fi
     if [ "$(get_vm_state "$vm_name")" != "shut off" ]; then
       print_error "Could not stop $vm_name; it was left as it is"
+      quota_release "$vm_name"
       rm -f "$temp_config" "$staged"
       return 1
     fi

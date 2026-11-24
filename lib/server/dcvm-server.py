@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import sys
+import termios
 import time
 
 PROTOCOL = 1
@@ -20,6 +21,9 @@ MAX_REQUEST = 256 * 1024
 MAX_FDS = 8
 MAX_ISO = 16 * 1024**3
 REQUEST_TIMEOUT = 15
+MAX_PER_UID = 8
+MAX_PENDING = 1024 * 1024
+WRITE_TIMEOUT = 5
 
 DCVM = "/usr/local/bin/dcvm"
 CONFIG = "/etc/dcvm-install.conf"
@@ -40,9 +44,11 @@ BACKUP_ID = re.compile(r"^([0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]
 SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMmTt]\Z")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{2,31}\Z")
 PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+-]*)*\Z")
-IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}\Z")
+# No leading zeros: iptables reads 050 as octal.
+OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+IPV4 = re.compile(r"^(%s\.){3}%s\Z" % (OCTET, OCTET))
 TTL = re.compile(r"^[1-9][0-9]{0,4}[mhd]\Z")
-OS_VARIANT = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
+OS_VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 TERM = re.compile(r"^[A-Za-z0-9._+-]{1,64}\Z")
 
 
@@ -167,11 +173,18 @@ def owner_of(vm):
     return int(entry.get("owner_uid", "0")) if entry else 0
 
 
-def vm_exists(vm):
+def domain_known(vm):
+    """True or False when libvirt answers, None when it doesn't."""
     if DRY_RUN:
         return registry_read(vm) is not None
-    return subprocess.run(["virsh", "dominfo", "--", vm], stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL, env=module_env_base()).returncode == 0
+    r = subprocess.run(["virsh", "list", "--all", "--name"], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, env=module_env_base())
+    return vm in r.stdout.decode(errors="replace").split() if r.returncode == 0 else None
+
+
+def vm_exists(vm):
+    # Unknown counts as existing: nothing may be reused or removed while libvirt is down.
+    return domain_known(vm) is not False
 
 
 def lock(name):
@@ -234,7 +247,7 @@ def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None):
         if used[k] + n > limits[k]:
             raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
                          % (names[k], used[k], n, limits[k], LIMITS))
-    return "%d %d %d" % tuple(limits[k] - used[k] for k in ("vcpus", "memory_mb", "disk_gb"))
+    return "%d %d %d" % tuple(limits[k] for k in ("vcpus", "memory_mb", "disk_gb"))
 
 
 def take_value(args, i, opt):
@@ -481,7 +494,9 @@ def decide_backup(ctx, args):
             if not re.match(r"^%s\Z" % day, bid):
                 raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
         check_backup_vm(ctx, vm)
-        ctx.update(vm=vm, mutating=True)
+        # A stale backup of a name now owned by someone else must not take that VM's lock.
+        owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
+        ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
         return ["backup", "delete", "%s-%s" % (vm, bid)]
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
@@ -496,7 +511,7 @@ def decide_backup(ctx, args):
             own_vm(ctx, rest[0])
             protected(rest[0])
             # The restore replaces the VM's own charge, so a backup of the same size always fits.
-            ctx.update(vm=rest[0], quota_left=check_quota(ctx["uid"], ctx["user"], 0, 0, 0, exclude=rest[0]))
+            ctx.update(vm=rest[0], quota_limits=check_quota(ctx["uid"], ctx["user"], 0, 0, 0, exclude=rest[0]))
         ctx.update(mutating=True, interactive=True)
         return ["backup", "restore"] + rest
     if sub == "export" and 1 <= len(rest) - rest.count("--full") <= 3:
@@ -567,8 +582,8 @@ def module_env(ctx, req):
     env["DCVM_CALLER_USER"] = ctx["user"]
     env["DCVM_CALLER_ROLE"] = ctx["role"]
     env["DCVM_ORIGIN"] = ctx["origin"]
-    if ctx.get("quota_left"):
-        env["DCVM_QUOTA_LEFT"] = ctx["quota_left"]
+    if ctx.get("quota_limits"):
+        env["DCVM_QUOTA_LIMITS"] = ctx["quota_limits"]
     return env
 
 
@@ -613,14 +628,21 @@ def stage_iso(ctx, fd, vm):
     return dest
 
 
+def clip(text, n=200):
+    return text if len(text) <= n else "%s…(%d bytes)" % (text[:n], len(text.encode(errors="replace")))
+
+
 def audit(ctx, argv, decision, rc=None, reason=None, started=None):
+    shown = "<malformed>"
+    if isinstance(argv, list):
+        shown = [clip(a) for a in redact(argv[:64])] + (["…(%d more)" % (len(argv) - 64)] if len(argv) > 64 else [])
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "uid": ctx.get("uid"), "user": ctx.get("user"),
            "role": ctx.get("role"), "origin": ctx.get("origin"), "pid": ctx.get("pid"),
-           "argv": redact(argv) if isinstance(argv, list) else "<malformed>", "decision": decision}
+           "argv": shown, "decision": decision}
     if rc is not None:
         rec["exit"] = rc
     if reason:
-        rec["reason"] = redact_text(reason, argv) if isinstance(argv, list) else reason
+        rec["reason"] = clip(redact_text(reason, argv) if isinstance(argv, list) else reason)
     if started:
         rec["seconds"] = round(time.time() - started, 1)
     line = json.dumps(rec, ensure_ascii=True)
@@ -634,11 +656,32 @@ def audit(ctx, argv, decision, rc=None, reason=None, started=None):
     print(line, file=sys.stderr, flush=True)
 
 
+def take_slot(uid):
+    d = os.path.join(RUN, "conn")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    for n in range(MAX_PER_UID):
+        fd = os.open(os.path.join(d, "%d-%d" % (uid, n)), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            os.close(fd)
+    raise Denied("you already have %d dcvm commands running; wait for one to finish" % MAX_PER_UID)
+
+
 def recv_request(conn):
-    conn.settimeout(REQUEST_TIMEOUT)
+    # One deadline for the whole request: a client trickling bytes must not hold its slot.
+    deadline = time.monotonic() + REQUEST_TIMEOUT
     data, fds = b"", []
     while len(data) < 4 or len(data) < 4 + struct.unpack(">I", data[:4])[0]:
-        msg, anc, flags, _ = conn.recvmsg(65536, socket.CMSG_SPACE(MAX_FDS * 4))
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise Denied("the request took too long to arrive")
+        conn.settimeout(left)
+        try:
+            msg, anc, flags, _ = conn.recvmsg(65536, socket.CMSG_SPACE(MAX_FDS * 4))
+        except socket.timeout:
+            raise Denied("the request took too long to arrive")
         for level, kind, payload in anc:
             if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                 fds += list(struct.unpack("%di" % (len(payload) // 4), payload[: len(payload) - len(payload) % 4]))
@@ -666,12 +709,24 @@ def send(conn, obj):
 
 
 def say(fd, text):
-    if fd is None:
-        return
+    if fd is not None:
+        write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode())
+
+
+def _alarm(_sig, _frame):
+    raise TimeoutError
+
+
+def write_some(fd, data):
+    # The caller's descriptor stays blocking (its flags are shared with the caller), so an alarm bounds a stuck write.
+    signal.signal(signal.SIGALRM, _alarm)
+    signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
     try:
-        os.write(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode())
+        return os.write(fd, data[:4096])
     except OSError:
-        pass
+        return None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def run_module(ctx, conn, argv, req, fds):
@@ -702,24 +757,72 @@ def run_module(ctx, conn, argv, req, fds):
                           "secrets": sorted(k for k in secrets if secrets.get(k))})
         os.write(fds.get("stdout", 1), (out + "\n").encode())
         return 0
-    proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=fds.get("stdout"),
-                            stderr=fds.get("stderr"), pass_fds=pass_fds, start_new_session=True, close_fds=True)
+    # The module writes to us, never to a caller's descriptor that could stall it while it holds locks;
+    # only an interactive terminal is handed over as it is.
+    child, outs = {}, []
+    for name in ("stdout", "stderr"):
+        fd = fds.get(name)
+        if fd is None or (stdin is not subprocess.DEVNULL and os.isatty(fd)):
+            child[name] = fd
+            continue
+        if os.isatty(fd):
+            # A pty of our own keeps colours and progress lines for a terminal.
+            r, w = os.openpty()
+            attrs = termios.tcgetattr(w)
+            attrs[1] &= ~termios.OPOST
+            termios.tcsetattr(w, termios.TCSANOW, attrs)
+        else:
+            r, w = os.pipe()
+        child[name] = w
+        outs.append([r, fd, bytearray()])
+    proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=child["stdout"],
+                            stderr=child["stderr"], pass_fds=pass_fds, start_new_session=True, close_fds=True)
     for fd in pass_fds:
         if fd != ctx.get("export_fd") and fd not in ctx.get("keep_fds", []):
             os.close(fd)
-    cancelled = False
-    while proc.poll() is None:
-        if cancelled:
-            try:
-                proc.wait(1)
-            except subprocess.TimeoutExpired:
-                pass
-            continue
+    for name, fd in child.items():
+        if fd is not None and fd != fds.get(name):
+            os.close(fd)
+    cancelled, ended, wrote = False, None, 0
+    while True:
+        if ended is None and proc.poll() is not None:
+            ended = time.monotonic()
+        if ended is not None:
+            now = time.monotonic()
+            for o in outs:
+                # Background children may keep the pipes open; what they write after the module ends is dropped.
+                if o[0] is not None and now > ended + 2:
+                    os.close(o[0])
+                    o[0] = None
+            # What is left goes to a caller that keeps reading (a pager may pause); with a VM's lock held, briefly.
+            if not any(o[0] is not None or o[2] for o in outs) or now > max(ended, wrote) + (2 if ctx.get("vm") else 60):
+                break
+        reads = [o[0] for o in outs if o[0] is not None] + ([] if cancelled else [conn])
         try:
-            ready, _, _ = select.select([conn], [], [], 0.5)
+            ready, writable, _ = select.select(reads, [o[1] for o in outs if o[2]], [], 0.5)
         except (OSError, ValueError):
-            ready = []
-        if ready:
+            ready, writable = [], []
+            time.sleep(0.5)
+        for o in outs:
+            if o[0] in ready:
+                try:
+                    data = os.read(o[0], 65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    os.close(o[0])
+                    o[0] = None
+                elif o[1] is not None and len(o[2]) < MAX_PENDING:
+                    o[2] += data
+            if o[2] and o[1] in writable:
+                n = write_some(o[1], o[2])
+                if n is None:
+                    o[1] = None
+                    o[2].clear()
+                else:
+                    del o[2][:n]
+                    wrote = time.monotonic()
+        if conn in ready:
             try:
                 data = conn.recv(64)
             except OSError:
@@ -735,6 +838,9 @@ def run_module(ctx, conn, argv, req, fds):
                         proc.wait(5)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
+    for o in outs:
+        if o[0] is not None:
+            os.close(o[0])
     rc = proc.wait()
     # A signal death is -N here; callers expect the shell's 128+N.
     return 128 - rc if rc < 0 else rc
@@ -747,6 +853,10 @@ def handle(conn):
     try:
         pid, uid, _gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
         ctx.update(uid=uid, pid=pid, user=user_name(uid), role=role_of(uid))
+        if ctx["role"] is None:
+            raise Denied("you are not in the %s group; ask an admin: sudo dcvm user add %s" % (USER_GROUP, ctx["user"]))
+        if ctx["role"] == "user":
+            ctx["slot"] = take_slot(uid)
         req, files = recv_request(conn)
         if len(files) > MAX_FDS:
             raise Denied("too many files passed")
@@ -762,19 +872,21 @@ def handle(conn):
         argv = req.get("argv")
         if not isinstance(argv, list) or not all(isinstance(a, str) and len(a) <= 4096 for a in argv) or len(argv) > 64:
             raise Denied("malformed request")
-        if ctx["role"] is None:
-            raise Denied("you are not in the %s group; ask an admin: sudo dcvm user add %s" % (USER_GROUP, ctx["user"]))
         if ctx["role"] == "user":
             final = decide_user(ctx, argv)
         else:
             final = admin_argv(ctx, argv)
+        # Logged before the module runs, so a request killed midway still leaves a trace.
+        audit(ctx, argv, "start")
         rc = execute(ctx, conn, final, req, fdmap)
         audit(ctx, argv, "allow", rc=rc, started=started)
         send(conn, {"exit": rc})
     except Denied as e:
-        say(fdmap_get(req, files, "stderr"), redact_text(str(e), argv) if isinstance(argv, list) else str(e))
+        err = fdmap_get(req, files, "stderr")
+        say(err, redact_text(str(e), argv) if isinstance(argv, list) else str(e))
         audit(ctx, argv, "deny", reason=str(e), started=started)
-        send(conn, {"exit": 77, "error": str(e)})
+        # Refused before the request was read: only the client can show the reason.
+        send(conn, {"exit": 77, "error": str(e), "show": err is None})
     except Exception as e:
         audit(ctx, argv, "error", reason=str(e), started=started)
         send(conn, {"exit": 70, "error": "dcvm server: %s" % e})
@@ -810,21 +922,29 @@ def admin_argv(ctx, argv):
     return final
 
 
+def name_taken(vm):
+    vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
+    if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
+        raise Denied("the name %s is taken" % vm)
+    return vm_dir
+
+
 def execute(ctx, conn, argv, req, fds):
     vm = ctx.get("vm")
     held = []
+    reserve = ctx.get("new_vm") and vm and ctx["role"] == "user"
     try:
+        if reserve:
+            # Before the VM's lock too, so asking for a taken name never holds up its owner.
+            name_taken(vm)
         if vm:
-            held.append(lock("vm-" + vm))
-        if ctx.get("new_vm") and vm and ctx["role"] == "user":
+            held.append(lock(ctx.get("lock") or "vm-" + vm))
+        if reserve:
             held.append(lock("global"))
-            vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
-            if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
-                raise Denied("the name %s is taken" % vm)
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
-            ctx["staged_dir"] = vm_dir
+            ctx["staged_dir"] = name_taken(vm)
             cpus, memory, disk = ctx["quota"]
-            ctx["quota_left"] = check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
+            ctx["quota_limits"] = check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
             registry_write(vm, {"owner_uid": ctx["uid"], "owner": ctx["user"], "state": "creating",
                                 "cpus": cpus, "memory_mb": memory, "disk_gb": disk, "created": int(time.time())})
             os.close(held.pop())
@@ -842,14 +962,18 @@ def execute(ctx, conn, argv, req, fds):
             rc = None
             raise
         finally:
-            if rc is None and ctx.get("reserved"):
+            if rc is None and ctx.get("reserved") and domain_known(vm) is False:
                 release_reservation(ctx, vm)
         # A declined or failed create may exit 0 too; only a defined domain makes the VM real.
-        if ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
+        known = domain_known(vm) if ctx.get("staged_dir") or ctx.get("reserved") else True
+        if known is None:
+            say(fds.get("stderr"), "libvirt did not answer, so dcvm kept the record and folder of %s; check it with: dcvm info %s" % (vm, vm))
+            return rc or 70
+        if ctx.get("staged_dir") and not ctx.get("reserved") and not known and not DRY_RUN:
             subprocess.run(["rm", "-rf", "--", ctx["staged_dir"]])
         if ctx.get("reserved"):
             entry = registry_read(vm) or {}
-            if not vm_exists(vm):
+            if not known:
                 release_reservation(ctx, vm)
             elif entry.get("state") == "creating":
                 entry["state"] = "ready"

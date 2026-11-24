@@ -81,6 +81,12 @@ history, so the commit or PR is listed for each release.
 - A downloaded or converted image must be a plain qcow2 without a backing or data file before it becomes a template.
 - The official server's published checksum decides over the serving mirror's; curl downloads refuse HTTPS-to-HTTP redirects.
 - VNC and SPICE set up by root get a random password too, shown at create (`"display_password"` in JSON) and by `network vnc status`.
+- Quotas hold under concurrent creates and restores: the real sizes are checked and recorded under the server's global lock, in-place restores included.
+- `dcvm.socket` has no trigger limit, so a connection flood can't stop it for everyone; `doctor --fix` upgrades and restarts it.
+- The socket server reads a request within one 15 s deadline, refuses callers outside the dcvm groups before reading, and runs at most 8 requests per user at once.
+- Module output goes through the server, so a caller that stops reading can't stall a command holding a VM or host lock; `backup delete` of an old backup no longer takes the lock of a VM now owned by someone else.
+- The audit log clips long arguments, logs each request before it runs, and is rotated weekly.
+- When libvirt doesn't answer, a create keeps its record and folder instead of freeing a name that may be in use; `--ip` refuses octets with leading zeros or over 255, and `--os-variant` must start with a letter or digit.
 
 ## [0.9.10] - 2026-11-23
 

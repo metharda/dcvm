@@ -809,7 +809,7 @@ remove_shell_lines() {
 
 free_bytes() { echo $(($(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024)); }
 
-DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service /etc/systemd/system/dcvm.socket /etc/systemd/system/dcvm@.service /etc/systemd/system/dcvm-reaper.service /etc/systemd/system/dcvm-reaper.timer"
+DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service /etc/systemd/system/dcvm.socket /etc/systemd/system/dcvm@.service /etc/systemd/system/dcvm-reaper.service /etc/systemd/system/dcvm-reaper.timer /etc/logrotate.d/dcvm"
 DCVM_USER_GROUP=dcvm
 DCVM_ADMIN_GROUP=dcvm-admin
 
@@ -856,6 +856,8 @@ SocketMode=0660
 DirectoryMode=0755
 Accept=yes
 MaxConnections=64
+# The default trigger limit stops the socket for everyone after 200 connections in 2s.
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=sockets.target
@@ -903,6 +905,19 @@ ExecStart=-/usr/local/bin/dcvm doctor --fix --quiet --only network
 [Install]
 WantedBy=multi-user.target
 EOF
+  if command_exists logrotate && [ -d /etc/logrotate.d ]; then
+    cat >/etc/logrotate.d/dcvm <<'EOF' || return 1
+/var/log/dcvm/audit.log {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  create 0640 root root
+}
+EOF
+  fi
+  systemctl reset-failed dcvm.socket >/dev/null 2>&1
   systemctl daemon-reload &&
     systemctl enable --now datacenter-storage.timer dcvm-reaper.timer >/dev/null 2>&1 &&
     systemctl enable dcvm-boot.service >/dev/null 2>&1 &&
@@ -913,6 +928,8 @@ dcvm_services_ok() {
   command_exists systemctl || return 0
   grep -qs 'dcvm doctor' /etc/systemd/system/datacenter-storage.service &&
     grep -qs 'dcvm-server.py' /etc/systemd/system/dcvm@.service &&
+    grep -qs '^TriggerLimitIntervalSec=0' /etc/systemd/system/dcvm.socket &&
+    { ! command_exists logrotate || [ -f /etc/logrotate.d/dcvm ]; } &&
     systemctl is-enabled datacenter-storage.timer dcvm-boot.service dcvm-reaper.timer dcvm.socket >/dev/null 2>&1 &&
     systemctl is-active dcvm.socket >/dev/null 2>&1
 }
@@ -1336,16 +1353,46 @@ read_dcvm_secrets() {
   unset DCVM_SECRETS_FD
 }
 
-# The server passes what is left of a user's quota; prompts and backups can ask for more than it charged.
+# The server passes a user's limits; prompts and backups can ask for more than it charged. Usage is re-read
+# and the charge recorded under the server's global lock, so concurrent requests can't overrun the limits.
 within_quota() {
-  [ -n "${DCVM_QUOTA_LEFT:-}" ] || return 0
-  local c m d
-  read -r c m d <<<"$DCVM_QUOTA_LEFT"
-  if [ "$1" -gt "$c" ] || [ "$2" -gt "$m" ] || [ "$3" -gt "$d" ]; then
-    print_error "Over your quota: this VM needs $1 vCPU, $2 MB, $3 GB; you have $c vCPU, $m MB, $d GB left"
+  [ -n "${DCVM_QUOTA_LIMITS:-}" ] || return 0
+  local cpus="$1" mem="$2" disk="$3" vm="$4" c m d uc um ud oc om od lockfd rc=0 files
+  local locks="${DCVM_STATE_DIR:+$DCVM_STATE_DIR/run/locks}"
+  locks=${locks:-/run/dcvm/locks}
+  read -r c m d <<<"$DCVM_QUOTA_LIMITS"
+  if [[ ! "$cpus $mem $disk $c $m $d" =~ ^[0-9]+( [0-9]+){5}$ ]] || [ -z "$vm" ]; then
+    print_error "Could not check your quota"
     return 1
   fi
+  if ! { mkdir -p "$locks" && exec {lockfd}>>"$locks/global" && flock -w 30 "$lockfd"; }; then
+    print_error "Could not lock the quota check; try again"
+    return 1
+  fi
+  files=("$(dirname "$(registry_file x)")"/*)
+  [ -e "${files[0]}" ] || files=()
+  read -r uc um ud oc om od < <(awk -v uid="$(caller_uid)" -v vm="$vm" '
+    FNR == 1 { n = FILENAME; sub(/.*\//, "", n) }
+    n ~ /\./ { next }
+    { k = index($0, "="); if (k) v[n, substr($0, 1, k - 1)] = substr($0, k + 1); seen[n] = 1 }
+    END {
+      for (n in seen) if (n != vm && v[n, "owner_uid"] == uid) { c += v[n, "cpus"]; m += v[n, "memory_mb"]; d += v[n, "disk_gb"] }
+      print c + 0, m + 0, d + 0, v[vm, "cpus"] + 0, v[vm, "memory_mb"] + 0, v[vm, "disk_gb"] + 0
+    }' "${files[@]}" /dev/null)
+  if ((uc + cpus > c || um + mem > m || ud + disk > d)); then
+    print_error "Over your quota: this VM needs $cpus vCPU, $mem MB, $disk GB; you have $((c - uc)) vCPU, $((m - um)) MB, $((d - ud)) GB left"
+    rc=1
+  else
+    QUOTA_PREV=("cpus=$oc" "memory_mb=$om" "disk_gb=$od")
+    # The larger of the old and new size stays charged until the operation records its real one.
+    registry_set "$vm" "cpus=$((cpus > oc ? cpus : oc))" "memory_mb=$((mem > om ? mem : om))" "disk_gb=$((disk > od ? disk : od))" || rc=1
+  fi
+  exec {lockfd}>&-
+  return $rc
 }
+
+# A failed in-place restore keeps the VM it had, so its old charge comes back.
+quota_release() { [ -z "${QUOTA_PREV+x}" ] || registry_set "$1" "${QUOTA_PREV[@]}"; }
 
 # Another VM's lease or static record: forwarding to it would reach that VM.
 ip_held_by_other_vm() {

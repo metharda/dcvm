@@ -1759,7 +1759,7 @@ main() {
     setup_static_ip
     setup_tailscale
     setup_vm_resources
-    within_quota "$VM_CPUS" "${VM_MEMORY%MB}" "$(size_gb "$VM_DISK_SIZE")" || exit 1
+    within_quota "$VM_CPUS" "${VM_MEMORY%MB}" "$(size_gb "$VM_DISK_SIZE")" "$VM_NAME" || exit 1
     show_vm_summary
     confirm_vm_creation
     ui_quiet
