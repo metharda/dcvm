@@ -934,17 +934,34 @@ dcvm_services_ok() {
     systemctl is-active dcvm.socket >/dev/null 2>&1
 }
 
-# Whether net.ipv4.ip_forward=1 is applied at boot. Asks systemd which
-# files it loads: Debian 13 no longer reads /etc/sysctl.conf.
-ip_forwarding_persisted() {
+# "<value> <file>" of the net.ipv4.ip_forward that boot applies: the last
+# assignment wins (sysctl.d(5)). Asks systemd which files it loads, in order:
+# Debian 13 no longer reads /etc/sysctl.conf.
+ip_forward_at_boot() {
   local conf
-  conf=$(systemd-analyze cat-config sysctl.d 2>/dev/null) || conf=$(cat /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null)
-  grep -qE '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1' <<<"$conf"
+  conf=$(systemd-analyze cat-config sysctl.d 2>/dev/null) || conf=$(cat /etc/sysctl.d/*.conf /etc/sysctl.conf 2>/dev/null)
+  awk '/^# \/[^ ]+\.conf$/ { f = $2 }
+    /^[[:space:]]*-?net[.\/]ipv4[.\/](ip_forward|conf[.\/]all[.\/]forwarding)[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); src = f
+    }
+    END { print v, src }' <<<"$conf"
+}
+
+ip_forwarding_persisted() {
+  local v
+  read -r v _ < <(ip_forward_at_boot)
+  [ "$v" = 1 ]
 }
 
 enable_ip_forwarding() {
+  local v src
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || return 1
-  ip_forwarding_persisted || echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-dcvm.conf
+  ip_forwarding_persisted && return 0
+  echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-dcvm.conf || return 1
+  read -r v src < <(ip_forward_at_boot)
+  [ "$v" = 1 ] && return 0
+  print_error "${src:-A sysctl file read after /etc/sysctl.d/90-dcvm.conf} sets net.ipv4.ip_forward=$v: forwarding is on now but off after a reboot"
+  return 1
 }
 
 # "alias dcvm=..." lines, written by installs before 0.9 (they pointed at
@@ -1436,10 +1453,18 @@ claim_static_ip() {
 
 # Only once the VM is defined: a record left by a cancelled create would hold the address forever.
 save_static_ip() {
-  local vm="$1" ip="$2"
+  local vm="$1" ip="$2" net="${NETWORK_NAME:-datacenter-net}" host
   mkdir -p "$DATACENTER_BASE/config/network" &&
     printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$DATACENTER_BASE/config/network/$vm.conf"
+      >"$DATACENTER_BASE/config/network/$vm.conf" || return 1
+  # Without a reservation dnsmasq leases the address to the next DHCP VM; libvirt refuses one another host holds.
+  host="<host mac='$(get_vm_mac "$vm" | head -1)' ip='$ip'/>"
+  if [[ "$host" == "<host mac='' "* ]] || ! virsh net-update "$net" add ip-dhcp-host "$host" --config >/dev/null 2>&1; then
+    print_warning "Could not reserve $ip for $vm in $net's DHCP (another VM's reservation?); dnsmasq may lease it to another VM"
+    return 1
+  fi
+  # Separately: with --live too, an inactive network fails the whole update.
+  virsh net-update "$net" add ip-dhcp-host "$host" --live >/dev/null 2>&1 || true
 }
 
 size_gb() {
@@ -1767,7 +1792,7 @@ cleanup_dhcp_lease_unlocked() {
   # The guest picks its own DHCP hostname; with a MAC, a hostname match could free another VM's lease.
   [ -n "$mac" ] && host=""
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local tmp matches lmac ip n released=0 skipped=0 active=true rc=0
+  local tmp matches lmac ip cid n released=0 skipped=0 active=true rc=0
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
@@ -1790,7 +1815,7 @@ cleanup_dhcp_lease_unlocked() {
   local sel='(($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
     ($host != "" and ((.hostname // "") | ascii_downcase) == $host))'
   if ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 ||
-    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
+    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\"), (.\"client-id\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
     ! jq --arg mac "$mac" --arg host "$host" "[.[] | select($sel | not)]" "$status_file" >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
     print_error "Could not parse $status_file; left unchanged"
@@ -1822,10 +1847,11 @@ cleanup_dhcp_lease_unlocked() {
     print_info "$NETWORK_NAME is not running; removed $n lease(s) from $status_file"
     return 0
   fi
-  while IFS=$'\t' read -r lmac ip; do
+  # With the client-id dnsmasq matches the lease exactly, even when the MAC holds several.
+  while IFS=$'\t' read -r lmac ip cid; do
     if [[ ! "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || [ -z "$lmac" ]; then
       skipped=$((skipped + 1))
-    elif dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null; then
+    elif dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" ${cid:+"$cid"} 2>/dev/null; then
       released=$((released + 1))
     else
       print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"

@@ -141,11 +141,17 @@ cmd_ip_forwarding() {
     ui_done ok "IP forwarding on" "persisted in /etc/sysctl.d/90-dcvm.conf"
     ;;
   off | disable)
-    echo 0 >/proc/sys/net/ipv4/ip_forward || {
+    if ! echo 0 >/proc/sys/net/ipv4/ip_forward || ! rm -f /etc/sysctl.d/90-dcvm.conf; then
       print_error "Failed to disable ip_forward"
       exit 1
-    }
-    ui_done warn "IP forwarding off" "VMs lose internet access and port forwards stop working"
+    fi
+    local v src
+    read -r v src < <(ip_forward_at_boot)
+    if [ "$v" = 1 ]; then
+      ui_done warn "IP forwarding off until reboot" "${src:-a sysctl file} turns it on at boot"
+    else
+      ui_done warn "IP forwarding off" "VMs lose internet access and port forwards stop working"
+    fi
     ;;
   show | *)
     local v

@@ -2012,8 +2012,8 @@ test_bulk_status_reset() {
     log_test "FAIL" "delete --all writes [] to the status file, same inode and mode (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
   fi
 
-  if ! command -v script >/dev/null 2>&1; then
-    log_test "SKIP" "dhcp clear --all writes [] to the status file (#37)" "script not available"
+  if ! command -v script >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp clear --all releases every lease, no network restart (#37, #93)" "script or jq not available"
     rm -rf "$t"
     return
   fi
@@ -2025,17 +2025,18 @@ source "$SCRIPT_DIR/../network/dhcp.sh" 2>/dev/null
 load_dcvm_config() { :; }
 require_root() { :; }
 check_dependencies() { :; }
-restart_network() { echo restart >>"$t/calls"; }
+dhcp_release() { echo "dhcp_release \$*" >>"$t/calls"; }
+virsh() { echo "virsh \$*" >>"$t/calls"; }
 DNSMASQ_DIR="$t" BRIDGE_NAME=br NETWORK_NAME=net
 main clear --all
 EOF
   printf 'y\n' | script -qec "bash $t/run.sh" /dev/null >/dev/null 2>&1
   after=$(stat -c '%i %a' "$t/br.status")
-  if [ "$(od -An -c "$t/br.status" | tr -s ' ')" = " [ ] \n" ] && [ "$before" = "$after" ] &&
-    grep -qx restart "$t/calls" 2>/dev/null; then
-    log_test "PASS" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)"
+  if [ "$(jq -c . "$t/br.status" 2>/dev/null)" = "[]" ] && [ "$before" = "$after" ] &&
+    [ "$(grep -c '^dhcp_release br ' "$t/calls" 2>/dev/null)" = 5 ] && ! grep -qE '^virsh net-(destroy|start)' "$t/calls"; then
+    log_test "PASS" "dhcp clear --all releases every lease in dnsmasq, status [] with the same inode and mode, no network restart (#37, #93)"
   else
-    log_test "FAIL" "dhcp clear --all writes [] to the status file, same inode and mode, then restarts (#37)" "$(od -An -c "$t/br.status" | head -2 | tr '\n' ' '); $before -> $after"
+    log_test "FAIL" "dhcp clear --all releases every lease in dnsmasq, status [] with the same inode and mode, no network restart (#37, #93)" "$(tr '\n' ' ' <"$t/br.status"); $before -> $after; $(tr '\n' ';' <"$t/calls" 2>/dev/null)"
   fi
   rm -rf "$t"
 }
@@ -2415,6 +2416,114 @@ test_apache_exact_match() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317 # stub
+test_ip_forward_last_wins() {
+  local r="" sysctl_text
+  at_boot() {
+    sysctl_text="$1"
+    (
+      systemd-analyze() { printf "%b" "$sysctl_text"; }
+      ip_forward_at_boot
+      ip_forwarding_persisted && echo persisted
+    )
+  }
+  [ "$(at_boot '# /etc/sysctl.d/90-dcvm.conf\nnet.ipv4.ip_forward=1\n\n# /etc/sysctl.d/99-sysctl.conf\nnet.ipv4.ip_forward = 0\n')" = "0 /etc/sysctl.d/99-sysctl.conf" ] && r+="later-0 "
+  [ "$(at_boot '# /etc/sysctl.d/10-x.conf\nnet.ipv4.ip_forward=0\n\n# /etc/sysctl.d/90-dcvm.conf\nnet.ipv4.ip_forward=1\n')" = $'1 /etc/sysctl.d/90-dcvm.conf\npersisted' ] && r+="later-1 "
+  [ "$(at_boot '# /usr/lib/sysctl.d/50-x.conf\n# net.ipv4.ip_forward=1\n; net.ipv4.ip_forward=1\n')" = " " ] && r+="comments "
+  [ "$(at_boot '# /etc/sysctl.d/90-dcvm.conf\nnet/ipv4/ip_forward=1\n')" = $'1 /etc/sysctl.d/90-dcvm.conf\npersisted' ] && r+="slashes "
+  [ "$(at_boot '# /etc/sysctl.d/90-dcvm.conf\nnet.ipv4.ip_forward=1\n# /etc/sysctl.d/99-hardening.conf\n-net.ipv4.conf.all.forwarding = 0\n')" = "0 /etc/sysctl.d/99-hardening.conf" ] && r+="all-forwarding "
+  if [ "$r" = "later-0 later-1 comments slashes all-forwarding " ]; then
+    log_test "PASS" "IP forwarding at boot: the last sysctl.d assignment wins and names its file (#84)"
+  else
+    log_test "FAIL" "IP forwarding at boot: the last sysctl.d assignment wins and names its file (#84)" "$r"
+  fi
+}
+
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_release_client_id() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp_release gets the lease's client-id (#99)" "jq not available"
+    return
+  fi
+  local t
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  jq '(.[] | select(.hostname == "vm1"))."client-id" = "01:52:54:00:00:00:01"' "$t/br.status" >"$t/s" && cat "$t/s" >"$t/br.status"
+  run_dhcp_fixture "$t" "" clear vm1 >/dev/null
+  run_dhcp_fixture "$t" "" clear web >/dev/null
+  if [ "$(grep '^dhcp_release' "$t/calls")" = $'dhcp_release br 10.10.10.11 52:54:00:00:00:01 01:52:54:00:00:00:01\ndhcp_release br 10.10.10.254 52:54:00:ab:c2:54' ]; then
+    log_test "PASS" "dhcp_release gets the lease's client-id, and none when the lease has none (#99)"
+  else
+    log_test "FAIL" "dhcp_release gets the lease's client-id, and none when the lease has none (#99)" "$(grep '^dhcp_release' "$t/calls" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2016 # stub code is eval'd later
+test_dhcp_renew_link() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp renew cuts the VMs' links and checks for new leases (#93)" "jq not available"
+    return
+  fi
+  local t out rc
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  jq '[.[] | select(.hostname == "vm1")]' "$t/br.status" >"$t/s" && cat "$t/s" >"$t/br.status"
+  mkdir -p "$t/config/network"
+  : >"$t/config/network/web.conf"
+  out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"
+    clear_all_leases() { echo clear_all >>"$t/calls"; }
+    is_vm_in_network() { :; }
+    get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    ssh() { echo "ssh $*" >>"$t/calls"; }' renew)
+  rc=$?
+  if [ "$rc" != 0 ] && grep -qx clear_all "$t/calls" && ! grep -q '^ssh' "$t/calls" &&
+    grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 down' "$t/calls" &&
+    grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 up' "$t/calls" &&
+    grep -qx 'virsh domif-setlink vm10 52:54:00:00:00:10 up' "$t/calls" &&
+    ! grep -q 'domif-setlink web' "$t/calls" &&
+    grep -q 'vm1 .*renewed: 10.10.10.11' <<<"$out" && grep -q 'vm10 .*no new lease' <<<"$out" &&
+    grep -q 'web .*static IP' <<<"$out"; then
+    log_test "PASS" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)"
+  else
+    log_test "FAIL" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)" "rc $rc; $(tr '\n' ';' <"$t/calls"); $(tr '\n' ';' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317 # globals read by save_static_ip; stubs
+test_static_ip_reservation() {
+  local t r="" out
+  t=$(mktemp -d)
+  save() {
+    (
+      DATACENTER_BASE="$t" NETWORK_NAME=net
+      get_vm_mac() { echo "$mac"; }
+      virsh() {
+        echo "virsh $*" >>"$t/calls"
+        [ "$*" != "$fail" ]
+      }
+      save_static_ip vm1 10.10.10.50
+    ) 2>&1
+  }
+  local mac=52:54:00:00:00:01 fail=""
+  local host="<host mac='52:54:00:00:00:01' ip='10.10.10.50'/>"
+  save >/dev/null && grep -q '^IP="10.10.10.50"$' "$t/config/network/vm1.conf" &&
+    [ "$(cat "$t/calls")" = "virsh net-update net add ip-dhcp-host $host --config"$'\n'"virsh net-update net add ip-dhcp-host $host --live" ] && r+="reserved "
+  : >"$t/calls"
+  fail="net-update net add ip-dhcp-host $host --config"
+  ! out=$(save) && grep -q 'Could not reserve 10.10.10.50' <<<"$out" && [ "$(wc -l <"$t/calls")" = 1 ] && r+="refused "
+  : >"$t/calls"
+  mac="" fail=""
+  ! out=$(save) && grep -q 'Could not reserve' <<<"$out" && [ ! -s "$t/calls" ] && r+="no-mac "
+  if [ "$r" = "reserved refused no-mac " ]; then
+    log_test "PASS" "static IP gets a DHCP reservation for the VM's MAC, saved and live; a refused one warns (#95)"
+  else
+    log_test "FAIL" "static IP gets a DHCP reservation for the VM's MAC, saved and live; a refused one warns (#95)" "$r"
+  fi
+  rm -rf "$t"
+}
+
 installer_packages() {
   local line
   line=$(grep -m1 "^  local $1_packages=(" "$SCRIPT_DIR/../installation/install-dcvm.sh") || return 1
@@ -2430,19 +2539,29 @@ test_installer_network() {
   echo 'NETWORK_NAME=datacenter-net' >"$t/conf"
   inst() {
     (
-      eval "$(sed -n '/^valid_bridge_name()/p; /^create_network()/,/^}/p; /^main()/,/^}/p; /^dcvm_init()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
-      CONFIG_FILE="$t/conf" LOG_FILE="$t/log" NETWORK_NAME=datacenter-net BRIDGE_NAME=virbr-dc NETWORK_ONLY=0 NETWORK_NAME_ARG=""
+      eval "$(sed -n '/^valid_bridge_name()/p; /^unused_subnet()/,/^}/p; /^create_network()/,/^}/p; /^main()/,/^}/p; /^dcvm_init()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+      CONFIG_FILE="$t/conf" LOG_FILE="$t/log" NETWORK_NAME=datacenter-net BRIDGE_NAME=virbr-dc NETWORK_ONLY=0 NETWORK_NAME_ARG="" NETWORK_SUBNET=10.10.10
       print_status_log() { echo "[$1] $2"; }
       check_root() { :; }
       install_required_packages() { :; }
       start_libvirtd() { :; }
+      enable_ip_forwarding() { echo forwarding-on; }
+      virsh() { return 1; }
+      ip() { :; }
       eval "$1"
       shift
       "$@"
     ) </dev/null 2>&1
   }
   local net='create_network() { echo "net=$1 bridge=$2"; }'
-  [ "$(inst "$net" dcvm_init --network-only --network-name datacenter-net | grep '^net=')" = "net=datacenter-net bridge=virbr-datacente" ] && r+="space "
+  [ "$(inst "$net" dcvm_init --network-only --network-name staging-network | grep '^net=')" = "net=staging-network bridge=virbr-stagingne" ] && r+="space "
+  [ "$(inst "$net" dcvm_init --network-only --network-name datacenter-net | grep '^net=')" = "net=datacenter-net bridge=virbr-dc" ] && r+="primary-bridge "
+  out=$(inst 'create_network() { echo "net=$1 subnet=$NETWORK_SUBNET"; }
+    ip() { [ "$2" = -o ] && echo "2: eth0    inet 10.10.0.5/24 brd 10.10.0.255 scope global eth0"; }
+    virsh() { case $1 in net-list) printf "datacenter-net\nother\n" ;; net-dumpxml) [ "$2" = other ] && echo "ip address 10.10.1.1" ;; *) return 1 ;; esac; }' dcvm_init --network-only --network-name lab)
+  grep -qx 'net=lab subnet=10.10.2' <<<"$out" && grep -qx forwarding-on <<<"$out" && r+="own-subnet-forwarding "
+  inst 'virsh() { case $1 in net-info) return 1 ;; net-define) cat "$2" >"$t/xml" ;; esac; }; uuidgen() { echo u; }' create_network n virbr-n >/dev/null
+  grep -q "<bridge name='virbr-n'" "$t/xml" 2>/dev/null && ! grep -q '<mac ' "$t/xml" && r+="no-fixed-mac "
   [ "$(inst "$net" dcvm_init --network-name=lab --network-only | grep '^net=')" = "net=lab bridge=virbr-lab" ] && r+="equals "
   ! out=$(inst "$net" dcvm_init --network-only --network-name) && grep -q 'requires a value' <<<"$out" && r+="no-value "
   ! out=$(inst 'virsh() { case $1 in net-info) return 1 ;; net-start) echo "error: bridge in use" >&2; return 1 ;; esac; }' create_network n virbr-n) &&
@@ -2450,10 +2569,10 @@ test_installer_network() {
   ! out=$(inst 'virsh() { case $1 in net-info) echo "Active:         no" ;; net-list) echo " n-old  active  yes  yes" ;; net-start) return 1 ;; esac; }' create_network n virbr-n) &&
     grep -q 'could not start' <<<"$out" && r+="existing-start-fails "
   installer_packages debian | grep -qx iptables && r+="debian-iptables "
-  if [ "$r" = "space equals no-value new-start-fails existing-start-fails debian-iptables " ]; then
-    log_test "PASS" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, failed net-start fails the step, iptables on Debian (#68)"
+  if [ "$r" = "space primary-bridge own-subnet-forwarding no-fixed-mac equals no-value new-start-fails existing-start-fails debian-iptables " ]; then
+    log_test "PASS" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, a new network gets a free subnet, libvirt's MAC and forwarding, failed net-start fails the step, iptables on Debian (#68, #86)"
   else
-    log_test "FAIL" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, failed net-start fails the step, iptables on Debian (#68)" "$r"
+    log_test "FAIL" "installer: --network-name VALUE and =VALUE, bridge within 15 bytes, a new network gets a free subnet, libvirt's MAC and forwarding, failed net-start fails the step, iptables on Debian (#68, #86)" "$r"
   fi
   rm -rf "$t"
 }
@@ -4294,6 +4413,10 @@ test_common_functions() {
   test_get_vm_ip_subnet_dots
   test_apache_exact_match
   test_dhcp_release
+  test_dhcp_release_client_id
+  test_dhcp_renew_link
+  test_static_ip_reservation
+  test_ip_forward_last_wins
   test_installer_packages
   test_ui_output
   test_ui_columns
