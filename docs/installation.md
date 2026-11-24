@@ -170,6 +170,9 @@ It holds `DATACENTER_BASE`, `NETWORK_NAME`, `BRIDGE_NAME` and
 `NETWORK_SUBNET`, read by every dcvm command. Changing a value later does not
 move existing files or reconfigure the network. See
 [Operations › Settings](operations.md#settings) for the other knobs.
+`DATACENTER_BASE` must be owned by root and not writable by other users if
+it already exists; the installer refuses it otherwise, and makes the
+folders it uses inside it root-owned.
 
 ### Network Configuration
 
@@ -248,6 +251,7 @@ sudo bash /usr/local/lib/dcvm/installation/uninstall-dcvm.sh
 > - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`. It is left alone if it has no `vms/` and `storage/` folders or is a system folder such as `/`, `/var` or `/home`.
 > - Remove the dcvm network, port-forwarding rules, DHCP leases, the NFS share's line in `/etc/exports`, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
 > - Delete `/var/log/datacenter-startup.log`.
+> - A VM it could not delete keeps its owner record, and the storage pools it removes are only those inside the dcvm data folder.
 > - Remove `alias dcvm` and `dcvm-completion.sh` lines from `~/.bashrc`, `~/.zshrc`, `~/.bash_profile`, and `~/.profile` (leaving `.bak` copies), and remove the bash completion scripts.
 >
 > To keep a VM, either detach it from the dcvm network before uninstalling (uninstall only deletes VMs attached to it), or save its definition (`virsh dumpxml <vm>`) and copy its disk images off the host. Copy any backups you want out of `$DATACENTER_BASE/backups`.
@@ -260,8 +264,11 @@ To update to the latest version:
 dcvm self-update
 ```
 
-After an update, dcvm runs a short `dcvm doctor --quiet` that lists anything
-the new version needs from you (tools to install, services, VMs to pin).
+After an update, dcvm installs its services (the socket, timers and boot
+service) when they are missing or old, then runs a short `dcvm doctor
+--quiet` that lists anything else the new version needs from you (tools to
+install, VMs to pin). Only one update or `--revert` runs at a time, and
+`--revert` installs the services of the version it goes back to.
 `sudo dcvm doctor --fix` repairs the safe ones; see [dcvm doctor](doctor.md).
 
 To check for updates without installing:

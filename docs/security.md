@@ -127,16 +127,16 @@ shows it.
   servers and well-known mirrors listed in `lib/utils/mirror-manager.sh`.
   Each download must be at least 100 MB and must match the checksum its
   publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
-  or `<file>.SHA256`, looked up first on the official server (the first
-  mirror listed), then on the mirror it came from and the other mirrors that
-  serve the same file name (the official servers publish them for all nine
-  images). The first server that publishes a checksum decides, so while the
-  official server answers, a mirror can't vouch for its own file. A download
-  that doesn't match is discarded and the next mirror is tried. If no mirror
-  publishes a checksum, dcvm keeps the file and prints `download not
-  verified`. GPG signatures are not checked, so a checksum file only proves
-  the download is intact and is the one that server lists, not who built it.
-  curl refuses a redirect from HTTPS to plain HTTP. Before an image becomes a
+  or `<file>.SHA256`, taken only from the official server (the first mirror
+  listed; the official servers publish them for all nine images), so no
+  mirror can vouch for its own file. A download that doesn't match is
+  discarded and the next mirror is tried; if the official server gives no
+  checksum (it is down, for example), the download is refused. GPG
+  signatures are not checked, so a checksum file only proves the download is
+  intact and is the one that server lists, not who built it. curl refuses a
+  redirect from HTTPS to plain HTTP; aria2c has no such option, so a mirror
+  that redirects to HTTP is left out when the mirrors are tested, and the
+  checksum catches one that does it later. Before an image becomes a
   template (Kali: after its conversion to qcow2), it must be a plain qcow2
   with no backing file or external data file, since every VM's disk is
   backed by it.
@@ -147,7 +147,8 @@ shows it.
 - **The installer** runs as root. The README's
   [review-first install](../README.md#quick-start) downloads it to a file so
   you can read it before running it; it then fetches the rest of dcvm from the
-  same repository over HTTPS, every file from the one commit the branch
+  same repository over HTTPS (curl refuses a redirect to plain HTTP, wget
+  follows no redirect), every file from the one commit the branch
   pointed to when it started. It installs from the folder it sits in only
   when that is a dcvm checkout (`lib/installation/install-dcvm.sh` next to
   the `dcvm` script) that no other user can change: owned by root or the
@@ -155,8 +156,8 @@ shows it.
   writable by group or others. Otherwise, a copy run from `/tmp` or through
   `bash -c` for example, it ignores the files around it and downloads.
 - **`dcvm self-update`** downloads the files from GitHub (`metharda/dcvm`,
-  `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, with no
-  signature check, all from one commit, into a staging folder, and replaces
+  `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, like the
+  installer, with no signature check, all from one commit, into a staging folder, and replaces
   the installed files in one swap only when every file arrived. It refuses a
   version older than the installed one unless you pass `--force`. Every installed file is owned by root
   with fixed modes, never inherited from the folder (on Debian, `/usr/local`

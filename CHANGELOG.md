@@ -12,6 +12,20 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+- `self-update --revert` installs the restored version's socket and timers instead of leaving them removed (#125).
+- `self-update` installs dcvm's services when they are missing or old instead of running `doctor --fix --only host` (#145).
+- Only one `self-update` or `--revert` runs at a time (#194).
+- A template download no longer deletes a build a create or restore is still setting up (#137).
+- `uninstall` fills in empty settings from the defaults, removes only storage pools inside a real dcvm data folder, keeps the owner records of VMs it could not delete, and reports a firewalld change only when it worked (#154, #155, #192).
+
+### Security
+- `template download` accepts only the exact supported image names and downloads to an unpredictable temporary file (#126).
+- The installer and `self-update` fetch dcvm only over https: curl refuses a redirect to http and wget follows no redirect (#127).
+- A downloaded image is checked only against the official server's checksum and refused when it gives none, so no mirror vouches for its own file (#136).
+- Mirrors that redirect to http are not ranked, so aria2c never downloads from them (#193).
+- The installer refuses a `DATACENTER_BASE` that another user owns or can write to, and makes the folders it uses inside it root-owned (#191).
+
 ## [0.9.11] - 2026-11-24
 
 Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
