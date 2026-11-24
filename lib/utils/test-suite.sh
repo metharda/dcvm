@@ -5252,16 +5252,26 @@ test_create_scrubs_seed() {
     mkisofs() { cat "${!#}"/* >"$2"; }
     wait_for_vm() { echo 10.10.10.9; }
     virsh() {
-      if [ "$1" = domblklist ]; then printf ' Type   Device   Target   Source\n file   cdrom    sda      x\n'; else echo "$*" >>"$t/virsh"; fi
+      if [ "$1" = domblklist ]; then
+        printf ' Type   Device   Target   Source\n file   cdrom    sda      x\n'
+      elif [ "$1" = domuuid ]; then
+        cat "$t/uuid" 2>/dev/null
+      else
+        echo "$*" >>"$t/virsh"
+      fi
     }
     run_detached() { echo "$1" >"$t/detached" && "$@"; }
     DATACENTER_BASE="$t" VM_NAME=seedtest
+    echo u-1 >"$t/uuid"
     scrub_cloud_init_seed
+    # A VM of the same name made later has another UUID: the old job leaves its CD-ROM alone.
+    echo u-2 >"$t/uuid"
+    swap_cloud_init_seed seedtest sda "$t/vms/seedtest/cloud-init.iso" u-1 || echo gone >"$t/gone"
   )
   grep -q 'instance-id: seedtest-1' "$t/vms/seedtest/cloud-init.iso" && ! grep -q 'secret-hash\|first-seed' "$t/vms/seedtest/cloud-init.iso" &&
     grep -q secret-hash "$t/vms/seedtest/cloud-init/user-data" && r+="iso "
   [ "$(cat "$t/virsh" 2>/dev/null)" = "change-media seedtest sda --eject --live --force
-change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && [ "$(cat "$t/detached")" = swap_cloud_init_seed ] && r+="swap "
+change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && [ "$(cat "$t/detached")" = swap_cloud_init_seed ] && [ -f "$t/gone" ] && r+="swap "
   generate_test_userdata tester n "" "$t/ud"
   grep -q '^  - rm -f /var/lib/cloud/instance/user-data.txt\* .*obj.pkl' "$t/ud" && r+="guest"
   if [ "$r" = "iso swap guest" ]; then

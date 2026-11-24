@@ -1479,7 +1479,7 @@ scrub_cloud_init_seed() {
   rm -rf "$seed" "$dir/cloud-init.iso.new"
   [ "$rc" -eq 0 ] || return 1
   dev=$(virsh domblklist "$VM_NAME" --details 2>/dev/null | awk '$2 == "cdrom" { print $3; exit }')
-  run_detached swap_cloud_init_seed "$VM_NAME" "$dev" "$dir/cloud-init.iso"
+  run_detached swap_cloud_init_seed "$VM_NAME" "$dev" "$dir/cloud-init.iso" "$(virsh domuuid "$VM_NAME" 2>/dev/null)"
 }
 
 create_vm_disk() {

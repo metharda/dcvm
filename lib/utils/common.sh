@@ -1642,8 +1642,14 @@ run_detached() {
 }
 
 # QEMU keeps the old seed open across guest reboots; SSH answers only after cloud-init has read it.
+# Gives up once the VM it was started for (by UUID) is gone, so a later VM of that name is left alone.
 swap_cloud_init_seed() {
-  wait_for_vm "$1" 1800 >/dev/null && virsh change-media "$1" "$2" --eject --live --force &&
+  local tries=60
+  until wait_for_vm "$1" 30 >/dev/null; do
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] && [ "$(virsh domuuid "$1" 2>/dev/null)" = "$4" ] || return 1
+  done
+  [ "$(virsh domuuid "$1" 2>/dev/null)" = "$4" ] && virsh change-media "$1" "$2" --eject --live --force &&
     virsh change-media "$1" "$2" "$3" --insert --live
 }
 
