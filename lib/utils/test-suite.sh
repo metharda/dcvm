@@ -620,6 +620,7 @@ test_delete_vm_keeps_network() {
     restart_network() { echo "restart_network" >>"$t/calls"; }
     cleanup_dhcp_lease() { echo "cleanup_dhcp_lease $*" >>"$t/calls"; }
     check_vm_exists() { return 0; }
+    is_vm_in_network() { :; }
     get_vm_mac() { echo 52:54:00:ab:cd:ef; }
     get_vm_disk_path() { :; }
     get_vm_ip() { :; }
@@ -2185,6 +2186,7 @@ test_delete_vm_exact_match() {
       }
       dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
       check_vm_exists() { return 0; }
+      is_vm_in_network() { :; }
       get_vm_disk_path() { :; }
       get_vm_ip() { :; }
       get_port_mappings_file() { echo "$t/port-mappings.txt"; }
@@ -2327,6 +2329,7 @@ EOF
     }
     cleanup_dhcp_lease() { return 2; }
     check_vm_exists() { [ ! -e "$t/gone" ]; }
+    is_vm_in_network() { :; }
     registry_get() { :; }
     registry_remove() { :; }
     get_vm_mac() { echo 52:54:00:00:00:01; }
@@ -5621,13 +5624,234 @@ test_user_remove_and_owner_hint() {
     check_vm_exists() { :; }
     is_vm_in_network() { :; }
     registry_set() { :; }
-    id() { echo 1001; }
+    id() { [ "$1" = -nG ] && echo "bob dcvm" || echo 1001; }
     set_owner web bob 2>&1 | grep -q 'dcvm console web' && echo owner-hint
   )
   if [ "$(tr '\n' ' ' <<<"$r")" = "stranger-fails member-ok owner-hint " ]; then
     log_test "PASS" "user remove fails for a non-member; owner tells the new owner how to log in"
   else
     log_test "FAIL" "user remove fails for a non-member; owner tells the new owner how to log in" "$(tr '\n' ' ' <<<"$r")"
+  fi
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs; groups are read by manage_users
+test_owner_records_follow_accounts() {
+  local t r=""
+  t=$(mktemp -d)
+  r=$(
+    DCVM_STATE_DIR="$t" DCVM_USER_GROUP=dcvm DCVM_ADMIN_GROUP=dcvm-admin
+    eval "$(sed -n '/^hand_vms_to_root()/,/^}/p; /^manage_users()/,/^}/p; /^set_owner()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    require_admin() { :; }
+    ensure_dcvm_groups() { :; }
+    usermod() { :; }
+    gpasswd() { [ "$3" = dcvm ]; }
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    id() {
+      case "$1 $2" in
+      "-u alice" | "-u carol") echo 1001 ;;
+      "-u bob") echo 1002 ;;
+      "-nG alice") echo "alice dcvm" ;;
+      "-nG bob") echo "bob users" ;;
+      *) return 1 ;;
+      esac
+    }
+    registry_set a1 owner_uid=1001 owner=alice
+    registry_set a2 owner_uid=1001 owner=alice
+    registry_set b1 owner_uid=1002 owner=bob
+    set_owner b1 bob >/dev/null 2>&1 || echo non-member-refused
+    set_owner b1 alice >/dev/null 2>&1 && [ "$(registry_get b1 owner)" = alice ] && echo member-ok
+    manage_users add carol >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 0 ] && [ "$(registry_get a2 owner_uid)" = 0 ] && [ "$(registry_get b1 owner_uid)" = 0 ] && echo reused-uid-to-root
+    registry_set a1 owner_uid=1001 owner=alice
+    manage_users add alice >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 1001 ] && echo own-kept
+    manage_users remove alice >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 0 ] && [ "$(registry_get a1 owner)" = root ] && echo removed-to-root
+  )
+  if [ "$(tr '\n' ' ' <<<"$r")" = "non-member-refused member-ok reused-uid-to-root own-kept removed-to-root " ]; then
+    log_test "PASS" "owner needs a dcvm user; user remove, or a reused UID at user add, hands the old VMs to root (#146 #147)"
+  else
+    log_test "FAIL" "owner needs a dcvm user; user remove, or a reused UID at user add, hands the old VMs to root (#146 #147)" "$(tr '\n' ' ' <<<"$r")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by delete_single_vm
+test_delete_names_and_leftovers() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/etc" "$t/base/vms/gone/sub" "$t/base/config/network" "$t/state/vms"
+  echo secret >"$t/etc/shadow"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\ngone 10.10.10.7 2230 8090\nweb 10.10.10.8 2231 8091\n' >"$t/base/port-mappings.txt"
+  echo IP=10.10.10.7 >"$t/base/config/network/gone.conf"
+  printf 'owner_uid=0\n' >"$t/state/vms/gone"
+  printf 'owner_uid=0\nprotected=1\n' >"$t/state/vms/kept"
+  run_del() {
+    (
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t/base" DCVM_STATE_DIR="$t/state" NETWORK_NAME=net
+      virsh() {
+        echo "virsh $*" >>"$t/calls"
+        if [ "$1 $2" = "list --all" ]; then
+          [ -e "$t/down" ] && return 1
+          printf 'web\nforeign\n'
+        fi
+        return 0
+      }
+      check_vm_exists() { [ "$1" = web ] || [ "$1" = foreign ]; }
+      is_vm_in_network() { [ "$1" = web ]; }
+      cleanup_port_forwarding_for_vm() { echo "cleanup $*" >>"$t/calls"; }
+      delete_single_vm "$1"
+    ) >/dev/null 2>&1
+  }
+  (
+    DCVM_STATE_DIR="$t/state"
+    registry_remove ../../etc/shadow
+    registry_set ../../etc/x a=1
+  ) 2>/dev/null
+  ! run_del ../../etc/shadow && [ -f "$t/etc/shadow" ] && [ ! -e "$t/etc/x" ] && r+="traversal "
+  ! run_del kept && [ -f "$t/state/vms/kept" ] && r+="protected "
+  ! run_del foreign && ! grep -q undefine "$t/calls" && r+="foreign "
+  : >"$t/down"
+  ! run_del gone && [ -f "$t/state/vms/gone" ] && [ -d "$t/base/vms/gone" ] && r+="libvirt-down "
+  rm -f "$t/down"
+  run_del gone && [ ! -e "$t/state/vms/gone" ] && [ ! -e "$t/base/vms/gone" ] && [ ! -e "$t/base/config/network/gone.conf" ] &&
+    ! grep -q '^gone ' "$t/base/port-mappings.txt" && grep -q '^web ' "$t/base/port-mappings.txt" &&
+    grep -qx 'cleanup 10.10.10.7 2230 8090' "$t/calls" && r+="leftovers "
+  if [ "$r" = "traversal protected foreign libvirt-down leftovers " ]; then
+    log_test "PASS" "delete refuses ../ names, protected records and foreign domains; a gone VM's record, folder, IP and ports go, not while libvirt is down (#148 #152 #153 #180)"
+  else
+    log_test "FAIL" "delete refuses ../ names, protected records and foreign domains; a gone VM's record, folder, IP and ports go, not while libvirt is down (#148 #152 #153 #180)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by delete_all_vms
+test_delete_all_libvirt_down() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/vm1" "$t/vms/vm2"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nvm1 10.10.10.5 2230 8090\n' >"$t/port-mappings.txt"
+  cp "$t/port-mappings.txt" "$t/map.orig"
+  run_all() {
+    (
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t" DCVM_STATE_DIR="$t/state"
+      # libvirt answers until the VM listing, then goes down for the rest of the run.
+      virsh() {
+        [ -e "$t/listed" ] && return 1
+        [ "$1" = list ] || return 0
+        [ "${3:-}" = --name ] && return 0
+        : >"$t/listed"
+        printf ' 1 vm1 running\n 2 vm2 running\n'
+      }
+      is_vm_in_network() { :; }
+      get_vm_state() { echo running; }
+      shuf() { echo 1234; }
+      get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+      save_iptables_rules() { :; }
+      iptables() { echo "$*" >>"$t/calls"; }
+      delete_single_vm() { return 1; }
+      eval "$1"
+      delete_all_vms
+    ) <<<$'yes\n1234' >/dev/null 2>&1
+  }
+  run_all 'virsh() { return 1; }; delete_single_vm() { : >"$t/deleted"; }'
+  [ ! -e "$t/deleted" ] && r+="refused "
+  ! run_all '' && [ -d "$t/vms/vm1" ] && [ -d "$t/vms/vm2" ] && cmp -s "$t/port-mappings.txt" "$t/map.orig" && [ ! -e "$t/calls" ] && r+="kept "
+  if [ "$r" = "refused kept " ]; then
+    log_test "PASS" "delete --all without libvirt deletes nothing and keeps every folder, mapping and rule (#110)"
+  else
+    log_test "FAIL" "delete --all without libvirt deletes nothing and keeps every folder, mapping and rule (#110)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by cmd_vnc
+test_vnc_keeps_spice() {
+  local t r="" out
+  t=$(mktemp -d)
+  vnc() {
+    (
+      source "$SCRIPT_DIR/../network/network-manager.sh" >/dev/null 2>&1
+      check_vm_exists() { :; }
+      virsh() {
+        case "$1" in
+        dumpxml) cat "$t/in.xml" ;;
+        define) cp "$2" "$t/out.xml" ;;
+        esac
+      }
+      cmd_vnc "$1" vm 2>&1
+    )
+  }
+  printf "<domain><devices>\n<graphics type='spice' autoport='yes' passwd='sp'>\n<listen type='address'/>\n</graphics>\n<graphics type='vnc' port='-1'/>\n<video>\n<model type='qxl'/>\n</video>\n</devices></domain>\n" >"$t/in.xml"
+  vnc disable >/dev/null
+  grep -q "type='spice'" "$t/out.xml" && grep -q "passwd='sp'" "$t/out.xml" && ! grep -q "type='vnc'" "$t/out.xml" && grep -q qxl "$t/out.xml" && r+="disable-keeps-spice "
+  grep -v "type='vnc'" "$t/in.xml" >"$t/spice.xml" && mv "$t/spice.xml" "$t/in.xml"
+  rm -f "$t/out.xml"
+  out=$(vnc disable)
+  grep -q 'already off' <<<"$out" && [ ! -e "$t/out.xml" ] && r+="spice-is-not-vnc "
+  vnc enable >/dev/null
+  grep -q "type='spice'" "$t/out.xml" && grep -q 'type="vnc"' "$t/out.xml" && [ "$(grep -o '<video>' "$t/out.xml" | wc -l)" = 1 ] && r+="enable-adds-vnc "
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+for a in ("enable", "disable", "status"):
+    ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "terminal", "files": {}}
+    s.decide_user(ctx, ["network", "vnc", a, "web"])
+    print(a, bool(ctx.get("interactive")))
+PY
+    )
+    [ "$(tr '\n' ' ' <<<"$out")" = "enable True disable True status False " ] && r+="interactive "
+  else
+    r+="interactive "
+  fi
+  if [ "$r" = "disable-keeps-spice spice-is-not-vnc enable-adds-vnc interactive " ]; then
+    log_test "PASS" "network vnc leaves a SPICE display and its password alone; enable/disable get the user's terminal (#144 #181)"
+  else
+    log_test "FAIL" "network vnc leaves a SPICE display and its password alone; enable/disable get the user's terminal (#144 #181)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC1090,SC1091 # stubs
+test_empty_name_and_trusted_info() {
+  local r="" out
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    load_dcvm_config() { :; }
+    stop_vms() { echo "stop:$*"; }
+    start_vms() { echo "start:$*"; }
+    (main stop "" 2>&1)
+    (main start "" --all 2>&1)
+  )
+  grep -q Usage <<<"$out" && ! grep -q 'stop:\|start:' <<<"$out" && r+="empty-name "
+  out=$(
+    eval "$(sed -n '/^json_str()/p; /^show_info()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    get_vm_state() { echo running; }
+    virsh() { :; }
+    registry_get() { :; }
+    vm_login() { echo u; }
+    # Only the guest agent claims an address, and it may be another VM's.
+    get_vm_ip() {
+      [ "${3:-}" = host ] && echo N/A && return 1
+      echo 10.10.10.40
+    }
+    show_info web --json
+  )
+  grep -q '"ip":null' <<<"$out" && r+="trusted-ip "
+  if [ "$r" = "empty-name trusted-ip " ]; then
+    log_test "PASS" "start/stop/restart refuse an empty VM name instead of acting on every VM; info never takes the guest's word for its address (#128 #149)"
+  else
+    log_test "FAIL" "start/stop/restart refuse an empty VM name instead of acting on every VM; info never takes the guest's word for its address (#128 #149)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
   fi
 }
 
@@ -5659,21 +5883,21 @@ test_reap_needs_libvirt() {
     registry_set alive "expires=1"
     mkdir() { :; }
     flock() {
-      echo "${*: -1}" >"$t/flocked"
+      echo "${*: -1}" >>"$t/flocked"
       return 1
     }
     virsh() { return 1; }
     reap_expired 2>/dev/null
-    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && echo kept
+    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && [ ! -e "$t/flocked" ] && echo kept
     virsh() { [ "$*" = "list --all --name" ] && echo alive; }
     reap_expired
-    [ -f "$t/vms/gone" ] || echo gone-removed
-    [ -f "$t/vms/alive" ] && [ "$(cat "$t/flocked")" = alive ] && echo alive-kept
+    # A VM already gone from libvirt goes through delete-vm.sh too, which also clears its folder and ports.
+    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && [ "$(sort "$t/flocked" | tr '\n' ' ')" = "alive gone " ] && echo both-deleted
   )
-  if [ "$(tr '\n' ' ' <<<"$r")" = "kept gone-removed alive-kept " ]; then
-    log_test "PASS" "the TTL reaper keeps every owner record while libvirt is not answering"
+  if [ "$(tr '\n' ' ' <<<"$r")" = "kept both-deleted " ]; then
+    log_test "PASS" "the TTL reaper keeps every owner record while libvirt is not answering; a VM gone from libvirt goes through delete too (#148)"
   else
-    log_test "FAIL" "the TTL reaper keeps every owner record while libvirt is not answering" "$(tr '\n' ' ' <<<"$r")"
+    log_test "FAIL" "the TTL reaper keeps every owner record while libvirt is not answering; a VM gone from libvirt goes through delete too (#148)" "$(tr '\n' ' ' <<<"$r")"
   fi
   rm -rf "$t"
 }
@@ -6247,6 +6471,11 @@ test_common_functions() {
   test_backup_delete_one_arg_ids
   test_backup_server_quota_and_ids
   test_user_remove_and_owner_hint
+  test_owner_records_follow_accounts
+  test_delete_names_and_leftovers
+  test_delete_all_libvirt_down
+  test_vnc_keeps_spice
+  test_empty_name_and_trusted_info
   test_static_ip_reason
   test_delete_vm_exact_match
   test_bulk_status_reset

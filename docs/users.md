@@ -34,7 +34,7 @@ Members of both groups are admins. `dcvm whoami` prints your role.
 sudo dcvm user add alice            # a user
 sudo dcvm user add carol --admin    # an admin
 sudo dcvm user list                 # members, roles and how many VMs each owns
-sudo dcvm user remove alice         # their VMs stay; hand them over with dcvm owner
+sudo dcvm user remove alice         # their VMs pass to root; hand them over with dcvm owner
 ```
 
 Group membership takes effect at the user's next login (or `newgrp dcvm`).
@@ -76,7 +76,7 @@ Every VM has an owner, kept in `/var/lib/dcvm/vms/<vm>` (owner, resources,
 login user, `--ttl` expiry, protection). Users see only the VMs and backups
 they own. Root and admins see an OWNER column in `dcvm list` and
 `dcvm status`, and `dcvm list --json` has an `owner` field. VMs from before 0.9.10 belong to root, so only admins see them;
-`sudo dcvm owner <vm> <user>` hands one over. VM names stay global: two users
+`sudo dcvm owner <vm> <user>` hands one over to a dcvm user. VM names stay global: two users
 can't both have a VM called `web`.
 
 Backups record the owner of the VM they were taken from, in an `owner` file

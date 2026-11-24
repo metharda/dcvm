@@ -210,7 +210,8 @@ cmd_vnc() {
   fi
 
   local has_vnc tmp_xml
-  has_vnc=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=" || true)
+  # VNC only: a SPICE display is not VNC, and disable must leave it alone.
+  has_vnc=$(virsh dumpxml "$vm_name" 2>/dev/null | grep -c "<graphics type=.vnc." || true)
   case "$action" in
   disable)
     if [ "$has_vnc" -eq 0 ]; then
@@ -221,8 +222,15 @@ cmd_vnc() {
     echo ""
     stop_for_vnc_change "$vm_name" || return 1
     tmp_xml="$(mktemp /tmp/remove-graphics-XXXXXX.xml)"
-    virsh dumpxml "$vm_name" | sed '/<graphics/,/<\/graphics>/d' | sed '/<video>/,/<\/video>/d' >"$tmp_xml"
-    if virsh define "$tmp_xml" >/dev/null 2>&1; then
+    # --security-info: a SPICE display that stays keeps its password.
+    virsh dumpxml --security-info "$vm_name" >"$tmp_xml"
+    if python3 -I -S -c '
+import re, sys
+p = sys.argv[1]
+s = re.sub(r"<graphics type=.vnc.(?:[^>]*/>|.*?</graphics>)\s*", "", open(p).read(), flags=re.S)
+if "<graphics" not in s:
+    s = re.sub(r"<video>.*?</video>\s*", "", s, flags=re.S)
+open(p, "w").write(s)' "$tmp_xml" && virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
       ui_done ok "VNC off on $vm_name" "its VNC port is free"
       ui_next "dcvm start $vm_name" "start it again" "dcvm console $vm_name" "serial console"
@@ -245,12 +253,13 @@ cmd_vnc() {
     pw=$(vnc_password)
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
     tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
-    virsh dumpxml "$vm_name" >"$tmp_xml"
+    virsh dumpxml --security-info "$vm_name" >"$tmp_xml"
     VNC_PW="$pw" python3 -I -S -c '
 import os, sys
 p = sys.argv[1]
 g = "<graphics type=\"vnc\" port=\"-1\" autoport=\"yes\" listen=\"127.0.0.1\" passwd=\"%s\"><listen type=\"address\" address=\"127.0.0.1\"/></graphics>" % os.environ["VNC_PW"]
-s = open(p).read().replace("</devices>", g + sys.argv[2] + "</devices>", 1)
+s = open(p).read()
+s = s.replace("</devices>", g + ("" if "<graphics" in s else sys.argv[2]) + "</devices>", 1)
 open(p, "w").write(s)' "$tmp_xml" "$video_xml"
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"

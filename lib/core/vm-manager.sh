@@ -317,7 +317,9 @@ main() {
     done
     local n=${#args[@]}
     [ "$every" = true ] && n=$((n + 1))
-    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$force" = true ] && [ "$every" = true ]; }; then
+    # An empty name (an unset variable) must not fall through to --all.
+    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$every" = false ] && [ -z "${args[0]}" ]; } ||
+      { [ "$force" = true ] && [ "$every" = true ]; }; then
       print_error "Usage: dcvm $cmd <vm> | --all$([ "$cmd" = stop ] && echo ", or dcvm stop <vm> --force")"
       exit 1
     fi

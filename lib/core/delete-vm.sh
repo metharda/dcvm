@@ -19,22 +19,52 @@ remove_vm_storage_pool() {
   return 0
 }
 
+# A record whose domain is gone (a failed create, or a VM undefined outside dcvm) still holds the name, disk and ports.
+delete_leftovers() {
+  local vm="$1" names port_file lockfd ip ssh_port http_port
+  # dominfo fails while libvirt is down too; only a listing that answers proves the VM gone.
+  if ! names=$(virsh list --all --name 2>/dev/null); then
+    print_error "libvirt is not answering; nothing of $vm was deleted"
+    return 1
+  fi
+  if grep -qxF -- "$vm" <<<"$names" || [ ! -f "$(registry_file "$vm")" ]; then
+    print_error "VM $vm does not exist"
+    return 1
+  fi
+  port_file=$(get_port_mappings_file)
+  exec {lockfd}>>"$port_file.lock"
+  flock -w 30 "$lockfd" || {
+    print_error "Another port change is running; try again"
+    return 1
+  }
+  read -r _ ip ssh_port http_port < <(awk -v v="$vm" '$1 == v' "$port_file" 2>/dev/null | head -1)
+  [ -n "$ip" ] && cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
+  drop_port_mapping "$vm"
+  exec {lockfd}>&-
+  remove_vm_storage_pool "$vm"
+  rm -rf "${DATACENTER_BASE:?}/vms/$vm"
+  rm -f "$DATACENTER_BASE/config/network/$vm.conf"
+  registry_remove "$vm"
+  ui_done ok "$vm deleted" "its domain was already gone; record, folder and port forwards removed"
+}
+
 delete_single_vm() {
   local VM_NAME="$1"
 
-  if ! check_vm_exists "$VM_NAME"; then
-    # A record left by a create that never finished still holds the name and quota.
-    if [ -f "$(registry_file "$VM_NAME")" ] && [ ! -d "$DATACENTER_BASE/vms/$VM_NAME" ]; then
-      registry_remove "$VM_NAME"
-      rm -f "$DATACENTER_BASE/config/network/$VM_NAME.conf"
-      ui_done ok "$VM_NAME deleted" "only its record was left"
-      return 0
-    fi
-    print_error "VM $VM_NAME does not exist"
+  if ! safe_vm_name "$VM_NAME"; then
+    print_error "Invalid VM name: $VM_NAME"
     return 1
   fi
   if [ "$(registry_get "$VM_NAME" protected)" = 1 ]; then
     print_error "$VM_NAME is protected: dcvm unprotect $VM_NAME first"
+    return 1
+  fi
+  if ! check_vm_exists "$VM_NAME"; then
+    delete_leftovers "$VM_NAME"
+    return
+  fi
+  if ! is_vm_in_network "$VM_NAME" && [ ! -f "$(registry_file "$VM_NAME")" ]; then
+    print_error "$VM_NAME is not a dcvm VM (not on $NETWORK_NAME); remove it with virsh if you mean to"
     return 1
   fi
 
@@ -142,7 +172,12 @@ delete_single_vm() {
   ! check_vm_exists "$VM_NAME"
 }
 delete_all_vms() {
-  local vms vm count failed=0
+  local vms vm count failed=0 names
+  # Without libvirt every VM looks gone, and the sweeps below would take their folders and rules.
+  if ! virsh list --all --name >/dev/null 2>&1; then
+    print_error "libvirt is not answering; nothing was deleted"
+    return 1
+  fi
   vms=$(list_datacenter_vm_names)
   if [ -z "$vms" ]; then
     echo ""
@@ -173,8 +208,12 @@ delete_all_vms() {
     fi
   done 3<<<"$vms"
 
+  if ! names=$(virsh list --all --name 2>/dev/null); then
+    ui_done warn "libvirt stopped answering" "shared DHCP state, port forwards and leftover folders are kept"
+    return 1
+  fi
   # Shared state only once no VM is left: a refused (protected) or failed VM keeps its lease, mapping and rules.
-  if [ -z "$(list_datacenter_vm_names)" ]; then
+  if [ "$failed" -eq 0 ] && [ -z "$(list_datacenter_vm_names)" ]; then
     local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
     # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
     [ -f "$status_file" ] && printf '[]\n' >"$status_file"
@@ -190,9 +229,11 @@ delete_all_vms() {
     exec {lockfd}>&-
   fi
   # A VM that was refused (protected) or failed keeps its folder and disk.
-  local dir
+  local dir base
   for dir in "$DATACENTER_BASE"/vms/*/; do
-    [ -d "$dir" ] && ! check_vm_exists "$(basename "$dir")" && [ "$(registry_get "$(basename "$dir")" state)" != creating ] && rm -rf "$dir"
+    base=$(basename "$dir")
+    [ -d "$dir" ] && ! grep -qxF -- "$base" <<<"$names" && [ "$(registry_get "$base" state)" != creating ] &&
+      [ "$(registry_get "$base" protected)" != 1 ] && rm -rf "$dir"
   done
 
   if [ "$failed" -eq 0 ] && [ -z "$(list_datacenter_vms)" ]; then

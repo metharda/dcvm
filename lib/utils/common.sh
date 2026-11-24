@@ -1438,14 +1438,19 @@ libvirt_nft_rejects_forwards() {
   command_exists nft && nft list table inet libvirt_network 2>/dev/null | grep -qF "\"${BRIDGE_NAME:-virbr-dc}\""
 }
 
-registry_file() { echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
+# Name characters only: a name becomes a path, and "../" would leave the folder.
+safe_vm_name() { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]]; }
+registry_file() { safe_vm_name "$1" && echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
 registry_get() { sed -n "s/^$2=//p" "$(registry_file "$1")" 2>/dev/null | head -1; }
-registry_remove() { rm -f "$(registry_file "$1")"; }
+registry_remove() {
+  local f
+  f=$(registry_file "$1") && rm -f "$f"
+}
 
 registry_set() {
   local vm="$1" file tmp kv
   shift
-  file=$(registry_file "$vm")
+  file=$(registry_file "$vm") || return 1
   mkdir -p -m 700 "${file%/*}" || return 1
   tmp="$file.tmp.$$"
   {
@@ -1648,7 +1653,7 @@ print(d.findtext("name"))' "$dir/all" "$dir/domain.xml" >"$dir/name"; then
   return $rc
 }
 
-vnc_password_of() { virsh dumpxml --security-info -- "$1" 2>/dev/null | sed -n "s/.*<graphics[^>]* passwd='\([^']*\)'.*/\1/p" | head -1; }
+vnc_password_of() { virsh dumpxml --security-info -- "$1" 2>/dev/null | sed -n "s/.*<graphics type='vnc'[^>]* passwd='\([^']*\)'.*/\1/p" | head -1; }
 
 cleanup_port_forwarding_for_vm() {
   local vm_ip="$1"
@@ -2252,7 +2257,7 @@ export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac vm_network_macs get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
-export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
+export -f safe_vm_name registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
