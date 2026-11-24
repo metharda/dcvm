@@ -3152,7 +3152,7 @@ STUB
   chmod +x "$t/bin/iptables"
   (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.2 "" "") >/dev/null 2>&1
   out=$(cat "$t/bin/deleted" 2>/dev/null)
-  if [ "$out" = "$(printf -- '-t nat -D PREROUTING 2\n-D FORWARD 2')" ]; then
+  if [ "$out" = "$(printf -- '-w -t nat -D PREROUTING 2\n-w -D FORWARD 2')" ]; then
     log_test "PASS" "deleting a VM removes only its own forwards, not those of .20 or .200"
   else
     log_test "FAIL" "deleting a VM removes only its own forwards, not those of .20 or .200" "$(tr '\n' '|' <<<"$out")"
@@ -3180,18 +3180,135 @@ STUB
   (PATH="$t/bin:$PATH" && source "$SCRIPT_DIR/../network/port-forward.sh" && BRIDGE_NAME=virbr-dc &&
     setup_vm_forwarding web 10.10.10.5 2221 8081 192.0.2.1) >/dev/null 2>&1
   [ "$(cat "$t/bin/calls" 2>/dev/null)" = "$(printf '%s\n' \
-    '-t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
-    '-t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="local-only "
+    '-w -t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+    '-w -t nat -I PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="local-only "
   rm -f "$t/bin/calls"
   (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.5 2221 8081) >/dev/null 2>&1
   out=$(grep -- '-t nat' "$t/bin/calls" 2>/dev/null)
   [ "$out" = "$(printf '%s\n' \
-    '-t nat -D PREROUTING -p tcp -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
-    '-t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="remove-old-and-new "
+    '-w -t nat -D PREROUTING -p tcp -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+    '-w -t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 8081 -j DNAT --to-destination 10.10.10.5:80')" ] && r+="remove-old-and-new "
   if [ "$r" = "local-only remove-old-and-new " ]; then
     log_test "PASS" "port forwards DNAT only traffic to the host, not from the bridge; removal matches old and new rules (#77)"
   else
     log_test "FAIL" "port forwards DNAT only traffic to the host, not from the bridge; removal matches old and new rules (#77)" "$r; $(tr '\n' '|' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are written literally or called by the module
+test_port_forward_records() {
+  local t r="" out c pf="$SCRIPT_DIR/../network/port-forward.sh"
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  cat >"$t/bin/iptables" <<'STUB'
+#!/bin/bash
+echo "$*" >>"${0%/*}/calls"
+case "$*" in
+*"-I PREROUTING"*"--dport 9001 "*) exit 1 ;;
+*"-S PREROUTING"*) printf '%s\n' '-P PREROUTING ACCEPT' \
+  '-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER' \
+  '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
+  '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
+  '-A PREROUTING -p tcp -m tcp --dport 2222 -j DNAT --to-destination 110.10.10.5:22' \
+  '-A PREROUTING -p tcp -j DNAT --to-destination 10.10.10.9:22' ;;
+*"-S FORWARD"*) printf '%s\n' '-P FORWARD ACCEPT' \
+  '-A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT' \
+  '-A FORWARD -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
+  '-A FORWARD -d 10.10.10.6/32 -p tcp -m tcp --dport 80 -j ACCEPT' \
+  '-A FORWARD -d 10.10.10.0/24 -o virbr-dc -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' \
+  '-A FORWARD -d 110.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' \
+  '-A FORWARD -s 192.0.2.9/32 -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' ;;
+*" -D "*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$t/bin/iptables"
+
+  (PATH="$t/bin:$PATH" NETWORK_SUBNET=10.10.10 BRIDGE_NAME=virbr-dc && cleanup_port_forwarding) >/dev/null 2>&1
+  [ "$(grep -- ' -D ' "$t/bin/calls")" = "$(printf '%s\n' \
+    '-w -t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
+    '-w -t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
+    '-w -D FORWARD -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
+    '-w -D FORWARD -d 10.10.10.6/32 -p tcp -m tcp --dport 80 -j ACCEPT')" ] && r+="cleanup-exact "
+
+  rm -f "$t/bin/calls"
+  out=$(
+    PATH="$t/bin:$PATH" BRIDGE_NAME=virbr-dc MAPPINGS_TMP="$t/tmp"
+    source "$pf"
+    cleanup_port_forwarding_for_vm() { echo "rollback $*" >>"$t/bin/calls"; }
+    setup_vm_forwarding web 10.10.10.5 2221 9001 192.0.2.1 >/dev/null 2>&1
+    echo "rc=$?"
+  )
+  [ "$out" = rc=1 ] && [ ! -s "$t/tmp" ] && grep -qx 'rollback 10.10.10.5 2221 9001' "$t/bin/calls" &&
+    ! grep -qv -e '^-w ' -e '^rollback' "$t/bin/calls" && r+="half-forward-undone "
+
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nold 10.10.10.7 3001 9001\n' >"$t/map"
+  chmod 644 "$t/map"
+  (
+    PATH="$t/bin:$PATH" SSH_PORT_START=3000 HTTP_PORT_START=9000
+    source "$pf"
+    BRIDGE_NAME=virbr-dc NETWORK_SUBNET=10.10.10
+    get_port_mappings_file() { echo "$t/map"; }
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    get_vm_ip_trusted() { echo 10.10.10.5; }
+    ip_held_by_other_vm() { return 1; }
+    ss() { [[ "$*" != *":9000"* ]] || echo LISTEN; }
+    detect_host_ip() { echo 192.0.2.1; }
+    vm_login() { :; }
+    save_iptables_rules() { :; }
+    cmd_add web
+  ) >/dev/null 2>&1
+  grep -qx 'web 10.10.10.5 3002 9002' "$t/map" && [ "$(stat -c %a "$t/map")" = 600 ] && r+="custom-range-free-port "
+
+  : >"$t/swept"
+  for c in clear apply setup; do
+    (
+      source "$pf"
+      flock() { return 1; }
+      cleanup_port_forwarding() { echo "$c" >>"$t/swept"; }
+      get_port_mappings_file() { echo "$t/map"; }
+      virsh() { return 1; }
+      "cmd_$c"
+    ) >/dev/null 2>&1 && echo "$c ran" >>"$t/swept"
+  done
+  [ ! -s "$t/swept" ] && r+="locked "
+  if [ "$r" = "cleanup-exact half-forward-undone custom-range-free-port locked " ]; then
+    log_test "PASS" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)"
+  else
+    log_test "FAIL" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null) $(tr '\n' '|' <"$t/swept")"
+  fi
+
+  r=""
+  out=$(PATH="$t/bin:$PATH" && source "$pf" && cmd_rules 2>&1)
+  grep -qE 'any +10\.10\.10\.9:22' <<<"$out" && ! grep -qE '2222 +10\.10\.10\.9' <<<"$out" && r+="rules-paired "
+  out=$(source "$pf" && get_port_mappings_file() { echo "$t/map"; } && vm_visible() { return 1; } && cmd_show 2>&1)
+  grep -q 'No saved port mappings' <<<"$out" && ! grep -q 'HTTP PORT' <<<"$out" && r+="show-none "
+  (BRIDGE_NAME=virbr-dc && nft() { printf 'table inet libvirt_network {\n\toifname "virbr-dc" counter reject\n}\n'; } && libvirt_nft_rejects_forwards) &&
+    ! (BRIDGE_NAME=virbr-other && nft() { printf 'table inet libvirt_network {\n\toifname "virbr-dc" counter reject\n}\n'; } && libvirt_nft_rejects_forwards) && r+="nft-backend "
+  if [ "$r" = "rules-paired show-none nft-backend " ]; then
+    log_test "PASS" "ports rules pairs each port with its own rule, ports show says none to users without forwards, libvirt's nftables rules are detected (#88)"
+  else
+    log_test "FAIL" "ports rules pairs each port with its own rule, ports show says none to users without forwards, libvirt's nftables rules are detected (#88)" "$r"
+  fi
+
+  r=""
+  mkdir -p "$t/config/network"
+  chmod 755 "$t/config/network"
+  (DATACENTER_BASE="$t" && save_static_ip web 10.10.10.5)
+  [ "$(stat -c %a "$t/config/network")" = 700 ] && [ "$(stat -c %a "$t/config/network/web.conf")" = 600 ] && r+="static-ip "
+  chmod 644 "$t/map"
+  (get_port_mappings_file() { echo "$t/map"; } && drop_port_mapping old)
+  ! grep -q '^old ' "$t/map" && [ "$(stat -c %a "$t/map")" = 600 ] && r+="drop "
+  rm -f "$t/port-mappings.txt"
+  echo "web 10.10.10.5 2221 8081" >"$t/tmp"
+  (source "$pf" && DATACENTER_BASE="$t" MAPPINGS_TMP="$t/tmp" && save_mappings_tmp_to_file) >/dev/null 2>&1
+  [ "$(stat -c %a "$t/port-mappings.txt" 2>/dev/null)" = 600 ] && r+="setup "
+  if [ "$r" = "static-ip drop setup " ]; then
+    log_test "PASS" "port mappings and static IP records are readable by root only (#106)"
+  else
+    log_test "FAIL" "port mappings and static IP records are readable by root only (#106)" "$r"
   fi
   rm -rf "$t"
 }
@@ -3215,9 +3332,10 @@ test_delete_all_shared_state() {
       save_iptables_rules() { :; }
       iptables() {
         case "$*" in
-        "-t nat -S PREROUTING") printf '%s\n' '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' \
+        "-w -t nat -S PREROUTING") printf '%s\n' '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' \
           '-A PREROUTING -p tcp -m tcp --dport 18080 -j DNAT --to-destination 10.10.10.9:80' ;;
         "-t nat -L PREROUTING"*) printf 'num target prot opt source destination\n1 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:2230 to:10.10.10.5:22\n2 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:18080 to:10.10.10.9:80\n' ;;
+        *"-L FORWARD"*) printf 'num target prot opt source destination\n1 ACCEPT all -- 0.0.0.0/0 110.10.10.7\n' ;;
         *-D*) echo "$*" >>"$t/calls" ;;
         esac
       }
@@ -3232,8 +3350,8 @@ test_delete_all_shared_state() {
   run_delete_all 'delete_single_vm() { return 1; }'
   cmp -s "$t/br.status" "$t/status.orig" && cmp -s "$t/port-mappings.txt" "$t/map.orig" && [ ! -e "$t/calls" ] && r+="survivor-kept "
   run_delete_all 'delete_single_vm() { : >"$t/deleted"; }'
-  [ "$(grep -c . "$t/port-mappings.txt")" = 1 ] && [ "$(grep PREROUTING "$t/calls")" = \
-    '-t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' ] && r+="by-destination "
+  [ "$(grep -c . "$t/port-mappings.txt")" = 1 ] && ! grep -q -- '-D FORWARD 1' "$t/calls" && [ "$(grep PREROUTING "$t/calls")" = \
+    '-w -t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.5:22' ] && r+="by-destination "
   if [ "$r" = "survivor-kept by-destination " ]; then
     log_test "PASS" "delete --all keeps a refused VM's lease, mapping and rules; removes rules by the mapping's destinations (#77)"
   else
@@ -3650,10 +3768,10 @@ test_network_trust() {
   rm -f "$t/bin/calls"
   (PATH="$t/bin:$PATH" && save_iptables_rules() { :; } && cleanup_port_forwarding_for_vm 10.10.10.5 2221 8081) >/dev/null 2>&1
   [ "$(grep -- '-D FORWARD' "$t/bin/calls")" = "$(printf '%s\n' \
-    '-D FORWARD -p tcp -d 10.10.10.5 --dport 22 -j ACCEPT' \
-    '-D FORWARD -p tcp -d 10.10.10.5 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
-    '-D FORWARD -p tcp -d 10.10.10.5 --dport 80 -j ACCEPT' \
-    '-D FORWARD -p tcp -d 10.10.10.5 --dport 80 -m conntrack --ctstate DNAT -j ACCEPT')" ] && r+="remove-both "
+    '-w -D FORWARD -p tcp -d 10.10.10.5 --dport 22 -j ACCEPT' \
+    '-w -D FORWARD -p tcp -d 10.10.10.5 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
+    '-w -D FORWARD -p tcp -d 10.10.10.5 --dport 80 -j ACCEPT' \
+    '-w -D FORWARD -p tcp -d 10.10.10.5 --dport 80 -m conntrack --ctstate DNAT -j ACCEPT')" ] && r+="remove-both "
   ! grep -qE '^ *iptables -I FORWARD -m state' "$SCRIPT_DIR/../network/port-forward.sh" && r+="related-once "
   if [ "$r" = "dnat-only remove-both related-once " ]; then
     log_test "PASS" "forward ACCEPT rules match only DNATed traffic; removal takes old and new rules; RELATED,ESTABLISHED added once"
@@ -4196,11 +4314,12 @@ test_common_functions() {
   run_test_expect_fail "validate_vm_name_list (newline)" "validate_vm_name_list \$'web1\\nweb2'"
   run_test_expect_fail "validate_vm_name_list (empty entry)" "validate_vm_name_list 'web1,,web2'"
   run_test_expect_fail "validate_vm_name_list (trailing comma)" "validate_vm_name_list 'web1,'"
-  local pf_rules="iptables() { case \"\$*\" in '-t nat -C PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.50:22' |'-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT') return 0 ;; esac; return 1; }"
-  run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "(BRIDGE_NAME=virbr-dc; $pf_rules; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
-  run_test_expect_fail "check_port_forward (no DNAT rule)" "(iptables() { case \"\$*\" in '-t nat'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
-  run_test_expect_fail "check_port_forward (no FORWARD rule)" "(iptables() { case \"\$*\" in '-C FORWARD'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
-  run_test_expect_fail "check_port_forward (old FORWARD rule without the DNAT match)" "(BRIDGE_NAME=virbr-dc; iptables() { case \"\$*\" in '-t nat'* | '-C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
+  local pf_rules="iptables() { case \"\$*\" in '-w -t nat -C PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL --dport 2221 -j DNAT --to-destination 10.10.10.50:22' |'-w -C FORWARD -p tcp -d 10.10.10.50 --dport 22 -m conntrack --ctstate DNAT -j ACCEPT') return 0 ;; esac; return 1; }"
+  run_test "check_port_forward (DNAT + FORWARD rules, VM port open)" "(BRIDGE_NAME=virbr-dc; $pf_rules; libvirt_nft_rejects_forwards() { return 1; }; check_port_connectivity() { [ \"\$1:\$2\" = '10.10.10.50:22' ]; }; check_port_forward 2221 10.10.10.50 22)"
+  run_test_expect_fail "check_port_forward (libvirt's nftables rules reject forwards)" "(BRIDGE_NAME=virbr-dc; $pf_rules; libvirt_nft_rejects_forwards() { return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
+  run_test_expect_fail "check_port_forward (no DNAT rule)" "(iptables() { case \"\$*\" in '-w -t nat'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
+  run_test_expect_fail "check_port_forward (no FORWARD rule)" "(iptables() { case \"\$*\" in '-w -C FORWARD'*) return 1 ;; esac; return 0; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
+  run_test_expect_fail "check_port_forward (old FORWARD rule without the DNAT match)" "(BRIDGE_NAME=virbr-dc; iptables() { case \"\$*\" in '-w -t nat'* | '-w -C FORWARD -p tcp -d 10.10.10.50 --dport 22 -j ACCEPT') return 0 ;; esac; return 1; }; check_port_connectivity() { return 0; }; check_port_forward 2221 10.10.10.50 22)"
   run_test_expect_fail "check_port_forward (VM port closed)" "(iptables() { return 0; }; check_port_connectivity() { return 1; }; check_port_forward 2221 10.10.10.50 22)"
   run_test "validate_package_list (valid)" "validate_package_list 'nginx, python3-pip,g++,libc6.1'"
   run_test_expect_fail "validate_package_list (shell chars)" "validate_package_list 'nginx;reboot'"
@@ -4318,6 +4437,7 @@ test_common_functions() {
   test_forward_cleanup_exact_ip
   test_dhcp_stale_by_mac
   test_forward_rules_scope
+  test_port_forward_records
   test_delete_all_shared_state
   test_installer_network
   test_network_status_no_bridge

@@ -61,17 +61,7 @@ main() {
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
   [[ -f "$status_file" ]] && printf '[]\n' >"$status_file"
 
-  local port line
-  for port in {2220..2299} {8080..8179}; do
-    while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q ":$port "; do
-      line=$(iptables -t nat -L PREROUTING -n --line-numbers | grep ":$port " | head -1 | awk '{print $1}')
-      [[ -n "$line" ]] && iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
-    done
-  done
-  while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "${NETWORK_SUBNET}\\."; do
-    line=$(iptables -L FORWARD -n --line-numbers | grep "${NETWORK_SUBNET}\\." | head -1 | awk '{print $1}')
-    [[ -n "$line" ]] && iptables -D FORWARD "$line" 2>/dev/null || break
-  done
+  cleanup_port_forwarding >/dev/null
   save_iptables_rules
   ui_step ok "Port forwards" "rules removed"
 

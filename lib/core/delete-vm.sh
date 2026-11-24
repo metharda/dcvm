@@ -80,7 +80,7 @@ delete_single_vm() {
   *) ui_step warn "DHCP lease" "not released (see the error above)" ;;
   esac
 
-  [ -f "$port_file" ] && awk -v v="$VM_NAME" '$1 != v' "$port_file" >"$port_file.new" && mv -f "$port_file.new" "$port_file"
+  drop_port_mapping "$VM_NAME"
   exec {lockfd}>&-
 
   virsh autostart "$VM_NAME" --disable >/dev/null 2>&1 || true
@@ -178,7 +178,7 @@ delete_all_vms() {
     local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
     # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
     [ -f "$status_file" ] && printf '[]\n' >"$status_file"
-    local port_file rule_num ip ssh_port http_port lockfd
+    local port_file ip ssh_port http_port lockfd
     port_file=$(get_port_mappings_file)
     exec {lockfd}>>"$port_file.lock"
     flock -w 30 "$lockfd" || print_warning "Another port change is running; clearing the port mappings anyway"
@@ -186,9 +186,6 @@ delete_all_vms() {
       [ -n "$ip" ] && cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
     done < <(read_port_mappings 2>/dev/null)
     [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
-    for rule_num in $(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac); do
-      iptables -D FORWARD "$rule_num" 2>/dev/null || true
-    done
     save_iptables_rules
     exec {lockfd}>&-
   fi

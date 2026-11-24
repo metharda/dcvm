@@ -153,19 +153,21 @@ check_host() {
     report fail "NFS share" "not squashed, not limited to the share (subtree_check) or open to host users: VMs may reach host files; --fix secures it"
   fi
 
-  local vm_files vm_dirs backups_open=0
+  local vm_files vm_dirs backups_open=0 net_open
   vm_files=$(find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -printf . 2>/dev/null | wc -c)
   vm_dirs=$(find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
   [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
-  if [ $((vm_files + vm_dirs + backups_open)) -eq 0 ]; then
-    report ok "Permissions" "VM disks, seeds and backups closed to other users"
+  net_open=$(find "$DATACENTER_BASE/port-mappings.txt" "$DATACENTER_BASE/config/network" -maxdepth 1 -perm /044 -printf . 2>/dev/null | wc -c)
+  if [ $((vm_files + vm_dirs + backups_open + net_open)) -eq 0 ]; then
+    report ok "Permissions" "VM disks, seeds, backups and network records closed to other users"
   elif $FIX; then
     find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -exec chmod go-rwx {} + 2>/dev/null
     find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
     [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
-    report fixed "Permissions" "closed VM disks, seeds and backups to other users"
+    find "$DATACENTER_BASE/port-mappings.txt" "$DATACENTER_BASE/config/network" -maxdepth 1 -perm /044 -exec chmod go-rwx {} + 2>/dev/null
+    report fixed "Permissions" "closed VM disks, seeds, backups and network records to other users"
   else
-    report warn "Permissions" "VM disks, cloud-init seeds (password hashes) or backups are readable by every local user: --fix closes them"
+    report warn "Permissions" "VM disks, cloud-init seeds (password hashes), backups or the port and static IP records (VM names, addresses, host ports) are readable by every local user: --fix closes them"
   fi
 
   $FAST && return 0
@@ -225,8 +227,8 @@ check_network() {
   fi
 
   local vm ip ssh_port http_port rules fwd saved=0 lost=0 moved=""
-  rules=$(iptables -t nat -S PREROUTING 2>/dev/null)
-  fwd=$(iptables -S FORWARD 2>/dev/null)
+  rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null)
+  fwd=$(iptables -w -S FORWARD 2>/dev/null)
   while read -r vm ip ssh_port http_port; do
     [ -n "$vm" ] || continue
     saved=$((saved + 1))
@@ -241,6 +243,8 @@ check_network() {
   done < <(read_port_mappings 2>/dev/null)
   if [ "$saved" -eq 0 ]; then
     report skip "Port forwards" "none saved"
+  elif libvirt_nft_rejects_forwards; then
+    report fail "Port forwards" "libvirt's nftables rules reject forwarded connections to $BRIDGE_NAME: set firewall_backend = \"iptables\" in /etc/libvirt/network.conf, restart libvirt, then dcvm network ports apply"
   elif [ -n "$moved" ]; then
     report warn "Port forwards" "VM address changed for $moved: dcvm network ports setup"
   elif [ "$lost" -eq 0 ]; then

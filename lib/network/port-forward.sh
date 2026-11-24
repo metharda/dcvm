@@ -5,23 +5,8 @@ source "$SCRIPT_DIR/../utils/common.sh"
 
 SSH_PORT_START=${SSH_PORT_START:-2221}
 HTTP_PORT_START=${HTTP_PORT_START:-8081}
-
-cleanup_port_forwarding() {
-  local subnet="${NETWORK_SUBNET:-10.10.10}"
-  local subnet_regex="${subnet//./\\.}"
-  print_info "Cleaning up existing dcvm port forwarding rules"
-  for port in {2220..2299} {8080..8179}; do
-    while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q ":$port "; do
-      local line=$(iptables -t nat -L PREROUTING -n --line-numbers | grep ":$port " | head -1 | awk '{print $1}')
-      [ -n "$line" ] && iptables -t nat -D PREROUTING "$line" 2>/dev/null || break
-    done
-  done
-  while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "${subnet_regex}\."; do
-    local line=$(iptables -L FORWARD -n --line-numbers | grep "${subnet_regex}\." | head -1 | awk '{print $1}')
-    [ -n "$line" ] && iptables -D FORWARD "$line" 2>/dev/null || break
-  done
-  print_success "Cleanup completed"
-}
+SSH_PORT_END=$((SSH_PORT_START + 78))
+HTTP_PORT_END=$((HTTP_PORT_START + 98))
 
 get_vm_ip_advanced() {
   local vm_name="$1" ip="" attempts=0
@@ -43,31 +28,46 @@ setup_vm_forwarding() {
   print_info "Setting up port forwarding for $vm ($vm_ip)"
   # Only traffic to this host: routed traffic (VM egress, docker, VPNs) to the same port is never rewritten.
   local match=(! -i "$BRIDGE_NAME" -p tcp -m addrtype --dst-type LOCAL)
-  if iptables -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null; then
-    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 22 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
+  if iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null &&
+    iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 22 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null &&
+    iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null &&
+    iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 80 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null; then
     print_success "  SSH: $host_ip:$ssh_port -> $vm_ip:22"
-  else
-    print_error "  Failed to setup SSH forwarding for $vm"
-    return 1
-  fi
-  if iptables -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null; then
-    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 80 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
     print_success "  HTTP: $host_ip:$http_port -> $vm_ip:80"
   else
-    print_error "  Failed to setup HTTP forwarding for $vm"
+    print_error "  Failed to set up port forwarding for $vm"
+    cleanup_port_forwarding_for_vm "$vm_ip" "$ssh_port" "$http_port" >/dev/null
+    return 1
   fi
   [ -n "${MAPPINGS_TMP:-}" ] && echo "$vm $vm_ip $ssh_port $http_port" >>"$MAPPINGS_TMP"
   return 0
+}
+
+free_port() {
+  local port rules
+  rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null)
+  for ((port = $1; port <= $2; port++)); do
+    awk -v c="$3" -v p="$port" '!/^#/ && $c == p { f = 1 } END { exit !f }' "$4" 2>/dev/null && continue
+    grep -q -- "--dport $port " <<<"$rules" && continue
+    ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
+    echo "$port"
+    return 0
+  done
+  return 1
+}
+
+allow_related() {
+  iptables -w -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -w -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 }
 
 save_mappings_tmp_to_file() {
   if [ -n "${MAPPINGS_TMP:-}" ] && [ -f "$MAPPINGS_TMP" ]; then
     create_dir_safe "$DATACENTER_BASE"
     local map_file="$DATACENTER_BASE/port-mappings.txt"
-    {
+    (umask 077 && {
       echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT"
       cat "$MAPPINGS_TMP"
-    } >"$map_file.new" && mv -f "$map_file.new" "$map_file"
+    } >"$map_file.new") && mv -f "$map_file.new" "$map_file"
     rm -f "$MAPPINGS_TMP"
     print_success "Port mappings saved to $map_file"
   fi
@@ -75,6 +75,7 @@ save_mappings_tmp_to_file() {
 
 cmd_setup() {
   ui_quiet
+  lock_port_mappings || exit 1
   if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     print_error "$NETWORK_NAME network not found"
     echo "Run the dcvm installer to create it."
@@ -102,7 +103,7 @@ cmd_setup() {
   cleanup_port_forwarding
   local HOST_IP=$(detect_host_ip)
   ui_title "Port forwarding" "host $HOST_IP ${SYM_DOT} $NETWORK_NAME"
-  local ssh_port=$SSH_PORT_START http_port=$HTTP_PORT_START
+  local ssh_port http_port
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
   local skipped=() count=0
@@ -114,17 +115,20 @@ cmd_setup() {
       continue
     fi
     local vm_ip=$(get_vm_ip_advanced "$vm")
-    if [ -n "$vm_ip" ] && [[ $vm_ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
-      if setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"; then
-        count=$((count + 1))
-      fi
-      ssh_port=$((ssh_port + 1))
-      http_port=$((http_port + 1))
-    else
+    if ! [[ $vm_ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
       skipped+=("$vm|no reachable IP yet; try again once it has booted")
+    elif ip_held_by_other_vm "$vm_ip" "$vm"; then
+      skipped+=("$vm|$vm_ip is leased to another VM; check the address set inside $vm")
+    elif ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$MAPPINGS_TMP") ||
+      ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$MAPPINGS_TMP"); then
+      skipped+=("$vm|no free ports left in $SSH_PORT_START-$SSH_PORT_END, $HTTP_PORT_START-$HTTP_PORT_END")
+    elif setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"; then
+      count=$((count + 1))
+    else
+      skipped+=("$vm|could not add the rules")
     fi
   done 3<<<"$VM_LIST"
-  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  allow_related
   save_mappings_tmp_to_file
   command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
   save_iptables_rules
@@ -142,7 +146,7 @@ cmd_setup() {
   done
   if [ "$count" -gt 0 ]; then
     ui_done ok "$(plural "$count" VM) forwarded" "saved to $DATACENTER_BASE/port-mappings.txt"
-    echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$((ssh_port - 1)) and $HTTP_PORT_START-$((http_port - 1)) in the host firewall.${NC}"
+    echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$SSH_PORT_END and $HTTP_PORT_START-$HTTP_PORT_END in the host firewall.${NC}"
   else
     ui_done warn "No VMs were forwarded"
   fi
@@ -150,33 +154,27 @@ cmd_setup() {
 }
 
 cmd_show() {
-  local map_file=$(get_port_mappings_file)
-  if [ -n "$(read_port_mappings 2>/dev/null)" ]; then
+  local map_file=$(get_port_mappings_file) rows
+  rows=$(read_port_mappings 2>/dev/null | while read -r vm ip ssh_port http_port; do
+    vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
+  done)
+  if [ -n "$rows" ]; then
     ui_title "Port forwards" "saved in $map_file"
-    {
-      printf 'VM\tIP\tSSH PORT\tHTTP PORT\n'
-      read_port_mappings | while read -r vm ip ssh_port http_port; do
-        [ -n "$vm" ] && vm_visible "$vm" && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "$ssh_port" "$http_port"
-      done
-    } | ui_table
+    printf 'VM\tIP\tSSH PORT\tHTTP PORT\n%s\n' "$rows" | ui_table
     echo ""
   else
-    print_warning "No saved port mappings. Run: dcvm network ports setup"
+    print_warning "No saved port mappings. Run: dcvm network ports add <vm>"
   fi
 }
 
 cmd_add() {
-  local vm="${1:-}" map_file line ip ssh_port="" http_port="" port lockfd host_ip
+  local vm="${1:-}" map_file line ip ssh_port http_port host_ip
   if [ -z "$vm" ] || ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then
     print_error "Usage: dcvm network ports add <your vm>"
     return 1
   fi
   map_file=$(get_port_mappings_file)
-  exec {lockfd}>>"$map_file.lock"
-  flock -w 30 "$lockfd" || {
-    print_error "Another port change is running; try again"
-    return 1
-  }
+  lock_port_mappings || return 1
   line=$(read_port_mappings 2>/dev/null | awk -v v="$vm" '$1 == v' | head -1)
   if [ -n "$line" ]; then
     read -r _ ip ssh_port http_port <<<"$line"
@@ -192,40 +190,28 @@ cmd_add() {
     print_error "$ip is leased to another VM; check the address set inside $vm"
     return 1
   fi
-  for ((port = SSH_PORT_START; port <= 2299; port++)); do
-    read_port_mappings 2>/dev/null | awk -v p="$port" '$3 == p { f = 1 } END { exit !f }' && continue
-    ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
-    ssh_port=$port
-    break
-  done
-  for ((port = HTTP_PORT_START; port <= 8179; port++)); do
-    read_port_mappings 2>/dev/null | awk -v p="$port" '$4 == p { f = 1 } END { exit !f }' && continue
-    ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
-    http_port=$port
-    break
-  done
-  if [ -z "$ssh_port" ] || [ -z "$http_port" ]; then
-    print_error "No free ports left in dcvm's ranges (2221-2299, 8081-8179)"
+  if ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$map_file") ||
+    ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$map_file"); then
+    print_error "No free ports left in dcvm's ranges ($SSH_PORT_START-$SSH_PORT_END, $HTTP_PORT_START-$HTTP_PORT_END)"
     return 1
   fi
   host_ip=$(detect_host_ip)
   setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$host_ip" >/dev/null || return 1
   [ -s "$map_file" ] || echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$map_file"
+  chmod 600 "$map_file"
   echo "$vm $ip $ssh_port $http_port" >>"$map_file"
-  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+  allow_related
   save_iptables_rules
   ui_done ok "$vm forwarded" "ssh -p $ssh_port $(vm_login "$vm" | grep . || echo '<user>')@$host_ip, http://$host_ip:$http_port"
 }
 
 cmd_remove() {
-  local vm="${1:-}" map_file line ip ssh_port http_port lockfd
+  local vm="${1:-}" line ip ssh_port http_port
   if [ -z "$vm" ] || ! is_vm_in_network "$vm"; then
     print_error "Usage: dcvm network ports remove <your vm>"
     return 1
   fi
-  map_file=$(get_port_mappings_file)
-  exec {lockfd}>>"$map_file.lock"
-  flock -w 30 "$lockfd" || return 1
+  lock_port_mappings || return 1
   line=$(read_port_mappings 2>/dev/null | awk -v v="$vm" '$1 == v' | head -1)
   if [ -z "$line" ]; then
     ui_done ok "$vm has no port forwards"
@@ -233,13 +219,13 @@ cmd_remove() {
   fi
   read -r _ ip ssh_port http_port <<<"$line"
   cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
-  awk -v v="$vm" '$1 != v' "$map_file" >"$map_file.new" && mv -f "$map_file.new" "$map_file"
+  drop_port_mapping "$vm"
   ui_done ok "$vm's port forwards removed" "SSH $ssh_port, HTTP $http_port"
 }
 
 cmd_rules() {
   local rules
-  rules=$(iptables -t nat -S PREROUTING 2>/dev/null | awk '/-j DNAT/ { for (i = 1; i <= NF; i++) { if ($i == "--dport") p = $(i + 1); if ($i == "--to-destination") d = $(i + 1) } print p "\t" d }')
+  rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null | awk '/-j DNAT/ { p = "any"; d = ""; for (i = 1; i <= NF; i++) { if ($i == "--dport") p = $(i + 1); if ($i == "--to-destination") d = $(i + 1) } print p "\t" d }')
   ui_title "Port forward rules" "iptables nat PREROUTING"
   if [ -n "$rules" ]; then
     printf 'HOST PORT\tDESTINATION\n%s\n' "$rules" | ui_table
@@ -251,6 +237,7 @@ cmd_rules() {
 
 cmd_clear() {
   ui_quiet
+  lock_port_mappings || exit 1
   cleanup_port_forwarding
   save_iptables_rules
   ui_done ok "Port forward rules removed" "the saved mappings stay; dcvm network ports apply restores them"
@@ -264,6 +251,7 @@ cmd_apply() {
     print_error "No saved mappings ($map_file). Run: dcvm network ports setup"
     exit 1
   fi
+  lock_port_mappings || exit 1
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
   cleanup_port_forwarding
   local HOST_IP=$(detect_host_ip) count=0
@@ -281,7 +269,7 @@ cmd_apply() {
       ui_step fail "$vm" "could not add the rules"
     fi
   done <"$map_file"
-  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  allow_related
   save_iptables_rules
   ui_done ok "$(plural "$count" VM) forwarded" "dcvm network ports test checks them"
   echo ""
@@ -301,7 +289,8 @@ cmd_test() {
         fi
       done
     } | ui_table
-    echo -e "  ${DIM}$SYM_OK forward rules in place and the VM port answers, $SYM_FAIL not reachable${NC}"
+    libvirt_nft_rejects_forwards && print_error "libvirt's nftables rules reject forwarded connections to $BRIDGE_NAME: set firewall_backend = \"iptables\" in /etc/libvirt/network.conf, restart libvirt, then dcvm network ports apply"
+    echo -e "  ${DIM}$SYM_OK rules in place, not blocked by libvirt, and the VM port answers this host (other machines are not tried), $SYM_FAIL not reachable${NC}"
     echo ""
   else
     print_warning "No port mappings to test. Run: dcvm network ports setup"
