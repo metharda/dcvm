@@ -6,7 +6,7 @@ SSH and delete it, without root. Your account must be in the `dcvm` group
 
 ## Test something in a fresh VM
 
-    dcvm create t1 -o 4 --ttl 2h --wait --json     # stdout: {"name","state","ip","user","expires","ready"}
+    dcvm create t1 -o 4 --ttl 2h --wait --json     # stdout: {"name","state","ip","user","expires","ready","display_password"}
     dcvm cp ./project t1:/home/ubuntu/project
     dcvm exec t1 -- 'cd project && make test'      # exits with the command's status
     dcvm delete t1 --yes
