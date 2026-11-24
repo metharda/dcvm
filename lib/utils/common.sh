@@ -1341,9 +1341,14 @@ check_port_forward() {
   local host_port="$1"
   local vm_ip="$2"
   local vm_port="$3"
-  iptables -t nat -C PREROUTING ! -i "${BRIDGE_NAME:-virbr-dc}" -p tcp -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
-  iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null || return 1
-  check_port_connectivity "$vm_ip" "$vm_port"
+  iptables -w -t nat -C PREROUTING ! -i "${BRIDGE_NAME:-virbr-dc}" -p tcp -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
+  iptables -w -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null || return 1
+  ! libvirt_nft_rejects_forwards && check_port_connectivity "$vm_ip" "$vm_port"
+}
+
+# libvirt's nftables backend (no firewall_backend = "iptables", or reset by an upgrade) rejects every forwarded connection to the bridge.
+libvirt_nft_rejects_forwards() {
+  command_exists nft && nft list table inet libvirt_network 2>/dev/null | grep -qF "\"${BRIDGE_NAME:-virbr-dc}\""
 }
 
 registry_file() { echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
@@ -1470,9 +1475,9 @@ claim_static_ip() {
 # Only once the VM is defined: a record left by a cancelled create would hold the address forever.
 save_static_ip() {
   local vm="$1" ip="$2" net="${NETWORK_NAME:-datacenter-net}" host
-  mkdir -p "$DATACENTER_BASE/config/network" &&
-    printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$DATACENTER_BASE/config/network/$vm.conf" || return 1
+  mkdir -p "$DATACENTER_BASE/config/network" && chmod 700 "$DATACENTER_BASE/config/network" &&
+    (umask 077 && printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$DATACENTER_BASE/config/network/$vm.conf") || return 1
   # Without a reservation dnsmasq leases the address to the next DHCP VM; libvirt refuses one another host holds.
   host="<host mac='$(get_vm_mac "$vm" | head -1)' ip='$ip'/>"
   if [[ "$host" == "<host mac='' "* ]] || ! virsh net-update "$net" add ip-dhcp-host "$host" --config >/dev/null 2>&1; then
@@ -1565,31 +1570,63 @@ cleanup_port_forwarding_for_vm() {
     # By port and destination, whatever else the rule matches: older rules have no address match.
     while read -r rule; do
       read -ra args <<<"${rule#-A }"
-      iptables -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
-    done < <(iptables -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
+      iptables -w -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
+    done < <(iptables -w -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
       $1 == "-A" { d = t = ""; for (i = 2; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
         if (d " " t == s || d " " t == h) print }')
     local port state
     for port in 22 80; do
       for state in "" "-m conntrack --ctstate DNAT"; do
         # shellcheck disable=SC2086 # $state is empty (old rule) or the match words
-        iptables -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
+        iptables -w -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
       done
     done
   else
     print_info "Searching and removing all rules with IP $vm_ip"
-    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
+    local nat_rules=$(iptables -w -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $nat_rules; do
-      iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
+      iptables -w -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
     done
 
-    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
+    local forward_rules=$(iptables -w -L FORWARD -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $forward_rules; do
-      iptables -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
+      iptables -w -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
     done
   fi
 
   save_iptables_rules
+}
+
+# Every rule in the exact shape setup_vm_forwarding makes (old and new), whatever the port; libvirt's, docker's and the RELATED rule stay.
+cleanup_port_forwarding() {
+  local net="${NETWORK_SUBNET:-10.10.10}" rule args
+  local ip="${net//./\\.}\.[0-9]+"
+  print_info "Cleaning up existing dcvm port forwarding rules"
+  while read -r rule; do
+    read -ra args <<<"${rule#-A }"
+    if [ "${args[0]}" = PREROUTING ]; then
+      iptables -w -t nat -D "${args[@]}" 2>/dev/null || true
+    else
+      iptables -w -D "${args[@]}" 2>/dev/null || true
+    fi
+  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null | grep -E \
+    -e "^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$" \
+    -e "^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$")
+  print_success "Cleanup completed"
+}
+
+lock_port_mappings() {
+  exec {PORT_LOCK_FD}>>"$(get_port_mappings_file).lock"
+  flock -w 30 "$PORT_LOCK_FD" && return 0
+  print_error "Another port change is running; try again"
+  return 1
+}
+
+drop_port_mapping() {
+  local f
+  f=$(get_port_mappings_file)
+  [ -f "$f" ] || return 0
+  (umask 077 && awk -v v="$1" '$1 != v' "$f" >"$f.new") && mv -f "$f.new" "$f"
 }
 
 register_vm() {
@@ -2110,7 +2147,7 @@ export -f registry_file registry_get caller_uid caller_user caller_role vm_owner
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
-export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
+export -f check_port_connectivity check_port_forward libvirt_nft_rejects_forwards is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f detect_host_ip get_fix_lock_script_path

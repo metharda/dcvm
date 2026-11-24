@@ -69,8 +69,16 @@ history, so the commit or PR is listed for each release.
 - `dhcp clear --all` releases leases without restarting the network, which cut every VM off; `dhcp renew` cuts DHCP VMs' links for 5 s and reports which got a new lease (#93).
 - A static `--ip` gets a DHCP reservation, so dnsmasq never leases it to another VM (#95).
 - Lease release passes the lease's client-id to `dhcp_release` (#99).
+- `ports setup` and `add` record a forward only once all four rules exist (iptables waits for the xtables lock), and remove a half-made one (#85).
+- `ports setup` skips host ports already in use and addresses leased to another VM, like `ports add`; `setup`, `apply` and `clear` take the mappings lock (#85).
+- Port-forward cleanup (`setup`, `apply`, `clear`, `uninstall`) removes only rules in dcvm's own shape, on any port, never other FORWARD rules that contain the subnet (#87).
+- Custom `SSH_PORT_START`/`HTTP_PORT_START` ranges are cleaned up, and `ports add` uses 79 SSH and 99 HTTP ports from them instead of stopping at 2299/8179 (#87).
+- `ports rules` no longer shows the previous rule's port next to a DNAT rule without one; `ports show` says there are none when a user has no forwards (#88).
+- `ports test`, `dcvm network` and `doctor` report libvirt's nftables rules that reject forwarded connections (#88).
 
 ### Security
+
+- `port-mappings.txt` and `config/network/` (VM names, addresses, host ports) are readable by root only; `doctor --fix` closes existing ones (#106).
 
 - IP addresses with a leading zero (`--ip 10.10.10.050`, which iptables reads as octal `.40`) are refused everywhere, so a static IP or port forward can no longer reach another VM's address.
 - `delete`, the TTL reaper, port forwards and the hourly storage check take a VM's address from host-side records only (its mapping, DHCP lease or static IP), never from the guest agent; `delete` removes the rules of the address in the VM's mapping.
