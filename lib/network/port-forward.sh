@@ -181,9 +181,13 @@ cmd_add() {
     ui_done ok "$vm is already forwarded" "SSH $ssh_port, HTTP $http_port"
     return 0
   fi
+  if [ "$(get_vm_state "$vm")" != running ]; then
+    print_error "$vm is not running; start it first: dcvm start $vm"
+    return 1
+  fi
   ip=$(get_vm_ip_trusted "$vm")
   valid_vm_ip "$ip" || {
-    print_error "$vm has no address yet; start it and wait for it to boot"
+    print_error "$vm has no address yet; wait for it to boot"
     return 1
   }
   if ip_held_by_other_vm "$ip" "$vm"; then

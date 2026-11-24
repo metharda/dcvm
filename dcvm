@@ -56,7 +56,8 @@ VMs:
   create-iso <name> --iso <f>   Create a VM that boots an installer ISO
   list                          VMs with state, IP, vCPU and memory
   status                        The same, plus the network and port forwards
-  start | stop | restart [vm]   One VM, or every dcvm VM without a name
+  start [vm|all]                Start one VM; without a name, every dcvm VM
+  stop | restart <vm|all>       One VM, or every dcvm VM; stop <vm> --force powers it off
   console [vm]                  Serial console of a VM; without a name, access hints
   delete <vm> | --all           Delete a VM with its disk, leases and forwards (backups stay)
   info <vm> [--json]            State, IP, login user, owner of one VM
