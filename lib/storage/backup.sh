@@ -1234,7 +1234,7 @@ restore_vm() {
     ui_title "Restoring $vm_name" "backup $backup_date ${SYM_DOT} $(get_file_size "$disk_backup")"
   fi
 
-  local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
+  local staged="$BACKUP_DIR/.restore-${vm_name}.$$.qcow2"
   local vm_exists=false vm_state=""
   if check_vm_exists "$vm_name"; then
     vm_exists=true
