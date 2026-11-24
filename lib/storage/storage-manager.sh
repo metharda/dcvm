@@ -15,62 +15,69 @@ report() {
 # the hourly timer has no terminal, so never wait for a password. The host key
 # is pinned per VM, as dcvm ssh does, not per address: addresses are reused.
 ssh_vm() {
-  local vm_name="$1" ip="$2"
+  local vm_name="$1" target="$2"
   shift 2
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
     -o "HostKeyAlias=dcvm-$vm_name-$(registry_get "$vm_name" created | grep . || echo 0)" \
     -o 'UserKnownHostsFile=~/.ssh/dcvm_known_hosts' \
-    "$(get_vm_username "$vm_name")@$ip" "$@"
+    "$target" "$@"
 }
 
 check_vm_storage() {
-  local vm_name="$1" ip usage
+  local vm_name="$1" ip login usage
   # Root's key is only in VMs root created.
   if [ "$(vm_owner_uid "$vm_name")" != 0 ]; then
     report skip "$vm_name" "owned by $(registry_get "$vm_name" owner | grep . || echo a user), skipped"
+    return 0
+  fi
+  login=$(vm_login "$vm_name")
+  if [ -z "$login" ]; then
+    report skip "$vm_name" "login user unknown (installed from an ISO), skipped"
     return 0
   fi
   if ! ip=$(get_vm_ip_trusted "$vm_name"); then
     report skip "$vm_name" "no IP address yet, skipped"
     return 1
   fi
-  usage=$(ssh_vm "$vm_name" "$ip" "df / | awk 'NR==2 {print \$5}' | tr -d %" 2>/dev/null)
+  # -P keeps a long device name from wrapping the line.
+  usage=$(ssh_vm "$vm_name" "$login@$ip" "df -P / | awk 'NR==2 {print \$5}' | tr -d %" 2>/dev/null)
   if [[ ! "$usage" =~ ^[0-9]+$ ]]; then
-    report fail "$vm_name" "could not check disk usage over SSH ($ip)"
+    report fail "$vm_name" "could not check disk usage over SSH ($login@$ip)"
     return 1
   fi
   if [ "$usage" -gt "$THRESHOLD" ]; then
     report warn "$vm_name" "root file system ${usage}% used, over ${THRESHOLD}%: archiving old files"
-    cleanup_old_files "$vm_name" "$ip"
+    cleanup_old_files "$vm_name" "$login@$ip"
   else
     report ok "$vm_name" "root file system ${usage}% used"
   fi
 }
 
 cleanup_old_files() {
-  local vm_name="$1" ip="$2"
-  ssh_vm "$vm_name" "$ip" 'sudo -n bash -s' <<'EOSSH'
-        find /var/log -name "*.log" -mtime +7 -exec gzip {} \;
-        mountpoint -q /mnt/shared || exit 0
-        mkdir -p /mnt/shared/archived-files/$(hostname)
-        find /tmp -type f -mtime +30 -exec sh -c '
+  local vm_name="$1" target="$2" rc=0
+  ssh_vm "$vm_name" "$target" 'sudo -n bash -s' <<'EOSSH' || rc=$?
+        rc=0
+        find /var/log -type f -name "*.log" -mtime +7 -exec gzip {} + || rc=1
+        mountpoint -q /mnt/shared || exit 3
+        dest="/mnt/shared/archived-files/$(hostname)"
+        mkdir -p "$dest" || exit 1
+        archive='dest=$1; shift; rc=0
             for file do
                 rel_path=${file#/}
-                mkdir -p "/mnt/shared/archived-files/$(hostname)/$(dirname "$rel_path")"
-                mv "$file" "/mnt/shared/archived-files/$(hostname)/$rel_path"
-                ln -s "/mnt/shared/archived-files/$(hostname)/$rel_path" "$file"
+                mkdir -p "$dest/$(dirname "$rel_path")" && mv -f "$file" "$dest/$rel_path" && ln -sf "$dest/$rel_path" "$file" || rc=1
             done
-        ' sh {} +
-        find /var/log -name "*.gz" -mtime +30 -exec sh -c '
-            for file do
-                rel_path=${file#/}
-                mkdir -p "/mnt/shared/archived-files/$(hostname)/$(dirname "$rel_path")"
-                mv "$file" "/mnt/shared/archived-files/$(hostname)/$rel_path"
-                ln -s "/mnt/shared/archived-files/$(hostname)/$rel_path" "$file"
-            done
-        ' sh {} +
+            exit $rc'
+        # -type f: the links an earlier run left behind must not be archived again.
+        find /tmp -type f -mtime +30 -exec sh -c "$archive" sh "$dest" {} + || rc=1
+        find /var/log -type f -name "*.gz" -mtime +30 -exec sh -c "$archive" sh "$dest" {} + || rc=1
+        exit $rc
 EOSSH
-  report ok "$vm_name" "old logs compressed and archived"
+  case $rc in
+  0) report ok "$vm_name" "old logs compressed and archived" ;;
+  3) report warn "$vm_name" "old logs compressed; /mnt/shared is not mounted, nothing archived" ;;
+  255) report fail "$vm_name" "cleanup failed: SSH to $target did not connect" ;;
+  *) report fail "$vm_name" "cleanup failed (exit $rc): needs passwordless sudo in the VM, or a file could not be compressed or moved" ;;
+  esac
 }
 
 main() {
