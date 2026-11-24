@@ -27,6 +27,18 @@ history, so the commit or PR is listed for each release.
 - `dhcp clear --stale` and `dcvm doctor` release no lease when libvirt can't list one VM's interfaces (#139).
 - `dhcp renew` releases only the leases of the VMs whose link it cuts; static and uncut VMs keep theirs (#140).
 - `ports setup`, `apply` and `clear` remove only DNAT rules on dcvm's port ranges or in `port-mappings.txt`; a hand-made DNAT to a VM, and the FORWARD rule it needs, stay (#156).
+- `self-update` and `--revert` refresh the installed bash completion (#199)
+- The XML sanitizer test plants a foreign network and catches a kept `<source network|bridge>` (#199)
+- Tests count exit 126/127 as a failure, not an expected refusal; `--quick` runs the help and mirror tests (#199)
+- `backup export` refuses a target that is the caller's own stdout or stderr file (#199)
+- A quota check that can't read the VMs' usage refuses instead of allowing the create (#199)
+- `user.<name>.*` limits win over global lines wherever they stand in `limits.conf` (#199)
+- `fix-lock` reads the install's network name and folder, so `--all` finds VMs on custom installs (#199)
+- `fix-lock` removes only the VM disk's own `.lock` file, not every lock file under its folder (#199)
+- `ports setup` reports a mapping file it couldn't write instead of "saved", and keeps the run's mappings (#199)
+- A revert's `pre-revert.sh` fails when a dcvm unit stays active, and the revert then restores the services (#199)
+- `create` undoes a half-made VM on error or Ctrl-C (only what it made) and refuses a disk left in the folder (#199)
+- `create` and `create-iso` run by root take the per-VM lock; an ISO create's undo removes only the domain it defined (#199)
 
 ### Security
 
