@@ -217,14 +217,21 @@ EOF
     exit 0
   fi
   load_dcvm_config
-  [ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
+  local args=() a
+  for a in "$@"; do
+    [ "$a" = --yes ] || [ "$a" = -y ] || args+=("$a")
+  done
+  if [ ${#args[@]} -ne 1 ] || [[ "${args[0]}" == -* && "${args[0]}" != --all && "${args[0]}" != -a ]]; then
+    print_error "Usage: dcvm delete <vm> [--yes] | --all"
+    exit 1
+  fi
 
-  case "$1" in
+  case "${args[0]}" in
   --all | -a)
     delete_all_vms
     ;;
   *)
-    delete_single_vm "$1"
+    delete_single_vm "${args[0]}"
     ;;
   esac
   local rc=$?

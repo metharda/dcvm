@@ -174,7 +174,7 @@ stop_for_vnc_change() {
   local vm_name="$1" confirm count=0
   virsh list | grep -q " $vm_name .*running" || return 0
   if [ ! -t 0 ]; then
-    print_error "$vm_name is running; stop it first (dcvm stop $vm_name)"
+    print_error "$vm_name is running; stop it first (dcvm stop $vm_name; --force if it does not shut down)"
     return 1
   fi
   confirm_action "$vm_name is running and has to stop for this. Stop it now?" || return 1
@@ -191,10 +191,18 @@ cmd_vnc() {
   local action="${1:-}"
   local vm_name="${2:-}"
 
-  if [ -z "$action" ] || [ -z "$vm_name" ]; then
+  if [ -z "$action" ] || [ -z "$vm_name" ] || [ $# -gt 2 ]; then
     print_error "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
     exit 1
   fi
+  case "$action" in
+  enable | disable | status) ;;
+  *)
+    print_error "Unknown action: $action"
+    echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+    return 1
+    ;;
+  esac
 
   if ! check_vm_exists "$vm_name"; then
     print_error "VM '$vm_name' does not exist"
@@ -277,13 +285,24 @@ open(p, "w").write(s)' "$tmp_xml" "$video_xml"
       echo ""
     fi
     ;;
-
-  *)
-    print_error "Unknown action: $action"
-    echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
-    return 1
-    ;;
   esac
+}
+
+vnc_help() {
+  ui_help <<EOF
+dcvm network vnc - VNC on a VM, listening on 127.0.0.1 of this host with a password
+
+Usage: dcvm network vnc <action> <vm>
+
+Actions:
+  enable    Add VNC (the VM must be off; with a terminal it offers to stop it)
+  disable   Remove VNC and free its port (the VM must be off)
+  status    VNC display, port and password, and how to tunnel to it
+
+Examples:
+  dcvm network vnc enable web
+  dcvm network vnc status web
+EOF
 }
 
 cmd_help() {
@@ -313,8 +332,12 @@ EOF
 
 main() {
   case "${1:-}:${2:-}" in
-  help:* | -h:* | --help:* | vnc:--help)
+  help:* | -h:* | --help:*)
     cmd_help
+    exit 0
+    ;;
+  vnc:--help | vnc:-h | vnc:help)
+    vnc_help
     exit 0
     ;;
   ports:--help) exec "$SCRIPT_DIR/port-forward.sh" --help ;;
@@ -327,7 +350,10 @@ main() {
   local subcmd="${1:-show}"
   shift || true
   case "$subcmd" in
-  show | info) cmd_show "$@" ;;
+  show | info)
+    [ $# -eq 0 ] || { print_error "Usage: dcvm network show" && exit 1; }
+    cmd_show
+    ;;
   status) cmd_status "$@" ;;
   start) cmd_start "$@" ;;
   stop) cmd_stop "$@" ;;

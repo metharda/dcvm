@@ -1166,6 +1166,12 @@ get_vm_ip() {
   local network_name="${NETWORK_NAME:-datacenter-net}"
   local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
 
+  # A stopped VM's old lease may already be another VM's address.
+  case "$(get_vm_state "$vm_name")" in "shut off" | crashed | not-found)
+    echo "N/A"
+    return 1
+    ;;
+  esac
   while [ -z "$ip" ] && [ "$count" -lt "$attempts" ]; do
     mac=$(virsh domiflist -- "$vm_name" 2>/dev/null | awk -v n="$network_name" '$3 == n { print $5; exit }')
     [ -n "$mac" ] && ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{ print $5 }' | cut -d/ -f1 | head -1)

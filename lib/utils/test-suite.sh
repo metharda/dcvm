@@ -3563,6 +3563,7 @@ STUB
     get_port_mappings_file() { echo "$t/map"; }
     check_vm_exists() { :; }
     is_vm_in_network() { :; }
+    get_vm_state() { echo running; }
     get_vm_ip_trusted() { echo 10.10.10.5; }
     ip_held_by_other_vm() { return 1; }
     ss() { [[ "$*" != *":9000"* ]] || echo LISTEN; }
@@ -3785,6 +3786,148 @@ test_iso_and_display_safety() {
     log_test "PASS" "staged ISOs with disk-image headers refused, cloud-init seed made under umask 077, root's VNC/SPICE get a password"
   else
     log_test "FAIL" "staged ISOs with disk-image headers refused, cloud-init seed made under umask 077, root's VNC/SPICE get a password" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2030,SC2031 # stubs are called by the modules
+test_stopped_vms_and_lifecycle_args() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\necho "virsh $*" >>"%s/ran"\n' "$t" >"$t/bin/virsh"
+  chmod +x "$t/bin/virsh"
+  lease_virsh() {
+    case "$1" in
+    domstate) echo "$STATE" ;;
+    domiflist) printf ' vnet0 network datacenter-net virtio 52:54:00:00:00:01\n' ;;
+    net-dhcp-leases) printf ' 2026-01-01 00:00:00 52:54:00:00:00:01 ipv4 10.10.10.50/24 web -\n' ;;
+    esac
+    return 0
+  }
+  out=$(
+    virsh() { lease_virsh "$@"; }
+    STATE="shut off" NETWORK_SUBNET=10.10.10 get_vm_ip web
+    STATE=running NETWORK_SUBNET=10.10.10 get_vm_ip_trusted web
+  )
+  [ "$out" = "$(printf 'N/A\n10.10.10.50')" ] && r+="ip "
+
+  out=$(
+    source "$SCRIPT_DIR/../network/port-forward.sh" >/dev/null 2>&1
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    lock_port_mappings() { :; }
+    read_port_mappings() { :; }
+    get_vm_state() { echo "shut off"; }
+    get_vm_ip_trusted() { echo 10.10.10.50; }
+    ip_held_by_other_vm() { return 1; }
+    free_port() { echo 2221; }
+    detect_host_ip() { echo 192.0.2.1; }
+    setup_vm_forwarding() { echo FORWARDED; }
+    allow_related() { :; }
+    save_iptables_rules() { :; }
+    vm_login() { :; }
+    DATACENTER_BASE="$t" cmd_add web 2>&1
+  )
+  grep -q 'not running; start it first' <<<"$out" && ! grep -q FORWARDED <<<"$out" && r+="ports-add "
+
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    export DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1001
+    vm_owner_uid() { [ "$1" = web ] && echo 1001 || echo 0; }
+    show_vm_table() { :; }
+    read_port_mappings() { printf 'web 10.10.10.50 2221 8081\ndb 10.10.10.51 2222 8082\nlog 10.10.10.52 2223 8083\n'; }
+    virsh() {
+      [ "$1 ${2:-}" = "list --all" ] && echo " - web shut off"
+      return 0
+    }
+    check_vm_exists() { :; }
+    prepare_vm_disk() { :; }
+    show_enhanced_status
+    start_vms web
+  )
+  grep -q 'Port forwards.*1 VM ' <<<"$out" && grep -q 'dcvm network ports add web makes it' <<<"$out" && r+="user-hints "
+
+  out=$(
+    PATH="$t/bin:$PATH"
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    load_dcvm_config() { :; }
+    check_vm_exists() { :; }
+    get_vm_state() { echo "shut off"; }
+    main console web 2>&1
+  )
+  grep -q 'web is shut off; start it first' <<<"$out" && [ ! -f "$t/ran" ] && r+="console "
+
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    load_dcvm_config() { :; }
+    start_vms() { echo "start:$*"; }
+    stop_vms() { echo "stop:$*"; }
+    restart_vms() { echo "restart:$*"; }
+    show_vm_table() { echo "list:$*"; }
+    for a in "stop" "restart" "stop all --force" "stop web extra" "list --bogus" "start" "stop web --force" "restart all" "list --json"; do
+      # shellcheck disable=SC2086
+      (main $a 2>&1) | grep -oE '^(start|stop|restart|list):.*|Usage' | tr '\n' ' '
+      echo "|"
+    done
+  )
+  [ "$out" = "$(printf '%s\n' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'Usage |' 'start: false |' 'stop:web true |' 'restart:all false |' 'list:--json |')" ] && r+="no-name "
+
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    check_vm_exists() { :; }
+    get_vm_state() { echo running; }
+    virsh() { echo "virsh $*" >&2; }
+    stop_vms web true 2>&1
+  )
+  grep -q 'virsh destroy web' <<<"$out" && ! grep -q 'virsh shutdown' <<<"$out" && r+="force "
+
+  out=$(
+    source "$SCRIPT_DIR/../network/network-manager.sh" >/dev/null 2>&1
+    set +e
+    check_vm_exists() { return 1; }
+    (main vnc --help)
+    cmd_vnc bogus web 2>&1
+  )
+  grep -q 'dcvm network vnc - ' <<<"$out" && grep -q 'Unknown action: bogus' <<<"$out" && ! grep -q 'does not exist' <<<"$out" && r+="vnc "
+
+  out=$(
+    source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+    load_dcvm_config() { :; }
+    delete_single_vm() { echo "delete:$*"; }
+    prune_builds() { :; }
+    list_datacenter_vms() { :; }
+    (main web --bogus 2>&1)
+    (main web extra 2>&1)
+    (main web --yes 2>&1)
+  )
+  [ "$(grep -c Usage <<<"$out")" = 2 ] && [ "$(grep -c '^delete:' <<<"$out")" = 1 ] && grep -q '^delete:web$' <<<"$out" && r+="delete-args "
+
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+def ask(*argv):
+    try:
+        return " ".join(s.decide_user({"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}, list(argv)))
+    except s.Denied:
+        return "denied"
+print(ask("stop"), ask("restart"), ask("stop", "all", "--force"), "|", ask("start"), "|", ask("stop", "web", "--force"), "|", ask("restart", "all"), "|", ask("start", "web", "--force"))
+PY
+    )
+    [ "$out" = "denied denied denied | start | stop web --force | restart all | denied" ] && r+="server "
+  else
+    r+="server "
+  fi
+
+  if [ "$r" = "ip ports-add user-hints console no-name force vnc delete-args server " ]; then
+    log_test "PASS" "stopped VMs have no IP and no port forward; stop/restart need a name, stop --force; vnc and delete check their arguments"
+  else
+    log_test "FAIL" "stopped VMs have no IP and no port forward; stop/restart need a name, stop --force; vnc and delete check their arguments" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
   fi
   rm -rf "$t"
 }
@@ -4969,6 +5112,7 @@ test_common_functions() {
   test_list_owner_column
   test_help_never_acts
   test_usage_matches_parsers
+  test_stopped_vms_and_lifecycle_args
   test_forward_cleanup_exact_ip
   test_dhcp_stale_by_mac
   test_forward_rules_scope

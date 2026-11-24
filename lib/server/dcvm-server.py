@@ -406,13 +406,19 @@ def decide_user(ctx, argv):
         own_vm(ctx, plain[0])
         return [cmd] + plain + json_flag
     if cmd in ("start", "stop", "restart"):
+        force = ["--force"] if cmd == "stop" and "--force" in plain else []
+        plain = [a for a in plain if a not in force]
         if len(plain) > 1:
             raise Denied("%s takes one VM" % cmd)
+        if not plain and cmd != "start":
+            raise Denied("%s needs a VM name, or all for every VM of yours" % cmd)
+        if force and plain[0] == "all":
+            raise Denied("stop --force takes one VM")
         if plain and plain[0] != "all":
             own_vm(ctx, plain[0])
             ctx["vm"] = plain[0]
         ctx["mutating"] = True
-        return [cmd] + plain
+        return [cmd] + plain + force
     if cmd == "console":
         if len(plain) == 1:
             own_vm(ctx, plain[0])
