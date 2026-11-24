@@ -41,7 +41,7 @@ fi
 
 show_version() {
   echo "dcvm - a VM manager"
-  echo "Version: 0.9.10"
+  echo "Version: 0.9.11"
   echo "https://github.com/metharda/dcvm"
 }
 
@@ -56,7 +56,7 @@ VMs:
   create-iso <name> --iso <f>   Create a VM that boots an installer ISO
   list                          VMs with state, IP, vCPU and memory
   status                        The same, plus the network and port forwards
-  start | stop | restart [vm]   One VM, or every dcvm VM without a name
+  start | stop | restart <vm>   One VM; --all for every dcvm VM; stop <vm> --force powers it off
   console [vm]                  Serial console of a VM; without a name, access hints
   delete <vm> | --all           Delete a VM with its disk, leases and forwards (backups stay)
   info <vm> [--json]            State, IP, login user, owner of one VM
@@ -65,17 +65,17 @@ VMs:
 
 Network:
   network                       Network, DHCP leases, static IPs and port forwards
-  network ports <command>       Forward host ports to VMs: add, remove, show, setup, test, apply, clear
+  network ports <command>       Forward host ports to VMs: add, remove, show, rules, setup, test, apply, clear
   network dhcp <command>        DHCP leases: show, clear, cleanup, renew
   network vnc <action> <vm>     VNC on a VM: enable, disable, status
 
 Backups and images:
-  backup <command>              create, list, restore, delete, export, import
-  template <command>            Cloud images: status, list, download, verify
+  backup <command>              create, list, restore, delete, export, import, ssh-setup, troubleshoot
+  template <command>            Cloud images: status, list, check, best, download, verify
   storage                       Disk usage inside running VMs
 
 System:
-  self-update [--check]         Update dcvm from GitHub (--revert goes back)
+  self-update [--check]         Update dcvm from GitHub (--force reinstalls, --revert goes back)
   doctor [--fix]                Check (and repair) the base images of VMs and backups
   fix-lock <vm> | --all         Clear stale disk locks when a VM will not start
   user add|remove|list          Who may use dcvm without root (admins)

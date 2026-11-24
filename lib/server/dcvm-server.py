@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import sys
+import termios
 import time
 
 PROTOCOL = 1
@@ -20,6 +21,10 @@ MAX_REQUEST = 256 * 1024
 MAX_FDS = 8
 MAX_ISO = 16 * 1024**3
 REQUEST_TIMEOUT = 15
+MAX_PER_UID = 8
+MAX_PENDING = 1024 * 1024
+WRITE_TIMEOUT = 5
+CANCEL_GRACE = 30
 
 DCVM = "/usr/local/bin/dcvm"
 CONFIG = "/etc/dcvm-install.conf"
@@ -40,9 +45,12 @@ BACKUP_ID = re.compile(r"^([0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]
 SIZE = re.compile(r"^[1-9][0-9]{0,4}[GgMmTt]\Z")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{2,31}\Z")
 PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+-]*)*\Z")
-IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}\Z")
-TTL = re.compile(r"^[1-9][0-9]{0,4}[mhd]\Z")
-OS_VARIANT = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
+# No leading zeros: iptables reads 050 as octal.
+OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+IPV4 = re.compile(r"^(%s\.){3}%s\Z" % (OCTET, OCTET))
+TTL = re.compile(r"^([1-9][0-9]{0,4})([mhd])\Z")
+MAX_TTL_DAYS = 3650
+OS_VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 TERM = re.compile(r"^[A-Za-z0-9._+-]{1,64}\Z")
 
 
@@ -65,9 +73,10 @@ def redact(argv):
         elif a in SECRET_FLAGS:
             out.append(a)
             hide = True
-        elif (a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--")) or \
-                any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
+        elif a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--"):
             out.append(a[:2] + "***")
+        elif any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
+            out.append(a.partition("=")[0] + "=***" if "=" in a else a[:2] + "***")
         else:
             out.append(a)
     return out
@@ -167,11 +176,18 @@ def owner_of(vm):
     return int(entry.get("owner_uid", "0")) if entry else 0
 
 
-def vm_exists(vm):
+def domain_known(vm):
+    """True or False when libvirt answers, None when it doesn't."""
     if DRY_RUN:
         return registry_read(vm) is not None
-    return subprocess.run(["virsh", "dominfo", "--", vm], stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL, env=module_env_base()).returncode == 0
+    r = subprocess.run(["virsh", "list", "--all", "--name"], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, env=module_env_base())
+    return vm in r.stdout.decode(errors="replace").split() if r.returncode == 0 else None
+
+
+def vm_exists(vm):
+    # Unknown counts as existing: nothing may be reused or removed while libvirt is down.
+    return domain_known(vm) is not False
 
 
 def lock(name):
@@ -219,9 +235,9 @@ def size_gb(value, default):
     return int(v.rstrip("G"))
 
 
-def check_quota(uid, user, cpus, memory_mb, disk_gb):
+def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None):
     limits = limits_for(user)
-    mine = [e for e in registry_all().values() if e.get("owner_uid") == str(uid)]
+    mine = [e for n, e in registry_all().items() if e.get("owner_uid") == str(uid) and n != exclude]
     used = {
         "vms": len(mine),
         "vcpus": sum(int(e.get("cpus", "0") or 0) for e in mine),
@@ -234,7 +250,7 @@ def check_quota(uid, user, cpus, memory_mb, disk_gb):
         if used[k] + n > limits[k]:
             raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
                          % (names[k], used[k], n, limits[k], LIMITS))
-    return "%d %d %d" % tuple(limits[k] - used[k] for k in ("vcpus", "memory_mb", "disk_gb"))
+    return "%d %d %d" % tuple(limits[k] for k in ("vcpus", "memory_mb", "disk_gb"))
 
 
 def take_value(args, i, opt):
@@ -265,17 +281,20 @@ def new_vm_name(vm):
 CREATE_FLAGS = {"-f", "--force", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key",
                 "--json", "--wait", "--uefi"}
 ISO_FLAGS = {"-f", "--force", "--json", "--wait", "--uefi"}
+CLOUD_INIT_ONLY = {"-k", "--packages", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key"}
 
 
 def parse_create(ctx, args, iso_mode):
     out, vm, i = [], None, 0
     cpus, memory, disk = 2, 2048, 20 if iso_mode else 30
-    disk_given = False
+    disk_given = os_given = False
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
         if a in CREATE_FLAGS and (not iso_mode or a in ISO_FLAGS):
             out.append(a)
+        elif iso_mode and opt in CLOUD_INIT_ONLY:
+            raise Denied("%s does nothing with an ISO: the installer sets up the OS" % opt)
         elif opt in ("-m", "--memory"):
             v, i = take_value(args, i, opt)
             if not v.isdigit() or not 512 <= int(v) <= 1048576:
@@ -291,7 +310,7 @@ def parse_create(ctx, args, iso_mode):
         elif opt in ("-d", "--disk"):
             v, i = take_value(args, i, opt)
             if not SIZE.match(v):
-                raise Denied("--disk must look like 30G")
+                raise Denied("--disk must look like %s" % ("20G" if iso_mode else "30G"))
             if v.upper().endswith("T") and int(v[:-1]) > 10:
                 raise Denied("--disk is at most 10T")
             disk, disk_given = size_gb(v, disk), True
@@ -303,9 +322,10 @@ def parse_create(ctx, args, iso_mode):
             out += ["-u", v]
         elif opt in ("-k", "--packages") and not iso_mode:
             v, i = take_value(args, i, opt)
-            if not PACKAGES.match(v.replace(" ", "")):
-                raise Denied("invalid package list")
-            out += ["-k", v.replace(" ", "")]
+            pkgs = ",".join(p.strip() for p in v.split(",") if p.strip())
+            if not PACKAGES.match(pkgs):
+                raise Denied("invalid package list: separate packages with commas, e.g. -k nginx,curl")
+            out += ["-k", pkgs]
         elif opt == "--ip":
             v, i = take_value(args, i, opt)
             if not IPV4.match(v):
@@ -318,10 +338,16 @@ def parse_create(ctx, args, iso_mode):
             out += ["--graphics", v]
         elif opt == "--ttl":
             v, i = take_value(args, i, opt)
-            if not TTL.match(v):
+            m = TTL.match(v)
+            if not m:
                 raise Denied("--ttl must look like 90m, 2h or 3d")
+            if int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)] > MAX_TTL_DAYS * 86400:
+                raise Denied("--ttl is at most %dd" % MAX_TTL_DAYS)
             out += ["--ttl", v]
         elif opt in ("-o", "--os") and not iso_mode:
+            if os_given:
+                raise Denied("give -o once")
+            os_given = True
             v, i = take_value(args, i, opt)
             if v.startswith("fd:"):
                 ctx["iso_fd"] = fd_ref(ctx, v)
@@ -392,13 +418,18 @@ def decide_user(ctx, argv):
         own_vm(ctx, plain[0])
         return [cmd] + plain + json_flag
     if cmd in ("start", "stop", "restart"):
-        if len(plain) > 1:
-            raise Denied("%s takes one VM" % cmd)
-        if plain and plain[0] != "all":
+        force = ["--force"] if cmd == "stop" and "--force" in plain else []
+        every = "--all" in plain
+        plain = [a for a in plain if a not in force and a != "--all"]
+        if len(plain) + every != 1:
+            raise Denied("%s takes one VM, or --all for every VM of yours" % cmd)
+        if force and every:
+            raise Denied("stop --force takes one VM")
+        if plain:
             own_vm(ctx, plain[0])
             ctx["vm"] = plain[0]
         ctx["mutating"] = True
-        return [cmd] + plain
+        return [cmd] + (plain or ["--all"]) + force
     if cmd == "console":
         if len(plain) == 1:
             own_vm(ctx, plain[0])
@@ -450,13 +481,62 @@ def decide_user(ctx, argv):
         return decide_backup(ctx, args)
     if cmd == "whoami":
         return argv
-    raise Denied("'%s' needs a dcvm admin" % " ".join(argv[:2]))
+    refuse(argv)
+
+
+# Every command the dcvm script routes, so a typo is told apart from an admin's command.
+COMMANDS = {"create", "create-iso", "delete", "list", "status", "start", "stop", "restart", "console", "network",
+            "backup", "restore", "storage", "storage-cleanup", "template", "mirror", "fix-lock", "info", "whoami",
+            "protect", "unprotect", "reap", "user", "owner", "doctor", "self-update", "update", "uninstall"}
+TEMPLATE_SUBS = {"list", "check", "best", "download", "status", "verify"}
+SUBCOMMANDS = {
+    "network": {"show", "info", "status", "start", "stop", "restart", "leases", "bridge", "ip-forwarding", "ipfwd",
+                "config", "ports", "dhcp", "vnc"},
+    "network ports": {"setup", "show", "add", "remove", "rules", "apply", "clear", "test"},
+    "network dhcp": {"show", "clear", "cleanup", "renew", "files"},
+    "template": TEMPLATE_SUBS,
+    "mirror": TEMPLATE_SUBS,
+    "backup": {"create", "list", "delete", "restore", "export", "import", "ssh-setup", "troubleshoot"},
+}
+USAGE = {
+    "list": "dcvm list [--json]",
+    "status": "dcvm status [vm]",
+    "info": "dcvm info <vm> [--json]",
+    "protect": "dcvm protect <vm>",
+    "unprotect": "dcvm unprotect <vm>",
+    "fix-lock": "dcvm fix-lock <vm> [--verbose]",
+    "network ports add": "dcvm network ports add <vm>",
+    "network ports remove": "dcvm network ports remove <vm>",
+    "network ports show": "dcvm network ports show",
+    "network vnc": "dcvm network vnc enable|disable|status <vm>",
+    "backup create": "dcvm backup create <vm>",
+    "backup list": "dcvm backup list [vm]",
+    "backup delete": "dcvm backup delete <vm> [dd.mm.yyyy[-N|-HH:MM:SS]|latest]",
+    "backup restore": "dcvm backup restore <vm> [id] [new-name]",
+    "backup export": "dcvm backup export <vm> [id|latest] [folder] [--full]",
+}
+
+
+def refuse(argv):
+    key, rest = argv[0], argv[1:]
+    if key not in COMMANDS:
+        raise Denied("unknown command: %s (see dcvm help)" % key)
+    while key in SUBCOMMANDS and rest and not rest[0].startswith("-"):
+        if rest[0] not in SUBCOMMANDS[key]:
+            raise Denied("unknown command: dcvm %s %s (see dcvm %s --help)" % (key, rest[0], key))
+        key, rest = key + " " + rest[0], rest[1:]
+    if key in USAGE:
+        raise Denied("usage: %s" % USAGE[key])
+    raise Denied("'%s' needs a dcvm admin" % key)
 
 
 def decide_backup(ctx, args):
     if not args:
         raise Denied("backup needs a command")
     sub, rest = args[0], args[1:]
+    yes = []
+    if sub in ("delete", "restore") and {"-y", "--yes"} & set(rest):
+        yes, rest = ["--yes"], [a for a in rest if a not in ("-y", "--yes")]
     if sub == "create" and len(rest) == 1:
         own_vm(ctx, rest[0])
         ctx.update(vm=rest[0], mutating=True, interactive=True)
@@ -468,21 +548,28 @@ def decide_backup(ctx, args):
     if sub == "delete" and len(rest) in (1, 2):
         day = r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]+|[0-9]{2}:[0-9]{2}:[0-9]{2}))?"
         if len(rest) == 1:
-            # The module takes one <vm>-<id> argument and splits it with the same greedy regex.
+            # Split with the module's own greedy regex for <vm>-<id>, so both name the same backup.
             m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
-            if not m:
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
-            vm, bid = m.group(1), m.group(2)
+            if m:
+                vm, bid = m.group(1), m.group(2)
+            elif NAME.match(rest[0]):
+                # A VM name alone: the module lists its backups and asks which to delete.
+                vm, bid = rest[0], None
+                ctx["interactive"] = True
+            else:
+                raise Denied("usage: %s" % USAGE["backup delete"])
         else:
             vm, bid = rest[0], strip_vm(rest[0], rest[1])
             t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
             if t:
                 bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
-            if not re.match(r"^%s\Z" % day, bid):
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+            if bid != "latest" and not re.match(r"^%s\Z" % day, bid):
+                raise Denied("usage: %s" % USAGE["backup delete"])
         check_backup_vm(ctx, vm)
-        ctx.update(vm=vm, mutating=True)
-        return ["backup", "delete", "%s-%s" % (vm, bid)]
+        # A stale backup of a name now owned by someone else must not take that VM's lock.
+        owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
+        ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
+        return ["backup", "delete", vm] + ([] if bid is None else [bid])
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
@@ -495,19 +582,30 @@ def decide_backup(ctx, args):
         else:
             own_vm(ctx, rest[0])
             protected(rest[0])
-            ctx["vm"] = rest[0]
+            # The restore replaces the VM's own charge, so a backup of the same size always fits.
+            ctx.update(vm=rest[0], quota_limits=check_quota(ctx["uid"], ctx["user"], 0, 0, 0, exclude=rest[0]))
         ctx.update(mutating=True, interactive=True)
-        return ["backup", "restore"] + rest
-    if sub == "export" and 1 <= len(rest) <= 3:
+        return ["backup", "restore"] + rest + yes
+    if sub == "export" and 1 <= len(rest) - rest.count("--full") <= 3:
+        full = ["--full"] if "--full" in rest else []
+        rest = [a for a in rest if a != "--full"]
         check_backup_vm(ctx, rest[0])
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
         if len(rest) >= 2 and not rest[1].startswith("fd:") and not BACKUP_ID.match(rest[1]):
             raise Denied("invalid backup id")
         if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
-        ctx["export_fd"] = fd_ref(ctx, rest[-1])
-        return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")]
-    raise Denied("'backup %s' needs a dcvm admin" % sub)
+        ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
+        return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
+    refuse(["backup"] + args)
+
+
+def export_fd(fd):
+    # Root writes the package through this descriptor, so only the caller's own write access may count.
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    if not stat.S_ISREG(os.fstat(fd).st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
+        raise Denied("export writes to a regular file you opened for writing")
+    return fd
 
 
 def strip_vm(vm, bid):
@@ -556,8 +654,8 @@ def module_env(ctx, req):
     env["DCVM_CALLER_USER"] = ctx["user"]
     env["DCVM_CALLER_ROLE"] = ctx["role"]
     env["DCVM_ORIGIN"] = ctx["origin"]
-    if ctx.get("quota_left"):
-        env["DCVM_QUOTA_LEFT"] = ctx["quota_left"]
+    if ctx.get("quota_limits"):
+        env["DCVM_QUOTA_LIMITS"] = ctx["quota_limits"]
     return env
 
 
@@ -602,14 +700,21 @@ def stage_iso(ctx, fd, vm):
     return dest
 
 
+def clip(text, n=200):
+    return text if len(text) <= n else "%s…(%d bytes)" % (text[:n], len(text.encode(errors="replace")))
+
+
 def audit(ctx, argv, decision, rc=None, reason=None, started=None):
+    shown = "<malformed>"
+    if isinstance(argv, list):
+        shown = [clip(a) for a in redact(argv[:64])] + (["…(%d more)" % (len(argv) - 64)] if len(argv) > 64 else [])
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "uid": ctx.get("uid"), "user": ctx.get("user"),
            "role": ctx.get("role"), "origin": ctx.get("origin"), "pid": ctx.get("pid"),
-           "argv": redact(argv) if isinstance(argv, list) else "<malformed>", "decision": decision}
+           "argv": shown, "decision": decision}
     if rc is not None:
         rec["exit"] = rc
     if reason:
-        rec["reason"] = redact_text(reason, argv) if isinstance(argv, list) else reason
+        rec["reason"] = clip(redact_text(reason, argv) if isinstance(argv, list) else reason)
     if started:
         rec["seconds"] = round(time.time() - started, 1)
     line = json.dumps(rec, ensure_ascii=True)
@@ -623,11 +728,32 @@ def audit(ctx, argv, decision, rc=None, reason=None, started=None):
     print(line, file=sys.stderr, flush=True)
 
 
+def take_slot(uid):
+    d = os.path.join(RUN, "conn")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    for n in range(MAX_PER_UID):
+        fd = os.open(os.path.join(d, "%d-%d" % (uid, n)), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            os.close(fd)
+    raise Denied("you already have %d dcvm commands running; wait for one to finish" % MAX_PER_UID)
+
+
 def recv_request(conn):
-    conn.settimeout(REQUEST_TIMEOUT)
+    # One deadline for the whole request: a client trickling bytes must not hold its slot.
+    deadline = time.monotonic() + REQUEST_TIMEOUT
     data, fds = b"", []
     while len(data) < 4 or len(data) < 4 + struct.unpack(">I", data[:4])[0]:
-        msg, anc, flags, _ = conn.recvmsg(65536, socket.CMSG_SPACE(MAX_FDS * 4))
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise Denied("the request took too long to arrive")
+        conn.settimeout(left)
+        try:
+            msg, anc, flags, _ = conn.recvmsg(65536, socket.CMSG_SPACE(MAX_FDS * 4))
+        except socket.timeout:
+            raise Denied("the request took too long to arrive")
         for level, kind, payload in anc:
             if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                 fds += list(struct.unpack("%di" % (len(payload) // 4), payload[: len(payload) - len(payload) % 4]))
@@ -639,8 +765,14 @@ def recv_request(conn):
         if len(data) >= 4 and struct.unpack(">I", data[:4])[0] > MAX_REQUEST:
             raise Denied("request too large")
     length = struct.unpack(">I", data[:4])[0]
-    req = json.loads(data[4: 4 + length].decode())
-    if not isinstance(req, dict) or req.get("v") != PROTOCOL:
+    if len(data) != 4 + length:
+        raise Denied("malformed request")
+    try:
+        req = json.loads(data[4:].decode())
+    except (ValueError, RecursionError):
+        raise Denied("malformed request")
+    # True == 1 in Python, so the type is checked too.
+    if not isinstance(req, dict) or type(req.get("v")) is not int or req["v"] != PROTOCOL:
         raise Denied("this dcvm client and server don't match; update dcvm")
     return req, fds
 
@@ -655,12 +787,26 @@ def send(conn, obj):
 
 
 def say(fd, text):
+    """True once the caller's descriptor took the message."""
     if fd is None:
-        return
+        return False
+    return write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode()) is not None
+
+
+def _alarm(_sig, _frame):
+    raise TimeoutError
+
+
+def write_some(fd, data):
+    # The caller's descriptor stays blocking (its flags are shared with the caller), so an alarm bounds a stuck write.
+    signal.signal(signal.SIGALRM, _alarm)
+    signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
     try:
-        os.write(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode())
+        return os.write(fd, data[:4096])
     except OSError:
-        pass
+        return None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def run_module(ctx, conn, argv, req, fds):
@@ -691,24 +837,74 @@ def run_module(ctx, conn, argv, req, fds):
                           "secrets": sorted(k for k in secrets if secrets.get(k))})
         os.write(fds.get("stdout", 1), (out + "\n").encode())
         return 0
-    proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=fds.get("stdout"),
-                            stderr=fds.get("stderr"), pass_fds=pass_fds, start_new_session=True, close_fds=True)
+    # The module writes to us, never to a caller's descriptor that could stall it while it holds locks;
+    # only an interactive terminal is handed over as it is.
+    child, outs = {}, []
+    for name in ("stdout", "stderr"):
+        fd = fds.get(name)
+        if fd is None or (stdin is not subprocess.DEVNULL and os.isatty(fd)):
+            child[name] = fd
+            continue
+        if os.isatty(fd):
+            # A pty of our own keeps colours and progress lines for a terminal.
+            r, w = os.openpty()
+            attrs = termios.tcgetattr(w)
+            attrs[1] &= ~termios.OPOST
+            termios.tcsetattr(w, termios.TCSANOW, attrs)
+        else:
+            r, w = os.pipe()
+        child[name] = w
+        outs.append([r, fd, bytearray()])
+    proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=child["stdout"],
+                            stderr=child["stderr"], pass_fds=pass_fds, start_new_session=True, close_fds=True)
     for fd in pass_fds:
         if fd != ctx.get("export_fd") and fd not in ctx.get("keep_fds", []):
             os.close(fd)
-    cancelled = False
-    while proc.poll() is None:
-        if cancelled:
-            try:
-                proc.wait(1)
-            except subprocess.TimeoutExpired:
-                pass
-            continue
+    for name, fd in child.items():
+        if fd is not None and fd != fds.get(name):
+            os.close(fd)
+    cancelled, ended, wrote, escalate = False, None, 0, []
+    while True:
+        if ended is None and proc.poll() is not None:
+            ended = time.monotonic()
+        while ended is None and escalate and time.monotonic() >= escalate[0][0]:
+            signal_group(proc, escalate.pop(0)[1])
+        if ended is not None:
+            now = time.monotonic()
+            for o in outs:
+                # Background children may keep the pipes open; what they write after the module ends is dropped.
+                if o[0] is not None and now > ended + 2:
+                    os.close(o[0])
+                    o[0] = None
+            # What is left goes to a caller that keeps reading (a pager may pause); with a VM's lock held, briefly.
+            if not any(o[0] is not None or o[2] for o in outs) or now > max(ended, wrote) + (2 if ctx.get("vm") else 60):
+                break
+        reads = [o[0] for o in outs if o[0] is not None] + ([] if cancelled else [conn])
         try:
-            ready, _, _ = select.select([conn], [], [], 0.5)
+            ready, writable, _ = select.select(reads, [o[1] for o in outs if o[2]], [], 0.5)
         except (OSError, ValueError):
-            ready = []
-        if ready:
+            ready, writable = [], []
+            time.sleep(0.5)
+        for o in outs:
+            if o[0] in ready:
+                try:
+                    data = os.read(o[0], 65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    os.close(o[0])
+                    o[0] = None
+                elif o[1] is not None and len(o[2]) < MAX_PENDING:
+                    o[2] += data
+            if o[2] and o[1] in writable:
+                n = write_some(o[1], o[2])
+                if n is None:
+                    o[1] = None
+                    o[2].clear()
+                else:
+                    del o[2][:n]
+                    wrote = time.monotonic()
+        if conn in ready:
             try:
                 data = conn.recv(64)
             except OSError:
@@ -716,15 +912,29 @@ def run_module(ctx, conn, argv, req, fds):
             if not data:
                 cancelled = True
                 if not ctx.get("mutating"):
-                    try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                    signal_group(proc, signal.SIGTERM)
                     try:
                         proc.wait(5)
                     except subprocess.TimeoutExpired:
-                        os.killpg(proc.pid, signal.SIGKILL)
-    return proc.wait()
+                        signal_group(proc, signal.SIGKILL)
+                elif stdin is not subprocess.DEVNULL:
+                    # It reads the caller's terminal, which is the shell's again: pass on the Ctrl-C it never got.
+                    signal_group(proc, signal.SIGINT)
+                    now = time.monotonic()
+                    escalate = [(now + CANCEL_GRACE, signal.SIGTERM), (now + CANCEL_GRACE + 5, signal.SIGKILL)]
+    for o in outs:
+        if o[0] is not None:
+            os.close(o[0])
+    rc = proc.wait()
+    # A signal death is -N here; callers expect the shell's 128+N.
+    return 128 - rc if rc < 0 else rc
+
+
+def signal_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
 
 
 def handle(conn):
@@ -734,6 +944,10 @@ def handle(conn):
     try:
         pid, uid, _gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
         ctx.update(uid=uid, pid=pid, user=user_name(uid), role=role_of(uid))
+        if ctx["role"] is None:
+            raise Denied("you are not in the %s group; ask an admin: sudo dcvm user add %s" % (USER_GROUP, ctx["user"]))
+        if ctx["role"] == "user":
+            ctx["slot"] = take_slot(uid)
         req, files = recv_request(conn)
         if len(files) > MAX_FDS:
             raise Denied("too many files passed")
@@ -749,19 +963,21 @@ def handle(conn):
         argv = req.get("argv")
         if not isinstance(argv, list) or not all(isinstance(a, str) and len(a) <= 4096 for a in argv) or len(argv) > 64:
             raise Denied("malformed request")
-        if ctx["role"] is None:
-            raise Denied("you are not in the %s group; ask an admin: sudo dcvm user add %s" % (USER_GROUP, ctx["user"]))
         if ctx["role"] == "user":
             final = decide_user(ctx, argv)
         else:
             final = admin_argv(ctx, argv)
+        # Logged before the module runs, so a request killed midway still leaves a trace.
+        audit(ctx, argv, "start")
         rc = execute(ctx, conn, final, req, fdmap)
         audit(ctx, argv, "allow", rc=rc, started=started)
         send(conn, {"exit": rc})
     except Denied as e:
-        say(fdmap_get(req, files, "stderr"), redact_text(str(e), argv) if isinstance(argv, list) else str(e))
+        err = fdmap_get(req, files, "stderr")
+        shown = say(err, redact_text(str(e), argv) if isinstance(argv, list) else str(e))
         audit(ctx, argv, "deny", reason=str(e), started=started)
-        send(conn, {"exit": 77, "error": str(e)})
+        # Refused before the request was read, or its stderr can't be written: only the client can show the reason.
+        send(conn, {"exit": 77, "error": str(e), "show": not shown})
     except Exception as e:
         audit(ctx, argv, "error", reason=str(e), started=started)
         send(conn, {"exit": 70, "error": "dcvm server: %s" % e})
@@ -782,9 +998,13 @@ def admin_argv(ctx, argv):
                 ctx["iso_fd"] = fd
                 final[i] = "@ISO@"
             elif final[:2] == ["backup", "export"]:
-                ctx["export_fd"] = fd
+                ctx["export_fd"] = export_fd(fd)
                 final[i] = None
             elif final[:2] == ["backup", "import"] or final[0] == "import":
+                # Root reopens it by path, so only a file the caller opened for reading may count.
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                if not stat.S_ISREG(st.st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) == os.O_WRONLY:
+                    raise Denied("import reads a regular file you opened for reading")
                 final[i] = "/proc/self/fd/%d" % fd
                 ctx.setdefault("keep_fds", []).append(fd)
             else:
@@ -792,26 +1012,43 @@ def admin_argv(ctx, argv):
     final = [a for a in final if a is not None]
     if final and final[0] in ("create", "create-iso") and len(final) > 1 and not final[1].startswith("-"):
         ctx.update(vm=final[1].split(",")[0], new_vm=True, mutating=True)
+    target = next((a for a in final[1:] if not a.startswith("-")), None)
+    if final[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"]) and target and NAME.match(target) and target not in RESERVED:
+        ctx["vm"] = target
     ctx["mutating"] = True
     ctx["interactive"] = True
     return final
 
 
+def name_taken(vm):
+    vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
+    if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
+        raise Denied("the name %s is taken" % vm)
+    return vm_dir
+
+
 def execute(ctx, conn, argv, req, fds):
     vm = ctx.get("vm")
     held = []
+    reserve = ctx.get("new_vm") and vm and ctx["role"] == "user"
     try:
+        if reserve:
+            # Before the VM's lock too, so asking for a taken name never holds up its owner.
+            name_taken(vm)
         if vm:
-            held.append(lock("vm-" + vm))
-        if ctx.get("new_vm") and vm and ctx["role"] == "user":
+            held.append(lock(ctx.get("lock") or "vm-" + vm))
+        if ctx["role"] == "user" and vm and not ctx.get("new_vm"):
+            # The policy ran before the lock; a request that waited must not act on a VM that changed hands meanwhile.
+            again = {k: ctx[k] for k in ("uid", "user", "role", "origin", "files")}
+            decide_user(again, req["argv"])
+            if again.get("lock") != ctx.get("lock"):
+                raise Denied("%s changed while this command waited; run it again" % vm)
+        if reserve:
             held.append(lock("global"))
-            vm_dir = os.path.join(read_config()["DATACENTER_BASE"], "vms", vm)
-            if vm_exists(vm) or registry_read(vm) is not None or os.path.lexists(vm_dir):
-                raise Denied("the name %s is taken" % vm)
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
-            ctx["staged_dir"] = vm_dir
+            ctx["staged_dir"] = name_taken(vm)
             cpus, memory, disk = ctx["quota"]
-            ctx["quota_left"] = check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
+            ctx["quota_limits"] = check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
             registry_write(vm, {"owner_uid": ctx["uid"], "owner": ctx["user"], "state": "creating",
                                 "cpus": cpus, "memory_mb": memory, "disk_gb": disk, "created": int(time.time())})
             os.close(held.pop())
@@ -822,20 +1059,25 @@ def execute(ctx, conn, argv, req, fds):
                     raise Denied("VM name required")
                 path = stage_iso(ctx, ctx["iso_fd"], vm)
                 argv = [path if a == "@ISO@" else a for a in argv]
-            if ctx["role"] == "user" and argv[0] in ("create", "create-iso"):
+            if ctx["role"] != "root" and argv[0] in ("create", "create-iso"):
                 write_pubkey(ctx, req)
             rc = run_module(ctx, conn, argv, req, fds)
         except BaseException:
             rc = None
             raise
         finally:
-            if rc is None and ctx.get("reserved"):
+            if rc is None and ctx.get("reserved") and domain_known(vm) is False:
                 release_reservation(ctx, vm)
-        if rc != 0 and ctx.get("staged_dir") and not ctx.get("reserved") and not vm_exists(vm) and not DRY_RUN:
+        # A declined or failed create may exit 0 too; only a defined domain makes the VM real.
+        known = domain_known(vm) if ctx.get("staged_dir") or ctx.get("reserved") else True
+        if known is None:
+            say(fds.get("stderr"), "libvirt did not answer, so dcvm kept the record and folder of %s; check it with: dcvm info %s" % (vm, vm))
+            return rc or 70
+        if ctx.get("staged_dir") and not ctx.get("reserved") and not known and not DRY_RUN:
             subprocess.run(["rm", "-rf", "--", ctx["staged_dir"]])
         if ctx.get("reserved"):
             entry = registry_read(vm) or {}
-            if rc != 0 and not vm_exists(vm):
+            if not known:
                 release_reservation(ctx, vm)
             elif entry.get("state") == "creating":
                 entry["state"] = "ready"

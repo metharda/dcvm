@@ -37,7 +37,7 @@ Options:
   --uefi                       UEFI firmware instead of BIOS
   --ip <address>               Static IP you set in the installer
   -u, --username <name>        Login user the installed OS has, for dcvm ssh/exec/cp
-  --copy-iso                   Copy the ISO next to the VM's disk
+  --copy-iso                   Copy the ISO next to the VM's disk (root only; a user's ISO is always copied)
   --ttl <90m|2h|3d>            Delete the VM after this long
   --wait                       Return once SSH answers (up to 30 minutes)
   --json                       Print the result as JSON on stdout
@@ -126,6 +126,10 @@ parse_args() {
     --ttl)
       TTL="$2"
       shift 2 || need_value "$1"
+      ;;
+    -k | --packages | --enable-root | --disable-root | --with-ssh-key | --without-ssh-key | -p | --password | -r | --root-password | --tailscale-authkey)
+      print_error "$1 does nothing with an ISO: the installer sets up the OS"
+      exit 1
       ;;
     -*)
       print_error "Unknown option: $1 (dcvm create-iso --help)"
@@ -270,10 +274,32 @@ prompt_iso_path() {
     exit 1
   fi
   ISO_PATH=$(realpath "$ISO_PATH")
+  local kind
+  if [ "$(caller_role)" != root ] && kind=$(disk_image_kind "$ISO_PATH"); then
+    print_error "$(iso_name "$ISO_PATH") is a $kind disk image, not an ISO; dcvm only boots installer ISOs"
+    exit 1
+  fi
+}
+
+# A non-root caller's ISO is staged as installer.iso, a name that would mean nothing to them.
+iso_name() {
+  if [ "$(caller_role)" = root ]; then basename "$1"; else echo "the file you gave"; fi
+}
+
+# A disk-image header can name host files as backing files or extents.
+disk_image_kind() {
+  case "$(head -c 21 -- "$1" | LC_ALL=C tr -c '[:print:]' '.')" in
+  QFI.*) echo qcow2 ;;
+  QED.*) echo qed ;;
+  KDMV* | COWD* | "# Disk DescriptorFile") echo vmdk ;;
+  vhdxfile*) echo vhdx ;;
+  conectix*) echo vhd ;;
+  *) [ "$(tail -c 512 -- "$1" | head -c 8 | tr -d '\0')" = conectix ] && echo vhd ;;
+  esac
 }
 
 show_iso_header() {
-  ui_title "New VM from an ISO" "$VM_NAME ${SYM_DOT} $(basename "$ISO_PATH")"
+  ui_title "New VM from an ISO" "$VM_NAME ${SYM_DOT} $(iso_name "$ISO_PATH")"
 }
 
 collect_vm_options() {
@@ -289,7 +315,7 @@ collect_vm_options() {
 
 show_vm_summary() {
   local rows=(
-    "$(printf '%-11s%s' ISO "$(basename "$ISO_PATH")$([ "$COPY_ISO" = true ] && echo " (copied)")")"
+    "$(printf '%-11s%s' ISO "$(iso_name "$ISO_PATH")$([ "$COPY_ISO" = true ] && echo " (copied)")")"
     "$(printf '%-11s%s' Resources "$CPUS vCPU, $MEMORY MB RAM, $DISK_SIZE disk")"
     "$(printf '%-11s%s' Display "$GRAPHICS")"
     "$(printf '%-11s%s' OS "${OS_VARIANT:-generic}")"
@@ -303,7 +329,7 @@ show_vm_summary() {
 }
 
 confirm_creation() {
-  confirm_action "Create it?" y || exit 0
+  confirm_action "Create it?" y || exit 130
   echo ""
 }
 
@@ -347,7 +373,7 @@ copy_iso_if_needed() {
 validate_iso_size() {
   # ISO 9660 (also the bridge in UDF installer ISOs) puts CD001 at byte 32769.
   if [ "$(dd if="$INSTALL_ISO" bs=1 skip=32769 count=5 2>/dev/null)" != CD001 ]; then
-    print_warning "$(basename "$INSTALL_ISO") doesn't look like an ISO 9660 image; the VM may not boot it"
+    print_warning "$(iso_name "$INSTALL_ISO") doesn't look like an ISO 9660 image; the VM may not boot it"
   fi
 }
 
@@ -427,7 +453,7 @@ build_virt_install_opts() {
     --memory "$MEMORY"
     --vcpus "$CPUS"
     --disk "path=$DISK_PATH,format=qcow2"
-    --disk "path=$INSTALL_ISO,device=cdrom,readonly=on"
+    --disk "path=$INSTALL_ISO,device=cdrom,readonly=on,format=raw"
     --network "network=$NETWORK_NAME"
     --boot "$([ "$UEFI" = true ] && echo uefi,)$BOOT_ORDER"
     --import
@@ -444,7 +470,7 @@ build_virt_install_opts() {
 
 run_virt_install() {
   local cmd=(virt-install "${VIRT_INSTALL_OPTS[@]}")
-  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+  if [ "$GRAPHICS" != none ]; then
     VNC_PW=$(vnc_password)
     cmd=(virt_install_with_vnc_password "$VNC_PW" "${cmd[@]}")
   fi
@@ -536,7 +562,7 @@ main() {
   parse_args "$@"
   load_dcvm_config
   if [ -n "${TTL:-}" ] && ! TTL_SECONDS=$(ttl_seconds "$TTL"); then
-    print_error "--ttl must look like 90m, 2h or 3d"
+    print_error "--ttl must look like 90m, 2h or 3d (at most 3650d)"
     exit 1
   fi
   [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && FORCE_MODE=true
@@ -564,7 +590,7 @@ main() {
   validate_iso_options
   show_vm_summary
   [ "$FORCE_MODE" = true ] || confirm_creation
-  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" || exit 1
+  within_quota "$CPUS" "$MEMORY" "$(size_gb "$DISK_SIZE")" "$VM_NAME" || exit 1
   if [ -n "$STATIC_IP" ]; then
     # ponytail: two creates naming the same new --ip at once can both pass; lock on the address if that matters.
     claim_static_ip "$VM_NAME" "$STATIC_IP" || exit 1

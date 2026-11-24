@@ -38,9 +38,19 @@ Delete a backup:
 # Interactive delete menu for a VM
 dcvm backup delete <vm_name>
 
-# Delete specific backup (vm-date-time)
-dcvm backup delete <vm_name>-<YYYYMMDD>_<HHMMSS>
+# Delete one backup, without asking: an ID as for restore (dd.mm.yyyy[-N],
+# dd.mm.yyyy-HH:MM:SS, YYYYMMDD_HHMMSS or latest), or <vm>-<id> in one argument
+dcvm backup delete <vm_name> <backup_id>
+dcvm backup delete <vm_name>-<dd.mm.yyyy>[-N]
+
+# Every backup; asks first, --yes without a terminal
+dcvm backup delete --all
 ```
+
+Deleting an ID that matches no backup fails (exit 1).
+
+Backup folders are `700` and every file in them `600`, for created and
+imported backups alike.
 
 Export a backup archive:
 ```bash
@@ -59,6 +69,12 @@ which import finds as described under [Restore](#restore).
 A package holds the disk, the VM definition, the base record and the seed's
 `meta-data` and `network-config`, without the seed's `user-data` (password
 hash, Tailscale key, MySQL password).
+
+When root or a `dcvm-admin` exports, the guest's `authorized_keys` files are
+removed from the packaged disk with guestfish. A user's export never opens the
+disk (it is guest-controlled, see [Restore](#restore)), so their package keeps
+the VM's own `authorized_keys`: those are the user's keys, and the package goes
+to that user.
 
 Import a backup archive:
 ```bash
@@ -82,8 +98,15 @@ before 0.9.10 belong to root. See [Users and agents](users.md#ownership).
 ## Restore
 
 Restoring over an existing VM asks you to type `yes`, then replaces the VM's
-disk and definition. The VM keeps its MAC addresses, so a DHCP VM gets its
-old IP back and saved port forwards still match.
+disk and definition; `--yes` skips the question (needed without a terminal,
+for example from an agent). The VM keeps its MAC addresses, so a DHCP VM gets
+its old IP back and saved port forwards still match.
+
+A restored VM is set to autostart and started, whatever state it was in when
+the backup was taken (backups record no state; every backup is taken with the
+VM shut down). The exceptions, a copy that keeps another VM's static IP and a
+disk another VM still uses, are described below. Stop it afterwards with
+`dcvm stop <vm>` if you want it off.
 
 **Base check.** Before anything of an existing VM is touched, restore (and
 import) unpacks the disk and looks for the base build it was made on:
@@ -133,7 +156,7 @@ dcvm backup restore <vm> '' <new_vm_name>
 
 If `<new_vm_name>` already exists, restore asks you to type `yes` and then replaces that VM (its disk is deleted). The new VM gets new MAC addresses (and so its own DHCP IP) and drops the source VM's NVRAM path. Port forwards are not copied, so run `dcvm network ports setup` afterwards.
 
-When `virt-customize` (libguestfs-tools) is installed, the copy's disk is changed offline before the VM is defined: the hostname and its `/etc/hosts` entries are set to the new name, `/etc/machine-id` is emptied so systemd generates a new one, and new SSH host keys are generated on first boot. Without `virt-customize`, restore warns and the copy keeps the source's hostname, machine-id and host keys.
+When `virt-customize` (libguestfs-tools) is installed, the copy's disk is changed offline before the VM is defined: the hostname and its `/etc/hosts` entries are set to the new name, `/etc/machine-id` is emptied so systemd generates a new one, and new SSH host keys are generated on first boot. Without `virt-customize`, restore warns and the copy keeps the source's hostname, machine-id and host keys. For a user (not root or `dcvm-admin`), the guest disk is untrusted, so root never opens it with libguestfs, not on restore and not on export: the copy gets a fresh cloud-init seed with a new instance ID and its own hostname, and on first boot cloud-init sets the hostname and generates new SSH host keys, and the machine-id is reset once. A guest without cloud-init (an ISO install) keeps the source's identity; reset it inside the guest. `backup import` is for admins only, and an imported archive restored under a new name does go through `virt-customize` as root: the admin chose to import that archive.
 
 If the source VM has a static IP recorded on this host (`$DATACENTER_BASE/config/network/<source_vm>.conf`, written by `dcvm create --ip`), that address is set inside the guest, so the copy keeps it: restore warns, and does not start the copy or set it to autostart. Change the IP inside the guest before starting it. The same applies to `dcvm backup import <package> <new_vm_name>` when that record exists on the importing host (for example, export and import on the same host); it also skips the SSH key setup prompt then. Export packages do not include the record, so a static-IP VM imported on another host is started normally and keeps its old IP.
 

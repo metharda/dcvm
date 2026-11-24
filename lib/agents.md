@@ -6,7 +6,7 @@ SSH and delete it, without root. Your account must be in the `dcvm` group
 
 ## Test something in a fresh VM
 
-    dcvm create t1 -o 4 --ttl 2h --wait --json     # stdout: {"name","state","ip","user","expires","ready"}
+    dcvm create t1 -o 4 --ttl 2h --wait --json     # stdout: {"name","state","ip","user","expires","ready","display_password"}
     dcvm cp ./project t1:/home/ubuntu/project
     dcvm exec t1 -- 'cd project && make test'      # exits with the command's status
     dcvm delete t1 --yes
@@ -53,7 +53,8 @@ to 30 minutes for SSH. The JSON adds `"display"` (e.g. `vnc://127.0.0.1:1`) and
 
 ## Other commands you may use on your own VMs
 
-start, stop, restart, console, backup create|list|restore|delete|export,
+start, stop, restart (a VM name or --all; `stop <vm> --force` powers off a guest
+that ignores shutdown), console, backup create|list|restore|delete|export,
 protect / unprotect (refuses delete and restore), network ports add|remove|show
 (forward SSH and HTTP from the host), network vnc enable|disable|status (VNC with a
 password), fix-lock.
@@ -73,5 +74,6 @@ named ..."), and a create whose name is taken exits 77 too; check with
 ## Limits
 
 Each user has quotas (VMs, vCPUs, memory, disk; `/etc/dcvm/limits.conf`). You
-see and change only your own VMs and backups. `delete` without a terminal needs
-`--yes`. Admins (`dcvm-admin`) can do everything.
+see and change only your own VMs and backups. `delete`, and `backup restore` over
+an existing VM, need `--yes` without a terminal. Admins (`dcvm-admin`) can do
+everything.

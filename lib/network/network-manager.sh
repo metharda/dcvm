@@ -75,7 +75,7 @@ cmd_status() {
   network_title || return 1
   network_kv
   local addr
-  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }')
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }' || true)
   ui_kv "Address" "${addr:-none}"
   echo ""
 }
@@ -113,20 +113,18 @@ cmd_restart() {
 cmd_leases() {
   ui_title "DHCP leases" "$NETWORK_NAME"
   leases_table
-  ui_section "Lease files"
-  local f
-  for f in "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.leases" "/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"; do
-    ui_kv "${f##*.}" "$f $([ -f "$f" ] && echo "($(wc -l <"$f") lines)" || echo "(not found)")"
-  done
+  ui_section "Lease file"
+  local f="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
+  ui_kv "status" "$f $([ -f "$f" ] && echo "($(wc -l <"$f") lines)" || echo "(not found)")"
   echo ""
 }
 
 cmd_bridge() {
   ui_title "Bridge" "$BRIDGE_NAME"
   local addr pid
-  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; sub(/^ +/, ""); print }')
+  addr=$(ip -br addr show "$BRIDGE_NAME" 2>/dev/null | awk '{ $1 = ""; sub(/^ +/, ""); print }' || true)
   pid=$(pgrep -f "dnsmasq.*/${NETWORK_NAME}.conf" | head -1 || true)
-  ui_kv "Address" "${addr:-bridge not found}" "dnsmasq" "${pid:+running, pid $pid}${pid:-not running}"
+  ui_kv "Address" "${addr:-bridge not found}" "dnsmasq" "$([ -n "$pid" ] && echo "running, pid $pid" || echo "not running")"
   ui_section "Routes"
   ip route show | sed 's/^/  /'
   echo ""
@@ -143,11 +141,17 @@ cmd_ip_forwarding() {
     ui_done ok "IP forwarding on" "persisted in /etc/sysctl.d/90-dcvm.conf"
     ;;
   off | disable)
-    echo 0 >/proc/sys/net/ipv4/ip_forward || {
+    if ! echo 0 >/proc/sys/net/ipv4/ip_forward || ! rm -f /etc/sysctl.d/90-dcvm.conf; then
       print_error "Failed to disable ip_forward"
       exit 1
-    }
-    ui_done warn "IP forwarding off" "VMs lose internet access and port forwards stop working"
+    fi
+    local v src
+    read -r v src < <(ip_forward_at_boot)
+    if [ "$v" = 1 ]; then
+      ui_done warn "IP forwarding off until reboot" "${src:-a sysctl file} turns it on at boot"
+    else
+      ui_done warn "IP forwarding off" "VMs lose internet access and port forwards stop working"
+    fi
     ;;
   show | *)
     local v
@@ -170,7 +174,7 @@ stop_for_vnc_change() {
   local vm_name="$1" confirm count=0
   virsh list | grep -q " $vm_name .*running" || return 0
   if [ ! -t 0 ]; then
-    print_error "$vm_name is running; stop it first (dcvm stop $vm_name)"
+    print_error "$vm_name is running; stop it first (dcvm stop $vm_name; --force if it does not shut down)"
     return 1
   fi
   confirm_action "$vm_name is running and has to stop for this. Stop it now?" || return 1
@@ -187,10 +191,18 @@ cmd_vnc() {
   local action="${1:-}"
   local vm_name="${2:-}"
 
-  if [ -z "$action" ] || [ -z "$vm_name" ]; then
+  if [ -z "$action" ] || [ -z "$vm_name" ] || [ $# -gt 2 ]; then
     print_error "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
     exit 1
   fi
+  case "$action" in
+  enable | disable | status) ;;
+  *)
+    print_error "Unknown action: $action"
+    echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
+    return 1
+    ;;
+  esac
 
   if ! check_vm_exists "$vm_name"; then
     print_error "VM '$vm_name' does not exist"
@@ -229,25 +241,20 @@ cmd_vnc() {
     fi
     echo ""
     stop_for_vnc_change "$vm_name" || return 1
-    local pw="" graphics_xml
-    [ "$(caller_role)" != root ] && pw=$(vnc_password)
-    graphics_xml="<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics>"
+    local pw
+    pw=$(vnc_password)
     local video_xml="<video><model type='virtio' heads='1' primary='yes'/></video>"
     tmp_xml="$(mktemp /tmp/add-graphics-XXXXXX.xml)"
     virsh dumpxml "$vm_name" >"$tmp_xml"
-    if [ -n "$pw" ]; then
-      VNC_PW="$pw" python3 -I -S -c '
+    VNC_PW="$pw" python3 -I -S -c '
 import os, sys
 p = sys.argv[1]
 g = "<graphics type=\"vnc\" port=\"-1\" autoport=\"yes\" listen=\"127.0.0.1\" passwd=\"%s\"><listen type=\"address\" address=\"127.0.0.1\"/></graphics>" % os.environ["VNC_PW"]
 s = open(p).read().replace("</devices>", g + sys.argv[2] + "</devices>", 1)
 open(p, "w").write(s)' "$tmp_xml" "$video_xml"
-    else
-      sed -i "s|</devices>|  $graphics_xml\n    $video_xml\n  </devices>|" "$tmp_xml"
-    fi
     if virsh define "$tmp_xml" >/dev/null 2>&1; then
       rm -f "$tmp_xml"
-      [ -n "$pw" ] && ui_kv "Password" "$pw"
+      ui_kv "Password" "$pw"
       ui_done ok "VNC on for $vm_name" "listens on 127.0.0.1 of this host"
       ui_next "dcvm start $vm_name" "start it" "dcvm network vnc status $vm_name" "its VNC port, once running"
     else
@@ -278,13 +285,24 @@ open(p, "w").write(s)' "$tmp_xml" "$video_xml"
       echo ""
     fi
     ;;
-
-  *)
-    print_error "Unknown action: $action"
-    echo "Usage: dcvm network vnc <enable|disable|status> <vm_name>"
-    return 1
-    ;;
   esac
+}
+
+vnc_help() {
+  ui_help <<EOF
+dcvm network vnc - VNC on a VM, listening on 127.0.0.1 of this host with a password
+
+Usage: dcvm network vnc <action> <vm>
+
+Actions:
+  enable    Add VNC (the VM must be off; with a terminal it offers to stop it)
+  disable   Remove VNC and free its port (the VM must be off)
+  status    VNC display, port and password, and how to tunnel to it
+
+Examples:
+  dcvm network vnc enable web
+  dcvm network vnc status web
+EOF
 }
 
 cmd_help() {
@@ -314,8 +332,12 @@ EOF
 
 main() {
   case "${1:-}:${2:-}" in
-  help:* | -h:* | --help:* | vnc:--help)
+  help:* | -h:* | --help:*)
     cmd_help
+    exit 0
+    ;;
+  vnc:--help | vnc:-h | vnc:help)
+    vnc_help
     exit 0
     ;;
   ports:--help) exec "$SCRIPT_DIR/port-forward.sh" --help ;;
@@ -328,7 +350,10 @@ main() {
   local subcmd="${1:-show}"
   shift || true
   case "$subcmd" in
-  show | info) cmd_show "$@" ;;
+  show | info)
+    [ $# -eq 0 ] || { print_error "Usage: dcvm network show" && exit 1; }
+    cmd_show
+    ;;
   status) cmd_status "$@" ;;
   start) cmd_start "$@" ;;
   stop) cmd_stop "$@" ;;

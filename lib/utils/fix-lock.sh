@@ -21,6 +21,43 @@ phase_done() {
   PHASE_ERRORS=$step_errors
 }
 
+# ISO installs ($3 false) keep their installer and their disk bus: Windows has no virtio driver.
+clean_definition() {
+  python3 -I -S - "$@" <<'PY'
+import sys, xml.etree.ElementTree as ET
+path, disk, cloud = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
+    ET.register_namespace(prefix, uri)
+tree = ET.parse(path)
+devices = tree.getroot().find("devices")
+if devices is None:
+    sys.exit(1)
+done = []
+# CD-ROMs stay: on a cloud VM it is the cloud-init seed, and without it cloud-init disables itself.
+for d in devices.findall("disk"):
+    src = d.find("source")
+    if d.get("device", "disk") != "disk" or src is None or src.get("file") != disk:
+        continue
+    drv = d.find("driver")
+    if drv is not None and "cache" in drv.attrib:
+        del drv.attrib["cache"]
+        done.append("cache setting removed")
+    if drv is not None and drv.get("name") == "qemu" and drv.get("type") != "qcow2":
+        drv.set("type", "qcow2")
+        done.append("disk read as qcow2")
+    tgt = d.find("target")
+    if cloud and tgt is not None and (tgt.get("dev"), tgt.get("bus")) != ("vda", "virtio"):
+        tgt.attrib = {"dev": "vda", "bus": "virtio"}
+        addr = d.find("address")
+        if addr is not None:
+            d.remove(addr)
+        done.append("disk on virtio")
+if done:
+    tree.write(path)
+print(", ".join(done))
+PY
+}
+
 fix_vm_locks() {
   local vm_name="$1"
   local step_errors=0
@@ -76,12 +113,8 @@ fix_vm_locks() {
   print_verbose "Current VM state: $vm_state"
 
   if [ "$vm_state" = "running" ]; then
-    print_info "Attempting graceful shutdown first"
-    virsh shutdown "$vm_name" >/dev/null 2>&1
-    sleep 3
-
-    vm_state=$(get_vm_state "$vm_name")
-    [ "$vm_state" = "running" ] && print_warning "Graceful shutdown failed, forcing destruction"
+    print_info "Shutting down $vm_name (forced off after 60 seconds)"
+    stop_vm_gracefully "$vm_name"
   fi
 
   virsh destroy "$vm_name" >/dev/null 2>&1 || print_verbose "VM destroy command failed or VM was not running"
@@ -100,20 +133,13 @@ fix_vm_locks() {
   sleep 2
 
   print_info "Checking processes using VM disk file"
-  if [ -f "$VM_DISK_PATH" ]; then
-    local disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $2}' || true)
-    if [ -n "$disk_users" ]; then
-      print_warning "Found processes using disk: $disk_users"
-      echo "$disk_users" | xargs -r kill -TERM 2>/dev/null || true
-      sleep 2
-
-      disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $2}' || true)
-      [ -n "$disk_users" ] && print_warning "Force killing disk users: $disk_users" && echo "$disk_users" | xargs -r kill -KILL 2>/dev/null || true
-    else
-      print_verbose "No processes found using VM disk"
-    fi
-
-    fuser -k "$VM_DISK_PATH" 2>/dev/null && print_verbose "fuser killed additional processes" && sleep 1
+  local disk_users
+  disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $1 "(" $2 ")"}' | sort -u | tr '\n' ' ')
+  # With the VM stopped, a holder is other work (a backup's qemu-img, say): never kill it.
+  if [ -n "$disk_users" ]; then
+    print_error "Still using the disk: $disk_users"
+    echo "  Wait for it to finish (or stop it yourself), then run dcvm fix-lock $vm_name again."
+    return 1
   fi
 
   phase_done "Stopped" "VM and its QEMU processes"
@@ -127,13 +153,14 @@ fix_vm_locks() {
       if [ -n "$found_locks" ]; then
         locks_found=true
         print_verbose "Removing locks in $lock_dir:"
-        echo "$found_locks" | while read -r lock_file; do
+        # A here-string, not a pipe: the loop must count step_errors in this shell.
+        while read -r lock_file; do
           print_verbose "  Removing: $lock_file"
           rm -f "$lock_file" 2>/dev/null || {
             print_warning "Failed to remove: $lock_file"
             step_errors=$((step_errors + 1))
           }
-        done
+        done <<<"$found_locks"
       fi
     else
       print_verbose "Lock directory not found: $lock_dir"
@@ -150,13 +177,13 @@ fix_vm_locks() {
   local disk_locks=$(find "$disk_dir" -name "*.lock" 2>/dev/null || true)
   if [ -n "$disk_locks" ]; then
     print_verbose "Found disk locks:"
-    echo "$disk_locks" | while read -r lock_file; do
+    while read -r lock_file; do
       print_verbose "  Removing: $lock_file"
       rm -f "$lock_file" 2>/dev/null || {
         print_warning "Failed to remove disk lock: $lock_file"
         step_errors=$((step_errors + 1))
       }
-    done
+    done <<<"$disk_locks"
   else
     print_verbose "No disk lock files found"
   fi
@@ -215,7 +242,7 @@ fix_vm_locks() {
     fi
 
     chmod 600 "$VM_DISK_PATH" 2>/dev/null && print_success "Fixed permissions: $target_owner with 600" || {
-      print_error "Failed to set permissions to 660"
+      print_error "Failed to set permissions to 600"
       step_errors=$((step_errors + 1))
     }
 
@@ -234,38 +261,27 @@ fix_vm_locks() {
 
   phase_done "Permissions" "${target_owner:-unchanged}, mode 600"
 
-  local temp_xml=$(mktemp)
-  if virsh dumpxml "$vm_name" >"$temp_xml" 2>/dev/null; then
-    print_verbose "Successfully dumped VM XML configuration"
-
-    grep -qi 'device="cdrom"' "$temp_xml" && sed -i '/<disk[^>]*device="cdrom"[^>]*>/,/<\/disk>/d' "$temp_xml" && print_verbose "Removed CD-ROM device blocks"
-    sed -i '/<target dev="hd[ab]".*bus="ide"\/>/d' "$temp_xml"
-    grep -q 'controller type="ide"' "$temp_xml" && sed -i '/<controller type="ide"/,/<\/controller>/d' "$temp_xml" && print_verbose "Removed IDE controllers from configuration"
-
-    local old_path=$(grep -o "file='[^']*'" "$temp_xml" | head -1 | sed "s/file='//;s/'//")
-    [ -n "$old_path" ] && [ "$old_path" != "$VM_DISK_PATH" ] && sed -i "s|<source file='[^']*'/>|<source file='$VM_DISK_PATH'/>|g" "$temp_xml" && print_verbose "Updated disk path from $old_path to $VM_DISK_PATH"
-
-    grep -q 'cache=' "$temp_xml" && sed -i '/<driver.*cache=/s/cache="[^"]*"//g' "$temp_xml" && print_verbose "Removed cache settings from disk configuration"
-
-    sed -i 's/<driver name="qemu"[^>]*>/<driver name="qemu" type="qcow2">/g' "$temp_xml"
-    grep -q '<target dev=' "$temp_xml" && sed -i 's/<target dev="\([a-z]*\)[0-9]*" bus="[^"]*"\/>/<target dev="vda" bus="virtio"\/>/g' "$temp_xml"
-
-    if virsh define --validate "$temp_xml" >/dev/null 2>&1; then
-      print_success "VM configuration cleaned and redefined with validation"
-    elif virsh define "$temp_xml" >/dev/null 2>&1; then
-      print_success "VM configuration cleaned and redefined (validation skipped)"
-    else
-      print_error "Failed to redefine VM configuration"
-      [ "$VERBOSE" = true ] && print_verbose "Problematic XML content:" && cat "$temp_xml"
-      step_errors=$((step_errors + 1))
-    fi
-  else
-    print_error "Failed to dump VM XML configuration"
+  local temp_xml changes cloud=false
+  temp_xml=$(mktemp)
+  [ -f "${DATACENTER_BASE:-/srv/datacenter}/vms/$vm_name/cloud-init/user-data" ] && cloud=true
+  # --security-info keeps VNC passwords, which a redefinition would otherwise drop.
+  if ! virsh dumpxml --security-info "$vm_name" >"$temp_xml" 2>/dev/null || ! changes=$(clean_definition "$temp_xml" "$VM_DISK_PATH" "$cloud"); then
+    print_error "Failed to read the VM's XML configuration"
     step_errors=$((step_errors + 1))
+    changes="not changed"
+  elif [ -z "$changes" ]; then
+    changes="nothing to change"
+  elif virsh define --validate "$temp_xml" >/dev/null 2>&1 || virsh define "$temp_xml" >/dev/null 2>&1; then
+    changes+=", redefined"
+  else
+    print_error "Failed to redefine VM configuration ($changes)"
+    [ "$VERBOSE" = true ] && print_verbose "Problematic XML content:" && cat "$temp_xml"
+    step_errors=$((step_errors + 1))
+    changes="not changed"
   fi
   rm -f "$temp_xml"
 
-  phase_done "Definition" "CD-ROM and IDE removed, disk on virtio, redefined"
+  phase_done "Definition" "$changes"
 
   local restart_success=false
   if [ "$(caller_role)" = user ]; then
@@ -343,7 +359,7 @@ fix_vm_locks() {
 
 main() {
   if wants_help "$@"; then
-    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
+    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all [--yes]    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
     exit 0
   fi
   check_permissions
@@ -352,9 +368,16 @@ main() {
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1
 
-  [ "$2" = "--verbose" ] || [ "$VM_NAME" = "--verbose" ] && VERBOSE=true
+  [[ " $* " == *" --verbose "* ]] && VERBOSE=true
 
   if [ "$VM_NAME" = "--all" ]; then
+    if [[ " $* " != *" --yes "* ]]; then
+      [ -t 0 ] || {
+        print_error "fix-lock --all stops every dcvm VM: add --yes"
+        exit 1
+      }
+      confirm_action "Stop every dcvm VM and clear its locks?" || exit 1
+    fi
 
     VM_LIST=$(virsh list --all --name 2>/dev/null | grep -v "^$" || true)
 

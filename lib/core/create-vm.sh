@@ -92,6 +92,7 @@ OS:
   9 Fedora 44
 
 Without -f, dcvm asks for every option you did not give.
+Several names, comma separated, create one VM each (root and dcvm admins only).
 Packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale, or any other.
 
 Examples:
@@ -249,7 +250,7 @@ check_dependencies() {
     exit 1
   fi
 
-  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+  if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
     print_warning "Network '$NETWORK_NAME' is not active. Starting it..."
     if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
       print_success "Network '$NETWORK_NAME' started"
@@ -279,29 +280,7 @@ iso_handoff_check() {
 
 select_os() {
   [ "$FORCE_MODE" = true ] && [ -z "$VM_OS_CHOICE" ] && VM_OS_CHOICE="$DEFAULT_OS"
-  if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == *.ISO ]] ||
-    { [ -n "$VM_OS_CHOICE" ] && [ -f "$VM_OS_CHOICE" ]; }; then
-    print_info "Detected ISO file - switching to custom ISO installation mode..."
-    local force_flag=""
-    [ "$FORCE_MODE" = true ] && force_flag="-f"
-    iso_handoff_check
-    [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
-    exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
-      ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
-      ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
-      ${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
-      ${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
-      ${FLAG_TTL:+--ttl "$FLAG_TTL"} \
-      ${FLAG_USERNAME:+-u "$FLAG_USERNAME"} \
-      ${FLAG_GRAPHICS:+--graphics "$FLAG_GRAPHICS"} \
-      $([ "$FLAG_UEFI" = true ] && echo --uefi) \
-      $([ "$FLAG_JSON" = true ] && echo --json) \
-      $([ "$FLAG_WAIT" = true ] && echo --wait) \
-      $force_flag
-    exit $?
-  fi
-
-  if [ "$FORCE_MODE" != true ]; then
+  if [ "$FORCE_MODE" != true ] && [ -z "$FLAG_OS" ]; then
     while true; do
       ui_section "Operating system"
       cat <<-EOF
@@ -330,6 +309,7 @@ select_os() {
     VM_OS="debian11"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/debian-11-generic-amd64.qcow2"
     OS_VARIANT="debian11"
+    print_warning "Debian 11 is end of life (no security updates since August 2026); it installs packages from archive.debian.org"
     ;;
   4)
     VM_OS="ubuntu24.04"
@@ -360,11 +340,12 @@ select_os() {
     VM_OS="fedora44"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Fedora-Cloud-Base-Generic-44.x86_64.qcow2"
     OS_VARIANT="fedora-unknown"
-    osinfo-query os -f short-id 2>/dev/null | grep -qx fedora44 && OS_VARIANT="fedora44"
+    osinfo-query os -f short-id 2>/dev/null | awk '{print $1}' | grep -qx fedora44 && OS_VARIANT="fedora44"
     ;;
   *)
 
-    if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
+    # Only a path or an .iso name is an ISO, so a stray file named 4 in the cwd is not.
+    if [[ "$VM_OS_CHOICE" == *.[iI][sS][oO] ]] || [[ "$VM_OS_CHOICE" == */* && -f "$VM_OS_CHOICE" ]]; then
       if [ "$(caller_role)" != root ] && [ "$VM_OS_CHOICE" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
         print_error "Pass the ISO as a file instead: dcvm create $VM_NAME -o <file.iso>"
         exit 1
@@ -388,7 +369,7 @@ select_os() {
         "${force_flag[@]}"
       exit $?
     fi
-    if [ "$FORCE_MODE" = true ]; then
+    if [ "$FORCE_MODE" = true ] || [ -n "$FLAG_OS" ]; then
       print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1-9 or path to ISO file."
       exit 1
     else
@@ -472,12 +453,14 @@ setup_user_account() {
 }
 
 setup_root_access() {
+  # Runs once per VM of a batch, so the parsed flags stay untouched.
+  local root_flag="$FLAG_ENABLE_ROOT"
   if [ "$FLAG_DISABLE_ROOT" = true ]; then
     if [ "$VM_USERNAME" = "root" ] || [ -n "$FLAG_ENABLE_ROOT" ]; then
       print_error "--disable-root can't be combined with username root, --enable-root or --root-password"
       exit 1
     fi
-    FLAG_ENABLE_ROOT="n"
+    root_flag="n"
   fi
 
   if [ "$VM_USERNAME" = "root" ]; then
@@ -494,7 +477,7 @@ setup_root_access() {
 
   if [ "$FORCE_MODE" = true ]; then
     print_info "Root access configuration"
-    [ -n "$FLAG_ENABLE_ROOT" ] && ENABLE_ROOT="$FLAG_ENABLE_ROOT" || ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
+    [ -n "$root_flag" ] && ENABLE_ROOT="$root_flag" || ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
     ROOT_PASSWORD=""
     if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
       if [ -n "$FLAG_ROOT_PASSWORD" ]; then
@@ -512,9 +495,9 @@ setup_root_access() {
       print_success "Root access disabled"
     fi
   else
-    if [ -n "$FLAG_ENABLE_ROOT" ]; then
+    if [ -n "$root_flag" ]; then
       ui_section "Root login"
-      ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+      ENABLE_ROOT="$root_flag"
       ROOT_PASSWORD=""
       if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
         if [ -n "$FLAG_ROOT_PASSWORD" ]; then
@@ -540,6 +523,18 @@ setup_root_access() {
   [ "$FORCE_MODE" != true ] && echo ""
 }
 
+# The key goes into user-data as one YAML line: printable ASCII only, first valid key only.
+first_ssh_key() {
+  LC_ALL=C tr -cd '\040-\176\n' 2>/dev/null <"$1" | grep -m1 -E '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( .*)?$'
+}
+
+# YAML 1.1 reads bare yes, off, null or 123 as non-strings, and ": " or " #" end a plain value.
+yaml_quote() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
 setup_ssh_key() {
   SSH_KEY=""
   SETUP_SSH_KEY=true
@@ -550,15 +545,15 @@ setup_ssh_key() {
   if [ "$SETUP_SSH_KEY" = true ]; then
     [ "$FORCE_MODE" = true ] && print_info "SSH key setup" || ui_section "SSH key"
     if [ "$(caller_role)" != root ]; then
-      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      SSH_KEY=$(first_ssh_key "${DCVM_SSH_PUBKEY_FILE:-/dev/null}")
       [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
     elif [ -f ~/.ssh/id_rsa.pub ]; then
-      SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+      SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
       [ "$FORCE_MODE" = true ] && print_success "SSH key configured" || print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
       [ "$FORCE_MODE" = true ] && print_info "Creating SSH key" || print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-        SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
         SSH_KEY_CREATED=true
         [ "$FORCE_MODE" = true ] && print_success "SSH key created" || print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
@@ -576,16 +571,11 @@ compute_incremental_ip() {
   local idx="$2"
   local total="$3"
 
-  if ! [[ "$base_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    return 1
-  fi
+  # Its reason goes to stderr, which the caller's $(...) leaves on the terminal.
+  validate_ip_in_subnet "$base_ip" || return 1
   IFS='.' read -r a b c d <<<"$base_ip"
   local prefix="${a}.${b}.${c}"
   local base_last=$d
-
-  if [ "$base_last" -lt 2 ] || [ "$base_last" -gt 254 ]; then
-    return 1
-  fi
 
   local forward=$((base_last + idx))
   local assigned
@@ -613,9 +603,32 @@ setup_static_ip() {
   fi
 }
 
+wants_tailscale() {
+  local p
+  local -a pkgs=()
+  IFS=',' read -ra pkgs <<<"$ADDITIONAL_PACKAGES"
+  for p in "${pkgs[@]}"; do
+    p=$(trim_whitespace "$p")
+    [ "${p,,}" = tailscale ] && return 0
+  done
+  return 1
+}
+
+web_servers_clash() {
+  local p=",${ADDITIONAL_PACKAGES//[[:space:]]/},"
+  [[ "$p" == *,nginx,* && ("$p" == *,apache2,* || "$p" == *,apache,*) ]]
+}
+
+# The key ends up in a root shell command inside the guest.
+valid_tailscale_authkey() { [[ "$1" =~ ^tskey-[A-Za-z0-9_-]+$ ]]; }
+
 setup_tailscale() {
   TAILSCALE_AUTHKEY=""
-  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! valid_tailscale_authkey "$FLAG_TAILSCALE_AUTHKEY"; then
+    print_error "Invalid Tailscale auth key: it must look like tskey-auth-..."
+    exit 1
+  fi
+  if [ -n "$FLAG_TAILSCALE_AUTHKEY" ] && ! wants_tailscale; then
     if [ -n "$ADDITIONAL_PACKAGES" ]; then
       ADDITIONAL_PACKAGES="${ADDITIONAL_PACKAGES},tailscale"
     else
@@ -623,7 +636,7 @@ setup_tailscale() {
     fi
   fi
 
-  if ! echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if ! wants_tailscale; then
     return 0
   fi
 
@@ -648,10 +661,9 @@ setup_tailscale() {
             print_error "Auth key cannot be empty"
             continue
           fi
-          if [[ ! "$TAILSCALE_AUTHKEY" =~ ^tskey- ]]; then
-            print_warning "Auth key doesn't start with 'tskey-', are you sure?"
-            read -p "Continue anyway? (y/N): " confirm_key || no_input
-            [[ ! "$confirm_key" =~ ^[Yy]$ ]] && continue
+          if ! valid_tailscale_authkey "$TAILSCALE_AUTHKEY"; then
+            print_error "Invalid auth key: it must look like tskey-auth-..."
+            continue
           fi
           print_success "Tailscale will auto-connect with provided auth key"
           break
@@ -834,15 +846,15 @@ interactive_prompt_ssh_key() {
   if [ "$SETUP_SSH_KEY" = true ]; then
     ui_section "SSH key"
     if [ "$(caller_role)" != root ]; then
-      SSH_KEY=$(head -1 "${DCVM_SSH_PUBKEY_FILE:-/dev/null}" 2>/dev/null)
+      SSH_KEY=$(first_ssh_key "${DCVM_SSH_PUBKEY_FILE:-/dev/null}")
       [ -n "$SSH_KEY" ] && print_success "SSH key configured (yours)" || print_warning "No SSH key of yours was found; log in with the password"
     elif [ -f ~/.ssh/id_rsa.pub ]; then
-      SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+      SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
       print_success "Using existing RSA SSH key from ~/.ssh/id_rsa.pub"
     else
       print_info "No RSA SSH key found. Creating new RSA SSH key..."
       if ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -C "$VM_USERNAME@$(hostname)" >/dev/null 2>&1; then
-        SSH_KEY=$(cat ~/.ssh/id_rsa.pub)
+        SSH_KEY=$(first_ssh_key ~/.ssh/id_rsa.pub)
         SSH_KEY_CREATED=true
         print_success "Created new RSA SSH key at ~/.ssh/id_rsa"
       else
@@ -1022,7 +1034,7 @@ show_vm_summary() {
       "$(printf '%-11s%s' Network "${FLAG_STATIC_IP:-DHCP} on $NETWORK_NAME")"
     )
     [ -n "$ADDITIONAL_PACKAGES" ] && rows+=("$(printf '%-11s%s' Packages "${ADDITIONAL_PACKAGES//,/, }")")
-    if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+    if wants_tailscale; then
       rows+=("$(printf '%-11s%s' Tailscale "$([ -n "$TAILSCALE_AUTHKEY" ] && echo "joins with the auth key" || echo "connect by hand")")")
     fi
     ui_box "$VM_NAME" "${rows[@]}"
@@ -1031,7 +1043,7 @@ show_vm_summary() {
 }
 
 confirm_vm_creation() {
-  [ "$FORCE_MODE" = true ] || confirm_action "Create it?" y || exit 0
+  [ "$FORCE_MODE" = true ] || confirm_action "Create it?" y || exit 130
 }
 
 prepare_vm_directory() {
@@ -1122,6 +1134,8 @@ generate_cloud_init_userdata() {
         package=apache
       fi
       [ "$VM_OS" = archlinux ] && [ "$package" = docker.io ] && package=docker
+      # apt's docker package is wmdocker, an unrelated tray app.
+      [[ "$VM_OS" =~ ^(debian|ubuntu|kali) ]] && [ "$package" = docker ] && package=docker.io
       if [[ "$VM_OS" == fedora* ]]; then
         case "$package" in
         apache2)
@@ -1182,29 +1196,29 @@ PACKAGES_EOF
   if [ "$MYSQL_REQUESTED" = true ]; then
     local sql_password=${VM_PASSWORD//\\/\\\\}
     sql_password=${sql_password//\'/\'\'}
-    local root_auth="IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password')"
-    [ "$mysql_service" = mysql ] && root_auth="IDENTIFIED WITH mysql_native_password BY '$sql_password'"
-    mysql_sql="ALTER USER 'root'@'localhost' $root_auth;"
+    # MySQL has no "socket OR password" auth, so its root stays on auth_socket (sudo mysql).
+    [ "$mysql_service" = mariadb ] &&
+      mysql_sql="ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$sql_password');"
     if [ "$VM_USERNAME" != "root" ]; then
-      mysql_sql+="
-CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
+      mysql_sql+="${mysql_sql:+
+}CREATE USER '$VM_USERNAME'@'localhost' IDENTIFIED BY '$sql_password';
 GRANT ALL PRIVILEGES ON *.* TO '$VM_USERNAME'@'localhost' WITH GRANT OPTION;"
     fi
-    mysql_sql+="
-FLUSH PRIVILEGES;"
+    mysql_sql+="${mysql_sql:+
+}FLUSH PRIVILEGES;"
   fi
 
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/user-data" <<USERDATA_EOF
 #cloud-config
-hostname: $VM_NAME
+hostname: $(yaml_quote "$VM_NAME")
 users:
-  - name: $VM_USERNAME$(if [ "$VM_USERNAME" != "root" ]; then echo "
+  - name: $(yaml_quote "$VM_USERNAME")$(if [ "$VM_USERNAME" != "root" ]; then echo "
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash"; fi)
     lock_passwd: false$(if [ "$VM_USERNAME" != "root" ]; then echo "
     passwd: '$PASSWORD_HASH'"; fi)$(if [ -n "$SSH_KEY" ]; then echo "
     ssh_authorized_keys:
-      - $SSH_KEY"; fi)
+      - $(yaml_quote "$SSH_KEY")"; fi)
 
 ssh_pwauth: true
 disable_root: $([ "$ROOT_LOGIN_SETTING" = "yes" ] && echo "false" || echo "true")$(if [ "$ROOT_LOGIN_SETTING" = "yes" ]; then echo "
@@ -1219,7 +1233,10 @@ packages:
 $(
     # shellcheck disable=SC2086 # one package per word
     printf '  - %s\n' $base_packages
-  )
+  )$(if [ "$VM_OS" = archlinux ]; then echo "
+# The Arch image ships no pacman keyring; package_update runs after bootcmd.
+bootcmd:
+  - cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'"; fi)
 
 write_files:
   - content: |
@@ -1251,7 +1268,14 @@ write_files:
       CREATED="$(date)"
     path: /etc/vm-info
     owner: root:root
-    permissions: '0644'$(if [ -n "$mysql_sql" ]; then
+    permissions: '0644'$(if [ "$VM_OS" = debian11 ]; then echo "
+  - content: |
+      deb http://archive.debian.org/debian bullseye main
+      deb http://archive.debian.org/debian bullseye-updates main
+      deb http://archive.debian.org/debian-security bullseye-security main
+    path: /etc/apt/sources.list
+    owner: root:root
+    permissions: '0644'"; fi)$(if [ -n "$mysql_sql" ]; then
     echo "
   - encoding: b64
     content: $(printf '%s\n' "$mysql_sql" | base64 | tr -d '\n')
@@ -1292,7 +1316,7 @@ $(if [ "$MYSQL_REQUESTED" = true ]; then
     cat <<MYSQL_EOF
   - systemctl enable $mysql_service
   - systemctl start $mysql_service
-  - $mysql_service < /root/dcvm-mysql-init.sql || true; rm -f /root/dcvm-mysql-init.sql
+  - '$mysql_service < /root/dcvm-mysql-init.sql || echo "dcvm: database user setup failed, see /var/log/cloud-init-output.log" | tee -a /var/log/dcvm-packages.log; rm -f /root/dcvm-mysql-init.sql'
 MYSQL_EOF
   fi)
 $(if [ "$DOCKER_REQUESTED" = true ]; then
@@ -1356,7 +1380,7 @@ USERDATA_EOF
 generate_cloud_init_metadata() {
   cat >"$DATACENTER_BASE/vms/$VM_NAME/cloud-init/meta-data" <<METADATA_EOF
 instance-id: $VM_NAME-$(date +%s)
-local-hostname: $VM_NAME
+local-hostname: $(yaml_quote "$VM_NAME")
 METADATA_EOF
 }
 
@@ -1420,18 +1444,14 @@ NETWORK_EOF
 create_cloud_init_iso() {
   [ "$FORCE_MODE" = true ] && print_info "Creating cloud-init config" || print_info "Creating cloud-init configuration..."
   cd "$DATACENTER_BASE/vms/$VM_NAME"
-  if command -v mkisofs >/dev/null 2>&1; then
-    mkisofs -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || {
-      print_error "Failed to create cloud-init ISO"
-      exit 1
-    }
-  else
-    genisoimage -output cloud-init.iso -volid cidata -joliet -rock cloud-init/ >/dev/null 2>&1 || {
-      print_error "Failed to create cloud-init ISO"
-      exit 1
-    }
-  fi
-  chmod 600 cloud-init.iso
+  local tool=genisoimage
+  command -v mkisofs >/dev/null 2>&1 && tool=mkisofs
+  # It holds password hashes and keys: other users may open files in the 711 folder by name.
+  (umask 077 && "$tool" -output cloud-init.iso -volid cidata -joliet -rock cloud-init/) >/dev/null 2>&1 || {
+    print_error "Failed to create cloud-init ISO"
+    exit 1
+  }
+  chmod 600 cloud-init.iso cloud-init/*
 }
 
 create_vm_disk() {
@@ -1466,7 +1486,7 @@ install_vm() {
     --vcpus "$VM_CPUS"
     --boot "$([ "$FLAG_UEFI" = true ] && echo uefi,)hd,menu=on"
     --disk "path=$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2,device=disk"
-    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom"
+    --disk "path=$DATACENTER_BASE/vms/$VM_NAME/cloud-init.iso,device=cdrom,format=raw"
     --graphics "$GRAPHICS"
     --os-variant "$OS_VARIANT"
     --network "network=$NETWORK_NAME"
@@ -1474,7 +1494,8 @@ install_vm() {
     --import
     --noautoconsole)
   local rc=0
-  if [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ]; then
+  VNC_PW=""
+  if [ "$GRAPHICS" != none ]; then
     VNC_PW=$(vnc_password)
     virt_error=$(virt_install_with_vnc_password "$VNC_PW" "${vi[@]}" 2>&1) || rc=$?
   else
@@ -1492,7 +1513,8 @@ install_vm() {
     echo "    - Check if network '$NETWORK_NAME' is active: virsh net-list"
     echo "    - Check if OS variant '$OS_VARIANT' is valid: osinfo-query os | grep $OS_VARIANT"
     echo "    - Check disk permissions and space"
-    rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
+    # A domain that exists is not ours: never delete its disk.
+    check_vm_exists "$VM_NAME" || rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
     exit 1
   fi
 
@@ -1548,7 +1570,7 @@ show_post_creation_info() {
       "dcvm console $VM_NAME" "watch the first boot" \
       "dcvm network ports setup" "reach it from other machines"
   fi
-  if [ "${TAILSCALE_REQUESTED:-false}" = true ] || echo "$ADDITIONAL_PACKAGES" | grep -qi tailscale; then
+  if wants_tailscale; then
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       echo -e "  Tailscale joins your tailnet after first boot; check with ${CYAN}tailscale status${NC} inside the VM."
     else
@@ -1581,7 +1603,7 @@ Wait 2-3 minutes for cloud-init to complete setup
    Check logs: tail -f /var/log/cloud-init-output.log (inside VM)
 EOF
 
-  if echo "$ADDITIONAL_PACKAGES" | grep -qi "tailscale"; then
+  if wants_tailscale; then
     echo ""
     if [ -n "$TAILSCALE_AUTHKEY" ]; then
       print_success "Tailscale VPN will auto-connect after cloud-init completes"
@@ -1600,6 +1622,10 @@ main() {
     show_usage
     exit 0
   fi
+  if [ $# -lt 1 ]; then
+    show_usage
+    exit 1
+  fi
   load_dcvm_config
 
   [ -f /etc/dcvm-install.conf ] && source /etc/dcvm-install.conf || {
@@ -1610,11 +1636,6 @@ main() {
   DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
   NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
   BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
-
-  if [ $# -lt 1 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-    show_usage
-    exit 0
-  fi
 
   parse_arguments "$@"
   read_dcvm_secrets
@@ -1627,7 +1648,7 @@ main() {
   fi
   [ -n "${DCVM_SECRET_TAILSCALE_AUTHKEY:-}" ] && FLAG_TAILSCALE_AUTHKEY="$DCVM_SECRET_TAILSCALE_AUTHKEY"
   if [ -n "$FLAG_TTL" ] && ! TTL_SECONDS=$(ttl_seconds "$FLAG_TTL"); then
-    print_error "--ttl must look like 90m, 2h or 3d"
+    print_error "--ttl must look like 90m, 2h or 3d (at most 3650d)"
     exit 1
   fi
   if [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && [ "$FORCE_MODE" != true ]; then
@@ -1651,6 +1672,10 @@ main() {
   fi
 
   if [ -n "$ADDITIONAL_PACKAGES" ] && ! validate_package_list "$ADDITIONAL_PACKAGES"; then
+    exit 1
+  fi
+  if web_servers_clash; then
+    print_error "-k nginx and apache2 both need port 80; choose one of them"
     exit 1
   fi
 
@@ -1682,6 +1707,10 @@ main() {
     if ! validate_vm_name "$VM_NAME"; then
       exit 1
     fi
+    if check_vm_exists "$VM_NAME"; then
+      print_error "VM $VM_NAME already exists"
+      exit 1
+    fi
     if [ -n "$BASE_STATIC_IP" ]; then
       if computed_ip=$(compute_incremental_ip "$BASE_STATIC_IP" "$i" "${#VM_NAMES[@]}"); then
         FLAG_STATIC_IP="$computed_ip"
@@ -1706,7 +1735,7 @@ main() {
     setup_static_ip
     setup_tailscale
     setup_vm_resources
-    within_quota "$VM_CPUS" "${VM_MEMORY%MB}" "$(size_gb "$VM_DISK_SIZE")" || exit 1
+    within_quota "$VM_CPUS" "${VM_MEMORY%MB}" "$(size_gb "$VM_DISK_SIZE")" "$VM_NAME" || exit 1
     show_vm_summary
     confirm_vm_creation
     ui_quiet
@@ -1721,7 +1750,7 @@ main() {
     ui_step ok "Disk" "$VM_DISK_SIZE copy-on-write overlay on the image"
     install_vm
     [ -n "$FLAG_STATIC_IP" ] && save_static_ip "$VM_NAME" "$FLAG_STATIC_IP"
-    [ -n "${VNC_PW:-}" ] && ui_step ok "VNC" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
+    [ -n "${VNC_PW:-}" ] && ui_step ok "Display" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
@@ -1742,8 +1771,9 @@ main() {
     if [ "$FLAG_JSON" = true ]; then
       [ -n "$vm_ip" ] || vm_ip=$(get_vm_ip "$VM_NAME")
       valid_vm_ip "$vm_ip" || vm_ip=""
-      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s,"ready":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
-        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" "$ready" >&3
+      printf '{"name":"%s","state":"%s","ip":%s,"user":"%s","expires":%s,"ready":%s,"display_password":%s}\n' "$VM_NAME" "$(get_vm_state "$VM_NAME")" \
+        "$([ -n "$vm_ip" ] && echo "\"$vm_ip\"" || echo null)" "$VM_USERNAME" "$(registry_get "$VM_NAME" expires | grep . || echo null)" "$ready" \
+        "$([ -n "$VNC_PW" ] && echo "\"$VNC_PW\"" || echo null)" >&3
     elif [ "${DCVM_VERBOSE:-0}" = 1 ]; then show_post_creation_info_verbose; else show_post_creation_info; fi
   done
 

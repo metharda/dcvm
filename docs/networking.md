@@ -35,10 +35,11 @@ dcvm create myvm -f -p password123 --ip 10.10.10.50
 - Valid range: `10.10.10.2` - `10.10.10.254`
 - `10.10.10.1` is reserved for the gateway
 - `10.10.10.255` is the broadcast address
-- Prefer addresses outside the DHCP range (`.2`-`.9` or `.201`-`.254`). An
-  address inside it works while the VM is running (dnsmasq checks with a ping
-  before handing an address out), but if the VM is off, DHCP can give its
-  address to another VM.
+- dcvm reserves the address for the VM's MAC in the network's DHCP
+  (`ip-dhcp-host`), so dnsmasq never hands it to another VM, also inside the
+  DHCP range; `dcvm delete` removes the reservation. VMs created by older
+  versions have no reservation: prefer addresses outside the DHCP range (`.2`-`.9` or
+  `.201`-`.254`) for them.
 
 ### Custom ISO VMs
 For custom ISO installations, static IP is noted during creation but must be configured manually inside the VM during OS installation.
@@ -54,10 +55,11 @@ DCVM allows you to toggle VNC graphics for VMs. This is critical for saving reso
 When VNC is enabled (either by default for those OS types or via `--graphics vnc,listen=127.0.0.1`), **VNC listens on `127.0.0.1` (localhost only)**. This means:
 - VNC is only accessible from the host machine
 - To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
-- VNC set up by a user without root (`dcvm network vnc enable`, or `create
-  --graphics vnc`) gets a random password, because other local users could
-  otherwise connect to `127.0.0.1`; `dcvm network vnc status <vm>` shows it
-  to the VM's owner. VNC set up by root has no password, as before
+- VNC and SPICE get a random password (`dcvm create`, `dcvm create-iso`,
+  `dcvm network vnc enable`), whether root or a user sets them up, because
+  any local account could otherwise connect to `127.0.0.1`. The create output
+  (and `"display_password"` in its JSON) shows it; `dcvm network vnc status
+  <vm>` shows it again to root and the VM's owner
 - This is a security feature to prevent unauthorized access
 
 ### Graphics Mode During Creation
@@ -103,8 +105,9 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
     Removes dcvm's previous rules, then gives each *running* VM on the dcvm
     network the next pair of host ports, starting at 2221 (to the VM's port
     22) and 8081 (to port 80). Run it again after starting or adding VMs.
+    Ports something on the host already listens on are skipped.
     `SSH_PORT_START` and `HTTP_PORT_START` in the environment change the
-    starting ports.
+    starting ports; dcvm uses 79 SSH and 99 HTTP ports from there.
     ```bash
     dcvm network ports setup
     ```
@@ -115,14 +118,18 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
     ```
 
 3.  **Test Connectivity:**
-    Verifies that the forwarded ports are actually reachable.
+    Checks that each forward's rules exist, that libvirt's nftables rules
+    (see below) don't reject them, and that the VM answers on the port. The
+    connection is made from the host, so it can't show a firewall in front of
+    the host.
     ```bash
     dcvm network ports test
     ```
 
 4.  **Persistence:**
     The table is saved to `$DATACENTER_BASE/port-mappings.txt`, one line per
-    VM: `VM_NAME VM_IP SSH_PORT HTTP_PORT`. `dcvm-boot.service` rebuilds the
+    VM: `VM_NAME VM_IP SSH_PORT HTTP_PORT`, readable by root only (users see
+    their own forwards with `ports show`). `dcvm-boot.service` rebuilds the
     iptables rules from it after a reboot (dcvm also writes
     `/etc/iptables/rules.v4` when `iptables-save` exists). Re-apply it by hand
     after editing it:
@@ -137,7 +144,8 @@ DCVM provides a robust port forwarding system to expose VM services to the host 
   it rejects forwarded connections to VMs in its own table, and no iptables
   rule can let them through. The installer therefore sets
   `firewall_backend = "iptables"` in `/etc/libvirt/network.conf`, as libvirt
-  already does on Debian and Ubuntu.
+  already does on Debian and Ubuntu. If that setting is lost (for example by
+  a libvirt upgrade), `ports test` and `dcvm doctor` say so.
 - **Rule order:** libvirt puts its own rules first when it restarts (for
   example after a package update), above the forwards. Run
   `dcvm network ports apply` afterwards; after a reboot `dcvm-boot.service`
@@ -163,7 +171,7 @@ because they touch every VM's forwards.
 | `rules` | Show active `iptables` rules |
 | `apply` | Apply rules from mappings file |
 | `clear` | Remove all forwarding rules |
-| `test` | Per VM: ping, and for SSH and HTTP that the DNAT and FORWARD rules exist and the VM port accepts connections |
+| `test` | Per VM: ping, and for SSH and HTTP that the DNAT and FORWARD rules exist, libvirt's nftables rules don't reject them, and the VM port accepts connections |
 
 ## Quick commands
 
@@ -175,14 +183,14 @@ dcvm network show
 - DHCP lease management:
 ```bash
 dcvm network dhcp show
-# Force renewal for all VMs
+# Clear all leases and make running DHCP VMs ask again (cuts their link for 5 s)
 dcvm network dhcp renew
 
 # Clear one lease: exact VM hostname (any case) or MAC; no network restart
 dcvm network dhcp clear <vm_name_or_mac>
 # Clear stale/orphaned leases (no network restart)
 dcvm network dhcp clear -s
-# Clear ALL leases and restart the network (asks first)
+# Clear ALL leases; the network keeps running (asks first)
 dcvm network dhcp clear -a
 ```
 
@@ -204,11 +212,15 @@ dcvm network bridge
 dcvm network ip-forwarding on|off|show
 ```
 
+`on` persists it in `/etc/sysctl.d/90-dcvm.conf` and fails, naming the file,
+when a sysctl file read later sets it back to 0. `off` removes that file.
+
 Forwarded ports listen on every host interface, and DNAT applies to
 connections arriving from other machines, not to the host's own connections:
 from the host itself, connect to the VM's IP. `setup`, `apply` and `clear`
-delete every `PREROUTING` rule on host ports 2220-2299 and 8080-8179, so keep
-other NAT rules off those ports.
+delete every rule in the shape dcvm makes (a DNAT to port 22 or 80 of an
+address on the dcvm network, and its FORWARD accept), on any host port; other
+rules stay.
 
 ## Tips
 - **Security:** Ensure your host firewall (ufw/iptables) permits traffic on the forwarded ports if you want external access.

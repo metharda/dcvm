@@ -59,6 +59,31 @@ package_for() {
   esac
 }
 
+# A seed's user-data holds password hashes and keys: its folder and files are root's alone.
+vm_permissions() {
+  local vms="$DATACENTER_BASE/vms" vm_files vm_dirs seeds open_seeds backups_open=0 net_open
+  vm_files=$(find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -printf . 2>/dev/null | wc -c)
+  vm_dirs=$(find "$vms" -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
+  seeds=$(find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -printf . 2>/dev/null | wc -c)
+  open_seeds=$(find "$vms" -mindepth 2 -maxdepth 3 \( -perm /077 -o ! -user root \) \
+    \( \( -type d -path "$vms/*/cloud-init" \) -o \( -type f -path "$vms/*/cloud-init/*" \) \) -printf . 2>/dev/null | wc -c)
+  [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
+  net_open=$(find "$DATACENTER_BASE/port-mappings.txt" "$DATACENTER_BASE/config/network" -maxdepth 1 -perm /044 -printf . 2>/dev/null | wc -c)
+  if [ $((vm_files + vm_dirs + open_seeds + backups_open + net_open)) -eq 0 ]; then
+    report ok "Permissions" "VM disks, $(plural "$seeds" "cloud-init seed"), backups and network records closed to other users"
+  elif $FIX; then
+    find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+    find "$vms" -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
+    find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -exec chown -R root:root {} + -exec chmod 700 {} + 2>/dev/null
+    find "$vms" -mindepth 3 -maxdepth 3 -type f -path "$vms/*/cloud-init/*" -exec chmod 600 {} + 2>/dev/null
+    [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
+    find "$DATACENTER_BASE/port-mappings.txt" "$DATACENTER_BASE/config/network" -maxdepth 1 -perm /044 -exec chmod go-rwx {} + 2>/dev/null
+    report fixed "Permissions" "closed VM disks, cloud-init seeds, backups and network records to other users"
+  else
+    report warn "Permissions" "VM disks, cloud-init seeds (password hashes), backups or the port and static IP records (VM names, addresses, host ports) are open to other local users: --fix closes them"
+  fi
+}
+
 check_host() {
   section "Host"
   if [ -e /dev/kvm ] && virsh list >/dev/null 2>&1; then
@@ -70,7 +95,7 @@ check_host() {
   fi
 
   local cmd missing=() pkgs=()
-  for cmd in qemu-img virsh virt-install jq dhcp_release aria2c guestfish virt-customize xz curl python3; do
+  for cmd in qemu-img virsh virt-install jq dhcp_release iptables aria2c guestfish virt-customize xz curl python3; do
     command_exists "$cmd" || {
       missing+=("$cmd")
       pkgs+=("$(package_for "$cmd")")
@@ -146,27 +171,14 @@ check_host() {
   if ! awk -v p="$share" '$1 == p { f = 1 } END { exit !f }' /etc/exports 2>/dev/null; then
     report skip "NFS share" "not exported"
   elif nfs_share_secure "$share"; then
-    report ok "NFS share" "VM users squashed, closed to host users"
+    report ok "NFS share" "VM users squashed and kept inside the share, closed to host users"
   elif $FIX && secure_nfs_share "$share" "${NETWORK_SUBNET:-10.10.10}"; then
-    report fixed "NFS share" "VM users squashed, share closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
+    report fixed "NFS share" "VM users squashed and kept inside the share, closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
   else
-    report fail "NFS share" "root in any VM can get root on this host: --fix squashes NFS users and closes the share"
+    report fail "NFS share" "not squashed, not limited to the share (subtree_check) or open to host users: VMs may reach host files; --fix secures it"
   fi
 
-  local vm_files vm_dirs backups_open=0
-  vm_files=$(find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -printf . 2>/dev/null | wc -c)
-  vm_dirs=$(find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
-  [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
-  if [ $((vm_files + vm_dirs + backups_open)) -eq 0 ]; then
-    report ok "Permissions" "VM disks, seeds and backups closed to other users"
-  elif $FIX; then
-    find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -exec chmod go-rwx {} + 2>/dev/null
-    find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
-    [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
-    report fixed "Permissions" "closed VM disks, seeds and backups to other users"
-  else
-    report warn "Permissions" "VM disks, cloud-init seeds (password hashes) or backups are readable by every local user: --fix closes them"
-  fi
+  vm_permissions
 
   $FAST && return 0
   local here latest tmp
@@ -222,22 +234,30 @@ check_network() {
     report fixed "IP forwarding" "turned on and persisted in /etc/sysctl.d/90-dcvm.conf"
   else
     report warn "IP forwarding" "$([ "$fwd" = 1 ] && echo "on but not persisted (off after a reboot)" || echo "off: VMs have no internet"): --fix turns it on"
+    # systemd-sysctl reads only sysctl.d; Debian 13 no longer links /etc/sysctl.conf into it.
+    grep -qsE '^[[:space:]]*net[.\/]ipv4[.\/]ip_forward[[:space:]]*=[[:space:]]*1' /etc/sysctl.conf && [ ! -e /etc/sysctl.d/99-sysctl.conf ] &&
+      echo -e "      ${DIM}/etc/sysctl.conf sets it, but systemd-sysctl does not read that file at boot${NC}"
   fi
 
-  local vm ip ssh_port http_port rules saved=0 lost=0 moved=""
-  rules=$(iptables -t nat -S PREROUTING 2>/dev/null)
+  local vm ip ssh_port http_port rules fwd saved=0 lost=0 moved=""
+  rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null)
+  fwd=$(iptables -w -S FORWARD 2>/dev/null)
   while read -r vm ip ssh_port http_port; do
     [ -n "$vm" ] || continue
     saved=$((saved + 1))
-    grep -q -- "--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" || lost=$((lost + 1))
+    # Old rules (no LOCAL match on DNAT, no ctstate DNAT on FORWARD) are too broad; ports apply replaces them.
+    grep -q -- "--dst-type LOCAL .*--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" &&
+      grep -q -- "-d $ip/32 .*--dport 22 .*--ctstate DNAT" <<<"$fwd" || lost=$((lost + 1))
     if check_vm_exists "$vm" && [ "$(get_vm_state "$vm")" = running ]; then
       local now
-      now=$(get_vm_ip "$vm" 2>/dev/null)
+      now=$(get_vm_ip_trusted "$vm" 2>/dev/null)
       [[ "$now" == *.* ]] && [ "$now" != "$ip" ] && moved+="${moved:+, }$vm"
     fi
   done < <(read_port_mappings 2>/dev/null)
   if [ "$saved" -eq 0 ]; then
     report skip "Port forwards" "none saved"
+  elif libvirt_nft_rejects_forwards; then
+    report fail "Port forwards" "libvirt's nftables rules reject forwarded connections to $BRIDGE_NAME: set firewall_backend = \"iptables\" in /etc/libvirt/network.conf, restart libvirt, then dcvm network ports apply"
   elif [ -n "$moved" ]; then
     report warn "Port forwards" "VM address changed for $moved: dcvm network ports setup"
   elif [ "$lost" -eq 0 ]; then
@@ -250,15 +270,14 @@ check_network() {
 
   local status="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" stale=0
   if [ -s "$status" ] && command_exists jq; then
-    stale=$(jq --argjson now "$(date +%s)" --arg vms "$(virsh list --all --name 2>/dev/null | tr '[:upper:]' '[:lower:]')" \
-      '[.[] | select(((."expiry-time" // 0) < $now) or ((.hostname // "") != "" and ((.hostname | ascii_downcase) as $h | ($vms | split("\n") | index($h)) == null)))] | length' "$status" 2>/dev/null || echo 0)
+    stale=$(stale_leases 2>/dev/null | grep -c .)
   fi
   if [ "${stale:-0}" -eq 0 ]; then
     report ok "DHCP leases" "no stale leases"
   elif $FIX && "$SCRIPT_DIR/../network/dhcp.sh" cleanup >/dev/null 2>&1; then
     report fixed "DHCP leases" "$(plural "$stale" "stale lease") released"
   else
-    report warn "DHCP leases" "$(plural "$stale" "stale lease") (expired or of deleted VMs): --fix releases them"
+    report warn "DHCP leases" "$(plural "$stale" "stale lease") (MAC of no VM): --fix releases them"
   fi
 }
 
@@ -335,14 +354,17 @@ base_status() {
 
 check_vms() {
   section "VMs"
-  local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 noip=()
-  local entry stale=()
-  for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
-    [ -f "$entry" ] || continue
-    vm=${entry##*/}
-    [ "$(registry_get "$vm" state)" = creating ] && [ -n "$(find "$entry" -mmin -60)" ] && continue
-    check_vm_exists "$vm" || stale+=("$vm")
-  done
+  local vm disk base state ip st kind sym rows="" age pid cpu0 cpu1 err noip=()
+  local entry stale=() defined
+  # Without libvirt every record would look stale, and --fix would drop the owners of live VMs.
+  if defined=$(virsh list --all --name 2>/dev/null); then
+    for entry in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
+      [ -f "$entry" ] || continue
+      vm=${entry##*/}
+      [ "$(registry_get "$vm" state)" = creating ] && [ -n "$(find "$entry" -mmin -60)" ] && continue
+      grep -qxF -- "$vm" <<<"$defined" || stale+=("$vm")
+    done
+  fi
   if [ ${#stale[@]} -gt 0 ] && $FIX; then
     for vm in "${stale[@]}"; do registry_remove "$vm"; done
     report fixed "Owners" "removed owner records of deleted VMs: ${stale[*]}"
@@ -379,8 +401,12 @@ check_vms() {
         report warn "$vm" "does not start with the host: --fix turns autostart on"
       fi
     fi
-    if [ "$state" = "shut off" ] && [ -f "$disk" ] && ! qemu-img info "$disk" >/dev/null 2>&1; then
-      report fail "$vm" "its disk is locked although the VM is off: dcvm fix-lock $vm"
+    if [ "$state" = "shut off" ] && [ -f "$disk" ] && command_exists qemu-img && ! err=$(qemu-img info "$disk" 2>&1 >/dev/null); then
+      if [[ "$err" == *'"write" lock'* ]]; then
+        report fail "$vm" "its disk is locked although the VM is off: dcvm fix-lock $vm"
+      else
+        report warn "$vm" "qemu-img cannot read its disk: $(head -1 <<<"$err")"
+      fi
     fi
   done < <(vm_disks)
   if [ -z "$rows" ]; then
@@ -470,16 +496,23 @@ check_storage() {
   fi
 
   $FAST && return 0
-  local img corrupt=""
+  if ! command_exists qemu-img; then
+    report skip "Templates" "not checked: qemu-img is not installed"
+    return 0
+  fi
+  local img corrupt="" unchecked=""
   for img in "$(templates_dir)"/*; do
     [ -f "$img" ] || continue
-    qemu-img check -U "$img" >/dev/null 2>&1 || corrupt+="${corrupt:+, }${img##*/}"
+    qemu-img check -U "$img" >/dev/null 2>&1
+    # Only 2 means corrupt: 1 is a failed check, 3 leaked clusters, 63 a format without checks.
+    case $? in
+    2) corrupt+="${corrupt:+, }${img##*/}" ;;
+    1) unchecked+="${unchecked:+, }${img##*/}" ;;
+    esac
   done
-  if [ -n "$corrupt" ]; then
-    report fail "Templates" "corrupt: $corrupt (dcvm template download <image> --force)"
-  else
-    report ok "Templates" "all pass qemu-img check"
-  fi
+  [ -n "$corrupt" ] && report fail "Templates" "corrupt: $corrupt (dcvm template download <image> --force)"
+  [ -n "$unchecked" ] && report warn "Templates" "qemu-img could not check $unchecked"
+  [ -n "$corrupt$unchecked" ] || report ok "Templates" "all pass qemu-img check"
 }
 
 check_builds() {
@@ -545,11 +578,13 @@ main() {
     --fast) FAST=true ;;
     --summary) SUMMARY=true QUIET=true FAST=true ;;
     --only)
-      ONLY="${2:-}"
+      [ -n "${2:-}" ] || need_value "$1"
+      ONLY="$2"
       shift
       ;;
     --vm)
-      VM_FILTER="${2:-}"
+      [ -n "${2:-}" ] || need_value "$1"
+      VM_FILTER="$2"
       shift
       ;;
     -h | --help | help)

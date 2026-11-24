@@ -20,7 +20,7 @@ dcvm create myvm
 ```
 
 The wizard will prompt you for:
-- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44)
+- Operating system (Debian 11/12/13, Ubuntu 20.04/22.04/24.04, Arch Linux, Kali Linux, Fedora 44). Debian 11 is end of life: it gets no security updates and installs packages from archive.debian.org
 - Username (default: depends on OS, e.g. ubuntu)
 - Password
 - Root access settings
@@ -43,8 +43,8 @@ names the option, and the password can come from `DCVM_PASSWORD`.
 dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH accepts connections
 ```
 
-- `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
-  minutes by `dcvm-reaper.timer`).
+- `--ttl 90m|2h|3d` deletes the VM when the time is up (at most 3650d;
+  checked every 5 minutes by `dcvm-reaper.timer`).
 - `--wait` returns only once the VM answers on SSH.
 - `--json` prints one JSON object per VM on stdout (`name`, `state`, `ip`,
   `user`, `expires`, `ready`); progress goes to stderr.
@@ -73,7 +73,7 @@ dcvm create myvm \
 
 Note about multiple VMs and `--ip`:
 
-- When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
+- Root and dcvm admins can create several VMs in one command (users create one per command). When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
   - vm1 → 10.10.10.50
   - vm2 → 10.10.10.51
   - vm3 → 10.10.10.52
@@ -109,6 +109,7 @@ The wizard will prompt you for:
 - Graphics type (VNC, SPICE, or none)
 - OS variant (for libvirt optimization)
 - Boot order
+- Whether to copy the ISO next to the disk
 - Static IP (optional)
 
 The summary before "Create it?" shows the login user dcvm will use for
@@ -201,10 +202,12 @@ dcvm start myvm
 
 ```bash
 dcvm stop myvm
+dcvm stop myvm --force    # power it off when the guest ignores the shutdown request
 ```
 
-`dcvm start`, `stop` and `restart` without a VM name act on every dcvm VM
-(for a user, every VM of theirs), without asking.
+`start`, `stop` and `restart` need a VM name, or `--all` for every dcvm VM
+(for a user, every VM of theirs), without asking. A VM named `all` is just a
+name: `dcvm stop all` stops that VM.
 
 ### Restarting a VM
 
@@ -446,8 +449,11 @@ setup.
 | --- | --- |
 | `nginx` | Enables and starts nginx and writes a welcome `index.html` (`/var/www/html`; `/usr/share/nginx/html` on Arch Linux) |
 | `apache2` (also `apache` on Arch Linux) | Enables and starts Apache (`apache2`; package `apache`, service `httpd` on Arch Linux) and writes a welcome `index.html` (`/var/www/html`; `/srv/http` on Arch Linux) |
-| `docker`, `docker.io` | Enables and starts Docker and adds the VM user to the `docker` group |
+| `docker`, `docker.io` | Installs Docker (`docker.io` on Debian, Ubuntu and Kali, where the `docker` package is an unrelated tray app; `docker` on Arch Linux), enables and starts it and adds the VM user to the `docker` group |
 | `mysql-server`, `default-mysql-server` | Installs the database server below and sets the database passwords |
+
+`nginx` and `apache2` (or `apache`) together are refused, since both need
+port 80.
 
 Database server installed:
 
@@ -460,11 +466,14 @@ Database server installed:
 
 Database accounts:
 
-- The database `root@localhost` gets the VM password (`-p`). With MariaDB it
-  also keeps its passwordless login from the system root account
-  (`sudo mariadb`); with MySQL it uses the password only.
+- With MariaDB, the database `root@localhost` gets the VM password (`-p`) and
+  keeps its passwordless login from the system root account (`sudo mariadb`).
+  With MySQL, `root@localhost` keeps only that passwordless login
+  (`sudo mysql`).
 - Unless the username is `root`, a database user with the VM username and
   password is created with all privileges.
+- If this setup fails, the VM still boots and the failure is logged in the
+  guest to `/var/log/dcvm-packages.log`.
 
 ### After VM Creation
 

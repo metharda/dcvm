@@ -12,6 +12,154 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-11-24
+
+Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
+live test with ten parallel testers. See the PR for the list.
+
+**Upgrading:** `sudo dcvm self-update`. Behaviour changes: `start`, `stop` and
+`restart` take a VM name or `--all` (a bare `all` is a VM name); `stop <vm>
+--force` powers off a guest that ignores shutdown; a user's backup export
+keeps the VM's `authorized_keys`; `--ttl` is at most 3650d.
+
+### Fixed
+- `start`, `stop` and `restart` take a VM name or `--all`; a bare `all` is a VM name, and `start` with no name no longer starts every VM.
+- A create the server refuses leaves no SSH key behind in the user's `~/.ssh`.
+
+- `dcvm help` lists `backup ssh-setup`/`troubleshoot`, `template check`/`best`, `self-update --force` and `network ports rules`; `backup`'s unknown-subcommand message lists `ssh-setup`.
+- `dcvm create` without arguments exits 1 like `create-iso`; `dcvm doctor --only` or `--vm` without a value is refused instead of checking nothing.
+- Docs and `create --help` say that comma-separated names in one `create` are for root and admins; the user command lists in `docs/users.md` and the routing table in `docs/architecture.md` match the code.
+- Network names are matched exactly, so `uninstall`, `delete --all` and other VM lists no longer touch VMs on a network whose name merely contains dcvm's (#90).
+- `self-update` handles a failed file list without leaving a backup, and `--revert` runs the old version's pre-revert step only once the saved version is staged, restoring the services if the swap fails (#100).
+- `uninstall` needs root, removes the NFS squash user, the storage pools and firewalld services it added, keeps the owner records until the VMs are gone, and never deletes the data folder while a VM still uses a disk in it (#101).
+- The test suite installs packages only with `--install-deps` (#103).
+- A shut-off VM has no IP: `info --json` no longer shows its old lease, `delete` no longer clears rules for an address another VM may hold now, and `network ports add` refuses a VM that isn't running.
+- `dcvm stop <vm> --force` powers off a guest that ignores the shutdown request, for the VM's owner too.
+- `start`, `status` and `console` hints name `network ports add <vm>` for users, and a user's `status` counts only their own port forwards.
+- `dcvm console` on a stopped VM says to start it first instead of claiming to connect.
+- `dcvm network vnc --help` shows VNC help, and an unknown `vnc` action is reported as such.
+- `delete`, `list`, `status` and `network show` refuse unknown options instead of ignoring them.
+
+- `backup create` builds the backup in a hidden folder and renames it only when disk, config, owner and base record are all saved; a failed `virsh dumpxml` fails the backup, and the VM is started again on every failure (#91).
+- `backup import` records this host's build for the backup, so pruning no longer deletes the base an imported backup needs (#92).
+- `backup export` fails instead of packing a truncated disk or a temporary file when unpacking or recompressing the disk fails (#94).
+- Builds are never pruned when libvirt can't list the VMs or their disks (#102).
+- A user's `backup restore <vm> <id> <new-name>` gives the copy a new hostname, SSH host keys and machine-id on first boot through a fresh cloud-init seed; root never opens the user's disk with libguestfs (#107).
+- `backup create` streams the disk straight into gzip (pigz if installed), so it needs at most the disk's allocated size free, not the disk plus its compressed copy; a failed or interrupted backup leaves no partial file (#47).
+- Arch guests initialise the pacman keyring before installing packages (#45).
+- Ubuntu MySQL keeps `root` on socket login, so `sudo mysql` works; a failed database setup is logged to `/var/log/dcvm-packages.log` (#45, #46).
+- Debian 11 guests install packages from archive.debian.org (#46).
+- `-k docker` installs `docker.io` on Debian, Ubuntu and Kali; `-k nginx,apache2` is refused (#46).
+- `backup export` refuses a descriptor that isn't a regular file opened for writing (#82).
+- Ctrl-C exits 130 and a module killed by a signal 128+N, not 241; a client outside the `dcvm` group exits 77 (#73).
+- VMs created by a `dcvm-admin` get the admin's SSH key (#74).
+- A cancelled create no longer leaves a VM marked ready; its name, quota and staged ISO are freed (#80).
+- In-place `backup restore` checks the quota (#79).
+- `dcvm backup export ... --full` works over the socket (#71).
+- `backup restore` checks the backup, base build and quota before it touches the existing VM, stops a paused VM too, and puts the old VM back if define fails (#75).
+- `backup import` refuses to overwrite an existing backup and never deletes one it did not create (#75).
+- `backup export` writes to the caller's file through the descriptor, never by reopening it as root (#82).
+- `backup export` accepts `latest` and `<vm>-<id>` (#71).
+- `dcvm create web,web` no longer overwrites the disk of the VM it just made: repeated names, newlines and empty entries are refused, and a failed create never removes a defined VM's folder (#78).
+- cloud-init quotes the hostname, user and SSH key, so names like `yes` or `123` and key comments with `: ` or `#` work; root uses only the first key of `~/.ssh/id_rsa.pub`; `--tailscale-authkey` must look like `tskey-...` and `-k tailscale-exporter` no longer counts as Tailscale (#70).
+- Declining "Create it?" exits 130, and a VM whose first start fails is undefined instead of left without a disk (#80).
+- Helpers that run Python no longer import modules from the working directory (#81).
+- DHCP lease cleanup reports a matched lease without an IPv4 address as not released, works on a stopped network without `dhcp_release`, and rewrites a 0-byte status file as `[]` (uninstall too) (#42).
+- `dcvm network dhcp cleanup` goes on after a failed release and reports how many were released (#42).
+- Lease MAC completion reads the `.status` file; nothing lists or truncates the unused `.leases` file any more (#43).
+- `delete` no longer ends with "No DHCP leases found" after a failed release; the missing `dhcp_release` error names the package for every distro and shows only when a lease needs releasing (#44).
+- `dcvm reap` keeps owner records while libvirt is not answering (#72).
+- `dcvm info <missing vm>` exits 1; `dcvm ssh/exec/cp` keep its exit code and work without `/usr/local/bin` in `PATH` (#73).
+- `dcvm exec`/`ssh`: remote command arguments can no longer be read as ssh options.
+- `dcvm fix-lock` really repairs the definition (only the VM's own disk), says when nothing changed, and keeps VNC passwords (#83).
+- `dcvm fix-lock` gives a running VM 60 seconds to shut down instead of 3.
+- `dcvm doctor` reports a disk as locked or a template as corrupt only when qemu-img says so (#83).
+- Installer: `--network-name VALUE` works, the bridge name fits 15 bytes, and a
+  network that fails to define or start fails the install (#68).
+- Debian/Ubuntu install `iptables`; `dcvm doctor` checks for it (#68).
+- `dcvm network status` and `bridge` no longer abort when the bridge is missing (#69).
+- DHCP cleanup and `doctor --fix` keep every lease whose MAC belongs to a VM,
+  whatever the guest's hostname, and clean orphans without a hostname (#76).
+- Port forwards rewrite only traffic to the host, so VM egress to ports
+  2221+/8081+ is no longer redirected; `doctor --fix` or `dcvm network ports apply`
+  replaces older rules (#77).
+- `delete --all` removes only the deleted VMs' forwards and keeps a refused
+  VM's lease, mapping and rules (#77).
+- `create -o` treats only a path or an `.iso` name as an ISO, skips the OS prompt, and finds Fedora 44's libosinfo variant (#89).
+- `create vm1,vm2 -f --disable-root` creates every VM of the batch (#108).
+- `dcvm storage` logs in as the VM's recorded user, uses `df -P`, reports a failed cleanup as failed and no longer re-archives its own links (#97).
+- `fix-lock` reports a lock it could not remove, never kills another process using the disk, and `--all` asks first (`--yes` without a terminal) (#104).
+- `doctor` checks cloud-init seed folders and files (700/600, owned by root) and `--fix` closes them; new seeds are written 600 (#105).
+- IP forwarding counts as persisted only when the last sysctl.d setting is 1; `ip-forwarding off` removes `90-dcvm.conf` (#84).
+- `--network-only --network-name` picks a free subnet, lets libvirt choose the bridge MAC and turns on IP forwarding (#86).
+- `dhcp clear --all` releases leases without restarting the network, which cut every VM off; `dhcp renew` cuts DHCP VMs' links for 5 s and reports which got a new lease (#93).
+- A static `--ip` gets a DHCP reservation, so dnsmasq never leases it to another VM (#95).
+- Lease release passes the lease's client-id to `dhcp_release` (#99).
+- `ports setup` and `add` record a forward only once all four rules exist (iptables waits for the xtables lock), and remove a half-made one (#85).
+- `ports setup` skips host ports already in use and addresses leased to another VM, like `ports add`; `setup`, `apply` and `clear` take the mappings lock (#85).
+- Port-forward cleanup (`setup`, `apply`, `clear`, `uninstall`) removes only rules in dcvm's own shape, on any port, never other FORWARD rules that contain the subnet (#87).
+- Custom `SSH_PORT_START`/`HTTP_PORT_START` ranges are cleaned up, and `ports add` uses 79 SSH and 99 HTTP ports from them instead of stopping at 2299/8179 (#87).
+- `ports rules` no longer shows the previous rule's port next to a DNAT rule without one; `ports show` says there are none when a user has no forwards (#88).
+- `ports test`, `dcvm network` and `doctor` report libvirt's nftables rules that reject forwarded connections (#88).
+- `backup delete <vm> <id>` works (it used to open the pick-a-number menu), takes `latest` like restore, and fails when no backup matches or the VM has none.
+- `backup restore` takes `--yes` to replace a VM without a terminal; the docs say a restored VM is started whatever its state was.
+- `backup delete --all` takes `--yes`.
+- `dcvm user remove` fails for someone who isn't a dcvm user instead of saying they were removed.
+- `dcvm owner` tells the new owner that the VM still holds only the previous owner's SSH key.
+- `create --ip` says why the address is refused (gateway, broadcast, outside the subnet) instead of only "Failed to compute static IP".
+- `doctor` says when `/etc/sysctl.conf` turns IP forwarding on but systemd-sysctl doesn't read it at boot.
+- `fix-lock` names the right mode (600) when it can't set the disk's permissions.
+
+- Users: a mistyped command or wrong arguments get "unknown command" or a usage line; only commands that exist for admins say "needs a dcvm admin", naming the command only.
+- Users: `-k "nginx apache2"` is refused (separate packages with commas) instead of becoming one package `nginxapache2` past the nginx+apache2 check; `-o`/`--os` given twice is refused instead of dropping the ISO.
+- Users: a malformed request exits 77 "malformed request" instead of 70, and the protocol version must be a number.
+- Users: a refusal the server can't write to the caller's stderr is printed by the client; the client makes `~/.ssh/id_ed25519` only once the socket accepts it.
+- Users can run `dcvm backup delete <vm>` (the menu) on their own backups.
+- `--ttl` is at most 3650d.
+- The audit log shows `--password=***` instead of `--***`.
+- `create-iso` for users names "the file you gave" instead of the staged `installer.iso`, says cloud-image options (`-k`, `--enable-root`) do nothing with an ISO, marks `--copy-iso` root-only in its help and asks for a disk size like 20G.
+
+### Security
+- `backup import` by a dcvm admin takes only a file opened for reading, since root reopens it by path.
+
+- `port-mappings.txt` and `config/network/` (VM names, addresses, host ports) are readable by root only; `doctor --fix` closes existing ones (#106).
+- A user's `backup export` no longer opens their guest-controlled disk with guestfish as root; the package keeps the VM's own `authorized_keys`.
+- Imported backups are `700`/`600` like created ones, and every file in a backup folder is `600`.
+- `$DATACENTER_BASE/vms` is `711`, so local users can't list VM names; the installer sets it and `doctor --fix` fixes it.
+
+- IP addresses with a leading zero (`--ip 10.10.10.050`, which iptables reads as octal `.40`) are refused everywhere, so a static IP or port forward can no longer reach another VM's address.
+- `delete`, the TTL reaper, port forwards and the hourly storage check take a VM's address from host-side records only (its mapping, DHCP lease or static IP), never from the guest agent; `delete` removes the rules of the address in the VM's mapping.
+- `delete` takes the port-mappings lock that `ports add` and `remove` take.
+- Forward rules accept only port-forwarded (DNATed) traffic, and `RELATED,ESTABLISHED` is added once; run `sudo dcvm network ports apply` once to replace older rules.
+- The storage check skips VMs owned by users and pins each VM's SSH host key, not the address's.
+- The NFS share is exported with `subtree_check`, so a VM can't reach files outside it; `dcvm doctor` reports older exports and `--fix` rewrites them.
+- The installer no longer sources or installs files from the folder it is run
+  from unless that is a dcvm checkout no other user can write to; another user
+  could plant `utils/common.sh` next to a download in `/tmp` and run code as root.
+- Backups keep the VM's VNC/SPICE password (config saved `600`), so a restore
+  no longer opens the console without one; exports leave it out.
+- The installer and `self-update` fetch every file from one commit;
+  `self-update` refuses an older version without `--force`; its staging
+  folders get random names.
+- `uninstall` deletes only VMs on the dcvm network itself (not `datacenter-net2`),
+  refuses to `rm -rf` a `DATACENTER_BASE` without dcvm's layout, and removes its
+  `/etc/exports` line.
+- The installer validates the directory and network name it writes to
+  `/etc/dcvm-install.conf` and makes the file `644`.
+- Installer ISOs are attached as raw images; a user's ISO with a qcow2, QED, VMDK, VHDX or VHD header is refused.
+- `cloud-init.iso` is created readable by root only, not made private after it is written.
+- A downloaded or converted image must be a plain qcow2 without a backing or data file before it becomes a template.
+- The official server's published checksum decides over the serving mirror's; curl downloads refuse HTTPS-to-HTTP redirects.
+- VNC and SPICE set up by root get a random password too, shown at create (`"display_password"` in JSON) and by `network vnc status`.
+- Quotas hold under concurrent creates and restores: the real sizes are checked and recorded under the server's global lock, in-place restores included.
+- `dcvm.socket` has no trigger limit, so a connection flood can't stop it for everyone; `doctor --fix` upgrades and restarts it.
+- The socket server reads a request within one 15 s deadline, refuses callers outside the dcvm groups before reading, and runs at most 8 requests per user at once.
+- Module output goes through the server, so a caller that stops reading can't stall a command holding a VM or host lock; `backup delete` of an old backup no longer takes the lock of a VM now owned by someone else.
+- The audit log clips long arguments, logs each request before it runs, and is rotated weekly.
+- When libvirt doesn't answer, a create keeps its record and folder instead of freeing a name that may be in use; `--ip` refuses octets with leading zeros or over 255, and `--os-variant` must start with a letter or digit.
+- A user's request checks ownership and protection again once it holds the VM's lock, so a VM handed to someone else or protected while it waited is refused (77); an admin's `delete`, `owner`, `protect` and `unprotect` over the socket take the VM's lock too (#96).
+- Ctrl-C or a closed connection now reaches an interactive command that reads your terminal (create, restore, admin commands) as SIGINT, then SIGTERM after 30 s, so no root process keeps reading your shell or holding the VM's lock (#98).
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
@@ -843,7 +991,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/metharda/dcvm/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10
 [0.9.9.1]: https://github.com/metharda/dcvm/pull/64
 [0.9.9]: https://github.com/metharda/dcvm/compare/v0.9.8...v0.9.9

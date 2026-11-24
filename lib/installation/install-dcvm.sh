@@ -4,16 +4,44 @@ set -euo pipefail
 DCVM_REPO_SLUG="${DCVM_REPO_SLUG:-metharda/dcvm}"
 DCVM_REPO_BRANCH="${DCVM_REPO_BRANCH:-main}"
 
-# The output helpers are lib/utils/common.sh: next to this script in a
-# checkout, or fetched from the same repository and branch as the rest of
-# dcvm when the installer runs on its own (curl | bash).
+# Root runs and installs the checkout this script sits in, so it is used only
+# when no other user can write to it; anything else (the one-liner, a
+# downloaded copy in /tmp) installs from the repository.
+checkout_root() {
+  local real root d owner mode bad uid=0
+  [[ "${SUDO_UID:-}" =~ ^[0-9]+$ ]] && uid=$SUDO_UID
+  [ -f "${1:-}" ] || return 1
+  real=$(readlink -f -- "$1") || return 1
+  [[ "$real" == */lib/installation/install-dcvm.sh ]] || return 1
+  root=${real%/lib/installation/install-dcvm.sh}
+  [ -f "$root/dcvm" ] || return 1
+  bad=$(find "$root/dcvm" "$root/lib" \( ! -uid 0 ! -uid "$uid" -o -perm /022 \) -print -quit 2>/dev/null) || bad=x
+  d=$root
+  while [ -z "$bad" ]; do
+    read -r owner mode <<<"$(stat -c '%u %a' -- "${d:-/}" 2>/dev/null)"
+    { [ "$owner" = 0 ] || [ "$owner" = "$uid" ]; } && [[ "$mode" =~ ^[0-7]+$ ]] && (((8#$mode & 8#022) == 0)) || bad=${d:-/}
+    [ -n "$d" ] || break
+    d=${d%/*}
+  done
+  if [ -n "$bad" ]; then
+    echo "warning: not using the checkout in ${root:-/}: other users can write to it (${bad}); installing from $DCVM_REPO_SLUG@$DCVM_REPO_BRANCH" >&2
+    return 1
+  fi
+  echo "${root:-/}"
+}
+DCVM_CHECKOUT=$(checkout_root "${BASH_SOURCE[0]:-}") || DCVM_CHECKOUT=""
+
+# The output helpers are lib/utils/common.sh: from the checkout, or fetched
+# from the commit the branch points to now, like the rest of dcvm.
 load_common() {
-  local dir tmp url="https://raw.githubusercontent.com/$DCVM_REPO_SLUG/$DCVM_REPO_BRANCH/lib/utils/common.sh"
-  dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || dir=""
-  if [ -n "$dir" ] && [ -f "$dir/../utils/common.sh" ]; then
-    source "$dir/../utils/common.sh"
+  local tmp url api="https://api.github.com/repos/$DCVM_REPO_SLUG/commits/$DCVM_REPO_BRANCH"
+  if [ -n "$DCVM_CHECKOUT" ] && [ -f "$DCVM_CHECKOUT/lib/utils/common.sh" ]; then
+    source "$DCVM_CHECKOUT/lib/utils/common.sh"
     return
   fi
+  DCVM_REPO_REF=$({ curl -fsSL -H "Accept: application/vnd.github.sha" "$api" || wget -q -O - --header="Accept: application/vnd.github.sha" "$api"; } 2>/dev/null) || true
+  [[ "$DCVM_REPO_REF" =~ ^[0-9a-f]{40}$ ]] || DCVM_REPO_REF=$DCVM_REPO_BRANCH
+  url="https://raw.githubusercontent.com/$DCVM_REPO_SLUG/$DCVM_REPO_REF/lib/utils/common.sh"
   tmp=$(mktemp)
   if ! { curl -fsSL -o "$tmp" "$url" 2>/dev/null || wget -q -O "$tmp" "$url" 2>/dev/null; }; then
     rm -f "$tmp"
@@ -140,18 +168,8 @@ clone_repo_source() {
 }
 
 ensure_source_dir() {
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local repo_root
-  repo_root="$(cd "$script_dir/../.." && pwd)"
-
-  if [[ -f "$repo_root/dcvm" && -d "$repo_root/lib" ]]; then
-    SOURCE_DIR="$repo_root"
-    return 0
-  fi
-
-  SOURCE_DIR=""
-  return 1
+  SOURCE_DIR=$DCVM_CHECKOUT
+  [[ -n "$SOURCE_DIR" ]]
 }
 
 install_by_fetch() {
@@ -313,7 +331,7 @@ prompt_yes_no() {
 install_required_packages() {
   print_status "INFO" "Checking and installing required packages..."
 
-  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils aria2 python3 ovmf)
+  local debian_packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils virtinst wget curl nfs-kernel-server uuid-runtime genisoimage bc guestfish libguestfs-tools jq dnsmasq-utils iptables aria2 python3 ovmf)
   local arch_packages=(qemu-full libvirt bridge-utils virt-install wget curl nfs-utils cdrtools dnsmasq ebtables iptables dmidecode bc util-linux guestfish libguestfs-tools jq aria2 python edk2-ovmf)
 
   local fedora_packages=(qemu-system-x86 qemu-img libvirt-daemon-kvm libvirt-daemon-config-network libvirt-client bridge-utils virt-install wget curl nfs-utils util-linux genisoimage bc libguestfs guestfs-tools jq dnsmasq dnsmasq-utils iptables-nft aria2 xz python3 edk2-ovmf)
@@ -404,17 +422,17 @@ start_libvirtd() {
 start_datacenter_network() {
   print_status "INFO" "Checking dcvm network..."
 
-  virsh net-list --all | grep -q "$NETWORK_NAME" || {
+  virsh net-list --all --name | grep -qxF "$NETWORK_NAME" || {
     print_status "ERROR" "Network '$NETWORK_NAME' not found. Please run the setup script first."
     exit 1
   }
 
-  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+  if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
     print_status_log "INFO" "Starting network '$NETWORK_NAME'..."
     virsh net-start "$NETWORK_NAME"
   fi
 
-  virsh net-list | grep -q "$NETWORK_NAME.*active" && print_status_log "SUCCESS" "Network '$NETWORK_NAME' is active" || {
+  virsh net-list --name | grep -qxF "$NETWORK_NAME" && print_status_log "SUCCESS" "Network '$NETWORK_NAME' is active" || {
     print_status_log "ERROR" "Failed to start network '$NETWORK_NAME'"
     exit 1
   }
@@ -510,18 +528,18 @@ check_directory_structure() {
     fi
   done
   chmod 700 "$DATACENTER_BASE/backups"
+  # Search only: libvirt reaches each VM's folder by name, other users cannot list the VM names.
+  chmod 711 "$DATACENTER_BASE/vms"
 
   print_status_log "SUCCESS" "Directory structure verified"
 }
 
 source_mirror_manager() {
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local repo_mirror="$script_dir/../utils/mirror-manager.sh"
+  local repo_mirror="$DCVM_CHECKOUT/lib/utils/mirror-manager.sh"
   local installed_mirror="/usr/local/lib/dcvm/utils/mirror-manager.sh"
   local loaded_from=""
 
-  if [[ -f "$repo_mirror" ]]; then
+  if [[ -n "$DCVM_CHECKOUT" && -f "$repo_mirror" ]]; then
     loaded_from="$repo_mirror"
   elif [[ -f "$installed_mirror" ]]; then
     loaded_from="$installed_mirror"
@@ -621,9 +639,12 @@ create_network() {
 
   if virsh net-info "$net_name" >/dev/null 2>&1; then
     print_status_log "INFO" "Network '$net_name' already exists."
-    if ! virsh net-list | grep -q "$net_name.*active"; then
+    if [ "$(virsh net-info "$net_name" 2>/dev/null | awk '/^Active:/ { print $2 }')" != yes ]; then
       print_status_log "INFO" "Starting existing network '$net_name'..."
-      virsh net-start "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not start network"
+      if ! virsh net-start "$net_name" >/dev/null; then
+        print_status_log "ERROR" "Network '$net_name' could not start (subnet or bridge in use?): virsh net-start $net_name"
+        return 1
+      fi
     fi
 
     return 0
@@ -643,7 +664,6 @@ create_network() {
 	</nat>
   </forward>
   <bridge name='${bridge_name}' stp='on' delay='0'/>
-  <mac address='52:54:00:8a:8b:8c'/>
   <ip address='${ip_addr}' netmask='${netmask}'>
 	<dhcp>
 	  <range start='${dhcp_start}' end='${dhcp_end}'/>
@@ -652,24 +672,44 @@ create_network() {
 </network>
 EOF
 
-  if virsh net-define "$network_config" >/dev/null 2>&1; then
-    print_status_log "SUCCESS" "Network '$net_name' defined"
-
-    if virsh net-start "$net_name" >/dev/null 2>&1; then
-      print_status_log "SUCCESS" "Network '$net_name' started"
-    else
-      print_status_log "WARNING" "Network defined but could not start - may need manual start"
-    fi
-
-    virsh net-autostart "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not set network to autostart"
-
-    print_status_log "SUCCESS" "Network '$net_name' created"
-  else
+  # virsh's own error goes to the step log, which install_step shows on failure.
+  if ! virsh net-define "$network_config" >/dev/null; then
+    rm -f "$network_config"
     print_status_log "ERROR" "Failed to create network '$net_name'"
     return 1
   fi
+  rm -f "$network_config"
+  print_status_log "SUCCESS" "Network '$net_name' defined"
 
-  rm -f "$network_config" 2>/dev/null || true
+  if ! virsh net-start "$net_name" >/dev/null; then
+    print_status_log "ERROR" "Network '$net_name' defined but could not start (${subnet}.0/24 or bridge $bridge_name in use?): virsh net-start $net_name"
+    return 1
+  fi
+
+  virsh net-autostart "$net_name" >/dev/null 2>&1 || print_status_log "WARNING" "Could not set network to autostart"
+
+  print_status_log "SUCCESS" "Network '$net_name' created"
+}
+
+# Linux interface names are at most 15 bytes (IFNAMSIZ).
+valid_bridge_name() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
+
+# First <a.b>.N subnet that no host address, route or libvirt network uses.
+unused_subnet() {
+  local base="${NETWORK_SUBNET:-10.10.10}" used n
+  used=$({
+    echo "$base."
+    ip -4 -o addr show
+    ip -4 route show
+    virsh net-list --all --name | while read -r n; do [ -z "$n" ] || virsh net-dumpxml "$n"; done
+  } 2>/dev/null)
+  for n in $(seq 0 254); do
+    grep -qF "${base%.*}.$n." <<<"$used" || {
+      echo "${base%.*}.$n"
+      return 0
+    }
+  done
+  return 1
 }
 
 create_datacenter_network() {
@@ -870,12 +910,27 @@ main() {
     install_required_packages
     start_libvirtd
     local net_name="$NETWORK_NAME"
-    local bridge_name="$BRIDGE_NAME"
-    if [[ -n "$NETWORK_NAME_ARG" ]]; then
+    local bridge_name="$BRIDGE_NAME" subnet_note=""
+    if [[ -n "$NETWORK_NAME_ARG" && "$NETWORK_NAME_ARG" != "$NETWORK_NAME" ]]; then
       net_name="$NETWORK_NAME_ARG"
       bridge_name="virbr-${net_name//[^a-zA-Z0-9]/}"
+      bridge_name="${bridge_name:0:15}"
     fi
-    create_network "$net_name" "$bridge_name"
+    if [[ ! "$net_name" =~ ^[A-Za-z0-9_.-]+$ ]] || ! valid_bridge_name "$bridge_name"; then
+      print_status_log "ERROR" "Invalid network name '$net_name' or bridge name '$bridge_name' (letters, digits, - _ .; a bridge at most 15)"
+      exit 1
+    fi
+    # A second network on the primary's subnet could not start next to it.
+    if [[ "$net_name" != "$NETWORK_NAME" ]] && ! virsh net-info "$net_name" >/dev/null 2>&1; then
+      NETWORK_SUBNET=$(unused_subnet) || {
+        print_status_log "ERROR" "No free subnet for '$net_name'"
+        exit 1
+      }
+      subnet_note="$NETWORK_SUBNET.0/24, "
+    fi
+    create_network "$net_name" "$bridge_name" || exit 1
+    enable_ip_forwarding || exit 1
+    ui_done ok "Network $net_name" "${subnet_note}bridge $bridge_name, IP forwarding on"
     exit 0
   fi
 
@@ -935,15 +990,28 @@ dcvm_init() {
       echo "Please choose the installation directory for dcvm."
       read -p "Install directory [default: $DEFAULT_DATACENTER_BASE]: " USER_DIR || USER_DIR=""
       USER_DIR=${USER_DIR:-$DEFAULT_DATACENTER_BASE}
-      DATACENTER_BASE="$USER_DIR"
+      DATACENTER_BASE="${USER_DIR%/}"
+      # The file is sourced by root and parsed by the socket service: plain paths only.
+      if [[ ! "$DATACENTER_BASE" =~ ^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$ ]]; then
+        echo "Invalid directory: an absolute path of letters, digits, - _ . Using default: $DEFAULT_DATACENTER_BASE"
+        DATACENTER_BASE="$DEFAULT_DATACENTER_BASE"
+      fi
 
       echo "Please enter the network name for dcvm."
       read -p "Network name [default: $NETWORK_NAME]: " USER_NETWORK_NAME || USER_NETWORK_NAME=""
       NETWORK_NAME=${USER_NETWORK_NAME:-$NETWORK_NAME}
+      if [[ ! "$NETWORK_NAME" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        echo "Invalid network name: letters, digits, - _ or . Using default: datacenter-net"
+        NETWORK_NAME="datacenter-net"
+      fi
 
       echo "Please enter the bridge name for dcvm."
       read -p "Bridge name [default: $BRIDGE_NAME]: " USER_BRIDGE_NAME || USER_BRIDGE_NAME=""
       BRIDGE_NAME=${USER_BRIDGE_NAME:-$BRIDGE_NAME}
+      if ! valid_bridge_name "$BRIDGE_NAME"; then
+        echo "Invalid bridge name: at most 15 letters, digits, - _ or . Using default: virbr-dc"
+        BRIDGE_NAME="virbr-dc"
+      fi
 
       echo "Network IP Configuration (default: 10.10.10.0/24)"
       echo "This determines the IP range for your VMs."
@@ -969,10 +1037,9 @@ dcvm_init() {
       NETWORK_SUBNET="10.10.10"
     fi
 
-    echo "DATACENTER_BASE=\"$DATACENTER_BASE\"" >"$CONFIG_FILE"
-    echo "NETWORK_NAME=\"$NETWORK_NAME\"" >>"$CONFIG_FILE"
-    echo "BRIDGE_NAME=\"$BRIDGE_NAME\"" >>"$CONFIG_FILE"
-    echo "NETWORK_SUBNET=\"$NETWORK_SUBNET\"" >>"$CONFIG_FILE"
+    printf 'DATACENTER_BASE="%s"\nNETWORK_NAME="%s"\nBRIDGE_NAME="%s"\nNETWORK_SUBNET="%s"\n' \
+      "$DATACENTER_BASE" "$NETWORK_NAME" "$BRIDGE_NAME" "$NETWORK_SUBNET" >"$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
     print_status_log "INFO" "Installation directory: $DATACENTER_BASE, network: $NETWORK_NAME, bridge: $BRIDGE_NAME, subnet: $NETWORK_SUBNET.0/24"
   else
     source "$CONFIG_FILE"
@@ -981,21 +1048,24 @@ dcvm_init() {
 
   NFS_EXPORT_PATH="$DATACENTER_BASE/nfs-share"
 
-  for arg in "$@"; do
-    case $arg in
+  while [ $# -gt 0 ]; do
+    case $1 in
     --network-only) NETWORK_ONLY=1 ;;
-    --network-name=*) NETWORK_NAME_ARG="${arg#*=}" ;;
+    --network-name=*) NETWORK_NAME_ARG="${1#*=}" ;;
     --network-name)
-      [[ -n "${2:-}" ]] && NETWORK_NAME_ARG="$2" || {
+      [[ -n "${2:-}" && "$2" != -* ]] || {
         echo "Error: --network-name requires a value" >&2
         exit 1
       }
+      NETWORK_NAME_ARG="$2"
+      shift
       ;;
     esac
+    shift
   done
   echo ""
   print_status_log "INFO" "Executing dcvm installer..." >&2
-  main "$@"
+  main
 }
 
 if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] || [[ -z "${BASH_SOURCE[0]:-}" ]]; then

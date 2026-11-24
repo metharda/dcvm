@@ -118,8 +118,9 @@ def attach_files(argv, files):
         k = 1 if cmd == "import" else 2
         if len(out) > k:
             out[k] = open_input(files, out[k], "archive")
-    elif out[:2] == ["backup", "export"] and len(out) >= 3:
-        rest = out[2:]
+    elif out[:2] == ["backup", "export"] and len(out) - out.count("--full") >= 3:
+        full = ["--full"] if "--full" in out else []
+        rest = [a for a in out[2:] if a != "--full"]
         dest = "."
         looks_like_id = re.match(r"^(latest|[0-9]{8}_[0-9]{6}|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-[0-9]+)?)\Z", rest[1]) if len(rest) == 2 else None
         if len(rest) == 3 or (len(rest) == 2 and not looks_like_id and (os.path.isdir(os.path.expanduser(rest[1])) or "/" in rest[1])):
@@ -129,7 +130,7 @@ def attach_files(argv, files):
         vm = rest[0]
         label = rest[1] if len(rest) > 1 else "latest"
         if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{2,63}\Z", vm) or not re.match(r"^[0-9A-Za-z._:-]{1,64}\Z", label) or label.startswith("fd:"):
-            fail("usage: dcvm backup export <vm> [id|latest] [folder]")
+            fail("usage: dcvm backup export <vm> [id|latest] [folder] [--full]")
         name = os.path.join(os.path.expanduser(dest), "%s-%s.tar.gz" % (vm, label.replace(":", "")))
         if os.path.exists(name):
             fail("%s already exists" % name)
@@ -139,23 +140,24 @@ def attach_files(argv, files):
         except OSError as e:
             fail("cannot create %s: %s" % (tmp, e.strerror))
         files.rename = (tmp, name)
-        out = out[:2] + rest + [files.add(fd)]
+        out = out[:2] + rest + [files.add(fd)] + full
     return out
 
 
 def public_key():
+    """Return (key, path of a key pair made now, or None)."""
     home = os.path.expanduser("~")
     for name in ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"):
         path = os.path.join(home, ".ssh", name)
         try:
             with open(path) as f:
-                return f.read(16384).strip()
+                return f.read(16384).strip(), None
         except OSError:
             continue
     key = os.path.join(home, ".ssh", "id_ed25519")
     if os.path.exists(key):
         print("dcvm: %s has no readable .pub file; the VM gets no SSH key of yours" % key, file=sys.stderr)
-        return None
+        return None, None
     try:
         os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
         made = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key], stdin=subprocess.DEVNULL,
@@ -163,10 +165,9 @@ def public_key():
     except OSError:
         made = False
     if made:
-        print("dcvm: created an SSH key for you in %s" % key, file=sys.stderr)
         with open(key + ".pub") as f:
-            return f.read().strip()
-    return None
+            return f.read().strip(), key
+    return None, None
 
 
 def columns():
@@ -197,29 +198,46 @@ def main(argv):
            "origin": os.environ.get("DCVM_ORIGIN") or ("terminal" if os.isatty(0) and os.isatty(1) else "agent")}
     if secrets:
         req["secrets"] = secrets
-    if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
-        key = public_key()
-        if key:
-            req["pubkey"] = key
     try:
-        sys.exit(talk(json.dumps(req).encode(), files))
+        conn = connect()
+        # After connecting: someone the socket turns away must not get a key made in ~/.ssh.
+        made = None
+        if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
+            key, made = public_key()
+            if key:
+                req["pubkey"] = key
+        rc = talk(json.dumps(req).encode(), files, conn)
+        if made and rc == 77:
+            # The server refused the create, so nothing uses the key made for it.
+            for path in (made, made + ".pub"):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        elif made:
+            print("dcvm: created an SSH key for you in %s" % made, file=sys.stderr)
+        sys.exit(rc)
     finally:
         if files.rename and os.path.exists(files.rename[0]):
             os.unlink(files.rename[0])
 
 
-def talk(data, files):
-    if len(data) > 262144:
-        fail("the command is too long")
+def connect():
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         conn.connect(SOCKET)
     except FileNotFoundError:
         fail("the dcvm service is not running (%s missing); ask an admin to run: sudo dcvm doctor --fix" % SOCKET, 70)
     except PermissionError:
-        fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"))
+        fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"), 77)
     except OSError as e:
         fail("cannot reach the dcvm service at %s: %s; ask an admin to run: sudo dcvm doctor --fix" % (SOCKET, e.strerror), 70)
+    return conn
+
+
+def talk(data, files, conn):
+    if len(data) > 262144:
+        fail("the command is too long")
     conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
     for fd in files.fds[3:]:
         os.close(fd)
@@ -253,14 +271,16 @@ def talk(data, files):
             raise ValueError
     except (ValueError, TypeError, KeyError, AttributeError, OSError, struct.error):
         fail("the dcvm service ended without an answer; ask an admin to check: journalctl -u 'dcvm@*'", 70)
-    if rc == 70 and resp.get("error"):
+    if (rc == 70 or resp.get("show")) and resp.get("error"):
         print("error: %s" % resp["error"], file=sys.stderr)
     if files.rename:
         tmp, name = files.rename
         if rc == 0 and os.path.getsize(tmp) > 0:
             os.replace(tmp, name)
             print("dcvm: exported to %s" % name, file=sys.stderr)
-    return rc
+    if interrupts[0] and rc != 0:
+        return 130
+    return 128 - rc if rc < 0 else rc
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ Usage: dcvm self-update [option]
 
 Options:
   --check      Compare the installed version with the latest one
-  --force      Reinstall even if the version is the same
+  --force      Reinstall the same version, or install an older one
   --revert     Go back to a version saved before an update
   -h, --help   Show this help
 
@@ -115,9 +115,11 @@ stage_files() {
 
 new_stage() {
   local stage
-  stage="$(dirname "$INSTALL_LIB")/.dcvm-stage.$$"
-  rm -rf "$stage"
-  mkdir -p "$stage/lib" && chmod 700 "$stage" && echo "$stage"
+  stage=$(mktemp -d "$(dirname "$INSTALL_LIB")/.dcvm-stage.XXXXXX") && mkdir "$stage/lib" && echo "$stage"
+}
+
+version_older() {
+  [[ "$1" != "$2" && "$1" =~ ^[0-9.]+$ && "$2" =~ ^[0-9.]+$ ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
 }
 
 prune_update_backups() {
@@ -129,10 +131,16 @@ do_update() {
   local force="${1:-false}"
   local current_version remote_version
   current_version=$(get_current_version)
-  remote_version=$(get_remote_version)
+  DCVM_REPO_REF=$(repo_commit_sha) || DCVM_REPO_REF=""
+  [[ -n "$DCVM_REPO_REF" ]] && remote_version=$(get_remote_version) || remote_version=error
 
   if [[ "$remote_version" == "error" ]] || [[ -z "$remote_version" ]] || [[ "$remote_version" == "unknown" ]]; then
     print_error "Could not fetch the latest version from GitHub. Check the network connection."
+    exit 1
+  fi
+
+  if [[ "$force" != "true" ]] && version_older "$remote_version" "$current_version"; then
+    print_error "GitHub has $remote_version, older than the installed $current_version; nothing was changed (--force installs it anyway)"
     exit 1
   fi
 
@@ -144,6 +152,14 @@ do_update() {
 
   ui_title "Updating dcvm" "$current_version $SYM_ARROW $remote_version"
 
+  local files
+  files=$(list_repo_files) || files=""
+  if [[ -z "$files" ]]; then
+    ui_step fail "Files" "could not list the repository files"
+    print_error "Could not discover repository files; nothing was changed"
+    exit 1
+  fi
+
   create_backup_dir
   local backup_dir="$BACKUP_DIR/dcvm-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$backup_dir"
@@ -151,14 +167,6 @@ do_update() {
   [[ -f "$INSTALL_BIN/dcvm" ]] && cp "$INSTALL_BIN/dcvm" "$backup_dir/dcvm"
   [[ -d "$INSTALL_LIB" ]] && cp -r "$INSTALL_LIB" "$backup_dir/lib"
   ui_step ok "Backup" "$current_version saved in $backup_dir"
-
-  local files
-  files=$(list_repo_files)
-  if [[ -z "$files" ]]; then
-    ui_step fail "Files" "could not list the repository files"
-    print_error "Could not discover repository files; nothing was changed"
-    exit 1
-  fi
 
   local result updated_count ok stage
   result=$(mktemp)
@@ -195,6 +203,7 @@ do_update() {
 check_update() {
   local current_version remote_version
   current_version=$(get_current_version)
+  DCVM_REPO_REF=$(repo_commit_sha) || DCVM_REPO_REF=""
   remote_version=$(get_remote_version)
 
   echo ""
@@ -208,6 +217,9 @@ check_update() {
 
   if [[ "$current_version" == "$remote_version" ]]; then
     ui_done ok "dcvm is up to date"
+    echo ""
+  elif version_older "$remote_version" "$current_version"; then
+    ui_done ok "dcvm is newer than the latest release" "dcvm self-update --force installs $remote_version"
     echo ""
   else
     ui_done ok "Update available" "$current_version $SYM_ARROW $remote_version"
@@ -264,15 +276,22 @@ do_revert() {
     print_error "This saved version is incomplete: $selected_backup"
     exit 1
   fi
+  stage=$(new_stage) && cp -a "$selected_backup/dcvm" "$stage/dcvm" && cp -a "$selected_backup/lib/." "$stage/lib/" || {
+    rm -rf "$stage"
+    print_error "Could not copy $selected_backup; nothing was reverted"
+    exit 1
+  }
   if [[ -x "$INSTALL_LIB/installation/pre-revert.sh" ]]; then
     "$INSTALL_LIB/installation/pre-revert.sh" || {
+      rm -rf "$stage"
       print_error "Could not undo this version's setup; nothing was reverted"
       exit 1
     }
   fi
-  stage=$(new_stage) && cp -a "$selected_backup/dcvm" "$stage/dcvm" && cp -a "$selected_backup/lib/." "$stage/lib/" &&
-    install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB" || {
+  install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB" || {
     rm -rf "$stage"
+    # pre-revert removed this version's socket and timer; this shell still has its common.sh.
+    install_dcvm_services || print_warning "Could not restore the dcvm services: dcvm doctor --fix"
     print_error "Could not restore $selected_backup"
     exit 1
   }

@@ -22,8 +22,10 @@ EOF
 
 VM_IP="" VM_USER="" VM_ALIAS="" VM_STATE=""
 resolve_vm() {
-  local info
-  info=$("$(command -v dcvm || echo "$SCRIPT_DIR/../../dcvm")" info "$1" --json) || exit 1
+  local info entry="$SCRIPT_DIR/../../dcvm"
+  # Installed, ../../dcvm is the library directory itself; the command sits in /usr/local/bin.
+  [ -f "$entry" ] || entry=/usr/local/bin/dcvm
+  info=$("$entry" info "$1" --json) || exit
   read -r VM_IP VM_USER VM_ALIAS VM_STATE < <(python3 -I -S -c '
 import json, sys
 i = json.loads(sys.stdin.read())
@@ -82,9 +84,9 @@ main() {
     local opts
     mapfile -t opts < <(ssh_opts)
     if [ "$cmd" = exec ]; then
-      exec ssh "${opts[@]}" -o BatchMode=yes -T "$VM_USER@$VM_IP" "$@"
+      exec ssh "${opts[@]}" -o BatchMode=yes -T "$VM_USER@$VM_IP" -- "$@"
     fi
-    exec ssh "${opts[@]}" "$([ -t 0 ] && echo -t || echo -T)" "$VM_USER@$VM_IP" "$@"
+    exec ssh "${opts[@]}" "$([ -t 0 ] && echo -t || echo -T)" "$VM_USER@$VM_IP" -- "$@"
     ;;
   cp)
     case "${1:-}" in -h | --help)

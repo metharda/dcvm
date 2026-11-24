@@ -43,20 +43,19 @@ delete_single_vm() {
 
   local MAC_ADDRESS=$(get_vm_mac "$VM_NAME")
   local VM_DISK_PATH=$(get_vm_disk_path "$VM_NAME")
-  local VM_IP=$(get_vm_ip "$VM_NAME")
-  local SSH_PORT=""
-  local HTTP_PORT=""
-  [ "$VM_IP" = "N/A" ] && VM_IP=""
+  local VM_IP="" SSH_PORT="" HTTP_PORT="" lockfd
 
   local port_file=$(get_port_mappings_file)
+  exec {lockfd}>>"$port_file.lock"
+  flock -w 30 "$lockfd" || {
+    print_error "Another port change is running; try again"
+    return 1
+  }
+  # The address the rules were made for, not what the VM has now: a guest can take another VM's.
   if [ -f "$port_file" ]; then
-    local mapping=$(grep "^$VM_NAME " "$port_file")
-    if [ -n "$mapping" ]; then
-      [ -z "$VM_IP" ] && VM_IP=$(echo "$mapping" | awk '{print $2}')
-      SSH_PORT=$(echo "$mapping" | awk '{print $3}')
-      HTTP_PORT=$(echo "$mapping" | awk '{print $4}')
-    fi
+    read -r _ VM_IP SSH_PORT HTTP_PORT < <(awk -v v="$VM_NAME" '$1 == v' "$port_file" | head -1)
   fi
+  [ -n "$VM_IP" ] || VM_IP=$(get_vm_ip_trusted "$VM_NAME") || VM_IP=""
 
   if virsh list | grep -q " $VM_NAME "; then
     stop_vm_gracefully "$VM_NAME" 10
@@ -73,15 +72,16 @@ delete_single_vm() {
     virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --config >/dev/null 2>&1 || true
     virsh net-update "$NETWORK_NAME" delete ip-dhcp-host "<host mac='$MAC_ADDRESS'/>" --live >/dev/null 2>&1 || true
   fi
-  if [ -n "$MAC_ADDRESS" ] || [ -n "$VM_NAME" ]; then
-    if cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME"; then
-      ui_step ok "DHCP lease" "released${VM_IP:+ ($VM_IP)}"
-    else
-      ui_step warn "DHCP lease" "not released (see the error above)"
-    fi
-  fi
+  local dhcp_rc=0
+  cleanup_dhcp_lease "$MAC_ADDRESS" "$VM_NAME" || dhcp_rc=$?
+  case "$dhcp_rc" in
+  0) ui_step ok "DHCP lease" "released${VM_IP:+ ($VM_IP)}" ;;
+  1) ui_step skip "DHCP lease" "none found" ;;
+  *) ui_step warn "DHCP lease" "not released (see the error above)" ;;
+  esac
 
-  [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file"
+  drop_port_mapping "$VM_NAME"
+  exec {lockfd}>&-
 
   virsh autostart "$VM_NAME" --disable >/dev/null 2>&1 || true
 
@@ -123,6 +123,7 @@ delete_single_vm() {
   dhcp_check=$(filter_lease_lines "$VM_NAME" 6 <<<"$leases")
   [ -n "$MAC_ADDRESS" ] && dhcp_check+=$(filter_lease_lines "$MAC_ADDRESS" 3 <<<"$leases")
   [ -n "$dhcp_check" ] && left+=("DHCP leases still exist")
+  [ "$dhcp_rc" = 2 ] && [ -z "$dhcp_check" ] && left+=("DHCP lease may stay in dnsmasq until it expires")
   [ -n "$VM_DISK_PATH" ] && [ -f "$VM_DISK_PATH" ] && left+=("Disk file still exists")
 
   if [ ${#left[@]} -eq 0 ]; then
@@ -133,7 +134,7 @@ delete_single_vm() {
     for item in "${left[@]}"; do print_warning "$item"; done
     if [ -n "$dhcp_check" ]; then
       echo -e "  ${DIM}They expire on their own; to remove stale leases now: dcvm network dhcp cleanup${NC}"
-    else
+    elif [ "$dhcp_rc" != 2 ]; then
       echo -e "  ${DIM}No DHCP leases found${NC}"
     fi
   fi
@@ -172,19 +173,22 @@ delete_all_vms() {
     fi
   done 3<<<"$vms"
 
-  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  # libvirt parses this file, so leave an empty JSON array, not 0 bytes.
-  [ -f "$status_file" ] && printf '[]\n' >"$status_file"
-  local port_file rule_num
-  port_file=$(get_port_mappings_file)
-  [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
-  for rule_num in $(iptables -t nat -L PREROUTING -n --line-numbers | grep -E "(222[0-9]|808[0-9])" | awk '{print $1}' | tac); do
-    iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null || true
-  done
-  for rule_num in $(iptables -L FORWARD -n --line-numbers | grep -E "${NETWORK_SUBNET//./\\.}\." | awk '{print $1}' | tac); do
-    iptables -D FORWARD "$rule_num" 2>/dev/null || true
-  done
-  save_iptables_rules
+  # Shared state only once no VM is left: a refused (protected) or failed VM keeps its lease, mapping and rules.
+  if [ -z "$(list_datacenter_vm_names)" ]; then
+    local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
+    # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
+    [ -f "$status_file" ] && printf '[]\n' >"$status_file"
+    local port_file ip ssh_port http_port lockfd
+    port_file=$(get_port_mappings_file)
+    exec {lockfd}>>"$port_file.lock"
+    flock -w 30 "$lockfd" || print_warning "Another port change is running; clearing the port mappings anyway"
+    while read -r _ ip ssh_port http_port; do
+      [ -n "$ip" ] && cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
+    done < <(read_port_mappings 2>/dev/null)
+    [ -f "$port_file" ] && echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$port_file"
+    save_iptables_rules
+    exec {lockfd}>&-
+  fi
   # A VM that was refused (protected) or failed keeps its folder and disk.
   local dir
   for dir in "$DATACENTER_BASE"/vms/*/; do
@@ -213,14 +217,21 @@ EOF
     exit 0
   fi
   load_dcvm_config
-  [ $# -lt 1 ] && print_error "VM name required. Usage: dcvm delete <vm_name|--all>" && exit 1
+  local args=() a
+  for a in "$@"; do
+    [ "$a" = --yes ] || [ "$a" = -y ] || args+=("$a")
+  done
+  if [ ${#args[@]} -ne 1 ] || [[ "${args[0]}" == -* && "${args[0]}" != --all && "${args[0]}" != -a ]]; then
+    print_error "Usage: dcvm delete <vm> [--yes] | --all"
+    exit 1
+  fi
 
-  case "$1" in
+  case "${args[0]}" in
   --all | -a)
     delete_all_vms
     ;;
   *)
-    delete_single_vm "$1"
+    delete_single_vm "${args[0]}"
     ;;
   esac
   local rc=$?

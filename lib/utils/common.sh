@@ -325,16 +325,8 @@ load_dcvm_config() {
   BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
   NETWORK_SUBNET="${NETWORK_SUBNET:-10.10.10}"
 
-  if [[ "$NETWORK_SUBNET" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-    local oct1="${BASH_REMATCH[1]}"
-    local oct2="${BASH_REMATCH[2]}"
-    local oct3="${BASH_REMATCH[3]}"
-    if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ]; then
-      echo "WARNING: Invalid NETWORK_SUBNET octets ($NETWORK_SUBNET), using default 10.10.10" >&2
-      NETWORK_SUBNET="10.10.10"
-    fi
-  else
-    echo "WARNING: Invalid NETWORK_SUBNET format ($NETWORK_SUBNET), using default 10.10.10" >&2
+  if ! valid_ipv4 "$NETWORK_SUBNET.0"; then
+    echo "WARNING: Invalid NETWORK_SUBNET ($NETWORK_SUBNET), using default 10.10.10" >&2
     NETWORK_SUBNET="10.10.10"
   fi
 }
@@ -366,8 +358,20 @@ leases_table() {
   } | ui_table
 }
 
+# Every file comes from one commit: the branch can move mid-update and the raw
+# CDN caches each path on its own.
+repo_commit_sha() {
+  local url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/commits/${DCVM_REPO_BRANCH:-main}" sha
+  if command_exists curl; then
+    sha=$(curl -fsSL -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+  else
+    sha=$(wget -q -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+}
+
 fetch_repo_file() {
-  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_BRANCH:-main}"
+  local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}"
   mkdir -p "$(dirname "$2")" 2>/dev/null || true
   if command_exists curl; then
     curl -fsSL -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
@@ -391,10 +395,10 @@ install_dcvm_tree() {
   local stage="$1" bin="$2" lib="$3" old
   [ -f "$stage/dcvm" ] && [ -d "$stage/lib" ] || return 1
   dcvm_tree_permissions "$stage/dcvm" "$stage/lib" || return 1
-  old="$lib.old.$$"
-  [ -d "$lib" ] && { mv "$lib" "$old" || return 1; }
+  old=$(mktemp -d "$lib.old.XXXXXX") || return 1
+  [ -d "$lib" ] && { mv "$lib" "$old/lib" || return 1; }
   if ! mv "$stage/lib" "$lib"; then
-    [ -d "$old" ] && mv "$old" "$lib"
+    [ -d "$old/lib" ] && mv "$old/lib" "$lib"
     return 1
   fi
   mv -f "$stage/dcvm" "$bin/dcvm" || return 1
@@ -402,7 +406,7 @@ install_dcvm_tree() {
 }
 
 list_repo_files() {
-  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_BRANCH:-main}?recursive=1"
+  local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}?recursive=1"
   local response files
   if command_exists curl; then
     response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
@@ -420,7 +424,7 @@ list_repo_files() {
   if command_exists jq; then
     files=$(jq -r '.tree[]? | select(.type == "blob") | select(.path == "dcvm" or (.path | startswith("lib/"))) | .path' <<<"$response" 2>/dev/null)
   elif command_exists python3; then
-    files=$(python3 -c '
+    files=$(python3 -I -S -c '
 import sys, json
 for item in json.load(sys.stdin).get("tree", []):
     p = item.get("path", "")
@@ -469,7 +473,7 @@ registered_build() {
 check_disk_image() {
   local info backing
   info=$(qemu-img info -U -f qcow2 --output=json -- "$1" 2>/dev/null) || return 1
-  backing=$(python3 -c '
+  backing=$(python3 -I -S -c '
 import json, sys
 i = json.load(sys.stdin)
 if i.get("format") != "qcow2": sys.exit(1)
@@ -480,7 +484,7 @@ print(b)' <<<"$info") || return 1
 }
 
 sanitize_domain_xml() {
-  python3 - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -S - "$1" "$2" "$3" "$4" <<'PY'
 import os, sys, xml.etree.ElementTree as ET
 path, name, disk, renamed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
 tree = ET.parse(path)
@@ -575,13 +579,14 @@ tree.write(path)
 PY
 }
 
+build_file() { echo "$(builds_dir)/${1%.*}-${2:0:12}.${1##*.}"; }
+
 register_build() {
-  local file="$1" img="$2" dir sha b
+  local file="$1" img="$2" sha b
   valid_image_name "$img" || return 1
-  dir=$(builds_dir)
-  mkdir -p "$dir" || return 1
+  mkdir -p "$(builds_dir)" || return 1
   sha=$(sha256sum "$file" | cut -d' ' -f1) || return 1
-  b="$dir/${img%.*}-${sha:0:12}.${img##*.}"
+  b=$(build_file "$img" "$sha")
   if [ ! -e "$b" ]; then
     ln "$file" "$b" 2>/dev/null || cp -p --sparse=always "$file" "$b" || return 1
   fi
@@ -613,24 +618,38 @@ find_build() {
   return 1
 }
 
+# Fails when libvirt can't be asked: an empty list then means "unknown", not "no VMs".
 vm_disks() {
-  local vm disk
+  local vm disk vms
+  vms=$(virsh list --all --name 2>/dev/null) || return 1
   while read -r vm; do
     [ -n "$vm" ] || continue
     disk=$(get_vm_disk_path "$vm")
+    [ -n "$disk" ] || virsh domblklist "$vm" >/dev/null 2>&1 || return 1
     [ -n "$disk" ] && printf '%s\t%s\t%s\n' "$vm" "$disk" "$(disk_backing "$disk")"
-  done < <(virsh list --all --name 2>/dev/null)
+  done <<<"$vms"
 }
 
 backup_builds() {
-  sed -n 's/^build=//p' "${DATACENTER_BASE:-/srv/datacenter}"/backups/*/base 2>/dev/null
+  local f img sha
+  for f in "${DATACENTER_BASE:-/srv/datacenter}"/backups/*/base; do
+    [ -f "$f" ] || continue
+    if grep -q '^build=' "$f"; then
+      sed -n 's/^build=//p' "$f"
+      continue
+    fi
+    # Imported before build= was kept: the build is named after its image and sha256.
+    img=$(sed -n 's/^image=//p' "$f" | head -1) sha=$(sed -n 's/^sha256=//p' "$f" | head -1)
+    valid_image_name "$img" && valid_sha256 "$sha" && build_file "$img" "$sha"
+  done
 }
 
 # Whether a disk or backup from before 0.9.9 exists: they do not record the
 # build they need, so no build may be deleted while one does.
 legacy_references() {
-  local base="${DATACENTER_BASE:-/srv/datacenter}" f
-  vm_disks | cut -f3 | grep -q "^$(templates_dir)/[^/]*$" && return 0
+  local base="${DATACENTER_BASE:-/srv/datacenter}" f disks
+  disks=$(vm_disks) || return 0
+  cut -f3 <<<"$disks" | grep -q "^$(templates_dir)/[^/]*$" && return 0
   for f in "$base"/backups/*-????????_?????? "$base"/backups/*-disk-*.qcow2*; do
     [ -d "$f" ] && [ ! -f "$f/base" ] && return 0
     [ -f "$f" ] && return 0
@@ -639,12 +658,13 @@ legacy_references() {
 }
 
 prune_builds() {
-  local b used
+  local b used disks
   # ponytail: builds staged by a restore in flight aren't counted, so only root and admins prune; add a build lock if that races.
   [ "$(caller_role)" = user ] && return 0
+  disks=$(vm_disks) || return 0
   legacy_references && return 0
   used=$({
-    vm_disks | cut -f3
+    cut -f3 <<<"$disks"
     backup_builds
     cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
   } | sed 's#.*/##')
@@ -805,7 +825,7 @@ remove_shell_lines() {
 
 free_bytes() { echo $(($(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024)); }
 
-DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service /etc/systemd/system/dcvm.socket /etc/systemd/system/dcvm@.service /etc/systemd/system/dcvm-reaper.service /etc/systemd/system/dcvm-reaper.timer"
+DCVM_UNITS="/etc/systemd/system/datacenter-storage.service /etc/systemd/system/datacenter-storage.timer /etc/systemd/system/dcvm-boot.service /etc/systemd/system/dcvm.socket /etc/systemd/system/dcvm@.service /etc/systemd/system/dcvm-reaper.service /etc/systemd/system/dcvm-reaper.timer /etc/logrotate.d/dcvm"
 DCVM_USER_GROUP=dcvm
 DCVM_ADMIN_GROUP=dcvm-admin
 
@@ -852,6 +872,8 @@ SocketMode=0660
 DirectoryMode=0755
 Accept=yes
 MaxConnections=64
+# The default trigger limit stops the socket for everyone after 200 connections in 2s.
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=sockets.target
@@ -899,6 +921,19 @@ ExecStart=-/usr/local/bin/dcvm doctor --fix --quiet --only network
 [Install]
 WantedBy=multi-user.target
 EOF
+  if command_exists logrotate && [ -d /etc/logrotate.d ]; then
+    cat >/etc/logrotate.d/dcvm <<'EOF' || return 1
+/var/log/dcvm/audit.log {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  create 0640 root root
+}
+EOF
+  fi
+  systemctl reset-failed dcvm.socket >/dev/null 2>&1
   systemctl daemon-reload &&
     systemctl enable --now datacenter-storage.timer dcvm-reaper.timer >/dev/null 2>&1 &&
     systemctl enable dcvm-boot.service >/dev/null 2>&1 &&
@@ -909,21 +944,40 @@ dcvm_services_ok() {
   command_exists systemctl || return 0
   grep -qs 'dcvm doctor' /etc/systemd/system/datacenter-storage.service &&
     grep -qs 'dcvm-server.py' /etc/systemd/system/dcvm@.service &&
+    grep -qs '^TriggerLimitIntervalSec=0' /etc/systemd/system/dcvm.socket &&
+    { ! command_exists logrotate || [ -f /etc/logrotate.d/dcvm ]; } &&
     systemctl is-enabled datacenter-storage.timer dcvm-boot.service dcvm-reaper.timer dcvm.socket >/dev/null 2>&1 &&
     systemctl is-active dcvm.socket >/dev/null 2>&1
 }
 
-# Whether net.ipv4.ip_forward=1 is applied at boot. Asks systemd which
-# files it loads: Debian 13 no longer reads /etc/sysctl.conf.
-ip_forwarding_persisted() {
+# "<value> <file>" of the net.ipv4.ip_forward that boot applies: the last
+# assignment wins (sysctl.d(5)). Asks systemd which files it loads, in order:
+# Debian 13 no longer reads /etc/sysctl.conf.
+ip_forward_at_boot() {
   local conf
-  conf=$(systemd-analyze cat-config sysctl.d 2>/dev/null) || conf=$(cat /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null)
-  grep -qE '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1' <<<"$conf"
+  conf=$(systemd-analyze cat-config sysctl.d 2>/dev/null) || conf=$(cat /etc/sysctl.d/*.conf /etc/sysctl.conf 2>/dev/null)
+  awk '/^# \/[^ ]+\.conf$/ { f = $2 }
+    /^[[:space:]]*-?net[.\/]ipv4[.\/](ip_forward|conf[.\/]all[.\/]forwarding)[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); src = f
+    }
+    END { print v, src }' <<<"$conf"
+}
+
+ip_forwarding_persisted() {
+  local v
+  read -r v _ < <(ip_forward_at_boot)
+  [ "$v" = 1 ]
 }
 
 enable_ip_forwarding() {
+  local v src
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || return 1
-  ip_forwarding_persisted || echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-dcvm.conf
+  ip_forwarding_persisted && return 0
+  echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/90-dcvm.conf || return 1
+  read -r v src < <(ip_forward_at_boot)
+  [ "$v" = 1 ] && return 0
+  print_error "${src:-A sysctl file read after /etc/sysctl.d/90-dcvm.conf} sets net.ipv4.ip_forward=$v: forwarding is on now but off after a reboot"
+  return 1
 }
 
 # "alias dcvm=..." lines, written by installs before 0.9 (they pointed at
@@ -1025,21 +1079,28 @@ validate_package_list() {
 validate_vm_name_list() {
   local raw="$1"
   local -a names
-  local name
-  local saw_name=0
-  IFS=',' read -ra names <<<"$raw"
-  for name in "${names[@]}"; do
-    name=$(trim_whitespace "$name")
-    [ -z "$name" ] && continue
-    saw_name=1
-    if ! validate_vm_name "$name"; then
-      return 1
-    fi
-  done
-  if [ "$saw_name" -eq 0 ]; then
+  local name seen=","
+  if [[ "$raw" == *$'\n'* || "$raw" == *$'\r'* ]]; then
+    print_error "VM names cannot contain newlines (separate them with commas)"
+    return 1
+  fi
+  if [[ "$raw" =~ (^|,)[[:space:]]*(,|$) ]]; then
     print_error "VM name cannot be empty"
     return 1
   fi
+  IFS=',' read -ra names <<<"$raw"
+  for name in "${names[@]}"; do
+    name=$(trim_whitespace "$name")
+    if ! validate_vm_name "$name"; then
+      return 1
+    fi
+    # A repeated name would overwrite the disk of the VM created just before it.
+    if [[ "$seen" == *",$name,"* ]]; then
+      print_error "VM $name is named twice"
+      return 1
+    fi
+    seen+="$name,"
+  done
   return 0
 }
 
@@ -1087,25 +1148,36 @@ get_vm_state() {
   virsh domstate "$vm_name" 2>/dev/null || echo "not-found"
 }
 
+# Decimal octets only: iptables and inet_aton read 10.10.10.050 as octal, 10.10.10.40.
+valid_ipv4() {
+  [[ "$1" =~ ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$ ]]
+}
+
 valid_vm_ip() {
   local subnet="${NETWORK_SUBNET:-10.10.10}" host
-  [[ "$1" == "$subnet".* ]] || return 1
+  valid_ipv4 "$1" && [[ "$1" == "$subnet".* ]] || return 1
   host=${1#"$subnet".}
   [[ "$host" =~ ^[0-9]{1,3}$ ]] && [ "$host" -ge 2 ] && [ "$host" -le 254 ]
 }
 
 # Host-side sources first: the guest agent reports whatever the guest wants.
 get_vm_ip() {
-  local vm_name="$1" attempts="${2:-1}" ip="" count=0 mac
+  local vm_name="$1" attempts="${2:-1}" agent="${3:-agent}" ip="" count=0 mac
   local network_name="${NETWORK_NAME:-datacenter-net}"
   local static_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${vm_name}.conf"
 
+  # A stopped VM's old lease may already be another VM's address.
+  case "$(get_vm_state "$vm_name")" in "shut off" | crashed | not-found)
+    echo "N/A"
+    return 1
+    ;;
+  esac
   while [ -z "$ip" ] && [ "$count" -lt "$attempts" ]; do
     mac=$(virsh domiflist -- "$vm_name" 2>/dev/null | awk -v n="$network_name" '$3 == n { print $5; exit }')
     [ -n "$mac" ] && ip=$(virsh net-dhcp-leases "$network_name" 2>/dev/null | filter_lease_lines "$mac" 3 | awk '{ print $5 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source lease 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=$([ -f "$static_conf" ] && grep '^IP=' "$static_conf" | head -1 | cut -d= -f2- | sed 's/^"//;s/"$//')
-    valid_vm_ip "$ip" || ip=$(virsh domifaddr -- "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
+    [ "$agent" = agent ] && ! valid_vm_ip "$ip" && ip=$(virsh domifaddr -- "$vm_name" --source agent 2>/dev/null | awk '/ipv4/ { print $4 }' | cut -d/ -f1 | head -1)
     valid_vm_ip "$ip" || ip=""
     [ -z "$ip" ] && [ "$attempts" -gt 1 ] && sleep 2
     count=$((count + 1))
@@ -1118,10 +1190,18 @@ get_vm_ip() {
   echo "$ip"
 }
 
+# For rules, deletes and root SSH: never what the guest reports about itself.
+get_vm_ip_trusted() { get_vm_ip "$1" "${2:-1}" host; }
+
 get_vm_mac() {
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
-  virsh domiflist "$vm_name" 2>/dev/null | grep "$network_name" | awk '{print $5}'
+  vm_network_macs "$vm_name" "$network_name" | head -1
+}
+
+# The exact Source column: a substring also hits the Type column ("network") and other networks.
+vm_network_macs() {
+  virsh domiflist -- "$1" 2>/dev/null | awk -v n="$2" '$3 == n { print $5 }'
 }
 
 get_vm_disk_path() {
@@ -1272,9 +1352,14 @@ check_port_forward() {
   local host_port="$1"
   local vm_ip="$2"
   local vm_port="$3"
-  iptables -t nat -C PREROUTING -p tcp --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
-  iptables -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -j ACCEPT 2>/dev/null || return 1
-  check_port_connectivity "$vm_ip" "$vm_port"
+  iptables -w -t nat -C PREROUTING ! -i "${BRIDGE_NAME:-virbr-dc}" -p tcp -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$vm_ip:$vm_port" 2>/dev/null || return 1
+  iptables -w -C FORWARD -p tcp -d "$vm_ip" --dport "$vm_port" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null || return 1
+  ! libvirt_nft_rejects_forwards && check_port_connectivity "$vm_ip" "$vm_port"
+}
+
+# libvirt's nftables backend (no firewall_backend = "iptables", or reset by an upgrade) rejects every forwarded connection to the bridge.
+libvirt_nft_rejects_forwards() {
+  command_exists nft && nft list table inet libvirt_network 2>/dev/null | grep -qF "\"${BRIDGE_NAME:-virbr-dc}\""
 }
 
 registry_file() { echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
@@ -1317,16 +1402,46 @@ read_dcvm_secrets() {
   unset DCVM_SECRETS_FD
 }
 
-# The server passes what is left of a user's quota; prompts and backups can ask for more than it charged.
+# The server passes a user's limits; prompts and backups can ask for more than it charged. Usage is re-read
+# and the charge recorded under the server's global lock, so concurrent requests can't overrun the limits.
 within_quota() {
-  [ -n "${DCVM_QUOTA_LEFT:-}" ] || return 0
-  local c m d
-  read -r c m d <<<"$DCVM_QUOTA_LEFT"
-  if [ "$1" -gt "$c" ] || [ "$2" -gt "$m" ] || [ "$3" -gt "$d" ]; then
-    print_error "Over your quota: this VM needs $1 vCPU, $2 MB, $3 GB; you have $c vCPU, $m MB, $d GB left"
+  [ -n "${DCVM_QUOTA_LIMITS:-}" ] || return 0
+  local cpus="$1" mem="$2" disk="$3" vm="$4" c m d uc um ud oc om od lockfd rc=0 files
+  local locks="${DCVM_STATE_DIR:+$DCVM_STATE_DIR/run/locks}"
+  locks=${locks:-/run/dcvm/locks}
+  read -r c m d <<<"$DCVM_QUOTA_LIMITS"
+  if [[ ! "$cpus $mem $disk $c $m $d" =~ ^[0-9]+( [0-9]+){5}$ ]] || [ -z "$vm" ]; then
+    print_error "Could not check your quota"
     return 1
   fi
+  if ! { mkdir -p "$locks" && exec {lockfd}>>"$locks/global" && flock -w 30 "$lockfd"; }; then
+    print_error "Could not lock the quota check; try again"
+    return 1
+  fi
+  files=("$(dirname "$(registry_file x)")"/*)
+  [ -e "${files[0]}" ] || files=()
+  read -r uc um ud oc om od < <(awk -v uid="$(caller_uid)" -v vm="$vm" '
+    FNR == 1 { n = FILENAME; sub(/.*\//, "", n) }
+    n ~ /\./ { next }
+    { k = index($0, "="); if (k) v[n, substr($0, 1, k - 1)] = substr($0, k + 1); seen[n] = 1 }
+    END {
+      for (n in seen) if (n != vm && v[n, "owner_uid"] == uid) { c += v[n, "cpus"]; m += v[n, "memory_mb"]; d += v[n, "disk_gb"] }
+      print c + 0, m + 0, d + 0, v[vm, "cpus"] + 0, v[vm, "memory_mb"] + 0, v[vm, "disk_gb"] + 0
+    }' "${files[@]}" /dev/null)
+  if ((uc + cpus > c || um + mem > m || ud + disk > d)); then
+    print_error "Over your quota: this VM needs $cpus vCPU, $mem MB, $disk GB; you have $((c - uc)) vCPU, $((m - um)) MB, $((d - ud)) GB left"
+    rc=1
+  else
+    QUOTA_PREV=("cpus=$oc" "memory_mb=$om" "disk_gb=$od")
+    # The larger of the old and new size stays charged until the operation records its real one.
+    registry_set "$vm" "cpus=$((cpus > oc ? cpus : oc))" "memory_mb=$((mem > om ? mem : om))" "disk_gb=$((disk > od ? disk : od))" || rc=1
+  fi
+  exec {lockfd}>&-
+  return $rc
 }
+
+# A failed in-place restore keeps the VM it had, so its old charge comes back.
+quota_release() { [ -z "${QUOTA_PREV+x}" ] || registry_set "$1" "${QUOTA_PREV[@]}"; }
 
 # Another VM's lease or static record: forwarding to it would reach that VM.
 ip_held_by_other_vm() {
@@ -1370,10 +1485,18 @@ claim_static_ip() {
 
 # Only once the VM is defined: a record left by a cancelled create would hold the address forever.
 save_static_ip() {
-  local vm="$1" ip="$2"
-  mkdir -p "$DATACENTER_BASE/config/network" &&
-    printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$DATACENTER_BASE/config/network/$vm.conf"
+  local vm="$1" ip="$2" net="${NETWORK_NAME:-datacenter-net}" host
+  mkdir -p "$DATACENTER_BASE/config/network" && chmod 700 "$DATACENTER_BASE/config/network" &&
+    (umask 077 && printf 'VM_NAME="%s"\nIP="%s"\nASSIGNED_AT="%s"\nSOURCE="static"\n' "$vm" "$ip" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$DATACENTER_BASE/config/network/$vm.conf") || return 1
+  # Without a reservation dnsmasq leases the address to the next DHCP VM; libvirt refuses one another host holds.
+  host="<host mac='$(get_vm_mac "$vm" | head -1)' ip='$ip'/>"
+  if [[ "$host" == "<host mac='' "* ]] || ! virsh net-update "$net" add ip-dhcp-host "$host" --config >/dev/null 2>&1; then
+    print_warning "Could not reserve $ip for $vm in $net's DHCP (another VM's reservation?); dnsmasq may lease it to another VM"
+    return 1
+  fi
+  # Separately: with --live too, an inactive network fails the whole update.
+  virsh net-update "$net" add ip-dhcp-host "$host" --live >/dev/null 2>&1 || true
 }
 
 size_gb() {
@@ -1390,13 +1513,16 @@ size_gb() {
   esac
 }
 
+# At most 3650 days, the same cap as the socket server's.
 ttl_seconds() {
   [[ "$1" =~ ^([1-9][0-9]{0,4})([mhd])$ ]] || return 1
+  local secs
   case "${BASH_REMATCH[2]}" in
-  m) echo $((BASH_REMATCH[1] * 60)) ;;
-  h) echo $((BASH_REMATCH[1] * 3600)) ;;
-  d) echo $((BASH_REMATCH[1] * 86400)) ;;
+  m) secs=$((BASH_REMATCH[1] * 60)) ;;
+  h) secs=$((BASH_REMATCH[1] * 3600)) ;;
+  d) secs=$((BASH_REMATCH[1] * 86400)) ;;
   esac
+  [ "$secs" -le $((3650 * 86400)) ] && echo "$secs"
 }
 
 wait_for_vm() {
@@ -1418,24 +1544,29 @@ vnc_password() { head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c
 # can read a root process's arguments, so it goes into the XML through the
 # environment: virt-install prints the domain, dcvm defines and starts it.
 virt_install_with_vnc_password() {
-  local pw="$1" xml name
+  local pw="$1" dir name
   shift
-  xml=$(mktemp) || return 1
-  if ! "$@" --print-xml >"$xml.all" || ! VNC_PW="$pw" python3 -I -S -c '
+  # A 0700 folder, so no file holding the password is ever readable by others.
+  dir=$(mktemp -d) || return 1
+  if ! "$@" --print-xml >"$dir/all" || ! VNC_PW="$pw" python3 -I -S -c '
 import os, re, sys, xml.etree.ElementTree as ET
 docs = re.findall(r"<domain[\s\S]*?</domain>", open(sys.argv[1]).read())
 d = ET.fromstring(docs[-1])
 for g in d.iter("graphics"):
     g.set("passwd", os.environ["VNC_PW"])
 open(sys.argv[2], "w").write(ET.tostring(d, encoding="unicode"))
-print(d.findtext("name"))' "$xml.all" "$xml" >"$xml.name"; then
-    rm -f "$xml" "$xml.all" "$xml.name"
+print(d.findtext("name"))' "$dir/all" "$dir/domain.xml" >"$dir/name"; then
+    rm -rf "$dir"
     return 1
   fi
-  name=$(cat "$xml.name")
-  virsh define "$xml" >/dev/null && virsh start "$name" >/dev/null
-  local rc=$?
-  rm -f "$xml" "$xml.all" "$xml.name"
+  name=$(cat "$dir/name")
+  local rc=0
+  virsh define "$dir/domain.xml" >/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && ! virsh start "$name" >/dev/null; then
+    rc=1
+    virsh undefine "$name" --nvram >/dev/null 2>&1 || virsh undefine "$name" >/dev/null 2>&1
+  fi
+  rm -rf "$dir"
   return $rc
 }
 
@@ -1449,24 +1580,67 @@ cleanup_port_forwarding_for_vm() {
   print_info "Cleaning up port forwarding rules"
 
   if [ -n "$ssh_port" ] && [ -n "$http_port" ]; then
-    iptables -t nat -D PREROUTING -p tcp --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null && print_info "Removed SSH port rule $ssh_port" || true
-    iptables -t nat -D PREROUTING -p tcp --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null && print_info "Removed HTTP port rule $http_port" || true
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null || true
+    local rule args
+    # By port and destination, whatever else the rule matches: older rules have no address match.
+    while read -r rule; do
+      read -ra args <<<"${rule#-A }"
+      iptables -w -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
+    done < <(iptables -w -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
+      $1 == "-A" { d = t = ""; for (i = 2; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
+        if (d " " t == s || d " " t == h) print }')
+    local port state
+    for port in 22 80; do
+      for state in "" "-m conntrack --ctstate DNAT"; do
+        # shellcheck disable=SC2086 # $state is empty (old rule) or the match words
+        iptables -w -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
+      done
+    done
   else
     print_info "Searching and removing all rules with IP $vm_ip"
-    local nat_rules=$(iptables -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
+    local nat_rules=$(iptables -w -t nat -L PREROUTING -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $nat_rules; do
-      iptables -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
+      iptables -w -t nat -D PREROUTING "$rule_num" 2>/dev/null && print_info "Removed NAT rule $rule_num" || true
     done
 
-    local forward_rules=$(iptables -L FORWARD -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
+    local forward_rules=$(iptables -w -L FORWARD -n --line-numbers | grep -wF "$vm_ip" | awk '{print $1}' | tac)
     for rule_num in $forward_rules; do
-      iptables -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
+      iptables -w -D FORWARD "$rule_num" 2>/dev/null && print_info "Removed FORWARD rule $rule_num" || true
     done
   fi
 
   save_iptables_rules
+}
+
+# Every rule in the exact shape setup_vm_forwarding makes (old and new), whatever the port; libvirt's, docker's and the RELATED rule stay.
+cleanup_port_forwarding() {
+  local net="${NETWORK_SUBNET:-10.10.10}" rule args
+  local ip="${net//./\\.}\.[0-9]+"
+  print_info "Cleaning up existing dcvm port forwarding rules"
+  while read -r rule; do
+    read -ra args <<<"${rule#-A }"
+    if [ "${args[0]}" = PREROUTING ]; then
+      iptables -w -t nat -D "${args[@]}" 2>/dev/null || true
+    else
+      iptables -w -D "${args[@]}" 2>/dev/null || true
+    fi
+  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null | grep -E \
+    -e "^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$" \
+    -e "^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$")
+  print_success "Cleanup completed"
+}
+
+lock_port_mappings() {
+  exec {PORT_LOCK_FD}>>"$(get_port_mappings_file).lock"
+  flock -w 30 "$PORT_LOCK_FD" && return 0
+  print_error "Another port change is running; try again"
+  return 1
+}
+
+drop_port_mapping() {
+  local f
+  f=$(get_port_mappings_file)
+  [ -f "$f" ] || return 0
+  (umask 077 && awk -v v="$1" '$1 != v' "$f" >"$f.new") && mv -f "$f.new" "$f"
 }
 
 register_vm() {
@@ -1479,7 +1653,7 @@ is_vm_in_network() {
   vm_visible "$1" || return 1
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
-  virsh domiflist "$vm_name" 2>/dev/null | grep -q "$network_name"
+  [ -n "$(vm_network_macs "$vm_name" "$network_name")" ]
 }
 
 get_port_mappings_file() {
@@ -1511,7 +1685,7 @@ nfs_unsafe_files() {
 nfs_share_secure() {
   local share="$1" uid gid
   uid=$(id -u "$NFS_SQUASH_USER" 2>/dev/null) && gid=$(id -g "$NFS_SQUASH_USER") || return 1
-  awk -v p="$share" -v u="anonuid=$uid" '$1 == p && $2 ~ /all_squash/ && index($2, u) { f = 1 } END { exit !f }' /etc/exports 2>/dev/null || return 1
+  awk -v p="$share" -v u="anonuid=$uid" '$1 == p && $2 ~ /all_squash/ && $2 ~ /[(,]subtree_check[,)]/ && index($2, u) { f = 1 } END { exit !f }' /etc/exports 2>/dev/null || return 1
   [ "$(stat -c '%u %a' "$share" 2>/dev/null)" = "$uid 700" ] || return 1
   [ -z "$(nfs_unsafe_files "$share" "$uid" "$gid" -print -quit)" ]
 }
@@ -1534,7 +1708,8 @@ secure_nfs_share() {
   tmp=$(mktemp) || return 1
   {
     awk -v p="$share" '$1 != p' /etc/exports 2>/dev/null
-    echo "$share ${subnet}.0/24(rw,sync,no_subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
+    # subtree_check: without it a forged file handle reaches any file on the same host file system.
+    echo "$share ${subnet}.0/24(rw,sync,subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
   } >"$tmp" &&
     cat "$tmp" >/etc/exports
   rm -f "$tmp"
@@ -1659,15 +1834,17 @@ filter_lease_lines() {
 # libvirt's dnsmasq with dhcp_release, and drop it from the libvirt status
 # file. libvirt runs dnsmasq with --leasefile-ro, so the status file is the
 # only lease store, and SIGHUP does not drop leases. Never restarts the
-# network. Runs under a lock so parallel cleanups do not undo each other's
-# edits.
-# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed).
+# network; on a stopped network only the status file is edited, which dnsmasq
+# reads when it starts. Runs under a lock so parallel cleanups do not undo
+# each other's edits.
+# Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed, a matched lease without an IPv4 address or MAC).
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
   if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
     cleanup_dhcp_lease_unlocked "$@"
     return
   fi
+  # libvirt's lease helper locks its pidfile with fcntl, which flock does not share; the write order below keeps its write last.
   (
     flock -w 30 9 || {
       print_error "Timed out waiting for $lock"
@@ -1682,16 +1859,14 @@ cleanup_dhcp_lease_unlocked() {
   # The guest picks its own DHCP hostname; with a MAC, a hostname match could free another VM's lease.
   [ -n "$mac" ] && host=""
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local tmp matches lmac ip n rc=0
+  local tmp matches lmac ip cid n released=0 skipped=0 active=true rc=0
 
   [ -z "$mac" ] && [ -z "$host" ] && return 1
   print_info "Clearing DHCP lease for MAC: ${mac:-unknown}, VM: ${2:-unknown}"
 
-  if ! command_exists dhcp_release; then
-    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian/Ubuntu, dnsmasq on Arch)"
-    return 2
-  fi
   if [ ! -s "$status_file" ]; then
+    # Older versions left 0 bytes; jq-based readers need valid JSON (libvirt accepts both).
+    [ -f "$status_file" ] && printf '[]\n' >"$status_file"
     print_info "No matching DHCP lease found"
     return 1
   fi
@@ -1707,7 +1882,7 @@ cleanup_dhcp_lease_unlocked() {
   local sel='(($mac != "" and ((."mac-address" // "") | ascii_downcase) == $mac) or
     ($host != "" and ((.hostname // "") | ascii_downcase) == $host))'
   if ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1 ||
-    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
+    ! matches=$(jq -r --arg mac "$mac" --arg host "$host" ".[] | select($sel) | [(.\"mac-address\" // \"\"), (.\"ip-address\" // \"\"), (.\"client-id\" // \"\")] | @tsv" "$status_file" 2>/dev/null) ||
     ! jq --arg mac "$mac" --arg host "$host" "[.[] | select($sel | not)]" "$status_file" >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
     print_error "Could not parse $status_file; left unchanged"
@@ -1717,6 +1892,13 @@ cleanup_dhcp_lease_unlocked() {
     rm -f "$tmp"
     print_info "No matching DHCP lease found"
     return 1
+  fi
+  # A stopped network has no dnsmasq to release from; dhcp_release would fail.
+  [ "$(virsh net-info "$NETWORK_NAME" 2>/dev/null | awk '/^Active:/ { print $2 }')" = no ] && active=false
+  if [ "$active" = true ] && ! command_exists dhcp_release; then
+    rm -f "$tmp"
+    print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian, Ubuntu, Kali and Fedora, dnsmasq on Arch)"
+    return 2
   fi
 
   # Write the status file first: dnsmasq's release makes libvirt's lease
@@ -1728,19 +1910,60 @@ cleanup_dhcp_lease_unlocked() {
     return 2
   fi
   rm -f "$tmp"
-  while IFS=$'\t' read -r lmac ip; do
-    [[ "$ip" == *.* ]] || continue
-    dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" 2>/dev/null || {
+  if [ "$active" = false ]; then
+    print_info "$NETWORK_NAME is not running; removed $n lease(s) from $status_file"
+    return 0
+  fi
+  # With the client-id dnsmasq matches the lease exactly, even when the MAC holds several.
+  while IFS=$'\t' read -r lmac ip cid; do
+    if [[ ! "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || [ -z "$lmac" ]; then
+      skipped=$((skipped + 1))
+    elif dhcp_release "$BRIDGE_NAME" "$ip" "$lmac" ${cid:+"$cid"} 2>/dev/null; then
+      released=$((released + 1))
+    else
       print_error "dhcp_release failed for $ip ($lmac); dnsmasq keeps it until it expires"
       rc=2
-    }
+    fi
   done <<<"$matches"
+  if [ "$skipped" -gt 0 ]; then
+    print_error "$skipped lease(s) without an IPv4 address or MAC cannot be released with dhcp_release; dnsmasq keeps them until they expire"
+    rc=2
+  fi
   if [ "$rc" = 0 ]; then
     print_info "Released and removed $n lease(s) from $status_file"
   else
-    print_info "Removed $n lease(s) from $status_file"
+    print_info "Removed $n lease(s) from $status_file, $released released in dnsmasq"
   fi
   return "$rc"
+}
+
+# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer.
+domain_macs() {
+  local names d
+  names=$(virsh list --all --name 2>/dev/null) || return 1
+  while read -r d; do
+    [ -n "$d" ] && virsh domiflist -- "$d" 2>/dev/null | awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }'
+  done <<<"$names"
+}
+
+# Status-file leases whose MAC belongs to no defined domain, whatever the guest
+# calls itself; by hostname only when the lease has no MAC. One line each:
+# mac, ip, hostname, reason separated by | (dnsmasq allows no | in hostnames).
+stale_leases() {
+  local status="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" macs vms
+  macs=$(domain_macs) || return 1
+  vms=$(virsh list --all --name 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  [ -s "$status" ] || return 0
+  # shellcheck disable=SC2016 # jq variables
+  jq -r --arg macs "$macs" --arg vms "$vms" --argjson now "$(date +%s)" '
+    ($macs | split("\n")) as $m | ($vms | split("\n")) as $v | . as $all | .[]
+    | ((."mac-address" // "") | ascii_downcase) as $mac | ((.hostname // "") | ascii_downcase) as $h
+    | select(if $mac != "" then ($m | index($mac)) == null
+      else $h != "" and ($v | index($h)) == null
+        and ([$all[] | select((."mac-address" // "") != "" and ((.hostname // "") | ascii_downcase) == $h)] | length) == 0 end)
+    | [$mac, (."ip-address" // ""), (.hostname // ""),
+      ((if $mac != "" then "no VM has this MAC" else "no VM named \(.hostname)" end)
+        + (if (."expiry-time" // 0) < $now then ", expired" else "" end))] | join("|")' "$status"
 }
 
 interactive_prompt_memory_common() {
@@ -1859,20 +2082,11 @@ validate_ip_in_subnet() {
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_re="${subnet//./\\.}"
 
-  if [[ ! "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-    print_error "Invalid IP address format: $ip"
+  if ! valid_ipv4 "$ip"; then
+    print_error "Invalid IP address: $ip (four numbers 0-255, no leading zeros)"
     return 1
   fi
-
-  local oct1="${BASH_REMATCH[1]}"
-  local oct2="${BASH_REMATCH[2]}"
-  local oct3="${BASH_REMATCH[3]}"
-  local oct4="${BASH_REMATCH[4]}"
-
-  if [ "$oct1" -gt 255 ] || [ "$oct2" -gt 255 ] || [ "$oct3" -gt 255 ] || [ "$oct4" -gt 255 ]; then
-    print_error "Invalid IP address: octets must be 0-255"
-    return 1
-  fi
+  local oct4="${ip##*.}"
 
   if [[ ! "$ip" =~ ^${subnet_re}\. ]]; then
     print_error "IP address $ip is not in subnet ${subnet}.0/24"
@@ -1942,12 +2156,12 @@ export -f print_info print_success print_warning print_error print_status ui_qui
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_mac get_vm_disk_path get_vm_username valid_vm_ip
+export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac vm_network_macs get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
 export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info
-export -f check_port_connectivity check_port_forward is_vm_in_network get_port_mappings_file read_port_mappings
+export -f check_port_connectivity check_port_forward libvirt_nft_rejects_forwards is_vm_in_network get_port_mappings_file read_port_mappings
 export -f check_vm_exists list_all_vms list_datacenter_vms get_host_ip check_ping require_confirmation
 export -f validate_memory_size validate_cpu_count validate_disk_size stop_vm_gracefully
 export -f detect_host_ip get_fix_lock_script_path

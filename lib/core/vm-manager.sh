@@ -7,7 +7,7 @@ show_enhanced_console() {
   local host
   host=$(get_host_ip)
   if [ -z "$(read_port_mappings 2>/dev/null)" ]; then
-    print_warning "No port mappings yet. Run: dcvm network ports setup"
+    print_warning "No port mappings yet. Run: $(ports_hint)"
     return 0
   fi
   ui_title "Access" "from other machines, through host $host"
@@ -71,6 +71,11 @@ restart_vm() {
   virsh reboot "$vm" >/dev/null 2>&1
 }
 
+# Users forward their own VMs one at a time; ports setup is for admins.
+ports_hint() {
+  if [ "$(caller_role)" = user ]; then echo "dcvm network ports add ${1:-<vm>}"; else echo "dcvm network ports setup"; fi
+}
+
 explain_failure() {
   "$SCRIPT_DIR/../utils/doctor.sh" --quiet --fast --only host,network,vms --vm "$1" || true
 }
@@ -85,7 +90,7 @@ not_found() {
 start_vms() {
   local target="$1"
 
-  if [ "$target" = "all" ] || [ -z "$target" ]; then
+  if [ "$target" = --all ]; then
     local vms
     vms=$(vms_in_state "shut off")
     if [ -z "$vms" ]; then
@@ -95,7 +100,7 @@ start_vms() {
       return 0
     fi
     run_on_vms "Starting VMs" start "started" "$vms"
-    echo -e "  ${DIM}They boot in under a minute; then dcvm network ports setup makes them reachable from other machines.${NC}"
+    echo -e "  ${DIM}They boot in under a minute; then $(ports_hint) makes them reachable from other machines.${NC}"
     echo ""
   else
     if ! check_vm_exists "$target"; then
@@ -109,7 +114,7 @@ start_vms() {
       prepare_vm_disk "$target" || return 1
       if virsh start "$target" >/dev/null; then
         print_success "$target started"
-        echo -e "  ${DIM}It boots in under a minute; then dcvm network ports setup makes it reachable from other machines.${NC}"
+        echo -e "  ${DIM}It boots in under a minute; then $(ports_hint "$target") makes it reachable from other machines.${NC}"
       else
         print_error "Failed to start VM '$target'"
         explain_failure "$target"
@@ -122,9 +127,9 @@ start_vms() {
 }
 
 stop_vms() {
-  local target="$1"
+  local target="$1" force="${2:-false}"
 
-  if [ "$target" = "all" ] || [ -z "$target" ]; then
+  if [ "$target" = --all ]; then
     local vms
     vms=$(vms_in_state running)
     if [ -z "$vms" ]; then
@@ -142,9 +147,17 @@ stop_vms() {
       return 1
     fi
 
-    if virsh list | grep -q " $target .*running"; then
+    if [ "$force" = true ] && [ "$(get_vm_state "$target")" != "shut off" ]; then
+      if virsh destroy "$target" >/dev/null; then
+        print_success "$target is off (forced)"
+      else
+        print_error "Failed to force off VM '$target'"
+        return 1
+      fi
+    elif virsh list | grep -q " $target .*running"; then
       if virsh shutdown "$target" >/dev/null; then
         print_success "$target is shutting down"
+        echo -e "  ${DIM}If its guest ignores the request: dcvm stop $target --force${NC}"
       else
         print_error "Failed to stop VM '$target'"
       fi
@@ -157,7 +170,7 @@ stop_vms() {
 restart_vms() {
   local target="$1"
 
-  if [ "$target" = "all" ] || [ -z "$target" ]; then
+  if [ "$target" = --all ]; then
     local running stopped rc=0
     running=$(vms_in_state running)
     stopped=$(vms_in_state "shut off")
@@ -177,7 +190,7 @@ restart_vms() {
       [ -n "$vm" ] || continue
       if prepare_vm_disk "$vm" "$vm" && virsh start "$vm" >/dev/null 2>&1; then ui_step ok "$vm" "was off, started"; else ui_step fail "$vm" "not started" && rc=1; fi
     done <<<"$stopped"
-    echo -e "  ${DIM}They boot in under a minute; then dcvm network ports setup makes them reachable from other machines.${NC}"
+    echo -e "  ${DIM}They boot in under a minute; then $(ports_hint) makes them reachable from other machines.${NC}"
     echo ""
     return $rc
   else
@@ -257,11 +270,11 @@ show_enhanced_status() {
     ui_step fail "Network" "$NETWORK_NAME is not active (dcvm network start)"
   fi
   local n
-  n=$(read_port_mappings 2>/dev/null | grep -c . || true)
+  n=$(read_port_mappings 2>/dev/null | while read -r vm _; do vm_visible "$vm" && echo "$vm"; done | grep -c . || true)
   if [ "${n:-0}" -gt 0 ]; then
     ui_step ok "Port forwards" "$(plural "$n" VM) (dcvm network ports show)"
   else
-    ui_step skip "Port forwards" "none (dcvm network ports setup)"
+    ui_step skip "Port forwards" "none ($(ports_hint))"
   fi
   [ "$(caller_role)" = user ] || "$SCRIPT_DIR/../utils/doctor.sh" --summary
   echo ""
@@ -274,9 +287,10 @@ dcvm list | status | start | stop | restart | console
 Usage:
   dcvm list [--json]          VMs with state, IP, vCPU and memory (and owner, for admins)
   dcvm status                 The same, plus the network and port forwards
-  dcvm start [vm|all]         One VM, or every dcvm VM without a name (yours, without root)
-  dcvm stop [vm|all]          Shut down one VM, or every dcvm VM
-  dcvm restart [vm|all]       Restart one VM, or every dcvm VM
+  dcvm start <vm> | --all     Start one VM, or every dcvm VM (yours, without root)
+  dcvm stop <vm> | --all      Shut down one VM, or every dcvm VM
+  dcvm stop <vm> --force      Power off a VM whose guest ignores the shutdown request
+  dcvm restart <vm> | --all   Restart one VM, or every dcvm VM
   dcvm console [vm]           Serial console of a VM (exit with Ctrl+]); without a name, access hints
 EOF
 }
@@ -289,15 +303,43 @@ main() {
   load_dcvm_config
 
   case $1 in
-  start) start_vms "$2" ;;
-  stop) stop_vms "$2" ;;
-  restart) restart_vms "$2" ;;
-  status) show_enhanced_status ;;
-  list) show_vm_table "${2:-}" ;;
+  start | stop | restart)
+    local cmd=$1 force=false every=false a args=()
+    shift
+    for a in "$@"; do
+      if [ "$a" = --force ] && [ "$cmd" = stop ]; then
+        force=true
+      elif [ "$a" = --all ]; then
+        every=true
+      else
+        args+=("$a")
+      fi
+    done
+    local n=${#args[@]}
+    [ "$every" = true ] && n=$((n + 1))
+    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$force" = true ] && [ "$every" = true ]; }; then
+      print_error "Usage: dcvm $cmd <vm> | --all$([ "$cmd" = stop ] && echo ", or dcvm stop <vm> --force")"
+      exit 1
+    fi
+    "${cmd}_vms" "${args[0]:---all}" "$force"
+    ;;
+  status)
+    [[ "${2:-}" != -* ]] || { print_error "Usage: dcvm status" && exit 1; }
+    show_enhanced_status
+    ;;
+  list)
+    [ $# -le 2 ] && [ "${2:---json}" = --json ] || { print_error "Usage: dcvm list [--json]" && exit 1; }
+    show_vm_table "${2:-}"
+    ;;
   console)
     if [ -z "${2:-}" ]; then
       show_enhanced_console
     elif check_vm_exists "$2"; then
+      case "$(get_vm_state "$2")" in
+      running) ;;
+      "shut off") print_error "$2 is shut off; start it first: dcvm start $2" && exit 1 ;;
+      *) print_error "$2 is $(get_vm_state "$2"), not running (dcvm info $2)" && exit 1 ;;
+      esac
       echo -e "${DIM}Connected to $2's serial console. Exit with Ctrl+]${NC}"
       exec virsh console "$2"
     else

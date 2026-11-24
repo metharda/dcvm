@@ -10,7 +10,10 @@ elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
   source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
 fi
 
-[ "${1:-}" = help ] || wants_help "$@" || load_dcvm_config
+BACKUP_SUBCOMMANDS="create, restore, list, delete, export, import, ssh-setup, troubleshoot"
+# main reports an unknown subcommand, even where dcvm isn't installed.
+[ "${1:-}" = help ] || wants_help "$@" ||
+  [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" != -* && ", $BACKUP_SUBCOMMANDS, " != *", ${1:-}, "* ]] || load_dcvm_config
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -20,6 +23,7 @@ KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
 BOOT_GRACE=90
 COMPRESSION_ENABLED=true
+ASSUME_YES=false
 
 log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
 get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
@@ -334,11 +338,11 @@ delete_backups() {
   local arg="$1"
 
   if [ -z "$arg" ]; then
-    print_error "Usage: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>"
+    print_error "Usage: dcvm backup delete <vm> [id] | <vm>-<id> | --all"
     return 1
   fi
 
-  if [ "$arg" = "--all" ] || [ "$arg" = "all" ]; then
+  if [ "$arg" = "--all" ]; then
     mapfile -t __folders < <(ls -1 -d "$BACKUP_DIR"/*-????????_?????? 2>/dev/null | grep -vE '/exports$')
     mapfile -t __legacy_disks < <(ls -1 "$BACKUP_DIR"/*-disk-*.qcow2* 2>/dev/null)
 
@@ -355,7 +359,7 @@ delete_backups() {
     [ "$count_folders" -gt 0 ] && ui_kv "Backups" "$count_folders"
     [ "$count_legacy" -gt 0 ] && ui_kv "Old format" "$count_legacy (single files from before 0.9)"
     echo ""
-    confirm_action "Delete them permanently?" || return 0
+    [ "$ASSUME_YES" = true ] || confirm_action "Delete them permanently?" || return 0
 
     local removed=0
     for d in "${__folders[@]}"; do
@@ -377,31 +381,19 @@ delete_backups() {
     return 0
   fi
 
-  local vm_name=""
-  local dmy=""
-  local hms=""
-  local indexN=""
-
-  if [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4})(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?$ ]]; then
-    vm_name="${BASH_REMATCH[1]}"
-    dmy="${BASH_REMATCH[2]}"
-    local tail="${BASH_REMATCH[4]}"
-    if [[ "$tail" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
-      hms="$tail"
-    elif [[ "$tail" =~ ^[0-9]+$ ]]; then
-      indexN="$tail"
-    fi
-  else
-    vm_name="$arg"
+  local vm_name="$arg" sel="${2:-}"
+  if [ -z "$sel" ] && [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?)$ ]]; then
+    vm_name="${BASH_REMATCH[1]}" sel="${BASH_REMATCH[2]}"
   fi
+  sel="${sel#"$vm_name-"}"
 
   mapfile -t backup_dates < <(list_backup_timestamps_desc "$vm_name")
   if [ ${#backup_dates[@]} -eq 0 ]; then
     print_warning "No backups found for VM: $vm_name"
-    return 0
+    return 1
   fi
 
-  if [ -z "$dmy" ]; then
+  if [ -z "$sel" ]; then
     if ! list_backups "$vm_name" true; then
       print_warning "No backups to delete for VM: $vm_name"
       return 0
@@ -449,34 +441,23 @@ delete_backups() {
     return 0
   fi
 
-  local dd=$(echo "$dmy" | cut -d'.' -f1)
-  local mm=$(echo "$dmy" | cut -d'.' -f2)
-  local yyyy=$(echo "$dmy" | cut -d'.' -f3)
-  local yyyymmdd="${yyyy}${mm}${dd}"
-
   local resolved_ts=""
-  if [ -n "$hms" ]; then
-    local HH=$(echo "$hms" | cut -d':' -f1)
-    local MM=$(echo "$hms" | cut -d':' -f2)
-    local SS=$(echo "$hms" | cut -d':' -f3)
-    resolved_ts="${yyyymmdd}_${HH}${MM}${SS}"
-    backup_visible "$(get_backup_folder_path "$vm_name" "$resolved_ts")" || resolved_ts=""
-  elif [ -n "$indexN" ]; then
-    local selector="${dd}.${mm}.${yyyy}-${indexN}"
-    resolved_ts=$(resolve_backup_selector "$vm_name" "$selector") || true
+  if [ "$sel" = latest ]; then
+    resolved_ts="${backup_dates[0]}"
+  elif [[ "$sel" =~ ^([0-9]{2})\.([0-9]{2})\.([0-9]{4})-([0-9]{2}):([0-9]{2}):([0-9]{2})$ ]]; then
+    resolved_ts="${BASH_REMATCH[3]}${BASH_REMATCH[2]}${BASH_REMATCH[1]}_${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
   else
-    resolved_ts=$(resolve_backup_selector "$vm_name" "${dd}.${mm}.${yyyy}") || true
+    resolved_ts=$(resolve_backup_selector "$vm_name" "$sel") || true
   fi
-
-  if [ -z "$resolved_ts" ]; then
-    print_error "No matching backup found: ${vm_name}-${dmy}${hms:+-$hms}${indexN:+-$indexN}"
+  if [ -z "$resolved_ts" ] || ! printf '%s\n' "${backup_dates[@]}" | grep -qxF -- "$resolved_ts"; then
+    print_error "No matching backup found: $vm_name $sel (use dd.mm.yyyy[-N], dd.mm.yyyy-HH:MM:SS, YYYYMMDD_HHMMSS or latest)"
     return 1
   fi
 
   if remove_backup_artifacts "$vm_name" "$resolved_ts" "backup"; then
-    ui_done ok "Backup $arg deleted" "taken $(pretty_ts "$resolved_ts")"
+    ui_done ok "Backup $vm_name-$sel deleted" "taken $(pretty_ts "$resolved_ts")"
   else
-    ui_done fail "Backup $arg could not be deleted" "check the permissions on $BACKUP_DIR"
+    ui_done fail "Backup $vm_name-$sel could not be deleted" "check the permissions on $BACKUP_DIR"
     echo ""
     return 1
   fi
@@ -577,12 +558,14 @@ export_backup() {
       backup_date=""
     fi
   fi
+  [ "$backup_date" = "latest" ] && backup_date=""
+  [[ "$backup_date" == "$vm_name-"* ]] && backup_date="${backup_date#"$vm_name-"}"
 
   if [ -n "$backup_date" ] && [[ ! "$backup_date" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
     local _resolved
     _resolved=$(resolve_backup_selector "$vm_name" "$backup_date")
     if [ -z "$_resolved" ]; then
-      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS or dd.mm.yyyy[-N])"
+      print_error "Backup selector not found: $backup_date (use YYYYMMDD_HHMMSS, [<vm>-]dd.mm.yyyy[-N] or latest)"
       return 1
     fi
     backup_date="$_resolved"
@@ -626,17 +609,17 @@ export_backup() {
 
   local pkg_name="${vm_name}-${backup_date}.tar.gz"
   local pkg_path="$export_base/$pkg_name"
-  [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]] && pkg_path="/dev/fd/$DCVM_EXPORT_FD"
 
   local tmpdir
-  tmpdir=$(mktemp -d)
+  tmpdir=$(mktemp -d) || return 1
+  trap 'rm -rf "$tmpdir"' EXIT
   if [ "${EXPORT_FULL:-false}" = true ]; then
     local full_disk="$tmpdir/$(basename "${disk_backup%.gz}")"
     stage_backup_disk "$disk_backup" "$tmpdir/staged.qcow2" "$(dirname "$disk_backup")/base" || {
       rm -rf "$tmpdir"
       return 1
     }
-    if ! ui_run "Flattening disk" qemu-img convert -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
+    if ! ui_run "Flattening disk" qemu-img convert -f qcow2 -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
       rm -rf "$tmpdir"
       ui_step fail "Disk" "flattening failed"
       return 1
@@ -659,7 +642,8 @@ export_backup() {
       ui_step warn "Base image" "not recorded (backup from before 0.9.9): the target needs the same build, or use --full"
     fi
   fi
-  cp "$config_backup" "$tmpdir/" || {
+  # The package leaves this host: no console password in it.
+  sed "s/ passwd='[^']*'//g; s/ passwd=\"[^\"]*\"//g" "$config_backup" >"$tmpdir/$(basename "$config_backup")" || {
     rm -rf "$tmpdir"
     print_error "Failed to copy config backup"
     return 1
@@ -667,30 +651,33 @@ export_backup() {
   [ -f "$(dirname "$config_backup")/login" ] && cp "$(dirname "$config_backup")/login" "$tmpdir/login"
 
   local work_disk="$tmpdir/$(basename "$disk_backup")"
-  local ssh_cleaned=false
-  if command -v guestfish >/dev/null 2>&1; then
-    set +e
+  local ssh_cleaned=false img
+  if [ "$(caller_role)" = user ]; then
+    # Root never opens a user's guest-controlled disk; the keys on it are the user's own.
+    ui_step ok "SSH keys" "kept: the archive holds $vm_name's authorized_keys (your keys)"
+  elif command -v guestfish >/dev/null 2>&1; then
+    img=$work_disk
     if [[ "$work_disk" == *.gz ]]; then
-      local tmp_img="${work_disk%.gz}.tmp.$$"
-      if gunzip -c "$work_disk" >"$tmp_img" 2>/dev/null; then
-        if guestfish --rw --format=qcow2 -a "$tmp_img" -i <<'GFSCMDS' 2>/dev/null; then
--rm /root/.ssh/authorized_keys
--glob rm /home/*/.ssh/authorized_keys
-GFSCMDS
-          ssh_cleaned=true
-        fi
-        gzip -c "$tmp_img" >"$work_disk" 2>/dev/null
-        rm -f "$tmp_img" 2>/dev/null
-      fi
-    else
-      if guestfish --rw --format=qcow2 -a "$work_disk" -i <<'GFSCMDS' 2>/dev/null; then
--rm /root/.ssh/authorized_keys
--glob rm /home/*/.ssh/authorized_keys
-GFSCMDS
-        ssh_cleaned=true
+      img="$tmpdir/.disk.qcow2"
+      if ! gunzip -c "$work_disk" >"$img" 2>/dev/null; then
+        rm -rf "$tmpdir"
+        ui_step fail "Disk" "could not unpack $(basename "$work_disk") (corrupt, or no space in ${tmpdir%/*})"
+        return 1
       fi
     fi
-    set -e
+    guestfish --rw --format=qcow2 -a "$img" -i <<'GFSCMDS' 2>/dev/null && ssh_cleaned=true
+-rm /root/.ssh/authorized_keys
+-glob rm /home/*/.ssh/authorized_keys
+GFSCMDS
+    if [ "$img" != "$work_disk" ]; then
+      # Recompressed to a new name: a failed gzip must not leave a truncated disk in the package.
+      if [ "$ssh_cleaned" = true ] && ! { gzip -c "$img" >"$img.gz" && mv -f "$img.gz" "$work_disk"; }; then
+        rm -rf "$tmpdir"
+        ui_step fail "Disk" "could not compress it again (no space in ${tmpdir%/*}?)"
+        return 1
+      fi
+      rm -f "$img"
+    fi
     if [ "$ssh_cleaned" = true ]; then
       ui_step ok "SSH keys" "authorized_keys removed from the disk"
     else
@@ -720,13 +707,19 @@ EOF
 
   [ -d "$tmpdir/cloud-init" ] && ui_step ok "cloud-init" "meta-data and network-config (user-data holds secrets and stays here)"
 
-  ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" . || {
+  if [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]]; then
+    # /dev/fd/N would be reopened by path as root; write through the caller's descriptor.
+    ui_run "Packing" bash -c 'tar -czf - -C "$1" . >&"$2"' _ "$tmpdir" "$DCVM_EXPORT_FD"
+  else
+    ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" .
+  fi || {
     rm -rf "$tmpdir"
     ui_step fail "Archive" "tar failed"
     print_error "Failed to create export archive"
     return 1
   }
   rm -rf "$tmpdir"
+  trap - EXIT
   if [[ "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]]; then
     ui_step ok "Archive" "written to your file (${UI_RUN_SECS}s)"
     return 0
@@ -806,7 +799,12 @@ import_backup() {
     return 1
   }
   local backup_folder="$(get_backup_folder_path "$vm_target" "$date_part")"
-  mkdir -p "$backup_folder" || {
+  if [ -e "$backup_folder" ]; then
+    rm -rf "$workdir"
+    print_error "A backup of $vm_target from $(pretty_ts "$date_part") already exists: $backup_folder"
+    return 1
+  fi
+  mkdir -m 700 "$backup_folder" || {
     rm -rf "$workdir"
     print_error "Cannot create backup folder: $backup_folder"
     return 1
@@ -821,19 +819,26 @@ import_backup() {
   ui_quiet
   ui_title "Importing $vm_target" "$(basename "$pkg_path")"
   cp "$disk_file" "$tgt_disk" || {
-    rm -rf "$workdir"
+    rm -rf "$workdir" "$backup_folder"
     print_error "Failed to import disk file"
     return 1
   }
   cp "$config_file" "$tgt_cfg" || {
-    rm -rf "$workdir"
+    rm -rf "$workdir" "$backup_folder"
     print_error "Failed to import config file"
     return 1
   }
   caller_uid >"$backup_folder/owner"
   local login
   [ -f "$workdir/login" ] && login=$(grep -Em1 '^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$' "$workdir/login") && echo "$login" >"$backup_folder/login"
-  [ -f "$workdir/base" ] && grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
+  if [ -f "$workdir/base" ]; then
+    grep -E '^(image=[A-Za-z0-9][A-Za-z0-9._+-]*|sha256=[0-9a-f]{64}|sha512=[0-9a-f]{128}|added=[0-9T:+-]+)$' "$workdir/base" >"$backup_folder/base"
+    # The archive's build= is a path on the other host; prune_builds keeps the build this one names after image and sha256.
+    local img sha
+    img=$(sed -n 's/^image=//p' "$backup_folder/base" | head -1) sha=$(sed -n 's/^sha256=//p' "$backup_folder/base" | head -1)
+    valid_image_name "$img" && valid_sha256 "$sha" && echo "build=$(build_file "$img" "$sha")" >>"$backup_folder/base"
+  fi
+  chmod 600 "$backup_folder"/*
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
@@ -842,6 +847,40 @@ import_backup() {
     rm -rf "$backup_folder"
     return 1
   fi
+}
+
+# Writes a stopped VM's disk, base record, owner, login and config into a new <folder>.
+write_backup_files() {
+  local vm_name="$1" vm_disk_path="$2" folder="$3" how=uncompressed disk config
+  disk="$folder/${vm_name}-disk-$DATE.qcow2" config="$folder/${vm_name}-config-$DATE.xml"
+  if ! mkdir -m 700 "$folder"; then
+    ui_step fail "Save disk" "cannot create $folder"
+    return 1
+  fi
+  [ "$COMPRESSION_ENABLED" = true ] && disk+=".gz" && how=$(command -v pigz || echo gzip)
+  if [ "$how" = uncompressed ]; then
+    ui_run "Copying disk" cp --sparse=always "$vm_disk_path" "$disk"
+  else
+    ui_run "Compressing disk" sh -c '"$1" -c "$2" >"$3"' _ "$how" "$vm_disk_path" "$disk"
+  fi || {
+    ui_step fail "Save disk" "failed"
+    cat "$UI_RUN_LOG"
+    return 1
+  }
+  ui_step ok "Saved disk" "$(get_file_size "$disk") (${how##*/}) in ${UI_RUN_SECS}s"
+  log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk")"
+  if ! write_base_record "$vm_disk_path" "$folder" || ! vm_owner_uid "$vm_name" >"$folder/owner" ||
+    ! vm_login "$vm_name" >"$folder/login"; then
+    ui_step fail "Save backup" "could not write the base, owner or login record"
+    return 1
+  fi
+  # --security-info keeps the VNC/SPICE password; without it a restore opens the console to every local user.
+  if ! (umask 077 && virsh dumpxml --security-info "$vm_name" >"$config") 2>/dev/null || [ ! -s "$config" ]; then
+    ui_step fail "Save config" "virsh dumpxml failed"
+    return 1
+  fi
+  chmod 600 "$folder"/*
+  ui_step ok "Saved config" "$(basename "$config")"
 }
 
 backup_vm() {
@@ -866,9 +905,15 @@ backup_vm() {
 
   ui_title "Backing up $vm_name" "$(get_file_size "$vm_disk_path") disk ${SYM_DOT} $BACKUP_DIR"
 
-  mkdir -p -m 700 "$BACKUP_DIR"
-  if [ "$(free_bytes "$BACKUP_DIR")" -lt "$(file_bytes "$vm_disk_path")" ]; then
-    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the copy needs $(get_file_size "$vm_disk_path")"
+  if ! mkdir -p -m 700 "$BACKUP_DIR"; then
+    print_error "Failed to create backup directory: $BACKUP_DIR"
+    return 1
+  fi
+  # The disk streams into the backup file, so it never needs more than the disk's allocated blocks.
+  local need
+  need=$(du -B1 "$vm_disk_path" 2>/dev/null | cut -f1)
+  if [ "$(free_bytes "$BACKUP_DIR")" -lt "${need:-0}" ]; then
+    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the backup needs up to $(format_bytes "$need")"
     echo -e "      ${DIM}$vm_name was not stopped. Free some space (dcvm backup delete <vm>), then try again.${NC}"
     return 1
   fi
@@ -902,62 +947,19 @@ backup_vm() {
     fi
   fi
 
+  local backup_folder_path="$BACKUP_DIR/${vm_name}-$DATE" rc=0
+  # Built under a hidden name and renamed once complete, so a failed or interrupted backup never lists as one.
+  local tmp="$BACKUP_DIR/.${vm_name}-$DATE.part"
+  trap 'rm -rf "$tmp"; [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1' EXIT
   if ! prepare_vm_disk "$vm_name"; then
-    [ "$was_running" = true ] && virsh start "$vm_name" >/dev/null 2>&1
     log "ERROR" "Backup of $vm_name stopped: its base image could not be identified"
-    return 1
+    rc=1
+  elif ! write_backup_files "$vm_name" "$vm_disk_path" "$tmp" || ! mv -T "$tmp" "$backup_folder_path"; then
+    log "ERROR" "Backup of $vm_name failed"
+    rc=1
   fi
-
-  if ! mkdir -p -m 700 "$BACKUP_DIR"; then
-    print_error "Failed to create backup directory: $BACKUP_DIR"
-    log "ERROR" "Failed to create backup directory: $BACKUP_DIR"
-    return 1
-  fi
-
-  local backup_folder_name="${vm_name}-$DATE"
-  local backup_folder_path="$BACKUP_DIR/$backup_folder_name"
-  mkdir -p "$backup_folder_path" || {
-    print_error "Failed to create folder: $backup_folder_path"
-    return 1
-  }
-
-  local disk_backup="$backup_folder_path/${vm_name}-disk-$DATE.qcow2"
-  local config_backup="$backup_folder_path/${vm_name}-config-$DATE.xml"
-
-  if ui_run "Copying disk" cp "$vm_disk_path" "$disk_backup"; then
-    ui_step ok "Copied disk" "$(get_file_size "$disk_backup") in ${UI_RUN_SECS}s"
-    log "INFO" "Disk backup completed for $vm_name: $(get_file_size "$disk_backup")"
-  else
-    ui_step fail "Copy disk" "failed"
-    cat "$UI_RUN_LOG"
-    log "ERROR" "Failed to backup VM disk for $vm_name"
-    if [ "$was_running" = true ]; then
-      virsh start "$vm_name" >/dev/null 2>&1 && ui_step ok "Started VM" "running again"
-    fi
-    return 1
-  fi
-
-  if [ "$COMPRESSION_ENABLED" = true ]; then
-    if ui_run "Compressing" gzip "$disk_backup"; then
-      disk_backup="${disk_backup}.gz"
-      ui_step ok "Compressed" "$(get_file_size "$disk_backup") with gzip in ${UI_RUN_SECS}s"
-      log "INFO" "Compressed backup for $vm_name: $(get_file_size "$disk_backup")"
-    else
-      ui_step warn "Compress" "failed, kept the uncompressed copy"
-      log "ERROR" "Failed to compress backup for $vm_name"
-    fi
-  fi
-
-  write_base_record "$vm_disk_path" "$backup_folder_path"
-  vm_owner_uid "$vm_name" >"$backup_folder_path/owner"
-  vm_login "$vm_name" >"$backup_folder_path/login"
-  if virsh dumpxml "$vm_name" >"$config_backup" 2>/dev/null; then
-    ui_step ok "Saved config" "$(basename "$config_backup")"
-    log "INFO" "Configuration backup completed for $vm_name"
-  else
-    ui_step fail "Save config" "virsh dumpxml failed"
-    log "ERROR" "Failed to backup VM configuration for $vm_name"
-  fi
+  trap - EXIT
+  rm -rf "$tmp"
 
   if [ "$was_running" = true ]; then
     if virsh start "$vm_name" >/dev/null 2>&1; then
@@ -968,6 +970,7 @@ backup_vm() {
       log "ERROR" "Failed to restart VM $vm_name"
     fi
   fi
+  [ "$rc" = 0 ] || return 1
 
   local before after
   before=$(list_backup_timestamps_desc "$vm_name" | grep -c . || true)
@@ -986,35 +989,26 @@ backup_vm() {
   return 0
 }
 
-compress_backup() {
-  local file_path="$1"
-  local vm_name="$2"
-
-  if [ "$COMPRESSION_ENABLED" = true ]; then
-    print_info "Compressing backup..."
-    local compressed_file="${file_path}.gz"
-
-    if gzip "$file_path"; then
-      local original_size=$(get_file_size "$file_path")
-      local compressed_size=$(get_file_size "$compressed_file")
-      print_success "Compression completed (${compressed_size})"
-      log "INFO" "Compressed backup for $vm_name: $original_size -> $compressed_size"
-      echo "$compressed_file"
-    else
-      print_error "Compression failed, keeping uncompressed backup"
-      log "ERROR" "Failed to compress backup for $vm_name"
-      echo "$file_path"
-    fi
-  else
-    echo "$file_path"
-  fi
-}
-
 hosts_rename_sed_expr() {
   # sed -E expression that renames host name $1 to $2 in /etc/hosts. Callers
   # apply it twice: one pass cannot rename adjacent matches ("vm1 vm1") that
   # share a separator.
   printf 's/([[:space:]])%s([.[:space:]]|$)/\\1%s\\2/g' "$1" "$2"
+}
+
+# A user's disk is guest-controlled, so root never opens it with libguestfs: the copy gets a
+# new cloud-init instance instead, which regenerates SSH host keys and sets the hostname.
+reseed_restored_guest() {
+  local vm="$1" dir="$DATACENTER_BASE/vms/$1" tool=genisoimage
+  command -v mkisofs >/dev/null 2>&1 && tool=mkisofs
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  mkdir -p -m 700 "$dir/cloud-init" &&
+    (umask 077 && printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$vm" "$(date +%s)" "$vm" >"$dir/cloud-init/meta-data" &&
+      printf '%s\n' '#cloud-config' 'users: []' 'bootcmd:' \
+        '  - [cloud-init-per, instance, dcvm-machine-id, sh, -c, "rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup"]' \
+        >"$dir/cloud-init/user-data" &&
+      "$tool" -output "$dir/cloud-init.iso" -volid cidata -joliet -rock "$dir/cloud-init/" >/dev/null 2>&1) || return 1
+  chmod 600 "$dir/cloud-init.iso"
 }
 
 customize_restored_guest() {
@@ -1155,6 +1149,17 @@ stage_backup_disk() {
   }
 }
 
+# A restore that fails after replacing a VM puts the old definition and disk back.
+undo_restore() {
+  local vm_name="$1" prev_xml="$2" prev_disk="$3" disk="$4"
+  quota_release "$vm_name"
+  [ -n "$prev_disk" ] && mv -f "$prev_disk" "$disk"
+  if [ -s "$prev_xml" ] && virsh define "$prev_xml" >/dev/null 2>&1; then
+    print_warning "Restore failed: the previous $vm_name is back"
+  fi
+  rm -f "$prev_xml"
+}
+
 restore_vm() {
   ui_quiet
   local source_name="$1"
@@ -1230,13 +1235,14 @@ restore_vm() {
   fi
 
   local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
-  rm -f "$staged"
+  local vm_exists=false vm_state=""
   if check_vm_exists "$vm_name"; then
+    vm_exists=true
     if [ "$(registry_get "$vm_name" protected)" = 1 ]; then
       print_error "$vm_name is protected: dcvm unprotect $vm_name first"
       return 1
     fi
-    local vm_state=$(get_vm_state "$vm_name")
+    vm_state=$(get_vm_state "$vm_name")
     print_warning "VM '$vm_name' already exists (state: $vm_state)"
 
     if [ "$force_restore" != "true" ]; then
@@ -1250,9 +1256,70 @@ restore_vm() {
         return 0
       fi
     fi
+  fi
 
-    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
+  stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
 
+  local vm_dir="$DATACENTER_BASE/vms/$vm_name"
+  local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
+
+  local backup_vm_name renamed=false static_ip_copy=""
+  backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
+  if [[ ! "$backup_vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+    backup_vm_name="" renamed=true
+  elif [ "$backup_vm_name" != "$vm_name" ]; then
+    renamed=true
+    local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
+    if [ -f "$source_net_conf" ]; then
+      static_ip_copy=$(grep '^IP=' "$source_net_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+      [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
+      print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
+      print_info "'$vm_name' will not be started or set to autostart"
+    fi
+  fi
+
+  print_info "Restoring VM configuration..."
+
+  local temp_config=$(mktemp)
+
+  if ! cp "$config_backup" "$temp_config"; then
+    print_error "Failed to prepare temporary config file"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed" 2>/dev/null; then
+    print_error "The backup's VM configuration could not be read"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  local cpus mem_kib disk_bytes mem_mb disk_gb
+  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
+  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
+  disk_bytes=$(qemu-img info -U --output=json "$staged" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
+  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
+  if [ -n "${DCVM_QUOTA_LIMITS:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
+    print_error "Could not read the backup's size to check your quota"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb" "$vm_name"; then
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  print_info "Preparing VM directory..."
+  if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
+    print_error "Failed to create VM directory: $vm_dir"
+    quota_release "$vm_name"
+    rm -f "$temp_config" "$staged"
+    return 1
+  fi
+
+  local prev_xml="" prev_disk=""
+  if [ "$vm_exists" = true ]; then
+    vm_state=$(get_vm_state "$vm_name")
     if [ "$vm_state" = "running" ]; then
       print_info "Stopping existing VM..."
       virsh shutdown "$vm_name" >/dev/null 2>&1
@@ -1264,10 +1331,22 @@ restore_vm() {
         sleep 5
         ui_step warn "Stopped VM" "forced after ${SHUTDOWN_TIMEOUT}s"
       fi
+    elif [ "$vm_state" != "shut off" ]; then
+      virsh destroy "$vm_name" >/dev/null 2>&1
+      ui_step ok "Stopped VM" "was $vm_state"
+    fi
+    if [ "$(get_vm_state "$vm_name")" != "shut off" ]; then
+      print_error "Could not stop $vm_name; it was left as it is"
+      quota_release "$vm_name"
+      rm -f "$temp_config" "$staged"
+      return 1
     fi
 
+    prev_xml=$(mktemp)
+    virsh dumpxml --inactive --security-info "$vm_name" >"$prev_xml" 2>/dev/null
     print_info "Removing existing VM definition (keeping storage)..."
-    virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
+    # Keep a UEFI VM's variables: a rollback redefines it with the same NVRAM file.
+    virsh undefine "$vm_name" --keep-nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
 
     print_info "Running fix-lock.sh for comprehensive cleanup..."
     if [ -x "$FIX_LOCK_SCRIPT" ]; then
@@ -1279,24 +1358,14 @@ restore_vm() {
     fi
   fi
 
-  if [ ! -f "$staged" ]; then
-    stage_backup_disk "$disk_backup" "$staged" "$(dirname "$disk_backup")/base" || return 1
-  fi
-
-  local vm_dir="$DATACENTER_BASE/vms/$vm_name"
-  local vm_disk_path="$vm_dir/${vm_name}-disk.qcow2"
-
-  print_info "Preparing VM directory..."
-  if ! mkdir -p "$vm_dir" || ! chmod 711 "$vm_dir"; then
-    print_error "Failed to create VM directory: $vm_dir"
-    return 1
-  fi
-
   if [ -f "$vm_disk_path" ]; then
-    print_info "Removing existing disk file..."
+    print_info "Setting the existing disk aside until the restored VM is defined..."
     lsof "$vm_disk_path" 2>/dev/null && sleep 3
-    rm -f "$vm_disk_path" || {
-      print_error "Failed to remove existing disk file: $vm_disk_path"
+    prev_disk="$vm_disk_path.pre-restore"
+    mv -f "$vm_disk_path" "$prev_disk" || {
+      print_error "Failed to move the existing disk file aside: $vm_disk_path"
+      undo_restore "$vm_name" "$prev_xml" "" "$vm_disk_path"
+      rm -f "$temp_config" "$staged"
       return 1
     }
   fi
@@ -1306,11 +1375,15 @@ restore_vm() {
   else
     rm -f "$staged"
     print_error "Could not move the restored disk into place: $vm_disk_path"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    rm -f "$temp_config"
     return 1
   fi
 
   if [ ! -f "$vm_disk_path" ] || [ ! -s "$vm_disk_path" ]; then
     print_error "Restored disk file is missing or empty: $vm_disk_path"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    rm -f "$temp_config"
     return 1
   fi
 
@@ -1334,57 +1407,15 @@ restore_vm() {
 
   print_success "File permissions and ownership set"
 
-  local backup_vm_name renamed=false static_ip_copy=""
-  backup_vm_name=$(sed -n 's|^[[:space:]]*<name>\([^<]*\)</name>.*|\1|p' "$config_backup" | head -1)
-  if [[ ! "$backup_vm_name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
-    backup_vm_name="" renamed=true
-  elif [ "$backup_vm_name" != "$vm_name" ]; then
-    renamed=true
-    local source_net_conf="${DATACENTER_BASE:-/srv/datacenter}/config/network/${backup_vm_name}.conf"
-    if [ -f "$source_net_conf" ]; then
-      static_ip_copy=$(grep '^IP=' "$source_net_conf" | head -1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
-      [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
-      print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
-      print_info "'$vm_name' will not be started or set to autostart"
-    fi
-  fi
-
-  print_info "Restoring VM configuration..."
-
-  local temp_config=$(mktemp)
-
-  if ! cp "$config_backup" "$temp_config"; then
-    print_error "Failed to prepare temporary config file"
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  if ! sanitize_domain_xml "$temp_config" "$vm_name" "$vm_disk_path" "$renamed"; then
-    print_error "The backup's VM configuration could not be read"
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  local cpus mem_kib disk_bytes mem_mb disk_gb
-  cpus=$(sed -n 's/.*<vcpu[^>]*>\([0-9]*\)<\/vcpu>.*/\1/p' "$temp_config" | head -1)
-  mem_kib=$(sed -n 's/.*<memory[^>]*>\([0-9]*\)<\/memory>.*/\1/p' "$temp_config" | head -1)
-  disk_bytes=$(qemu-img info -U --output=json "$vm_disk_path" 2>/dev/null | python3 -I -S -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null)
-  mem_mb=$((${mem_kib:-0} / 1024)) disk_gb=$(((${disk_bytes:-0} + 1073741823) / 1073741824))
-  if [ -n "${DCVM_QUOTA_LEFT:-}" ] && { [ -z "$cpus" ] || [ -z "$mem_kib" ] || [ -z "$disk_bytes" ]; }; then
-    print_error "Could not read the backup's size to check your quota"
-    rm -f "$temp_config"
-    return 1
-  fi
-  if ! within_quota "${cpus:-1}" "$mem_mb" "$disk_gb"; then
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  if [ "$renamed" = true ] && [ "$(caller_role)" != user ]; then
+  local reseeded=false
+  if [ "$renamed" = true ] && [ "$(caller_role)" = user ]; then
+    reseed_restored_guest "$vm_name" && reseeded=true ||
+      print_warning "Could not give $vm_name a new identity; inside the VM: sudo hostnamectl set-hostname $vm_name, then reset /etc/machine-id and the SSH host keys"
+  elif [ "$renamed" = true ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
 
-  local define_output attempt=1 max_attempts=3
+  local define_output attempt=1 max_attempts=3 defined=false
   while [ $attempt -le $max_attempts ]; do
     define_output=$(virsh define "$temp_config" 2>&1)
     if [ $? -eq 0 ]; then
@@ -1398,7 +1429,13 @@ restore_vm() {
         login=$(vm_login "$vm_name")
       fi
       registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
+      if [ "$reseeded" = true ]; then
+        virsh attach-disk "$vm_name" "$DATACENTER_BASE/vms/$vm_name/cloud-init.iso" sdc --type cdrom --mode readonly --targetbus sata --config >/dev/null 2>&1 &&
+          ui_step ok "Identity" "new hostname, SSH host keys and machine-id on first boot" ||
+          print_warning "Could not attach $vm_name's new cloud-init seed; it keeps the source's identity"
+      fi
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
+      defined=true
       break
     fi
     if echo "$define_output" | grep -q "must be model='pci-root'"; then
@@ -1435,16 +1472,18 @@ restore_vm() {
       fi
     else
       print_error "Define failed (attempt $attempt): $define_output"
-      if [ $attempt -eq $max_attempts ]; then
-        print_error "Giving up after $max_attempts attempts"
-        sed -n '1,30p' "$temp_config"
-        rm -f "$temp_config"
-        return 1
-      fi
     fi
     attempt=$((attempt + 1))
     [ $attempt -le $max_attempts ] && print_info "Retrying define (attempt $attempt)..." && sleep 1
   done
+  if [ "$defined" != true ]; then
+    print_error "Giving up after $max_attempts attempts"
+    sed -n '1,30p' "$temp_config"
+    rm -f "$temp_config"
+    undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"
+    return 1
+  fi
+  rm -f "$prev_disk" "$prev_xml"
 
   rm -f "$temp_config"
 
@@ -1761,10 +1800,11 @@ Usage: dcvm backup <command> [args]
 Commands:
   create <vm>                         Back up a VM (shuts it down meanwhile, then starts it again)
   list [vm]                           Backups of every VM, or of one
-  restore <vm> [id] [new-name]        Put a backup back (newest by default), or restore it as a new VM
+  restore <vm> [id] [new-name]        Put a backup back (newest by default) and start it, or restore it as a new VM
+                                      (replacing a VM asks first; --yes without a terminal)
   delete <vm>                         Pick backups to delete from a numbered list
-  delete <id>                         Delete one backup: <vm>-dd.mm.yyyy[-N] or <vm>-dd.mm.yyyy-HH:MM:SS
-  delete --all                        Delete every backup (asks first)
+  delete <vm> <id> | <vm>-<id>        Delete one backup, without asking
+  delete --all                        Delete every backup (asks first; --yes without a terminal)
   export <vm> [id] [dir]              Pack a backup as a .tar.gz for another host (default dir: $BACKUP_DIR/exports)
   import <file|dir> [new-name]        Unpack an exported backup and restore it
   ssh-setup <vm>                      Put this host's SSH key on an imported VM
@@ -1815,6 +1855,10 @@ main() {
       EXPORT_FULL=true
       shift
       ;;
+    -y | --yes)
+      ASSUME_YES=true
+      shift
+      ;;
     *)
       args+=("$1")
       shift
@@ -1826,6 +1870,11 @@ main() {
   local SUBCOMMAND="$1"
   local VM_NAME="$2"
   local BACKUP_DATE="$3"
+  if [[ ", $BACKUP_SUBCOMMANDS, " != *", $SUBCOMMAND, "* ]]; then
+    print_error "Unknown subcommand: $SUBCOMMAND"
+    echo "Valid subcommands: $BACKUP_SUBCOMMANDS"
+    exit 1
+  fi
 
   for cmd in virsh cp gzip gunzip wget qemu-img; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -1857,7 +1906,7 @@ main() {
       print_error "VM name required for 'restore'"
       exit 1
     fi
-    restore_vm "$VM_NAME" "$BACKUP_DATE" "" "" "$4"
+    restore_vm "$VM_NAME" "$BACKUP_DATE" "$ASSUME_YES" "" "$4"
     exit $?
     ;;
   "list")
@@ -1871,10 +1920,10 @@ main() {
     ;;
   "delete")
     if [ -z "$VM_NAME" ]; then
-      print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>|--all|all"
+      print_error "Argument required. Use: dcvm backup delete <vm> [id] | <vm>-<id> | --all"
       exit 1
     fi
-    delete_backups "$VM_NAME"
+    delete_backups "$VM_NAME" "$BACKUP_DATE"
     local rc=$?
     prune_builds >/dev/null
     exit $rc
@@ -1910,11 +1959,6 @@ main() {
     fi
     troubleshoot_vm "$VM_NAME"
     exit $?
-    ;;
-  *)
-    print_error "Unknown subcommand: $SUBCOMMAND"
-    echo "Valid subcommands: create, restore, list, delete, export, import, troubleshoot"
-    exit 1
     ;;
   esac
 }
