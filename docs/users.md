@@ -55,11 +55,11 @@ On their own VMs:
 | `console`, `ssh`, `exec`, `cp` | `ssh`, `exec` and `cp` use the user's own SSH key |
 | `delete` | Without a terminal it needs `--yes` |
 | `protect`, `unprotect` | A protected VM refuses `delete` and `restore` |
-| `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `export` writes to a file in the user's own folder |
+| `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `delete` takes a backup ID or `latest` and doesn't ask; restoring over a VM without a terminal needs `--yes`. `export` writes to a file in the user's own folder and keeps the VM's `authorized_keys` (root never opens a user's disk) |
 | `network ports add`, `remove`, `show` | Forwards SSH and HTTP for one VM from dcvm's port ranges |
 | `network vnc enable`, `disable`, `status` | VNC gets a random password, shown only to the VM's owner |
 | `fix-lock` | Without restarting libvirt, which serves every user |
-| `template list` | A missing image is downloaded when `create` needs it |
+| `template list`, `status` | A missing image is downloaded when `create` needs it |
 
 Admin only: `network` (start, stop, config, DHCP), `ports setup`/`apply`/`clear`,
 `template download`, `backup import`, `restore --base`, `storage`, `doctor`,
