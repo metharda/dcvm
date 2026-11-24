@@ -5243,14 +5243,14 @@ test_create_scrubs_seed() {
     virsh() {
       if [ "$1" = domblklist ]; then printf ' Type   Device   Target   Source\n file   cdrom    sda      x\n'; else echo "$*" >>"$t/virsh"; fi
     }
+    run_detached() { echo "$1" >"$t/detached" && "$@"; }
     DATACENTER_BASE="$t" VM_NAME=seedtest
     scrub_cloud_init_seed
-    wait
   )
   grep -q 'instance-id: seedtest-1' "$t/vms/seedtest/cloud-init.iso" && ! grep -q 'secret-hash\|first-seed' "$t/vms/seedtest/cloud-init.iso" &&
     grep -q secret-hash "$t/vms/seedtest/cloud-init/user-data" && r+="iso "
   [ "$(cat "$t/virsh" 2>/dev/null)" = "change-media seedtest sda --eject --live --force
-change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && r+="swap "
+change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && [ "$(cat "$t/detached")" = swap_cloud_init_seed ] && r+="swap "
   generate_test_userdata tester n "" "$t/ud"
   grep -q '^  - rm -f /var/lib/cloud/instance/user-data.txt\* .*obj.pkl' "$t/ud" && r+="guest"
   if [ "$r" = "iso swap guest" ]; then

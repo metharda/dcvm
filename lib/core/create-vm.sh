@@ -1473,10 +1473,8 @@ scrub_cloud_init_seed() {
   rc=$?
   rm -rf "$seed" "$dir/cloud-init.iso.new"
   [ "$rc" -eq 0 ] || return 1
-  # QEMU keeps the old file open across guest reboots; SSH answers only after cloud-init has read it.
   dev=$(virsh domblklist "$VM_NAME" --details 2>/dev/null | awk '$2 == "cdrom" { print $3; exit }')
-  (wait_for_vm "$VM_NAME" 1800 && virsh change-media "$VM_NAME" "$dev" --eject --live --force &&
-    virsh change-media "$VM_NAME" "$dev" "$dir/cloud-init.iso" --insert --live) </dev/null >/dev/null 2>&1 3>&- &
+  run_detached swap_cloud_init_seed "$VM_NAME" "$dev" "$dir/cloud-init.iso"
 }
 
 create_vm_disk() {

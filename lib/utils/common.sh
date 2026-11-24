@@ -1608,6 +1608,23 @@ ttl_seconds() {
   [ "$secs" -le $((3650 * 86400)) ] && echo "$secs"
 }
 
+# A socket request's service is stopped with every process left in it, so a job that must outlive
+# the request gets a transient unit of its own; it runs with dcvm's config loaded.
+run_detached() {
+  if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ] &&
+    systemd-run --quiet --collect bash -c 'source "$1" && load_dcvm_config >/dev/null 2>&1 && shift && "$@"' _ \
+      "$(realpath "${BASH_SOURCE[0]}")" "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+  ("$@") </dev/null >/dev/null 2>&1 3>&- &
+}
+
+# QEMU keeps the old seed open across guest reboots; SSH answers only after cloud-init has read it.
+swap_cloud_init_seed() {
+  wait_for_vm "$1" 1800 >/dev/null && virsh change-media "$1" "$2" --eject --live --force &&
+    virsh change-media "$1" "$2" "$3" --insert --live
+}
+
 wait_for_vm() {
   local vm="$1" timeout="${2:-300}" start=$SECONDS ip
   while [ $((SECONDS - start)) -lt "$timeout" ]; do
