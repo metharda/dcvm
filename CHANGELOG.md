@@ -12,6 +12,16 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-11-24
+
+Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
+live test with ten parallel testers. See the PR for the list.
+
+**Upgrading:** `sudo dcvm self-update`. Behaviour changes: `start`, `stop` and
+`restart` take a VM name or `--all` (a bare `all` is a VM name); `stop <vm>
+--force` powers off a guest that ignores shutdown; a user's backup export
+keeps the VM's `authorized_keys`; `--ttl` is at most 3650d.
+
 ### Fixed
 - `start`, `stop` and `restart` take a VM name or `--all`; a bare `all` is a VM name, and `start` with no name no longer starts every VM.
 - A create the server refuses leaves no SSH key behind in the user's `~/.ssh`.
@@ -981,7 +991,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/metharda/dcvm/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10
 [0.9.9.1]: https://github.com/metharda/dcvm/pull/64
 [0.9.9]: https://github.com/metharda/dcvm/compare/v0.9.8...v0.9.9
