@@ -65,6 +65,9 @@ clone without a config file. It then `exec`s one script per command:
 | `storage`, `storage-cleanup` | `storage/storage-manager.sh` |
 | `template`, `mirror` | `utils/mirror-manager.sh` |
 | `fix-lock` | `utils/fix-lock.sh` |
+| `doctor` | `utils/doctor.sh` |
+| `info`, `whoami`, `protect`, `unprotect`, `reap`, `user`, `owner` | `core/access.sh` |
+| `ssh`, `exec`, `cp` | `core/connect.sh` |
 | `self-update`, `update`, `uninstall` | `installation/` |
 
 Every script sources `lib/utils/common.sh` and calls `load_dcvm_config`, which
@@ -94,8 +97,8 @@ sequenceDiagram
 
 1. **Validation.** VM names (3-64 characters of letters, digits, `_`, `-`),
    usernames, passwords, `-k` package names and `--ip` are checked before
-   anything is written. A comma-separated name list (`web,db,cache`) creates
-   several VMs in force mode, with incrementing static IPs if `--ip` is given.
+   anything is written. A comma-separated name list (`web,db,cache`, root and admins
+   only) creates several VMs in force mode, with incrementing static IPs if `--ip` is given.
 2. **Template.** Each OS choice maps to one cloud image under
    `$DATACENTER_BASE/storage/templates`. If it is missing,
    `mirror-manager.sh` tests the mirrors for that image and downloads it to a

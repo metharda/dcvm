@@ -3844,6 +3844,26 @@ test_help_never_acts() {
   rm -rf "$t"
 }
 
+test_usage_matches_parsers() {
+  local out bad=""
+  out=$(NO_COLOR=1 bash "$SCRIPT_DIR/../../dcvm" help 2>&1)
+  for f in "ssh-setup, troubleshoot" "check, best" "--force" "show, rules"; do
+    grep -qF -- "$f" <<<"$out" || bad+="help lacks '$f'; "
+  done
+  out=$(NO_COLOR=1 bash "$SCRIPT_DIR/../storage/backup.sh" bogus 2>&1)
+  grep -q 'ssh-setup' <<<"$out" || bad+="backup unknown-subcommand list lacks ssh-setup; "
+  out=$(NO_COLOR=1 bash "$SCRIPT_DIR/../core/create-vm.sh" </dev/null 2>&1) && bad+="create without arguments exited 0; "
+  grep -q 'Usage: dcvm create' <<<"$out" || bad+="create without arguments shows no usage; "
+  out=$(NO_COLOR=1 bash "$SCRIPT_DIR/doctor.sh" --only 2>&1) && bad+="doctor --only without a value exited 0; "
+  grep -q 'needs a value' <<<"$out" || bad+="doctor --only: $out; "
+  NO_COLOR=1 bash "$SCRIPT_DIR/doctor.sh" --vm >/dev/null 2>&1 && bad+="doctor --vm without a value exited 0; "
+  if [ -z "$bad" ]; then
+    log_test "PASS" "help lists every subcommand; create without arguments and doctor --only/--vm without a value fail"
+  else
+    log_test "FAIL" "help lists every subcommand; create without arguments and doctor --only/--vm without a value fail" "$bad"
+  fi
+}
+
 test_registry_visibility() {
   local t r=""
   t=$(mktemp -d)
@@ -4948,6 +4968,7 @@ test_common_functions() {
   test_registry_visibility
   test_list_owner_column
   test_help_never_acts
+  test_usage_matches_parsers
   test_forward_cleanup_exact_ip
   test_dhcp_stale_by_mac
   test_forward_rules_scope

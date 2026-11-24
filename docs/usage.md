@@ -73,7 +73,7 @@ dcvm create myvm \
 
 Note about multiple VMs and `--ip`:
 
-- When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
+- Root and dcvm admins can create several VMs in one command (users create one per command). When creating multiple VMs in a single command (e.g. `dcvm create vm1,vm2,vm3 --ip 10.10.10.50 -f -p pass`), DCVM will auto-assign incremental IPs starting from the provided base IP:
   - vm1 → 10.10.10.50
   - vm2 → 10.10.10.51
   - vm3 → 10.10.10.52
@@ -109,6 +109,7 @@ The wizard will prompt you for:
 - Graphics type (VNC, SPICE, or none)
 - OS variant (for libvirt optimization)
 - Boot order
+- Whether to copy the ISO next to the disk
 - Static IP (optional)
 
 The summary before "Create it?" shows the login user dcvm will use for

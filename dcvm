@@ -65,17 +65,17 @@ VMs:
 
 Network:
   network                       Network, DHCP leases, static IPs and port forwards
-  network ports <command>       Forward host ports to VMs: add, remove, show, setup, test, apply, clear
+  network ports <command>       Forward host ports to VMs: add, remove, show, rules, setup, test, apply, clear
   network dhcp <command>        DHCP leases: show, clear, cleanup, renew
   network vnc <action> <vm>     VNC on a VM: enable, disable, status
 
 Backups and images:
-  backup <command>              create, list, restore, delete, export, import
-  template <command>            Cloud images: status, list, download, verify
+  backup <command>              create, list, restore, delete, export, import, ssh-setup, troubleshoot
+  template <command>            Cloud images: status, list, check, best, download, verify
   storage                       Disk usage inside running VMs
 
 System:
-  self-update [--check]         Update dcvm from GitHub (--revert goes back)
+  self-update [--check]         Update dcvm from GitHub (--force reinstalls, --revert goes back)
   doctor [--fix]                Check (and repair) the base images of VMs and backups
   fix-lock <vm> | --all         Clear stale disk locks when a VM will not start
   user add|remove|list          Who may use dcvm without root (admins)
