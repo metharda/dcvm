@@ -39,11 +39,12 @@ load_common() {
     source "$DCVM_CHECKOUT/lib/utils/common.sh"
     return
   fi
-  DCVM_REPO_REF=$({ curl -fsSL -H "Accept: application/vnd.github.sha" "$api" || wget -q -O - --header="Accept: application/vnd.github.sha" "$api"; } 2>/dev/null) || true
+  # Sourced as root: never over plain http, so curl stays on https and wget follows no redirect.
+  DCVM_REPO_REF=$({ curl -fsSL --proto =https --proto-redir =https -H "Accept: application/vnd.github.sha" "$api" || wget -q --max-redirect=0 -O - --header="Accept: application/vnd.github.sha" "$api"; } 2>/dev/null) || true
   [[ "$DCVM_REPO_REF" =~ ^[0-9a-f]{40}$ ]] || DCVM_REPO_REF=$DCVM_REPO_BRANCH
   url="https://raw.githubusercontent.com/$DCVM_REPO_SLUG/$DCVM_REPO_REF/lib/utils/common.sh"
   tmp=$(mktemp)
-  if ! { curl -fsSL -o "$tmp" "$url" 2>/dev/null || wget -q -O "$tmp" "$url" 2>/dev/null; }; then
+  if ! { curl -fsSL --proto =https --proto-redir =https -o "$tmp" "$url" 2>/dev/null || wget -q --max-redirect=0 -O "$tmp" "$url" 2>/dev/null; }; then
     rm -f "$tmp"
     echo "error: could not download $url; check the network connection" >&2
     exit 1
@@ -503,6 +504,12 @@ start_nfs_server() {
 
 check_directory_structure() {
   print_status_log "INFO" "Checking directory structure..."
+  local owner mode
+  # Root writes below the base: another user who owns it or can write to it could swap vms/ for a symlink.
+  if read -r owner mode < <(stat -L -c '%u %a' -- "$DATACENTER_BASE" 2>/dev/null) && { [ "$owner" != 0 ] || ((8#$mode & 8#022)); }; then
+    print_status_log "ERROR" "$DATACENTER_BASE belongs to or is writable by another user: make it root-owned (chown root:root, chmod go-w) or choose another folder"
+    return 1
+  fi
 
   local directories=(
     "$DATACENTER_BASE/vms"
@@ -527,6 +534,11 @@ check_directory_structure() {
       fi
     fi
   done
+  chown root:root "$DATACENTER_BASE"/{vms,storage,storage/templates,backups,config,config/network} &&
+    chmod go-w "$DATACENTER_BASE"/{storage,storage/templates,config,config/network} || {
+    print_status_log "ERROR" "Could not make the folders in $DATACENTER_BASE root-owned"
+    return 1
+  }
   chmod 700 "$DATACENTER_BASE/backups"
   # Search only: libvirt reaches each VM's folder by name, other users cannot list the VM names.
   chmod 711 "$DATACENTER_BASE/vms"

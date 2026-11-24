@@ -7,4 +7,5 @@ source "$SCRIPT_DIR/../utils/common.sh"
 
 require_root
 
-"$SCRIPT_DIR/../utils/doctor.sh" --fix --quiet --only host || true
+# Only the services must match the new files; everything else is the doctor's report to act on.
+dcvm_services_ok || install_dcvm_services

@@ -224,8 +224,9 @@ DCVM_REPO_SLUG=you/dcvm DCVM_REPO_BRANCH=my-branch \
 - VMs share one bridge and can reach each other, including VMs of different
   users; the optional NFS share is one folder for every VM.
 - Cloud images are checked against the checksum files their publishers put
-  next to them (SHA256SUMS, SHA512SUMS); signatures are not checked, and a
-  mirror that publishes no checksum is used with a warning.
+  next to them on the official server (SHA256SUMS, SHA512SUMS); signatures
+  are not checked, and a download is refused when that server gives no
+  checksum.
 
 ## How it compares
 

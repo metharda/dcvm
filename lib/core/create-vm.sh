@@ -1457,6 +1457,7 @@ create_cloud_init_iso() {
 create_vm_disk() {
   [ "$FORCE_MODE" = true ] && print_info "Creating VM disk ($VM_DISK_SIZE)" || print_info "Creating VM disk ($VM_DISK_SIZE)..."
   local disk_error base
+  hold_builds
   base=$(current_build "$(basename "$TEMPLATE_FILE")") || base="$TEMPLATE_FILE"
   disk_error=$(umask 077 && qemu-img create -f qcow2 -F qcow2 -b "$base" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
   if [ $? -ne 0 ]; then

@@ -28,6 +28,44 @@ domains_using_dir() {
   echo "${used[*]}"
 }
 
+# Sets DELETED_VMS and KEPT_VMS. Owner records go with their VMs: a VM that survives stays owned.
+delete_network_vms() {
+  local net="$1" records="$2" vm vms
+  DELETED_VMS=0 KEPT_VMS=""
+  vms=$(virsh list --all --name 2>/dev/null) || KEPT_VMS="VMs libvirt could not list"
+  for vm in $vms; do
+    vm_on_network "$vm" "$net" || continue
+    virsh destroy "$vm" >/dev/null 2>&1
+    if virsh undefine "$vm" --nvram >/dev/null 2>&1 || virsh undefine "$vm" >/dev/null 2>&1; then
+      DELETED_VMS=$((DELETED_VMS + 1))
+      rm -f "$records/$vm"
+    else
+      KEPT_VMS+="${KEPT_VMS:+, }$vm"
+    fi
+  done
+  [ -n "$KEPT_VMS" ] || rm -rf "$records"
+}
+
+# firewall-cmd fails for an interface in no zone; a bridge already gone falls back to libvirt's zone.
+bridge_zone() {
+  local zone
+  zone=$(firewall-cmd --get-zone-of-interface="$1" 2>/dev/null) && [ -n "$zone" ] && [ "$zone" != "no zone" ] || zone=libvirt
+  echo "$zone"
+}
+
+# Only pools inside a real dcvm data folder: an empty or / base would match every pool.
+remove_dcvm_pools() {
+  local base pool path
+  base=$(removable_data_dir "$1") || return 0
+  while read -r pool; do
+    [ -n "$pool" ] || continue
+    path=$(virsh pool-dumpxml "$pool" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)
+    [[ -n "$path" && "$path/" == "$base/"* ]] || continue
+    virsh pool-destroy "$pool" >/dev/null 2>&1 || true
+    virsh pool-undefine "$pool" >/dev/null 2>&1 && ui_step ok "Storage pool" "$pool removed"
+  done < <(virsh pool-list --all --name 2>/dev/null)
+}
+
 main() {
   if [ "${1:-}" = --help ]; then
     echo "Usage: dcvm uninstall     Delete every dcvm VM, all backups, the network, the services and dcvm itself (asks first)"
@@ -35,7 +73,8 @@ main() {
   fi
   require_root
   if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
+    # Fills in empty values: an empty base or network name would match every pool or no VM.
+    load_dcvm_config "$CONFIG_FILE"
   else
     print_warning "$CONFIG_FILE not found; using the default paths"
     DATACENTER_BASE="/srv/datacenter"
@@ -55,17 +94,13 @@ main() {
   groupdel "$DCVM_USER_GROUP" 2>/dev/null
   ui_step ok "Services" "timers, boot service, socket and the dcvm groups removed"
 
-  local deleted_count=0 vm_name
-  for vm_name in $(virsh list --all --name 2>/dev/null); do
-    [[ -z "$vm_name" ]] && continue
-    if vm_on_network "$vm_name" "$NETWORK_NAME"; then
-      virsh destroy "$vm_name" >/dev/null 2>&1 || true
-      virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
-      deleted_count=$((deleted_count + 1))
-    fi
-  done
-  rm -rf /var/lib/dcvm/vms /run/dcvm
-  ui_step ok "VMs" "$deleted_count deleted"
+  delete_network_vms "$NETWORK_NAME" /var/lib/dcvm/vms
+  rm -rf /run/dcvm
+  if [ -n "$KEPT_VMS" ]; then
+    ui_step warn "VMs" "$DELETED_VMS deleted; kept with their owner records: $KEPT_VMS"
+  else
+    ui_step ok "VMs" "$DELETED_VMS deleted"
+  fi
 
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
   [[ -f "$status_file" ]] && printf '[]\n' >"$status_file"
@@ -77,14 +112,14 @@ main() {
   # Before the network goes: the zone is looked up by its bridge.
   if command_exists firewall-cmd && systemctl is-active --quiet firewalld 2>/dev/null; then
     local zone services=(--remove-service=nfs --remove-service=rpc-bind --remove-service=mountd)
-    zone=$(firewall-cmd --get-zone-of-interface="$BRIDGE_NAME" 2>/dev/null) || zone=libvirt
+    zone=$(bridge_zone "$BRIDGE_NAME")
     # The host's default zone may serve NFS to more than dcvm's VMs.
     if [ "$zone" = "$(firewall-cmd --get-default-zone 2>/dev/null)" ]; then
       ui_step skip "firewalld" "NFS left allowed in the default zone $zone"
-    else
-      firewall-cmd -q --zone="$zone" "${services[@]}" 2>/dev/null
-      firewall-cmd -q --permanent --zone="$zone" "${services[@]}" 2>/dev/null
+    elif firewall-cmd -q --zone="$zone" "${services[@]}" 2>/dev/null && firewall-cmd -q --permanent --zone="$zone" "${services[@]}" 2>/dev/null; then
       ui_step ok "firewalld" "NFS no longer allowed in zone $zone"
+    else
+      ui_step warn "firewalld" "could not remove NFS from zone $zone: firewall-cmd --permanent --zone=$zone --remove-service=nfs"
     fi
   fi
 
@@ -104,14 +139,7 @@ main() {
     ui_step ok "NFS share" "removed from /etc/exports"
   fi
 
-  local pool path
-  while read -r pool; do
-    [ -n "$pool" ] || continue
-    path=$(virsh pool-dumpxml "$pool" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)
-    [[ -n "$path" && "$path/" == "${DATACENTER_BASE%/}/"* ]] || continue
-    virsh pool-destroy "$pool" >/dev/null 2>&1 || true
-    virsh pool-undefine "$pool" >/dev/null 2>&1 && ui_step ok "Storage pool" "$pool removed"
-  done < <(virsh pool-list --all --name 2>/dev/null)
+  remove_dcvm_pools "$DATACENTER_BASE"
 
   local data_dir in_use
   in_use=$(domains_using_dir "$DATACENTER_BASE")

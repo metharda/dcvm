@@ -2752,17 +2752,233 @@ test_published_checksum() {
     echo "none=$?"
     check_download x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" "" 2>/dev/null
     echo "none_check=$?"
+    get_mirrors() { printf '%s\n' "file://$t/gone/img.qcow2" "file://$t/m2/img.qcow2"; }
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "official_down=$?"
+    get_mirrors() { echo "file://$t/m3/img.qcow2"; }
     (cd "$t/m3" && sha512sum img.qcow2 | sed 's/  / */' >SHA512SUMS)
     verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
     echo "sha512=$?"
   ) >"$t/out"
-  for rc in same=0 other=0 tampered=1 tampered_check=1 self_vouched=1 none=2 none_check=0 sha512=0; do
+  for rc in same=0 other=0 tampered=1 tampered_check=1 self_vouched=1 none=2 none_check=1 official_down=2 sha512=0; do
     if grep -qx "$rc" "$t/out"; then
       log_test "PASS" "published checksum ($rc)"
     else
       log_test "FAIL" "published checksum ($rc)" "$(tr '\n' ' ' <"$t/out")"
     fi
   done
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_download_hardening() {
+  local t r
+  t=$(mktemp -d)
+  r=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    [ -z "$(get_mirrors 'Fedora-Cloud-Base-Generic-../../../../etc/x.x86_64.qcow2')" ] && echo "traversal-refused"
+    [ -n "$(get_mirrors "Fedora-Cloud-Base-Generic-${FEDORA_VERSION}.x86_64.qcow2")" ] && echo "fedora-known"
+    curl() {
+      printf '%s\n' "$@" >"$t/args"
+      return 1
+    }
+    test_mirror_speed https://m1/img.qcow2 "$t" 0
+    grep -qx -- '--proto-redir' "$t/args" && echo "ranking-https-only"
+    rank_mirrors() { :; }
+    curl() {
+      while [ $# -gt 0 ]; do
+        [ "$1" = -o ] && echo "$2" >"$t/tmpname"
+        shift
+      done
+      return 1
+    }
+    download_with_mirrors debian-13-genericcloud-amd64.qcow2 "$t/img.qcow2" 1024 >/dev/null 2>&1
+    [[ "$(cat "$t/tmpname" 2>/dev/null)" == "$t/img.qcow2.tmp."* && "$(cat "$t/tmpname")" != "$t/img.qcow2.tmp.$$" ]] && echo "random-temp"
+  )
+  if [ "$(echo $r)" = "traversal-refused fedora-known ranking-https-only random-temp" ]; then
+    log_test "PASS" "template download: exact image names, https-only mirror ranking, unpredictable temp file (#126, #193)"
+  else
+    log_test "FAIL" "template download: exact image names, https-only mirror ranking, unpredictable temp file (#126, #193)" "$(echo $r)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_repo_fetch_https() {
+  local t
+  t=$(mktemp -d)
+  (
+    curl() {
+      echo "$*" >>"$t/curl"
+      return 1
+    }
+    wget() {
+      echo "$*" >>"$t/wget"
+      return 1
+    }
+    fetch_repo_file dcvm "$t/x"
+    repo_commit_sha
+    list_repo_files
+    command_exists() { [ "$1" != curl ]; }
+    fetch_repo_file dcvm "$t/x"
+    repo_commit_sha
+    list_repo_files
+    eval "$(sed -n '/^load_common()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+    DCVM_CHECKOUT=""
+    load_common
+  ) >/dev/null 2>&1
+  if [ "$(grep -c . "$t/curl")" = 5 ] && [ "$(grep -c -- '--proto =https --proto-redir =https' "$t/curl")" = 5 ] &&
+    [ "$(grep -c . "$t/wget")" = 5 ] && [ "$(grep -c -- '--max-redirect=0' "$t/wget")" = 5 ]; then
+    log_test "PASS" "installer and self-update fetch code over https only, without following redirects to http (#127)"
+  else
+    log_test "FAIL" "installer and self-update fetch code over https only, without following redirects to http (#127)" "$(cat "$t/curl" "$t/wget" 2>&1 | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs and the paths do_revert reads
+test_self_update_revert_and_lock() {
+  local t r="" f="$SCRIPT_DIR/../installation/self-update.sh" post="$SCRIPT_DIR/../installation/post-update.sh"
+  t=$(mktemp -d)
+  mkdir -p "$t/lib/installation" "$t/backups/dcvm-backup-1/lib/installation"
+  printf '#!/bin/sh\necho pre-revert >>"%s/calls"\n' "$t" >"$t/lib/installation/pre-revert.sh"
+  printf '#!/bin/sh\necho post-update >>"%s/calls"\n' "$t" >"$t/backups/dcvm-backup-1/lib/installation/post-update.sh"
+  chmod +x "$t/lib/installation/pre-revert.sh" "$t/backups/dcvm-backup-1/lib/installation/post-update.sh"
+  echo old >"$t/backups/dcvm-backup-1/dcvm"
+  (
+    eval "$(sed -n '/^new_stage()/,/^}/p; /^do_revert()/,/^}/p' "$f")"
+    INSTALL_BIN="$t" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups"
+    get_current_version() { echo 0.9.11; }
+    create_backup_dir() { :; }
+    validate_backup() { :; }
+    install_dcvm_tree() { rm -rf "$3" && mv "$1/lib" "$3" && mv "$1/dcvm" "$2/dcvm"; }
+    do_revert <<<1
+  ) >"$t/out" 2>&1
+  [ "$(tr '\n' ' ' <"$t/calls" 2>/dev/null)" = "pre-revert post-update " ] && r+="services-after-revert "
+  (
+    eval "$(sed -n '/^lock_self_update()/,/^}/p' "$f")"
+    BACKUP_DIR="$t/backups"
+    create_backup_dir() { :; }
+    exec 8>>"$t/backups/.lock"
+    flock 8
+    (lock_self_update) && echo "second-update-ran"
+    exec 8>&-
+    (lock_self_update) && echo "lock-free-again"
+  ) >"$t/lock" 2>&1
+  grep -q 'Another dcvm self-update is running' "$t/lock" && ! grep -q second-update-ran "$t/lock" &&
+    grep -q lock-free-again "$t/lock" && r+="one-at-a-time "
+  ! grep -q -- '--fix' "$post" && grep -q 'install_dcvm_services' "$post" && r+="no-silent-fix "
+  if [ "$r" = "services-after-revert one-at-a-time no-silent-fix " ]; then
+    log_test "PASS" "self-update: revert reinstalls the services, one update at a time, no doctor --fix after an update (#125, #145, #194)"
+  else
+    log_test "FAIL" "self-update: revert reinstalls the services, one update at a time, no doctor --fix after an update (#125, #145, #194)" "$r; $(tr '\n' ';' <"$t/lock")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_build_lock() {
+  local t b out
+  t=$(mktemp -d)
+  b="$t/storage/templates/builds"
+  mkdir -p "$b"
+  out=$(
+    DATACENTER_BASE="$t" DCVM_CALLER_ROLE=root
+    vm_disks() { :; }
+    legacy_references() { return 1; }
+    backup_builds() { :; }
+    : >"$b/test-aaaaaaaaaaaa.img"
+    exec 8>>"$b/.lock"
+    flock -s 8
+    [ -z "$(prune_builds)" ] && [ -f "$b/test-aaaaaaaaaaaa.img" ] && echo "kept while a create holds builds"
+    exec 8>&-
+    hold_builds
+    [ "$(prune_builds)" = test-aaaaaaaaaaaa.img ] && echo "own hold prunes"
+    (
+      exec 9>>"$b/.lock"
+      flock -n -s 9 && ! flock -n -x 9
+    ) && echo "hold kept shared"
+  )
+  if [ "$(echo $out)" = "kept while a create holds builds own hold prunes hold kept shared" ]; then
+    log_test "PASS" "builds: no prune while a create or restore holds builds (#137)"
+  else
+    log_test "FAIL" "builds: no prune while a create or restore holds builds (#137)" "$(echo $out)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_installer_base_owner() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/dc"
+  chmod 777 "$t/dc"
+  run() {
+    (
+      eval "$(sed -n '/^check_directory_structure()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+      print_status_log() { :; }
+      chown() { echo "chown $*" >>"$t/calls"; }
+      DATACENTER_BASE="$t/dc"
+      eval "${1:-}"
+      check_directory_structure
+    ) >/dev/null 2>&1
+  }
+  run || [ -e "$t/dc/vms" ] || r+="open-base-refused "
+  chmod 755 "$t/dc"
+  run 'stat() { echo "0 755"; }' && grep -q "chown root:root $t/dc/vms " "$t/calls" 2>/dev/null && r+="root-base-used "
+  if [ "$r" = "open-base-refused root-base-used " ]; then
+    log_test "PASS" "installer refuses a data folder other users own or can write, and makes its folders root-owned (#191)"
+  else
+    log_test "FAIL" "installer refuses a data folder other users own or can write, and makes its folders root-owned (#191)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# Functions only, never main: it would uninstall the test host.
+# shellcheck disable=SC2317 # stubs
+test_uninstall_survivors_and_pools() {
+  local t f="$SCRIPT_DIR/../installation/uninstall-dcvm.sh" out
+  t=$(mktemp -d)
+  mkdir -p "$t/rec" "$t/dc/vms" "$t/dc/storage"
+  touch "$t/rec/a" "$t/rec/b"
+  (
+    eval "$(sed -n '/^removable_data_dir()/,/^}/p; /^delete_network_vms()/,/^}/p; /^bridge_zone()/,/^}/p; /^remove_dcvm_pools()/,/^}/p' "$f")"
+    ui_step() { :; }
+    vm_on_network() { :; }
+    virsh() {
+      case "$1" in
+      list) printf 'a\nb\n' ;;
+      undefine) [ "$2" = a ] ;;
+      pool-list) printf 'p1\np2\n' ;;
+      pool-dumpxml) if [ "$2" = p1 ]; then echo "<path>$t/dc/storage/pool</path>"; else echo "<path>/var/lib/libvirt/images</path>"; fi ;;
+      pool-undefine) echo "$2" >>"$t/pools" ;;
+      esac
+    }
+    delete_network_vms net "$t/rec"
+    [ "$DELETED_VMS/$KEPT_VMS" = 1/b ] && [ ! -e "$t/rec/a" ] && [ -e "$t/rec/b" ] && echo "survivor keeps its record"
+    remove_dcvm_pools ""
+    remove_dcvm_pools /
+    [ ! -e "$t/pools" ] && echo "empty base removes no pool"
+    remove_dcvm_pools "$t/dc"
+    [ "$(cat "$t/pools" 2>/dev/null)" = p1 ] && echo "only the dcvm pool"
+    virsh() { [ "$1" != list ]; }
+    delete_network_vms net "$t/rec"
+    [ -e "$t/rec/b" ] && echo "unlisted keeps records"
+    virsh() { [ "$1" != list ] || echo b; }
+    delete_network_vms net "$t/rec"
+    [ ! -e "$t/rec" ] && echo "records go with the last VM"
+    firewall-cmd() { echo "no zone"; }
+    [ "$(bridge_zone virbr-dc)" = libvirt ] && echo "no zone falls back"
+    firewall-cmd() { echo trusted; }
+    [ "$(bridge_zone virbr-dc)" = trusted ] && echo "bound zone kept"
+  ) >"$t/out" 2>/dev/null
+  out=$(cat "$t/out")
+  if [ "$(echo $out)" = "survivor keeps its record empty base removes no pool only the dcvm pool unlisted keeps records records go with the last VM no zone falls back bound zone kept" ] &&
+    grep -q 'load_dcvm_config "$CONFIG_FILE"' "$f"; then
+    log_test "PASS" "uninstall keeps surviving VMs' owner records, removes only dcvm's pools, falls back from 'no zone' (#154, #155, #192)"
+  else
+    log_test "FAIL" "uninstall keeps surviving VMs' owner records, removes only dcvm's pools, falls back from 'no zone' (#154, #155, #192)" "$(echo $out)"
+  fi
   rm -rf "$t"
 }
 
@@ -5652,6 +5868,12 @@ test_common_functions() {
   test_self_update_failure_paths
   test_aria2c_download
   test_published_checksum
+  test_download_hardening
+  test_repo_fetch_https
+  test_self_update_revert_and_lock
+  test_build_lock
+  test_installer_base_owner
+  test_uninstall_survivors_and_pools
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only
   test_installer_checkout_trust

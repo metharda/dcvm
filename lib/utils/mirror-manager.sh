@@ -116,7 +116,7 @@ get_mirror_varname() {
   ubuntu-20.04-server-cloudimg-amd64.img) echo "MIRROR_ubuntu_2004" ;;
   Arch-Linux-x86_64-cloudimg.qcow2) echo "MIRROR_arch" ;;
   kali-linux-cloud-genericcloud-amd64.qcow2) echo "MIRROR_kali" ;;
-  Fedora-Cloud-Base-Generic-*.x86_64.qcow2) echo "MIRROR_fedora" ;;
+  "Fedora-Cloud-Base-Generic-${FEDORA_VERSION}.x86_64.qcow2") echo "MIRROR_fedora" ;;
   *) echo "" ;;
   esac
 }
@@ -143,7 +143,8 @@ get_mirrors() {
 # The size (from Content-Range) tells mirrors with another build apart.
 test_mirror_speed() {
   local url="$1" tmp_dir="$2" idx="$3" result size
-  result=$(curl -4 --http1.1 -sS -L --max-redirs 3 -o /dev/null -D "$tmp_dir/headers_$idx" \
+  # aria2c has no https-only option: a mirror that redirects to http is never ranked, so never handed to it.
+  result=$(curl -4 --http1.1 -sS -L --proto =https --proto-redir =https --max-redirs 3 -o /dev/null -D "$tmp_dir/headers_$idx" \
     -w '%{http_code} %{time_total} %{speed_download}' \
     --connect-timeout 5 --max-time 10 -r 0-1048575 "$url" 2>/dev/null) || return 1
   case "${result%% *}" in
@@ -210,41 +211,32 @@ fetch_text() {
 }
 
 # Checks a downloaded image against the checksums its publisher puts next to
-# it: SHA256SUMS or SHA512SUMS in the same folder, or <file>.SHA256. Looks on
-# the official server (the first mirror), then the mirror it came from, then
-# the other mirrors that serve the same file name (most mirrors don't copy the
-# checksum files). The first folder that publishes a checksum decides, so a
-# mirror can't vouch for its own file while the official server answers.
+# it on the official server (the first mirror): SHA256SUMS or SHA512SUMS in
+# the same folder, or <file>.SHA256. Mirrors are never asked, so none can
+# vouch for its own file (or for one aria2c combined from several mirrors).
 # Returns 0 if a published checksum matches, 1 if checksums were found but
-# none matches, 2 if no mirror publishes one.
+# none matches, 2 if the official server gave none.
 verify_published_checksum() {
-  local filename="$1" url="$2" file="$3"
-  local base="${url##*/}" found=false dir sums hash algo
+  local filename="$1" file="$3" official dir base found=false sums hash algo
   local -A digest=()
-  local dirs
-  dirs=$({
-    get_mirrors "$filename" 2>/dev/null | head -1
-    echo "$url"
-    get_mirrors "$filename" 2>/dev/null
-  } | awk -v b="$base" 'NF { n = $0; sub(/.*\//, "", n); if (n == b) { sub(/\/[^\/]*$/, ""); if (!seen[$0]++) print } }')
-  while IFS= read -r dir; do
-    [ -n "$dir" ] || continue
-    for sums in SHA256SUMS SHA512SUMS "$base.SHA256" $([[ "$filename" == Fedora-Cloud-* ]] && echo "$FEDORA_CHECKSUM"); do
-      hash=$(fetch_text "$dir/$sums" | checksum_for_file "$base")
-      case ${#hash} in
-      64) algo=sha256 ;;
-      128) algo=sha512 ;;
-      *) continue ;;
-      esac
-      found=true
-      [ -n "${digest[$algo]:-}" ] || digest[$algo]=$("${algo}sum" "$file" | awk '{print $1}')
-      if [ "${digest[$algo]}" = "$hash" ]; then
-        echo "INFO: $algo checksum verified against $dir/$sums" >&2
-        return 0
-      fi
-    done
-    $found && return 1
-  done <<<"$dirs"
+  official=$(get_mirrors "$filename" 2>/dev/null | head -1)
+  [ -n "$official" ] || return 2
+  dir=${official%/*} base=${official##*/}
+  for sums in SHA256SUMS SHA512SUMS "$base.SHA256" $([[ "$filename" == Fedora-Cloud-* ]] && echo "$FEDORA_CHECKSUM"); do
+    hash=$(fetch_text "$dir/$sums" | checksum_for_file "$base")
+    case ${#hash} in
+    64) algo=sha256 ;;
+    128) algo=sha512 ;;
+    *) continue ;;
+    esac
+    found=true
+    [ -n "${digest[$algo]:-}" ] || digest[$algo]=$("${algo}sum" "$file" | awk '{print $1}')
+    if [ "${digest[$algo]}" = "$hash" ]; then
+      echo "INFO: $algo checksum verified against $dir/$sums" >&2
+      return 0
+    fi
+  done
+  $found && return 1
   return 2
 }
 
@@ -265,8 +257,8 @@ check_download() {
     return 1
     ;;
   *)
-    echo "WARNING: No published checksum found for ${url##*/}; download not verified" >&2
-    return 0
+    echo "WARNING: Could not get the published checksum of ${url##*/} from its official server; download refused" >&2
+    return 1
     ;;
   esac
 }
@@ -318,7 +310,8 @@ download_with_mirrors() {
   fi
 
   mkdir -p "$(dirname "$target_path")" 2>/dev/null
-  local tmp_file="${target_path}.tmp.$$"
+  local tmp_file
+  tmp_file=$(mktemp "${target_path}.tmp.XXXXXX") && chmod 644 "$tmp_file" || return 1
   echo "INFO: Finding best mirror for $filename..." >&2
   local ranked best
   ranked=$(rank_mirrors "$filename") || ranked=""
