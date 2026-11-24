@@ -2571,6 +2571,119 @@ test_disable_root_and_nfs_subnet() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317 # stubs
+test_installer_checkout_trust() {
+  local base t r=""
+  base=$(mktemp -d "$HOME/.dcvm-trust-test.XXXXXX") || return
+  t=$(mktemp -d)
+  mk_checkout() {
+    mkdir -p "$1/lib/installation" "$1/lib/utils"
+    : >"$1/dcvm"
+    : >"$1/lib/installation/install-dcvm.sh"
+    echo "echo sourced >>'$t/marker'" >"$1/lib/utils/common.sh"
+    chmod -R go-w "$1"
+  }
+  trust_sourced() {
+    rm -f "$t/marker"
+    (
+      eval "$(sed -n '/^checkout_root()/,/^}/p; /^load_common()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+      DCVM_REPO_SLUG=x/y DCVM_REPO_BRANCH=main SUDO_UID=$(id -u)
+      curl() { return 1; }
+      wget() { return 1; }
+      DCVM_CHECKOUT=$(checkout_root "$1") || DCVM_CHECKOUT=""
+      load_common
+    ) >/dev/null 2>&1
+    [ -f "$t/marker" ]
+  }
+  mk_checkout "$base/good"
+  mkdir -p "$base/ww/dl" "$base/ww/utils"
+  mk_checkout "$base/ww/repo"
+  echo "echo sourced >>'$t/marker'" >"$base/ww/utils/common.sh"
+  : >"$base/ww/dl/install-dcvm.sh"
+  chmod 777 "$base/ww"
+  mk_checkout "$base/gw"
+  chmod g+w "$base/gw/lib/utils/common.sh"
+  trust_sourced "$base/good/lib/installation/install-dcvm.sh" && r+="checkout "
+  trust_sourced "$base/ww/repo/lib/installation/install-dcvm.sh" && r+="world-writable-parent "
+  trust_sourced "$base/ww/dl/install-dcvm.sh" && r+="planted-next-to-download "
+  trust_sourced "" && r+="bash-c "
+  trust_sourced "$base/gw/lib/installation/install-dcvm.sh" && r+="group-writable-file "
+  if [ "$r" = "checkout " ]; then
+    log_test "PASS" "installer sources only a checkout no other user can write to"
+  else
+    log_test "FAIL" "installer sources only a checkout no other user can write to" "sourced: $r"
+  fi
+  rm -rf "$base" "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_uninstall_exact_matches() {
+  local t
+  t=$(mktemp -d)
+  mkdir -p "$t/dc/vms" "$t/dc/storage" "$t/other"
+  (
+    eval "$(sed -n '/^vm_on_network()/,/^}/p; /^removable_data_dir()/,/^}/p' "$SCRIPT_DIR/../installation/uninstall-dcvm.sh")"
+    virsh() {
+      echo " Interface   Type      Source            Model    MAC"
+      echo "-------------------------------------------------------------"
+      echo " vnet0       network   datacenter-net2   virtio   52:54:00:00:00:01"
+    }
+    vm_on_network a datacenter-net && echo "matched datacenter-net"
+    vm_on_network a datacenter-net2 || echo "missed datacenter-net2"
+    removable_data_dir "$t/dc" >/dev/null || echo "refused $t/dc"
+    for d in "" / /var /etc/ "$t/other" "$t/dc/../other"; do
+      removable_data_dir "$d" >/dev/null && echo "accepted '$d'"
+    done
+  ) >"$t/out" 2>&1
+  if [ ! -s "$t/out" ]; then
+    log_test "PASS" "uninstall matches the network exactly and deletes only a dcvm data folder"
+  else
+    log_test "FAIL" "uninstall matches the network exactly and deletes only a dcvm data folder" "$(tr '\n' ';' <"$t/out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_console_password() {
+  local t ts=20260101_120000 mode
+  t=$(mktemp -d)
+  : >"$t/disk.qcow2"
+  printf ' 1    vm1    shut off\n' >"$t/list"
+  echo "shut off" >"$t/state"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    eval "stub_$(declare -f virsh)"
+    virsh() {
+      if [ "$1" = dumpxml ]; then
+        [[ " $* " == *" --security-info "* ]] && pw=" passwd='s3cret'"
+        echo "<domain><name>vm1</name><devices><graphics type='vnc' port='-1'${pw:-} listen='127.0.0.1'/></devices></domain>"
+      else
+        stub_virsh "$@"
+      fi
+    }
+    DATE=$ts COMPRESSION_ENABLED=false
+    free_bytes() { echo $((1 << 40)); }
+    get_vm_disk_path() { echo "$t/disk.qcow2"; }
+    prepare_vm_disk() { :; }
+    write_base_record() { :; }
+    vm_owner_uid() { echo 1000; }
+    vm_login() { :; }
+    backup_vm vm1
+    export_backup vm1 latest "$t/out" </dev/null
+  ) >/dev/null 2>&1
+  local cfg="$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  mode="$(stat -c %a "$cfg" 2>/dev/null) $(stat -c %a "$t/backups/vm1-$ts" 2>/dev/null)"
+  if grep -q "passwd='s3cret'" "$cfg" 2>/dev/null && [ "$mode" = "600 700" ] &&
+    tar -xzOf "$t/out/vm1-$ts.tar.gz" "./vm1-config-$ts.xml" 2>/dev/null | grep -q "<graphics type='vnc' port='-1' listen=" &&
+    ! tar -xzOf "$t/out/vm1-$ts.tar.gz" 2>/dev/null | grep -q s3cret; then
+    log_test "PASS" "backup keeps the console password (600 file, 700 folder), export drops it"
+  else
+    log_test "FAIL" "backup keeps the console password (600 file, 700 folder), export drops it" "modes: $mode; $(head -c 200 "$cfg" 2>/dev/null)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_starts_dcvm_vms_only() {
   local t
   t=$(mktemp -d)
@@ -3094,14 +3207,15 @@ test_self_update_keeps_backup() {
   for d in 20260101000001 20260101000002 20260101000003 20260101000004; do mkdir "$t/backups/dcvm-backup-$d"; done
   update() {
     (
-      eval "$(sed -n '/^stage_files()/,/^}/p; /^new_stage()/,/^}/p; /^prune_update_backups()/,/^}/p; /^do_update()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
+      eval "$(sed -n '/^stage_files()/,/^}/p; /^new_stage()/,/^}/p; /^version_older()/,/^}/p; /^prune_update_backups()/,/^}/p; /^do_update()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
       INSTALL_BIN="$t/bin" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups" KEEP_UPDATE_BACKUPS=3
       get_current_version() { echo 0.9.7; }
-      get_remote_version() { echo 0.9.8; }
+      repo_commit_sha() { printf '%040d\n' 7; }
+      get_remote_version() { echo "${REMOTE:-0.9.8}"; }
       create_backup_dir() { :; }
       dcvm_tree_permissions() { :; }
       list_repo_files() { printf 'dcvm\nlib/core/x.sh\nlib/core/new.py\n'; }
-      fetch_repo_file() { [ "$1" != "${FAIL_ON:-}" ] && mkdir -p "${2%/*}" && echo "new $1" >"$2"; }
+      fetch_repo_file() { echo "$DCVM_REPO_REF" >>"$t/refs" && [ "$1" != "${FAIL_ON:-}" ] && mkdir -p "${2%/*}" && echo "new $1" >"$2"; }
       do_update false
     ) >/dev/null 2>&1
   }
@@ -3109,15 +3223,18 @@ test_self_update_keeps_backup() {
   local failed_kept_old=false
   [ "$(cat "$t/lib/core/x.sh")" = old ] && [ -f "$t/lib/core/stale.sh" ] && failed_kept_old=true
   FAIL_ON="" update
+  echo changed >"$t/lib/core/x.sh"
+  REMOTE=0.9.6 update
   local kept newest
   kept=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | wc -l)
   newest=$(find "$t/backups" -maxdepth 1 -name 'dcvm-backup-*' | sort -r | head -1)
-  if $failed_kept_old && [ "$(cat "$t/lib/core/x.sh")" = "new lib/core/x.sh" ] && [ -f "$t/lib/core/new.py" ] &&
+  if $failed_kept_old && [ "$(cat "$t/lib/core/x.sh")" = changed ] && [ -f "$t/lib/core/new.py" ] &&
+    [ "$(sort -u "$t/refs")" = "$(printf '%040d' 7)" ] &&
     [ ! -e "$t/lib/core/stale.sh" ] && [ "$kept" -eq 3 ] && grep -q 'Version: 0.9.7' "$newest/dcvm" 2>/dev/null &&
-    [ "$(cat "$newest/lib/core/x.sh" 2>/dev/null)" = old ] && [ -z "$(find "$t" -maxdepth 1 -name '.dcvm-stage.*')" ]; then
-    log_test "PASS" "self-update swaps the whole tree only when every file arrived, keeps 3 saved versions"
+    [ "$(cat "$newest/lib/core/x.sh" 2>/dev/null)" = old ] && [ -z "$(find "$t" -maxdepth 1 -name '.dcvm-stage.*' -o -name 'lib.old.*')" ]; then
+    log_test "PASS" "self-update: one commit, whole tree swap only when every file arrived, 3 saved versions, no downgrade"
   else
-    log_test "FAIL" "self-update swaps the whole tree only when every file arrived, keeps 3 saved versions" "failed run kept old: $failed_kept_old; kept $kept; x.sh: $(cat "$t/lib/core/x.sh")"
+    log_test "FAIL" "self-update: one commit, whole tree swap only when every file arrived, 3 saved versions, no downgrade" "failed run kept old: $failed_kept_old; kept $kept; x.sh: $(cat "$t/lib/core/x.sh")"
   fi
   rm -rf "$t"
 }
@@ -3844,6 +3961,9 @@ test_common_functions() {
   test_published_checksum
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only
+  test_installer_checkout_trust
+  test_uninstall_exact_matches
+  test_backup_console_password
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact

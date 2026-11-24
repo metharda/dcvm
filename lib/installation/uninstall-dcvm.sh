@@ -5,6 +5,21 @@ source "$SCRIPT_DIR/../utils/common.sh"
 
 CONFIG_FILE="/etc/dcvm-install.conf"
 
+vm_on_network() {
+  virsh domiflist "$1" 2>/dev/null | awk -v n="$2" 'NR > 2 && $3 == n { f = 1 } END { exit !f }'
+}
+
+# rm -rf runs on a path from a config file: only a folder with dcvm's layout.
+removable_data_dir() {
+  local base
+  base=$(realpath -m -- "$1" 2>/dev/null) || return 1
+  [[ "$base" == /?* ]] || return 1
+  case " / /bin /boot /dev /etc /home /lib /lib64 /media /mnt /opt /proc /root /run /sbin /srv /sys /tmp /usr /usr/local /var /var/lib " in
+  *" $base "*) return 1 ;;
+  esac
+  [ -d "$base/vms" ] && [ -d "$base/storage" ] && echo "$base"
+}
+
 main() {
   if [ "${1:-}" = --help ]; then
     echo "Usage: dcvm uninstall     Delete every dcvm VM, all backups, the network, the services and dcvm itself (asks first)"
@@ -35,7 +50,7 @@ main() {
   local deleted_count=0 vm_name
   for vm_name in $(virsh list --all --name 2>/dev/null); do
     [[ -z "$vm_name" ]] && continue
-    if virsh domiflist "$vm_name" 2>/dev/null | grep -q "$NETWORK_NAME"; then
+    if vm_on_network "$vm_name" "$NETWORK_NAME"; then
       virsh destroy "$vm_name" >/dev/null 2>&1 || true
       virsh undefine "$vm_name" --nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
       deleted_count=$((deleted_count + 1))
@@ -68,11 +83,22 @@ main() {
     ui_step skip "Network" "$NETWORK_NAME not found"
   fi
 
-  if [ -d "$DATACENTER_BASE" ]; then
-    rm -rf "$DATACENTER_BASE"
-    ui_step ok "Data" "$DATACENTER_BASE removed"
-  else
+  local share="$DATACENTER_BASE/nfs-share" tmp
+  if awk -v p="$share" '$1 == p { f = 1 } END { exit !f }' /etc/exports 2>/dev/null && tmp=$(mktemp); then
+    awk -v p="$share" '$1 != p' /etc/exports >"$tmp" && cat "$tmp" >/etc/exports
+    rm -f "$tmp"
+    command_exists exportfs && exportfs -ra 2>/dev/null
+    ui_step ok "NFS share" "removed from /etc/exports"
+  fi
+
+  local data_dir
+  if [ ! -d "$DATACENTER_BASE" ]; then
     ui_step skip "Data" "$DATACENTER_BASE not found"
+  elif data_dir=$(removable_data_dir "$DATACENTER_BASE"); then
+    rm -rf "$data_dir"
+    ui_step ok "Data" "$data_dir removed"
+  else
+    ui_step warn "Data" "$DATACENTER_BASE left in place: not a dcvm folder (no vms/ and storage/); delete it yourself"
   fi
 
   rm -f /usr/local/bin/dcvm /etc/dcvm-install.conf /var/log/datacenter-startup.log /etc/bash_completion.d/dcvm /usr/local/share/dcvm/dcvm-completion.sh
