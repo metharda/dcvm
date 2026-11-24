@@ -43,8 +43,8 @@ names the option, and the password can come from `DCVM_PASSWORD`.
 dcvm create t1 --ttl 2h --wait --json    # deleted after 2 hours; returns once SSH accepts connections
 ```
 
-- `--ttl 90m|2h|3d` deletes the VM when the time is up (checked every 5
-  minutes by `dcvm-reaper.timer`).
+- `--ttl 90m|2h|3d` deletes the VM when the time is up (at most 3650d;
+  checked every 5 minutes by `dcvm-reaper.timer`).
 - `--wait` returns only once the VM answers on SSH.
 - `--json` prints one JSON object per VM on stdout (`name`, `state`, `ip`,
   `user`, `expires`, `ready`); progress goes to stderr.

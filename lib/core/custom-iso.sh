@@ -37,7 +37,7 @@ Options:
   --uefi                       UEFI firmware instead of BIOS
   --ip <address>               Static IP you set in the installer
   -u, --username <name>        Login user the installed OS has, for dcvm ssh/exec/cp
-  --copy-iso                   Copy the ISO next to the VM's disk
+  --copy-iso                   Copy the ISO next to the VM's disk (root only; a user's ISO is always copied)
   --ttl <90m|2h|3d>            Delete the VM after this long
   --wait                       Return once SSH answers (up to 30 minutes)
   --json                       Print the result as JSON on stdout
@@ -126,6 +126,10 @@ parse_args() {
     --ttl)
       TTL="$2"
       shift 2 || need_value "$1"
+      ;;
+    -k | --packages | --enable-root | --disable-root | --with-ssh-key | --without-ssh-key | -p | --password | -r | --root-password | --tailscale-authkey)
+      print_error "$1 does nothing with an ISO: the installer sets up the OS"
+      exit 1
       ;;
     -*)
       print_error "Unknown option: $1 (dcvm create-iso --help)"
@@ -272,9 +276,14 @@ prompt_iso_path() {
   ISO_PATH=$(realpath "$ISO_PATH")
   local kind
   if [ "$(caller_role)" != root ] && kind=$(disk_image_kind "$ISO_PATH"); then
-    print_error "$(basename "$ISO_PATH") is a $kind disk image, not an ISO; dcvm only boots installer ISOs"
+    print_error "$(iso_name "$ISO_PATH") is a $kind disk image, not an ISO; dcvm only boots installer ISOs"
     exit 1
   fi
+}
+
+# A non-root caller's ISO is staged as installer.iso, a name that would mean nothing to them.
+iso_name() {
+  if [ "$(caller_role)" = root ]; then basename "$1"; else echo "the file you gave"; fi
 }
 
 # A disk-image header can name host files as backing files or extents.
@@ -290,7 +299,7 @@ disk_image_kind() {
 }
 
 show_iso_header() {
-  ui_title "New VM from an ISO" "$VM_NAME ${SYM_DOT} $(basename "$ISO_PATH")"
+  ui_title "New VM from an ISO" "$VM_NAME ${SYM_DOT} $(iso_name "$ISO_PATH")"
 }
 
 collect_vm_options() {
@@ -306,7 +315,7 @@ collect_vm_options() {
 
 show_vm_summary() {
   local rows=(
-    "$(printf '%-11s%s' ISO "$(basename "$ISO_PATH")$([ "$COPY_ISO" = true ] && echo " (copied)")")"
+    "$(printf '%-11s%s' ISO "$(iso_name "$ISO_PATH")$([ "$COPY_ISO" = true ] && echo " (copied)")")"
     "$(printf '%-11s%s' Resources "$CPUS vCPU, $MEMORY MB RAM, $DISK_SIZE disk")"
     "$(printf '%-11s%s' Display "$GRAPHICS")"
     "$(printf '%-11s%s' OS "${OS_VARIANT:-generic}")"
@@ -364,7 +373,7 @@ copy_iso_if_needed() {
 validate_iso_size() {
   # ISO 9660 (also the bridge in UDF installer ISOs) puts CD001 at byte 32769.
   if [ "$(dd if="$INSTALL_ISO" bs=1 skip=32769 count=5 2>/dev/null)" != CD001 ]; then
-    print_warning "$(basename "$INSTALL_ISO") doesn't look like an ISO 9660 image; the VM may not boot it"
+    print_warning "$(iso_name "$INSTALL_ISO") doesn't look like an ISO 9660 image; the VM may not boot it"
   fi
 }
 
@@ -553,7 +562,7 @@ main() {
   parse_args "$@"
   load_dcvm_config
   if [ -n "${TTL:-}" ] && ! TTL_SECONDS=$(ttl_seconds "$TTL"); then
-    print_error "--ttl must look like 90m, 2h or 3d"
+    print_error "--ttl must look like 90m, 2h or 3d (at most 3650d)"
     exit 1
   fi
   [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && FORCE_MODE=true

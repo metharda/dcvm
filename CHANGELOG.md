@@ -91,6 +91,15 @@ history, so the commit or PR is listed for each release.
 - `ports rules` no longer shows the previous rule's port next to a DNAT rule without one; `ports show` says there are none when a user has no forwards (#88).
 - `ports test`, `dcvm network` and `doctor` report libvirt's nftables rules that reject forwarded connections (#88).
 
+- Users: a mistyped command or wrong arguments get "unknown command" or a usage line; only commands that exist for admins say "needs a dcvm admin", naming the command only.
+- Users: `-k "nginx apache2"` is refused (separate packages with commas) instead of becoming one package `nginxapache2` past the nginx+apache2 check; `-o`/`--os` given twice is refused instead of dropping the ISO.
+- Users: a malformed request exits 77 "malformed request" instead of 70, and the protocol version must be a number.
+- Users: a refusal the server can't write to the caller's stderr is printed by the client; the client makes `~/.ssh/id_ed25519` only once the socket accepts it.
+- Users can run `dcvm backup delete <vm>` (the menu) on their own backups.
+- `--ttl` is at most 3650d.
+- The audit log shows `--password=***` instead of `--***`.
+- `create-iso` for users names "the file you gave" instead of the staged `installer.iso`, says cloud-image options (`-k`, `--enable-root`) do nothing with an ISO, marks `--copy-iso` root-only in its help and asks for a disk size like 20G.
+
 ### Security
 
 - `port-mappings.txt` and `config/network/` (VM names, addresses, host ports) are readable by root only; `doctor --fix` closes existing ones (#106).

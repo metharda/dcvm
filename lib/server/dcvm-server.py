@@ -48,7 +48,8 @@ PACKAGES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*(,[A-Za-z0-9][A-Za-z0-9@._+
 # No leading zeros: iptables reads 050 as octal.
 OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
 IPV4 = re.compile(r"^(%s\.){3}%s\Z" % (OCTET, OCTET))
-TTL = re.compile(r"^[1-9][0-9]{0,4}[mhd]\Z")
+TTL = re.compile(r"^([1-9][0-9]{0,4})([mhd])\Z")
+MAX_TTL_DAYS = 3650
 OS_VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 TERM = re.compile(r"^[A-Za-z0-9._+-]{1,64}\Z")
 
@@ -72,9 +73,10 @@ def redact(argv):
         elif a in SECRET_FLAGS:
             out.append(a)
             hide = True
-        elif (a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--")) or \
-                any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
+        elif a[:2] in ("-p", "-r") and len(a) > 2 and not a.startswith("--"):
             out.append(a[:2] + "***")
+        elif any(a.startswith(f) and a != f for f in SECRET_FLAGS if f.startswith("--")):
+            out.append(a.partition("=")[0] + "=***" if "=" in a else a[:2] + "***")
         else:
             out.append(a)
     return out
@@ -279,17 +281,20 @@ def new_vm_name(vm):
 CREATE_FLAGS = {"-f", "--force", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key",
                 "--json", "--wait", "--uefi"}
 ISO_FLAGS = {"-f", "--force", "--json", "--wait", "--uefi"}
+CLOUD_INIT_ONLY = {"-k", "--packages", "--enable-root", "--disable-root", "--with-ssh-key", "--without-ssh-key"}
 
 
 def parse_create(ctx, args, iso_mode):
     out, vm, i = [], None, 0
     cpus, memory, disk = 2, 2048, 20 if iso_mode else 30
-    disk_given = False
+    disk_given = os_given = False
     while i < len(args):
         a = args[i]
         opt = a.split("=", 1)[0]
         if a in CREATE_FLAGS and (not iso_mode or a in ISO_FLAGS):
             out.append(a)
+        elif iso_mode and opt in CLOUD_INIT_ONLY:
+            raise Denied("%s does nothing with an ISO: the installer sets up the OS" % opt)
         elif opt in ("-m", "--memory"):
             v, i = take_value(args, i, opt)
             if not v.isdigit() or not 512 <= int(v) <= 1048576:
@@ -305,7 +310,7 @@ def parse_create(ctx, args, iso_mode):
         elif opt in ("-d", "--disk"):
             v, i = take_value(args, i, opt)
             if not SIZE.match(v):
-                raise Denied("--disk must look like 30G")
+                raise Denied("--disk must look like %s" % ("20G" if iso_mode else "30G"))
             if v.upper().endswith("T") and int(v[:-1]) > 10:
                 raise Denied("--disk is at most 10T")
             disk, disk_given = size_gb(v, disk), True
@@ -317,9 +322,10 @@ def parse_create(ctx, args, iso_mode):
             out += ["-u", v]
         elif opt in ("-k", "--packages") and not iso_mode:
             v, i = take_value(args, i, opt)
-            if not PACKAGES.match(v.replace(" ", "")):
-                raise Denied("invalid package list")
-            out += ["-k", v.replace(" ", "")]
+            pkgs = ",".join(p.strip() for p in v.split(",") if p.strip())
+            if not PACKAGES.match(pkgs):
+                raise Denied("invalid package list: separate packages with commas, e.g. -k nginx,curl")
+            out += ["-k", pkgs]
         elif opt == "--ip":
             v, i = take_value(args, i, opt)
             if not IPV4.match(v):
@@ -332,10 +338,16 @@ def parse_create(ctx, args, iso_mode):
             out += ["--graphics", v]
         elif opt == "--ttl":
             v, i = take_value(args, i, opt)
-            if not TTL.match(v):
+            m = TTL.match(v)
+            if not m:
                 raise Denied("--ttl must look like 90m, 2h or 3d")
+            if int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)] > MAX_TTL_DAYS * 86400:
+                raise Denied("--ttl is at most %dd" % MAX_TTL_DAYS)
             out += ["--ttl", v]
         elif opt in ("-o", "--os") and not iso_mode:
+            if os_given:
+                raise Denied("give -o once")
+            os_given = True
             v, i = take_value(args, i, opt)
             if v.startswith("fd:"):
                 ctx["iso_fd"] = fd_ref(ctx, v)
@@ -470,7 +482,53 @@ def decide_user(ctx, argv):
         return decide_backup(ctx, args)
     if cmd == "whoami":
         return argv
-    raise Denied("'%s' needs a dcvm admin" % " ".join(argv[:2]))
+    refuse(argv)
+
+
+# Every command the dcvm script routes, so a typo is told apart from an admin's command.
+COMMANDS = {"create", "create-iso", "delete", "list", "status", "start", "stop", "restart", "console", "network",
+            "backup", "restore", "storage", "storage-cleanup", "template", "mirror", "fix-lock", "info", "whoami",
+            "protect", "unprotect", "reap", "user", "owner", "doctor", "self-update", "update", "uninstall"}
+TEMPLATE_SUBS = {"list", "check", "best", "download", "status", "verify"}
+SUBCOMMANDS = {
+    "network": {"show", "info", "status", "start", "stop", "restart", "leases", "bridge", "ip-forwarding", "ipfwd",
+                "config", "ports", "dhcp", "vnc"},
+    "network ports": {"setup", "show", "add", "remove", "rules", "apply", "clear", "test"},
+    "network dhcp": {"show", "clear", "cleanup", "renew", "files"},
+    "template": TEMPLATE_SUBS,
+    "mirror": TEMPLATE_SUBS,
+    "backup": {"create", "list", "delete", "restore", "export", "import", "ssh-setup", "troubleshoot"},
+}
+USAGE = {
+    "list": "dcvm list [--json]",
+    "status": "dcvm status [vm]",
+    "info": "dcvm info <vm> [--json]",
+    "protect": "dcvm protect <vm>",
+    "unprotect": "dcvm unprotect <vm>",
+    "fix-lock": "dcvm fix-lock <vm> [--verbose]",
+    "network ports add": "dcvm network ports add <vm>",
+    "network ports remove": "dcvm network ports remove <vm>",
+    "network ports show": "dcvm network ports show",
+    "network vnc": "dcvm network vnc enable|disable|status <vm>",
+    "backup create": "dcvm backup create <vm>",
+    "backup list": "dcvm backup list [vm]",
+    "backup delete": "dcvm backup delete <vm> [dd.mm.yyyy[-N|-HH:MM:SS]]",
+    "backup restore": "dcvm backup restore <vm> [id] [new-name]",
+    "backup export": "dcvm backup export <vm> [id|latest] [folder] [--full]",
+}
+
+
+def refuse(argv):
+    key, rest = argv[0], argv[1:]
+    if key not in COMMANDS:
+        raise Denied("unknown command: %s (see dcvm help)" % key)
+    while key in SUBCOMMANDS and rest and not rest[0].startswith("-"):
+        if rest[0] not in SUBCOMMANDS[key]:
+            raise Denied("unknown command: dcvm %s %s (see dcvm %s --help)" % (key, rest[0], key))
+        key, rest = key + " " + rest[0], rest[1:]
+    if key in USAGE:
+        raise Denied("usage: %s" % USAGE[key])
+    raise Denied("'%s' needs a dcvm admin" % key)
 
 
 def decide_backup(ctx, args):
@@ -490,21 +548,26 @@ def decide_backup(ctx, args):
         if len(rest) == 1:
             # The module takes one <vm>-<id> argument and splits it with the same greedy regex.
             m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
-            if not m:
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
-            vm, bid = m.group(1), m.group(2)
+            if m:
+                vm, bid = m.group(1), m.group(2)
+            elif NAME.match(rest[0]):
+                # A VM name alone: the module lists its backups and asks which to delete.
+                vm, bid = rest[0], None
+                ctx["interactive"] = True
+            else:
+                raise Denied("usage: %s" % USAGE["backup delete"])
         else:
             vm, bid = rest[0], strip_vm(rest[0], rest[1])
             t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
             if t:
                 bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
             if not re.match(r"^%s\Z" % day, bid):
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+                raise Denied("usage: %s" % USAGE["backup delete"])
         check_backup_vm(ctx, vm)
         # A stale backup of a name now owned by someone else must not take that VM's lock.
         owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
         ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
-        return ["backup", "delete", "%s-%s" % (vm, bid)]
+        return ["backup", "delete", vm if bid is None else "%s-%s" % (vm, bid)]
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
@@ -532,7 +595,7 @@ def decide_backup(ctx, args):
             raise Denied("export writes to a file you pass")
         ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
-    raise Denied("'backup %s' needs a dcvm admin" % sub)
+    refuse(["backup"] + args)
 
 
 def export_fd(fd):
@@ -700,8 +763,14 @@ def recv_request(conn):
         if len(data) >= 4 and struct.unpack(">I", data[:4])[0] > MAX_REQUEST:
             raise Denied("request too large")
     length = struct.unpack(">I", data[:4])[0]
-    req = json.loads(data[4: 4 + length].decode())
-    if not isinstance(req, dict) or req.get("v") != PROTOCOL:
+    if len(data) != 4 + length:
+        raise Denied("malformed request")
+    try:
+        req = json.loads(data[4:].decode())
+    except (ValueError, RecursionError):
+        raise Denied("malformed request")
+    # True == 1 in Python, so the type is checked too.
+    if not isinstance(req, dict) or type(req.get("v")) is not int or req["v"] != PROTOCOL:
         raise Denied("this dcvm client and server don't match; update dcvm")
     return req, fds
 
@@ -716,8 +785,10 @@ def send(conn, obj):
 
 
 def say(fd, text):
-    if fd is not None:
-        write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode())
+    """True once the caller's descriptor took the message."""
+    if fd is None:
+        return False
+    return write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode()) is not None
 
 
 def _alarm(_sig, _frame):
@@ -901,10 +972,10 @@ def handle(conn):
         send(conn, {"exit": rc})
     except Denied as e:
         err = fdmap_get(req, files, "stderr")
-        say(err, redact_text(str(e), argv) if isinstance(argv, list) else str(e))
+        shown = say(err, redact_text(str(e), argv) if isinstance(argv, list) else str(e))
         audit(ctx, argv, "deny", reason=str(e), started=started)
-        # Refused before the request was read: only the client can show the reason.
-        send(conn, {"exit": 77, "error": str(e), "show": err is None})
+        # Refused before the request was read, or its stderr can't be written: only the client can show the reason.
+        send(conn, {"exit": 77, "error": str(e), "show": not shown})
     except Exception as e:
         audit(ctx, argv, "error", reason=str(e), started=started)
         send(conn, {"exit": 70, "error": "dcvm server: %s" % e})
