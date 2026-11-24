@@ -55,6 +55,15 @@ history, so the commit or PR is listed for each release.
 - `delete --all` removes only the deleted VMs' forwards and keeps a refused
   VM's lease, mapping and rules (#77).
 
+### Security
+
+- IP addresses with a leading zero (`--ip 10.10.10.050`, which iptables reads as octal `.40`) are refused everywhere, so a static IP or port forward can no longer reach another VM's address.
+- `delete`, the TTL reaper, port forwards and the hourly storage check take a VM's address from host-side records only (its mapping, DHCP lease or static IP), never from the guest agent; `delete` removes the rules of the address in the VM's mapping.
+- `delete` takes the port-mappings lock that `ports add` and `remove` take.
+- Forward rules accept only port-forwarded (DNATed) traffic, and `RELATED,ESTABLISHED` is added once; run `sudo dcvm network ports apply` once to replace older rules.
+- The storage check skips VMs owned by users and pins each VM's SSH host key, not the address's.
+- The NFS share is exported with `subtree_check`, so a VM can't reach files outside it; `dcvm doctor` reports older exports and `--fix` rewrites them.
+
 ## [0.9.10] - 2026-11-23
 
 dcvm for people and agents without root, and Fedora 44. See
