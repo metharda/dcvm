@@ -473,7 +473,8 @@ def decide_user(ctx, argv):
         return argv
     if cmd == "network" and plain[:1] == ["vnc"] and len(plain) == 3 and plain[1] in ("enable", "disable", "status"):
         own_vm(ctx, plain[2])
-        ctx.update(vm=plain[2], mutating=plain[1] != "status")
+        # enable/disable offer to stop a running VM, which needs the user's terminal.
+        ctx.update(vm=plain[2], mutating=plain[1] != "status", interactive=plain[1] != "status")
         return argv
     if cmd == "restore":
         return decide_backup(ctx, ["restore"] + args)
