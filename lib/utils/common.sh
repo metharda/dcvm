@@ -1190,7 +1190,12 @@ get_vm_ip_trusted() { get_vm_ip "$1" "${2:-1}" host; }
 get_vm_mac() {
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
-  virsh domiflist "$vm_name" 2>/dev/null | grep "$network_name" | awk '{print $5}'
+  vm_network_macs "$vm_name" "$network_name" | head -1
+}
+
+# The exact Source column: a substring also hits the Type column ("network") and other networks.
+vm_network_macs() {
+  virsh domiflist -- "$1" 2>/dev/null | awk -v n="$2" '$3 == n { print $5 }'
 }
 
 get_vm_disk_path() {
@@ -1639,7 +1644,7 @@ is_vm_in_network() {
   vm_visible "$1" || return 1
   local vm_name="$1"
   local network_name="${NETWORK_NAME:-datacenter-net}"
-  virsh domiflist "$vm_name" 2>/dev/null | grep -q "$network_name"
+  [ -n "$(vm_network_macs "$vm_name" "$network_name")" ]
 }
 
 get_port_mappings_file() {
@@ -2142,7 +2147,7 @@ export -f print_info print_success print_warning print_error print_status ui_qui
 export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
-export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
+export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac vm_network_macs get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
 export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action

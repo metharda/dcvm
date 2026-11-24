@@ -21,6 +21,7 @@ SYNTAX_ONLY=false
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
 VERBOSE=false
+INSTALL_DEPS=false
 
 readonly C_PASS="${GREEN}"
 readonly C_FAIL="${RED}"
@@ -42,6 +43,7 @@ show_test_usage() {
 	  --unit         Run unit tests only (common.sh functions)
 	  --integration  Run integration tests only (requires root)
 	  --verbose      Show detailed output
+	  --install-deps Install missing test tools with the package manager (sudo)
 	  --help         Show this help
 	
 	Test Categories:
@@ -96,18 +98,17 @@ log_test() {
 }
 
 install_missing_test_deps() {
-  local missing_pkgs=()
-  local test_deps=(
-    "openssl:openssl"
-    "genisoimage:genisoimage"
-  ) # Update this list as needed
-
-  for dep in "${test_deps[@]}"; do
-    local cmd="${dep%%:*}"
-    local pkg="${dep##*:}"
-    if ! command -v "$cmd" &>/dev/null; then
-      missing_pkgs+=("$pkg")
-    fi
+  local family cmd pkg missing_pkgs=() sudo=()
+  family=$(distro_family)
+  for cmd in openssl genisoimage jq shellcheck xmlstarlet qemu-img; do
+    command -v "$cmd" &>/dev/null && continue
+    case "$family:$cmd" in
+    debian:qemu-img) pkg=qemu-utils ;;
+    arch:genisoimage) pkg=cdrtools ;;
+    fedora:shellcheck) pkg=ShellCheck ;;
+    *) pkg=$cmd ;;
+    esac
+    missing_pkgs+=("$pkg")
   done
 
   if [ ${#missing_pkgs[@]} -eq 0 ]; then
@@ -115,18 +116,14 @@ install_missing_test_deps() {
   fi
 
   echo -e "${C_INFO}[INFO]${C_RESET} Installing missing test dependencies: ${missing_pkgs[*]}"
-
-  local apt_cmd=""
-  if [ "$EUID" -eq 0 ]; then
-    apt_cmd="apt-get"
-  elif command -v sudo &>/dev/null; then
-    apt_cmd="sudo apt-get"
-  else
-    echo -e "${C_WARN}[WARN]${C_RESET} Cannot install dependencies - not root and sudo unavailable"
-    return 1
-  fi
-
-  if $apt_cmd update -qq &>/dev/null && $apt_cmd install -y -qq "${missing_pkgs[@]}" &>/dev/null; then
+  [ "$EUID" -eq 0 ] || sudo=(sudo)
+  case "$family" in
+  debian) "${sudo[@]}" apt-get update -qq &>/dev/null && "${sudo[@]}" apt-get install -y -qq "${missing_pkgs[@]}" &>/dev/null ;;
+  fedora) "${sudo[@]}" dnf install -y -q "${missing_pkgs[@]}" &>/dev/null ;;
+  arch) "${sudo[@]}" pacman -S --needed --noconfirm "${missing_pkgs[@]}" &>/dev/null ;;
+  *) false ;;
+  esac
+  if [ $? -eq 0 ]; then
     echo -e "${C_PASS}[PASS]${C_RESET} Installed missing dependencies"
     return 0
   else
@@ -1628,8 +1625,9 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/root.yaml" 'd["chpasswd"]["list"]')" = "r
 
   local h
   h=$(generate_password_hash -neE)
-  if command -v openssl >/dev/null 2>&1 &&
-    [ "$(printf '%s\n' -neE | openssl passwd -6 -salt "$(cut -d'$' -f3 <<<"$h")" -stdin)" = "$h" ]; then
+  if ! command -v openssl >/dev/null 2>&1; then
+    log_test "SKIP" "generate_password_hash hashes a password that looks like echo options (#36)" "openssl not installed"
+  elif [ "$(printf '%s\n' -neE | openssl passwd -6 -salt "$(cut -d'$' -f3 <<<"$h")" -stdin)" = "$h" ]; then
     log_test "PASS" "generate_password_hash hashes a password that looks like echo options (#36)"
   else
     log_test "FAIL" "generate_password_hash hashes a password that looks like echo options (#36)" "$h"
@@ -2868,6 +2866,51 @@ test_uninstall_exact_matches() {
   rm -rf "$t"
 }
 
+# Read, never run: a missing root check would make main uninstall the test host.
+test_uninstall_root_and_leftovers() {
+  local f="$SCRIPT_DIR/../installation/uninstall-dcvm.sh" r
+  r=$(awk '/^main\(\) \{/,/^}/ { if (/^  require_root$/) print "root"; else if (/require_confirmation|systemctl|virsh|rm -|groupdel/) print "acts" }' "$f" | head -1)
+  if [ "$r" = root ] && grep -q 'userdel "$NFS_SQUASH_USER"' "$f" && grep -q 'pool-undefine' "$f" &&
+    grep -q -- '--remove-service=nfs' "$f"; then
+    log_test "PASS" "uninstall needs root first, removes the NFS user, pools and firewalld services (#101)"
+  else
+    log_test "FAIL" "uninstall needs root first, removes the NFS user, pools and firewalld services (#101)" "$(tr '\n' ' ' <<<"$r")"
+  fi
+}
+
+test_suite_installs_only_on_request() {
+  local calls
+  calls=$(grep -n 'install_missing_test_deps$' "${BASH_SOURCE[0]}" | grep -v 'INSTALL_DEPS" = true ] &&')
+  if [ -z "$calls" ]; then
+    log_test "PASS" "test suite installs packages only with --install-deps (#103)"
+  else
+    log_test "FAIL" "test suite installs packages only with --install-deps (#103)" "$calls"
+  fi
+}
+
+# shellcheck disable=SC2317 # stubs
+test_network_name_exact() {
+  local r
+  r=$(
+    virsh() {
+      printf ' Interface   Type      Source    Model    MAC\n----------------------------------------\n'
+      case "${*: -1}" in
+      other) echo ' vnet0       network   default   virtio   52:54:00:00:00:09' ;;
+      two) printf ' vnet1       network   net       virtio   52:54:00:00:00:01\n vnet2       network   net       virtio   52:54:00:00:00:02\n' ;;
+      esac
+    }
+    NETWORK_NAME=net
+    is_vm_in_network other && echo "other-matched"
+    is_vm_in_network two || echo "two-missed"
+    echo "mac=$(get_vm_mac two)"
+  )
+  if [ "$r" = "mac=52:54:00:00:00:01" ]; then
+    log_test "PASS" "NETWORK_NAME=net matches only VMs on 'net', and one MAC per VM (#90)"
+  else
+    log_test "FAIL" "NETWORK_NAME=net matches only VMs on 'net', and one MAC per VM (#90)" "$(tr '\n' ' ' <<<"$r")"
+  fi
+}
+
 # shellcheck disable=SC2317 # stubs
 test_backup_console_password() {
   local t ts=20260101_120000 mode
@@ -3864,6 +3907,49 @@ test_self_update_keeps_backup() {
     log_test "PASS" "self-update: one commit, whole tree swap only when every file arrived, 3 saved versions, no downgrade"
   else
     log_test "FAIL" "self-update: one commit, whole tree swap only when every file arrived, 3 saved versions, no downgrade" "failed run kept old: $failed_kept_old; kept $kept; x.sh: $(cat "$t/lib/core/x.sh")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs and the paths do_update reads
+test_self_update_failure_paths() {
+  local t r
+  t=$(mktemp -d)
+  mkdir -p "$t/lib/installation" "$t/backups/dcvm-backup-1/lib"
+  printf '#!/bin/sh\necho pre-revert >>"%s/calls"\n' "$t" >"$t/lib/installation/pre-revert.sh"
+  chmod +x "$t/lib/installation/pre-revert.sh"
+  echo old >"$t/backups/dcvm-backup-1/dcvm"
+  run() {
+    (
+      set -euo pipefail
+      eval "$(sed -n '/^new_stage()/,/^}/p; /^version_older()/,/^}/p; /^do_update()/,/^}/p; /^do_revert()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
+      INSTALL_BIN="$t" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups"
+      get_current_version() { echo 0.9.10; }
+      repo_commit_sha() { echo abc; }
+      get_remote_version() { echo 0.9.10.1; }
+      list_repo_files() { return 1; }
+      fetch_repo_file() { return 1; }
+      create_backup_dir() { :; }
+      validate_backup() { :; }
+      install_dcvm_services() { echo restored >>"$t/calls"; }
+      eval "$1"
+      "${@:2}"
+    ) >>"$t/out" 2>&1
+  }
+  run : do_update false </dev/null
+  grep -q 'nothing was changed' "$t/out" && [ "$(find "$t/backups" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && r+="list-failure-clean "
+  run 'new_stage() { return 1; }' do_revert <<<1
+  [ ! -e "$t/calls" ] && r+="no-pre-revert-without-stage "
+  run 'install_dcvm_tree() { return 1; }' do_revert <<<1
+  [ "$(tr '\n' ' ' <"$t/calls" 2>/dev/null)" = "pre-revert restored " ] && r+="services-restored "
+  (
+    eval "$(sed -n '/^version_older()/,/^}/p' "$SCRIPT_DIR/../installation/self-update.sh")"
+    version_older 0.9.9 0.9.10 && version_older 0.9.10 0.9.10.1 && ! version_older 0.9.10.1 0.9.10 && ! version_older 0.9.10 0.9.10
+  ) && r+="numeric "
+  if [ "$r" = "list-failure-clean no-pre-revert-without-stage services-restored numeric " ]; then
+    log_test "PASS" "self-update: failed file list exits cleanly, revert runs pre-revert only after staging and restores services (#100)"
+  else
+    log_test "FAIL" "self-update: failed file list exits cleanly, revert runs pre-revert only after staging and restores services (#100)" "$r; $(tr '\n' ';' <"$t/out" | tail -c 300)"
   fi
   rm -rf "$t"
 }
@@ -4885,12 +4971,16 @@ test_common_functions() {
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
+  test_self_update_failure_paths
   test_aria2c_download
   test_published_checksum
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only
   test_installer_checkout_trust
   test_uninstall_exact_matches
+  test_uninstall_root_and_leftovers
+  test_network_name_exact
+  test_suite_installs_only_on_request
   test_backup_console_password
   test_delete_vm_exact_match
   test_bulk_status_reset
@@ -5269,6 +5359,10 @@ main() {
       VERBOSE=true
       shift
       ;;
+    --install-deps)
+      INSTALL_DEPS=true
+      shift
+      ;;
     --help | -h)
       show_test_usage
       exit 0
@@ -5292,7 +5386,7 @@ main() {
 
   [ -f "/etc/dcvm-install.conf" ] && source /etc/dcvm-install.conf
 
-  install_missing_test_deps
+  [ "$INSTALL_DEPS" = true ] && install_missing_test_deps
   if [ "$SYNTAX_ONLY" = true ]; then
     test_syntax_all_scripts
     test_shellcheck

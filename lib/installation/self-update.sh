@@ -152,6 +152,14 @@ do_update() {
 
   ui_title "Updating dcvm" "$current_version $SYM_ARROW $remote_version"
 
+  local files
+  files=$(list_repo_files) || files=""
+  if [[ -z "$files" ]]; then
+    ui_step fail "Files" "could not list the repository files"
+    print_error "Could not discover repository files; nothing was changed"
+    exit 1
+  fi
+
   create_backup_dir
   local backup_dir="$BACKUP_DIR/dcvm-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$backup_dir"
@@ -159,14 +167,6 @@ do_update() {
   [[ -f "$INSTALL_BIN/dcvm" ]] && cp "$INSTALL_BIN/dcvm" "$backup_dir/dcvm"
   [[ -d "$INSTALL_LIB" ]] && cp -r "$INSTALL_LIB" "$backup_dir/lib"
   ui_step ok "Backup" "$current_version saved in $backup_dir"
-
-  local files
-  files=$(list_repo_files)
-  if [[ -z "$files" ]]; then
-    ui_step fail "Files" "could not list the repository files"
-    print_error "Could not discover repository files; nothing was changed"
-    exit 1
-  fi
 
   local result updated_count ok stage
   result=$(mktemp)
@@ -276,15 +276,22 @@ do_revert() {
     print_error "This saved version is incomplete: $selected_backup"
     exit 1
   fi
+  stage=$(new_stage) && cp -a "$selected_backup/dcvm" "$stage/dcvm" && cp -a "$selected_backup/lib/." "$stage/lib/" || {
+    rm -rf "$stage"
+    print_error "Could not copy $selected_backup; nothing was reverted"
+    exit 1
+  }
   if [[ -x "$INSTALL_LIB/installation/pre-revert.sh" ]]; then
     "$INSTALL_LIB/installation/pre-revert.sh" || {
+      rm -rf "$stage"
       print_error "Could not undo this version's setup; nothing was reverted"
       exit 1
     }
   fi
-  stage=$(new_stage) && cp -a "$selected_backup/dcvm" "$stage/dcvm" && cp -a "$selected_backup/lib/." "$stage/lib/" &&
-    install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB" || {
+  install_dcvm_tree "$stage" "$INSTALL_BIN" "$INSTALL_LIB" || {
     rm -rf "$stage"
+    # pre-revert removed this version's socket and timer; this shell still has its common.sh.
+    install_dcvm_services || print_warning "Could not restore the dcvm services: dcvm doctor --fix"
     print_error "Could not restore $selected_backup"
     exit 1
   }

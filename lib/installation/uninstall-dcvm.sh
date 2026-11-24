@@ -25,6 +25,7 @@ main() {
     echo "Usage: dcvm uninstall     Delete every dcvm VM, all backups, the network, the services and dcvm itself (asks first)"
     exit 0
   fi
+  require_root
   if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
   else
@@ -42,7 +43,6 @@ main() {
   systemctl disable --now datacenter-storage.timer dcvm-boot.service dcvm.socket dcvm-reaper.timer 2>/dev/null || true
   rm -f $DCVM_UNITS /etc/sysctl.d/90-dcvm.conf
   systemctl daemon-reload 2>/dev/null || true
-  rm -rf /var/lib/dcvm/vms /run/dcvm
   groupdel "$DCVM_ADMIN_GROUP" 2>/dev/null
   groupdel "$DCVM_USER_GROUP" 2>/dev/null
   ui_step ok "Services" "timers, boot service, socket and the dcvm groups removed"
@@ -56,6 +56,7 @@ main() {
       deleted_count=$((deleted_count + 1))
     fi
   done
+  rm -rf /var/lib/dcvm/vms /run/dcvm
   ui_step ok "VMs" "$deleted_count deleted"
 
   local status_file="/var/lib/libvirt/dnsmasq/${BRIDGE_NAME}.status"
@@ -64,6 +65,20 @@ main() {
   cleanup_port_forwarding >/dev/null
   save_iptables_rules
   ui_step ok "Port forwards" "rules removed"
+
+  # Before the network goes: the zone is looked up by its bridge.
+  if command_exists firewall-cmd && systemctl is-active --quiet firewalld 2>/dev/null; then
+    local zone services=(--remove-service=nfs --remove-service=rpc-bind --remove-service=mountd)
+    zone=$(firewall-cmd --get-zone-of-interface="$BRIDGE_NAME" 2>/dev/null) || zone=libvirt
+    # The host's default zone may serve NFS to more than dcvm's VMs.
+    if [ "$zone" = "$(firewall-cmd --get-default-zone 2>/dev/null)" ]; then
+      ui_step skip "firewalld" "NFS left allowed in the default zone $zone"
+    else
+      firewall-cmd -q --zone="$zone" "${services[@]}" 2>/dev/null
+      firewall-cmd -q --permanent --zone="$zone" "${services[@]}" 2>/dev/null
+      ui_step ok "firewalld" "NFS no longer allowed in zone $zone"
+    fi
+  fi
 
   if virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1 || true
@@ -81,6 +96,15 @@ main() {
     ui_step ok "NFS share" "removed from /etc/exports"
   fi
 
+  local pool path
+  while read -r pool; do
+    [ -n "$pool" ] || continue
+    path=$(virsh pool-dumpxml "$pool" 2>/dev/null | sed -n 's:.*<path>\(.*\)</path>.*:\1:p' | head -1)
+    [[ -n "$path" && "$path/" == "${DATACENTER_BASE%/}/"* ]] || continue
+    virsh pool-destroy "$pool" >/dev/null 2>&1 || true
+    virsh pool-undefine "$pool" >/dev/null 2>&1 && ui_step ok "Storage pool" "$pool removed"
+  done < <(virsh pool-list --all --name 2>/dev/null)
+
   local data_dir
   if [ ! -d "$DATACENTER_BASE" ]; then
     ui_step skip "Data" "$DATACENTER_BASE not found"
@@ -90,6 +114,7 @@ main() {
   else
     ui_step warn "Data" "$DATACENTER_BASE left in place: not a dcvm folder (no vms/ and storage/); delete it yourself"
   fi
+  id -u "$NFS_SQUASH_USER" >/dev/null 2>&1 && userdel "$NFS_SQUASH_USER" 2>/dev/null && ui_step ok "NFS user" "$NFS_SQUASH_USER removed"
 
   rm -f /usr/local/bin/dcvm /etc/dcvm-install.conf /var/log/datacenter-startup.log /etc/bash_completion.d/dcvm /usr/local/share/dcvm/dcvm-completion.sh
   rm -rf /usr/local/lib/dcvm
