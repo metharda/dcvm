@@ -12,6 +12,17 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Security
+
+- Backup restore moves every network interface onto dcvm's network and drops host bridges, `<target>`, `<filterref>`, `<virtualport>`, VLANs and network boot; graphics get autoport and a password (#115).
+- Backup restore keeps only listed attributes and child elements on every device, so `<input type='evdev'>`, a vhost-user video driver, a TPM state path or `<sysinfo type='fwcfg'>` file no longer survive (#190).
+- The cloud-init seed CD-ROM loses its `user-data` (password hashes, Tailscale key, MySQL password) once the guest has read it, and the guest deletes cloud-init's copies at the end of its first boot (#134).
+
+### Fixed
+
+- `--ip` and DHCP network-config match the NIC by its MAC, so they work on Debian, Kali and Fedora, not only with netplan (#130).
+- CPU, memory and disk sizes with a leading zero (`-c 08`, `-m 01000`) are read as decimal in the quota check and size parsing (#131).
+
 ## [0.9.11] - 2026-11-24
 
 Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
