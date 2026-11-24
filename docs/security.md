@@ -73,7 +73,11 @@ Every cloud-image VM gets:
 
 VNC, when enabled (by default only for Kali and Debian 13, or with
 `--graphics vnc,listen=127.0.0.1` / `dcvm network vnc enable`), listens on
-`127.0.0.1` only. Reach it through an SSH tunnel.
+`127.0.0.1` only. Reach it through an SSH tunnel. VNC and SPICE always get a
+random password (VNC allows 8 characters), also when root sets them up, since
+any local account can connect to `127.0.0.1`; it is set through the
+environment, never on a command line, and `dcvm network vnc status <vm>`
+shows it.
 
 ## Network exposure
 
@@ -123,13 +127,23 @@ VNC, when enabled (by default only for Kali and Debian 13, or with
   servers and well-known mirrors listed in `lib/utils/mirror-manager.sh`.
   Each download must be at least 100 MB and must match the checksum its
   publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
-  or `<file>.SHA256`, looked up on the mirror it came from and on the other
-  mirrors that serve the same file name (the official servers publish them
-  for all nine images). A download that matches no published checksum is
-  discarded and the next mirror is tried. If no mirror publishes a checksum,
-  dcvm keeps the file and prints `download not verified`. GPG signatures are
-  not checked, so a checksum file only proves the download is intact and is
-  the one that server lists, not who built it.
+  or `<file>.SHA256`, looked up first on the official server (the first
+  mirror listed), then on the mirror it came from and the other mirrors that
+  serve the same file name (the official servers publish them for all nine
+  images). The first server that publishes a checksum decides, so while the
+  official server answers, a mirror can't vouch for its own file. A download
+  that doesn't match is discarded and the next mirror is tried. If no mirror
+  publishes a checksum, dcvm keeps the file and prints `download not
+  verified`. GPG signatures are not checked, so a checksum file only proves
+  the download is intact and is the one that server lists, not who built it.
+  curl refuses a redirect from HTTPS to plain HTTP. Before an image becomes a
+  template (Kali: after its conversion to qcow2), it must be a plain qcow2
+  with no backing file or external data file, since every VM's disk is
+  backed by it.
+- **Installer ISOs** are attached read-only as raw images, so neither QEMU
+  nor libvirt reads them as qcow2 or VMDK. An ISO a user hands to
+  `create-iso` is refused if it starts with a disk-image header (qcow2, QED,
+  VMDK, VHDX, VHD).
 - **The installer** runs as root. The README's
   [review-first install](../README.md#quick-start) downloads it to a file so
   you can read it before running it; it then fetches the rest of dcvm from the
@@ -210,10 +224,10 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
   used for their VMs, never root's.
 - **Isolation between users.** Users see and change only their own VMs and
   backups; backups carry their owner, so a reused VM name gets nothing of the
-  previous owner's. `fix-lock` doesn't restart libvirt for users. VNC set up
-  by a user has a random password (VNC allows 8 characters) that only the
-  owner can read. Disks and cloud-init seeds of every VM are readable by root
-  only.
+  previous owner's. `fix-lock` doesn't restart libvirt for users. Every
+  VNC/SPICE display has a random password that only root and the VM's owner
+  can read. Disks and cloud-init seeds of every VM are readable by root only;
+  seeds are created that way, never readable by others even for a moment.
 - **Limits.** Quotas cap each user's VMs, vCPUs, memory and disk
   (`/etc/dcvm/limits.conf`).
 - **Audit.** Every request is logged with its caller and decision

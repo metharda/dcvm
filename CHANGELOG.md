@@ -76,6 +76,11 @@ history, so the commit or PR is listed for each release.
   `/etc/exports` line.
 - The installer validates the directory and network name it writes to
   `/etc/dcvm-install.conf` and makes the file `644`.
+- Installer ISOs are attached as raw images; a user's ISO with a qcow2, QED, VMDK, VHDX or VHD header is refused.
+- `cloud-init.iso` is created readable by root only, not made private after it is written.
+- A downloaded or converted image must be a plain qcow2 without a backing or data file before it becomes a template.
+- The official server's published checksum decides over the serving mirror's; curl downloads refuse HTTPS-to-HTTP redirects.
+- VNC and SPICE set up by root get a random password too, shown at create (`"display_password"` in JSON) and by `network vnc status`.
 
 ## [0.9.10] - 2026-11-23
 

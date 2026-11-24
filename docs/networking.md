@@ -54,10 +54,11 @@ DCVM allows you to toggle VNC graphics for VMs. This is critical for saving reso
 When VNC is enabled (either by default for those OS types or via `--graphics vnc,listen=127.0.0.1`), **VNC listens on `127.0.0.1` (localhost only)**. This means:
 - VNC is only accessible from the host machine
 - To access VNC remotely, use SSH tunneling: `ssh -L 5900:localhost:5900 user@host`
-- VNC set up by a user without root (`dcvm network vnc enable`, or `create
-  --graphics vnc`) gets a random password, because other local users could
-  otherwise connect to `127.0.0.1`; `dcvm network vnc status <vm>` shows it
-  to the VM's owner. VNC set up by root has no password, as before
+- VNC and SPICE get a random password (`dcvm create`, `dcvm create-iso`,
+  `dcvm network vnc enable`), whether root or a user sets them up, because
+  any local account could otherwise connect to `127.0.0.1`. The create output
+  (and `"display_password"` in its JSON) shows it; `dcvm network vnc status
+  <vm>` shows it again to root and the VM's owner
 - This is a security feature to prevent unauthorized access
 
 ### Graphics Mode During Creation
