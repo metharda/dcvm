@@ -6123,6 +6123,7 @@ test_cli_args_and_completion() {
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
     check_permissions() { :; }
     check_dependencies() { :; }
+    load_dcvm_config() { :; }
     fix_vm_locks() { echo "fixed $1 verbose=$VERBOSE"; }
     main --verbose web
   ) 2>&1
