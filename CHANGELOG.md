@@ -12,6 +12,17 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Admin commands over the socket take the same per-VM lock as users' (backup, restore, start/stop, ports, fix-lock); a restore stages its disk under a per-process name (#119)
+- `create a,b,c` locks every named VM, not just the first (#120)
+- An ISO copy that hits a short write or changes size is refused instead of published (#135)
+- `backup restore <vm> <id> <new>` no longer reserves a fixed 2 vCPU/2 GB/30 GB; the backup's real size is checked (#143)
+- A late write timeout can no longer fail a request and remove a VM folder while its module still runs (#186)
+- A staged installer ISO counts against the user's disk quota (#187)
+- The client shows the server's reason instead of a traceback when it is refused before the request is read (#188)
+- `create-iso -o <iso>` works for group users, as it does for root (#189)
+
 ## [0.9.11] - 2026-11-24
 
 Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
