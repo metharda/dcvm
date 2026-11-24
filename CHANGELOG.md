@@ -54,6 +54,11 @@ history, so the commit or PR is listed for each release.
   replaces older rules (#77).
 - `delete --all` removes only the deleted VMs' forwards and keeps a refused
   VM's lease, mapping and rules (#77).
+- IP forwarding counts as persisted only when the last sysctl.d setting is 1; `ip-forwarding off` removes `90-dcvm.conf` (#84).
+- `--network-only --network-name` picks a free subnet, lets libvirt choose the bridge MAC and turns on IP forwarding (#86).
+- `dhcp clear --all` releases leases without restarting the network, which cut every VM off; `dhcp renew` cuts DHCP VMs' links for 5 s and reports which got a new lease (#93).
+- A static `--ip` gets a DHCP reservation, so dnsmasq never leases it to another VM (#95).
+- Lease release passes the lease's client-id to `dhcp_release` (#99).
 
 ### Security
 
