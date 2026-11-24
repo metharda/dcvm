@@ -206,7 +206,7 @@ def lock(name):
 
 
 def limits_for(user):
-    limits = dict(DEFAULT_LIMITS)
+    limits, mine = dict(DEFAULT_LIMITS), {}
     try:
         with open(LIMITS) as f:
             for line in f:
@@ -215,12 +215,15 @@ def limits_for(user):
                 k, v = k.strip(), v.strip()
                 if not v.isdigit():
                     continue
+                prefix, _, name = k.rpartition(".")
                 if k in limits:
                     limits[k] = int(v)
-                elif k.startswith("user.%s." % user) and k.rsplit(".", 1)[-1] in limits:
-                    limits[k.rsplit(".", 1)[-1]] = int(v)
+                elif prefix == "user." + user and name in limits:
+                    mine[name] = int(v)
     except OSError:
         pass
+    # A user's own line wins over a global one wherever either stands in the file.
+    limits.update(mine)
     return limits
 
 
@@ -645,7 +648,7 @@ def decide_backup(ctx, args):
             raise Denied("invalid backup id")
         if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
-        ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
+        ctx["export_fd"] = export_fd(ctx, fd_ref(ctx, rest[-1]))
         # Not mutating: a client that goes away cancels the export.
         backup_lock(ctx, rest[0])
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
@@ -658,11 +661,14 @@ def backup_lock(ctx, vm):
     ctx.update(vm=vm, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
 
 
-def export_fd(fd):
+def export_fd(ctx, fd):
     # Root writes the package through this descriptor, so only the caller's own write access may count.
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     if not stat.S_ISREG(os.fstat(fd).st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
         raise Denied("export writes to a regular file you opened for writing")
+    # dcvm's own messages would be written into the archive.
+    if any(os.path.samestat(os.fstat(fd), os.fstat(o)) for o in ctx.get("output_fds", ())):
+        raise Denied("export cannot write to the file your output goes to")
     return fd
 
 
@@ -1032,6 +1038,7 @@ def handle(conn):
             if isinstance(i, int) and 0 <= i < len(files):
                 fdmap[name] = files[i]
         ctx["files"] = {i: fd for i, fd in enumerate(files)}
+        ctx["output_fds"] = [fdmap[n] for n in ("stdout", "stderr") if n in fdmap]
         # A client may say "agent" on a terminal, never "terminal" without one.
         ttys = all(fdmap.get(n) is not None and os.isatty(fdmap[n]) for n in ("stdin", "stdout"))
         ctx["origin"] = "terminal" if req.get("origin") == "terminal" and ttys else "agent"
@@ -1073,7 +1080,7 @@ def admin_argv(ctx, argv):
                 ctx["iso_fd"] = fd
                 final[i] = "@ISO@"
             elif final[:2] == ["backup", "export"]:
-                ctx["export_fd"] = export_fd(fd)
+                ctx["export_fd"] = export_fd(ctx, fd)
                 final[i] = None
             elif final[:2] == ["backup", "import"] or final[0] == "import":
                 # Root reopens it by path, so only a file the caller opened for reading may count.

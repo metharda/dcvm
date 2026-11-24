@@ -166,7 +166,11 @@ run_test_expect_fail() {
   output=$(eval "$cmd" 2>&1)
   exit_code=$?
 
-  if [ $exit_code -ne 0 ]; then
+  # 126/127 mean the code under test is missing, not that it refused.
+  if [ $exit_code -eq 126 ] || [ $exit_code -eq 127 ]; then
+    log_test "FAIL" "$test_name" "Not run (exit $exit_code): ${output:0:200}"
+    return 1
+  elif [ $exit_code -ne 0 ]; then
     log_test "PASS" "$test_name (expected failure)"
     return 0
   else
@@ -5161,7 +5165,7 @@ test_sanitize_domain_xml() {
     <disk type='file' device='cdrom'><source file='/etc/shadow'/><target dev='sda' bus='sata'/></disk>
     <hostdev mode='subsystem' type='pci'/><filesystem type='mount'><source dir='/'/><target dir='r'/></filesystem>
     <interface type='ethernet'><script path='/tmp/x'/></interface>
-    <interface type='network'><mac address='52:54:00:11:22:33'/><source network='datacenter-net'/></interface>
+    <interface type='network'><mac address='52:54:00:11:22:33'/><source network='host-lan'/></interface>
     <interface type='bridge'><mac address='52:54:00:44:55:66'/><source bridge='br0'/><target dev='tapx'/><filterref filter='f'/><virtualport type='openvswitch'/><vlan><tag id='5'/></vlan><model type='vhost-user'/></interface>
     <input type='evdev'><source dev='/dev/input/event0' grab='all'/></input><input type='tablet' bus='usb'/>
     <video><driver name='vhostuser'/><model type='virtio' heads='1'><acceleration accel3d='yes' rendernode='/dev/dri/renderD128'/></model></video>
@@ -5184,7 +5188,7 @@ XML
   }
   out=$(cat "$t/vm.xml")
   local leaked
-  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|<emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35|br0|tapx|filterref|virtualport|vlan|vhost|evdev|/dev/[a-z]+|accel|dev="network"|5901|knownpw|fwcfg' <<<"$out" | sort -u | tr '\n' ' ')
+  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|<emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35|br0|tapx|filterref|virtualport|vlan|vhost|evdev|/dev/[a-z]+|accel|dev="network"|5901|knownpw|fwcfg|host-lan|source bridge' <<<"$out" | sort -u | tr '\n' ' ')
   if [ -z "$leaked" ] && grep -q '<name>new</name>' <<<"$out" && [ "$(grep -o '<disk ' <<<"$out" | wc -l)" -eq 1 ] &&
     grep -q 'file="/srv/datacenter/vms/new/new-disk.qcow2"' <<<"$out" && grep -q 'type="pty"' <<<"$out" &&
     grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out" &&
@@ -6101,6 +6105,7 @@ test_fix_lock_counts_and_spares() {
     echo "rc4=$?"
     check_permissions() { :; }
     check_dependencies() { :; }
+    load_dcvm_config() { :; }
     (main --all </dev/null)
     echo "all=$?"
   ) 2>&1
@@ -6263,6 +6268,227 @@ PY
   else
     log_test "FAIL" "admin import takes only a descriptor opened for reading" "$out"
   fi
+}
+
+test_expect_fail_needs_code() {
+  local out
+  out=$(
+    run_test_expect_fail "probe-missing" "no_such_function_199" 2>&1
+    run_test_expect_fail "probe-refused" "false" 2>&1
+  )
+  if grep -q 'FAIL.*probe-missing' <<<"$out" && grep -q 'PASS.*probe-refused' <<<"$out"; then
+    log_test "PASS" "test suite: an expected failure from a missing command (exit 126/127) counts as a failed test (#199)"
+  else
+    log_test "FAIL" "test suite: an expected failure from a missing command (exit 126/127) counts as a failed test (#199)" "$(tr '\n' ' ' <<<"$out")"
+  fi
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs; globals are read by the code under test
+test_update_completion_and_units() {
+  local t r="" inst="$SCRIPT_DIR/../installation"
+  t=$(mktemp -d)
+  echo old >"$t/share.sh"
+  (
+    eval "$(sed -n '/^refresh_completion()/,/^}/p' "$inst/post-update.sh")"
+    SCRIPT_DIR="$inst"
+    refresh_completion "$t/share.sh" "$t/absent.sh"
+  ) >/dev/null 2>&1
+  cmp -s "$t/share.sh" "$SCRIPT_DIR/dcvm-completion.sh" && [ ! -e "$t/absent.sh" ] && r+="completion "
+  units() {
+    (
+      eval "$(sed -n '/^remove_units()/,/^}/p' "$inst/pre-revert.sh")"
+      rm() { echo "rm $*" >>"$t/rm"; }
+      systemctl() {
+        [ "$1" != disable ] || return 1
+        [ "$1" != is-active ] || [ "$ACTIVE" = 1 ]
+      }
+      remove_units
+    ) >/dev/null 2>&1
+  }
+  ACTIVE=0 units && ! ACTIVE=1 units && grep -q 'dcvm-reaper.timer' "$t/rm" && r+="units-checked "
+  mkdir -p "$t/lib/installation" "$t/backups/dcvm-backup-1/lib"
+  printf '#!/bin/sh\nexit 1\n' >"$t/lib/installation/pre-revert.sh"
+  chmod +x "$t/lib/installation/pre-revert.sh"
+  echo old >"$t/backups/dcvm-backup-1/dcvm"
+  (
+    eval "$(sed -n '/^new_stage()/,/^}/p; /^do_revert()/,/^}/p' "$inst/self-update.sh")"
+    INSTALL_BIN="$t" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups"
+    get_current_version() { echo 0.9.11; }
+    create_backup_dir() { :; }
+    validate_backup() { :; }
+    install_dcvm_tree() { echo tree >>"$t/calls"; }
+    install_dcvm_services() { echo restored >>"$t/calls"; }
+    do_revert <<<1
+  ) >/dev/null 2>&1
+  [ "$(cat "$t/calls" 2>/dev/null)" = restored ] && r+="revert-restores "
+  if [ "$r" = "completion units-checked revert-restores " ]; then
+    log_test "PASS" "self-update refreshes the installed completion; pre-revert fails while a unit stays active and revert then restores the services (#199)"
+  else
+    log_test "FAIL" "self-update refreshes the installed completion; pre-revert fails while a unit stays active and revert then restores the services (#199)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+test_quota_reads_and_export_target() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "quota and export target checks (python3 not installed)"
+    return
+  fi
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/vms"
+  ! (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 16384 200" && awk() { return 1; } && within_quota 1 512 1 q1) >"$t/out" 2>&1 &&
+    grep -q 'Could not read' "$t/out" && r+="quota-closed "
+  out=$(
+    python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" "$t" <<'PY' 2>&1
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+t = sys.argv[2]
+out = os.open(os.path.join(t, "out"), os.O_WRONLY)
+same = os.open(os.path.join(t, "out"), os.O_WRONLY)
+pkg = os.open(os.path.join(t, "pkg"), os.O_WRONLY | os.O_CREAT, 0o600)
+def ask(fd):
+    try:
+        return "ok" if s.export_fd({"output_fds": [out]}, fd) == fd else "wrong"
+    except s.Denied:
+        return "denied"
+r = [ask(same), ask(pkg)]
+s.LIMITS = os.path.join(t, "limits.conf")
+open(s.LIMITS, "w").write("user.bob.vms=10\nuser.bob.x.vcpus=64\nvms=3\n")
+bob, alice = s.limits_for("bob"), s.limits_for("alice")
+print(" ".join(r + [str(bob["vms"]), str(bob["vcpus"]), str(alice["vms"])]))
+PY
+  )
+  [ "$out" = "denied ok 10 8 3" ] && r+="export-limits "
+  if [ "$r" = "quota-closed export-limits " ]; then
+    log_test "PASS" "quota refuses when usage can't be read; export never writes into the caller's own output; per-user limits win over later global lines (#199)"
+  else
+    log_test "FAIL" "quota refuses when usage can't be read; export never writes into the caller's own output; per-user limits win over later global lines (#199)" "$r; $out"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by fix-lock.sh
+test_fix_lock_config_and_own_lock() {
+  local t r="" out d
+  t=$(mktemp -d)
+  d="$t/vms/fixlockown199"
+  mkdir -p "$d/sub"
+  : >"$d/fixlockown199-disk.qcow2"
+  : >"$d/fixlockown199-disk.qcow2.lock"
+  : >"$d/other.qcow2.lock"
+  : >"$d/sub/x.lock"
+  out=$(
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    exec 2>&1
+    TERM=dumb DCVM_CALLER_ROLE=user
+    check_permissions() { :; }
+    check_dependencies() { :; }
+    load_dcvm_config() { NETWORK_NAME=custom-net DATACENTER_BASE="$t"; }
+    is_vm_in_network() { [ "$NETWORK_NAME" = custom-net ]; }
+    check_vm_exists() { :; }
+    get_vm_disk_path() { echo "$d/fixlockown199-disk.qcow2"; }
+    get_vm_state() { echo "shut off"; }
+    vm_qemu_pid() { return 1; }
+    command_exists() { return 1; }
+    chown() { :; }
+    lsof() { :; }
+    rm() {
+      if [[ "$*" == *"$t/"* ]]; then command rm "$@"; else echo "refused $*" >>"$t/refused"; fi
+    }
+    virsh() {
+      [ "$1" != list ] || echo fixlockown199
+      [ "$1" != dumpxml ] || echo "<domain><devices/></domain>"
+      return 0
+    }
+    NETWORK_NAME=custom-net fix_vm_locks fixlockown199
+    echo "rc=$?"
+    fix_vm_locks() { echo "fixed $1"; }
+    (main --all --yes </dev/null)
+  ) 2>&1
+  grep -q 'Locks cleared on fixlockown199' <<<"$out" && [ ! -e "$d/fixlockown199-disk.qcow2.lock" ] && [ -e "$d/other.qcow2.lock" ] && [ -e "$d/sub/x.lock" ] && r+="own-lock "
+  grep -q '^fixed fixlockown199' <<<"$out" && grep -q 'all 1 VMs' <<<"$out" && r+="config "
+  if [ "$r" = "own-lock config " ]; then
+    log_test "PASS" "fix-lock reads the install's network name and removes only the VM disk's own lock file (#199)"
+  else
+    log_test "FAIL" "fix-lock reads the install's network name and removes only the VM disk's own lock file (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090 # stubs are called by the code under test
+test_port_mappings_save_failure() {
+  local t out
+  t=$(mktemp -d)
+  echo "web 10.10.10.5 2221 8081" >"$t/tmp"
+  out=$(
+    source "$SCRIPT_DIR/../network/port-forward.sh"
+    DATACENTER_BASE="$t" MAPPINGS_TMP="$t/tmp"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    mv() { return 1; }
+    save_mappings_tmp_to_file
+    echo "rc=$?"
+  ) 2>&1
+  if grep -q '^rc=1' <<<"$out" && [ -s "$t/tmp" ] && ! grep -q 'mappings saved' <<<"$out" && [ ! -e "$t/port-mappings.txt.new" ]; then
+    log_test "PASS" "ports setup reports a mapping file it could not write and keeps this run's mappings (#199)"
+  else
+    log_test "FAIL" "ports setup reports a mapping file it could not write and keeps this run's mappings (#199)" "$(tr '\n' ' ' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh and custom-iso.sh
+test_create_undo_and_name_lock() {
+  local t r=""
+  t=$(mktemp -d)
+  undo() {
+    (
+      source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+      virsh() { echo "virsh $*" >>"$t/virsh"; }
+      check_vm_exists() { [ "${EXISTS:-0}" = 1 ]; }
+      DATACENTER_BASE="$t" VM_NAME=web CREATING=true VM_UUID=u-1 VM_DIR_MADE=$1 DISK_MADE=true
+      (exit 1)
+      undo_create
+    ) >/dev/null 2>&1
+  }
+  mkdir -p "$t/vms/web"
+  undo true
+  [ ! -e "$t/vms/web" ] && grep -q '^virsh destroy u-1' "$t/virsh" && ! grep -q ' web' "$t/virsh" && r+="made-folder "
+  mkdir -p "$t/vms/web"
+  : >"$t/vms/web/web-disk.qcow2"
+  : >"$t/vms/web/keep"
+  EXISTS=1 undo false
+  [ -e "$t/vms/web/web-disk.qcow2" ] && r+="other-domain "
+  undo false
+  [ ! -e "$t/vms/web/web-disk.qcow2" ] && [ -e "$t/vms/web/keep" ] && r+="old-folder "
+  : >"$t/virsh"
+  (
+    source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1
+    virsh() { echo "virsh $*" >>"$t/virsh"; }
+    DATACENTER_BASE="$t" VM_NAME=web STARTED=true DEFINED=false VM_UUID=u-2
+    (exit 1)
+    undo_on_failure
+  ) >/dev/null 2>&1
+  grep -q '^virsh destroy u-2' "$t/virsh" && ! grep -q ' web' "$t/virsh" && r+="iso-uuid "
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$t/run/locks"
+    flock "$t/run/locks/vm-web" sleep 2 &
+    sleep 0.5
+    lock() { (unset DCVM_CALLER_ROLE && DCVM_STATE_DIR="$t" && flock() { command flock -n "${@: -1}"; } && eval "$1") >/dev/null 2>&1; }
+    ! lock 'lock_vm_name web' && lock 'DCVM_CALLER_ROLE=user lock_vm_name web' && r+="held "
+    wait
+    lock 'lock_vm_name web' && r+="free "
+  else
+    r+="held free "
+  fi
+  if [ "$r" = "made-folder other-domain old-folder iso-uuid held free " ]; then
+    log_test "PASS" "create undoes only what it made, by the UUID it gave the VM; root's create takes the server's per-VM lock (#199)"
+  else
+    log_test "FAIL" "create undoes only what it made, by the UUID it gave the VM; root's create takes the server's per-VM lock (#199)" "$r; $(tr '\n' ' ' <"$t/virsh")"
+  fi
+  rm -rf "$t"
 }
 
 test_common_functions() {
@@ -6480,6 +6706,12 @@ test_common_functions() {
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact
+  test_expect_fail_needs_code
+  test_update_completion_and_units
+  test_quota_reads_and_export_target
+  test_fix_lock_config_and_own_lock
+  test_port_mappings_save_failure
+  test_create_undo_and_name_lock
 }
 
 test_cli_help() {
@@ -6501,7 +6733,7 @@ test_cli_help() {
   run_test "dcvm -v" "$dcvm_cmd -v"
   run_test "dcvm create --help" "$dcvm_cmd create --help"
   run_test "dcvm backup --help" "$dcvm_cmd backup --help"
-  run_test "dcvm network help" "$dcvm_cmd network help" || true
+  run_test "dcvm network --help" "$dcvm_cmd network --help"
   run_test_output_contains "dcvm help contains 'create'" "create" "$dcvm_cmd help"
   run_test_output_contains "dcvm help contains 'delete'" "delete" "$dcvm_cmd help"
   run_test_output_contains "dcvm help contains 'network'" "network" "$dcvm_cmd help"
@@ -6901,15 +7133,15 @@ main() {
     test_configuration
     test_dependencies
     test_common_functions
+    test_cli_help
+    test_mirror_manager_functions
 
     if [ "$QUICK_MODE" != true ]; then
       test_libvirt
       test_directory_structure
-      test_cli_help
       test_vm_listing
       test_network_commands
       test_storage_commands
-      test_mirror_manager_functions
       test_template_commands
       test_self_update
       test_fix_lock

@@ -355,6 +355,8 @@ select_os() {
       [ "$FORCE_MODE" = true ] && force_flag=(-f)
       iso_handoff_check
       [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
+      # custom-iso.sh takes the VM's lock itself; an inherited hold would make it wait on itself.
+      [ -z "${VM_LOCK_FD:-}" ] || exec {VM_LOCK_FD}>&-
       exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
         ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
         ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
@@ -1058,6 +1060,7 @@ prepare_vm_directory() {
     exit 1
   }
 
+  [ -d "$DATACENTER_BASE/vms/$VM_NAME" ] || VM_DIR_MADE=true
   # QEMU runs as its own user: it must traverse the folder, nobody else read it.
   if ! mkdir -p "$DATACENTER_BASE/vms/$VM_NAME/cloud-init" ||
     ! chmod 711 "$DATACENTER_BASE/vms/$VM_NAME" ||
@@ -1482,6 +1485,7 @@ create_vm_disk() {
   local disk_error base
   hold_builds
   base=$(current_build "$(basename "$TEMPLATE_FILE")") || base="$TEMPLATE_FILE"
+  DISK_MADE=true
   disk_error=$(umask 077 && qemu-img create -f qcow2 -F qcow2 -b "$base" "${VM_NAME}-disk.qcow2" "$VM_DISK_SIZE" 2>&1)
   if [ $? -ne 0 ]; then
     print_error "Failed to create VM disk"
@@ -1503,8 +1507,11 @@ install_vm() {
   fi
   [ "$(caller_role)" != root ] && [ "$GRAPHICS" != none ] && GRAPHICS="${GRAPHICS%%,*},listen=127.0.0.1"
   VM_GRAPHICS_USED=$GRAPHICS
+  # Undo removes this UUID, never whichever domain holds the name by then.
+  VM_UUID=$(cat /proc/sys/kernel/random/uuid) || exit 1
   local vi=(virt-install
     --name "$VM_NAME"
+    --metadata "uuid=$VM_UUID"
     --virt-type kvm
     --memory "$VM_MEMORY"
     --vcpus "$VM_CPUS"
@@ -1537,13 +1544,27 @@ install_vm() {
     echo "    - Check if network '$NETWORK_NAME' is active: virsh net-list"
     echo "    - Check if OS variant '$OS_VARIANT' is valid: osinfo-query os | grep $OS_VARIANT"
     echo "    - Check disk permissions and space"
-    # A domain that exists is not ours: never delete its disk.
-    check_vm_exists "$VM_NAME" || rm -rf "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
     exit 1
   fi
 
   VM_AUTOSTART_OK=true
   virsh autostart "$VM_NAME" >/dev/null 2>&1 || VM_AUTOSTART_OK=false
+}
+
+# Undo a create stopped half way (an error, Ctrl-C): only what this run made goes.
+undo_create() {
+  [ $? -ne 0 ] && [ "${CREATING:-false}" = true ] || return
+  if [ -n "${VM_UUID:-}" ]; then
+    virsh destroy "$VM_UUID" >/dev/null 2>&1
+    virsh undefine "$VM_UUID" --nvram >/dev/null 2>&1 || virsh undefine "$VM_UUID" >/dev/null 2>&1
+  fi
+  # A domain of that name now is not ours: its files stay.
+  check_vm_exists "$VM_NAME" && return
+  if [ "${VM_DIR_MADE:-false}" = true ]; then
+    rm -rf "${DATACENTER_BASE:?}/vms/$VM_NAME"
+  elif [ "${DISK_MADE:-false}" = true ]; then
+    rm -f "$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2"
+  fi
 }
 
 show_create_plan() {
@@ -1731,8 +1752,14 @@ main() {
     if ! validate_vm_name "$VM_NAME"; then
       exit 1
     fi
+    lock_vm_name "$VM_NAME" || exit 1
     if check_vm_exists "$VM_NAME"; then
       print_error "VM $VM_NAME already exists"
+      exit 1
+    fi
+    # qemu-img create would truncate a disk left in the folder.
+    if [ -e "$DATACENTER_BASE/vms/$VM_NAME/${VM_NAME}-disk.qcow2" ]; then
+      print_error "$DATACENTER_BASE/vms/$VM_NAME already has a disk; remove it or pick another name"
       exit 1
     fi
     if [ -n "$BASE_STATIC_IP" ]; then
@@ -1764,6 +1791,10 @@ main() {
     confirm_vm_creation
     ui_quiet
     show_create_plan
+    CREATING=true VM_DIR_MADE=false DISK_MADE=false VM_UUID=""
+    trap undo_create EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
     prepare_vm_directory
     generate_cloud_init_userdata
     generate_cloud_init_metadata
@@ -1778,6 +1809,7 @@ main() {
     [ -n "${VNC_PW:-}" ] && ui_step ok "Display" "password $VNC_PW (dcvm network vnc status $VM_NAME shows it again)"
     register_vm "$VM_NAME" "user=$VM_USERNAME" "cpus=$VM_CPUS" "memory_mb=${VM_MEMORY%MB}" \
       "disk_gb=$(size_gb "$VM_DISK_SIZE")" "expires=${TTL_SECONDS:+$(($(date +%s) + TTL_SECONDS))}"
+    CREATING=false
     if [ "${VM_AUTOSTART_OK:-true}" = true ]; then
       ui_step ok "VM" "defined and started, starts with the host"
     else

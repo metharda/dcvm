@@ -284,6 +284,8 @@ do_revert() {
   if [[ -x "$INSTALL_LIB/installation/pre-revert.sh" ]]; then
     "$INSTALL_LIB/installation/pre-revert.sh" || {
       rm -rf "$stage"
+      # It may have removed part of this version's units before failing.
+      install_dcvm_services || print_warning "Could not restore the dcvm services: dcvm doctor --fix"
       print_error "Could not undo this version's setup; nothing was reverted"
       exit 1
     }
