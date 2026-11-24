@@ -133,20 +133,13 @@ fix_vm_locks() {
   sleep 2
 
   print_info "Checking processes using VM disk file"
-  if [ -f "$VM_DISK_PATH" ]; then
-    local disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $2}' || true)
-    if [ -n "$disk_users" ]; then
-      print_warning "Found processes using disk: $disk_users"
-      echo "$disk_users" | xargs -r kill -TERM 2>/dev/null || true
-      sleep 2
-
-      disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $2}' || true)
-      [ -n "$disk_users" ] && print_warning "Force killing disk users: $disk_users" && echo "$disk_users" | xargs -r kill -KILL 2>/dev/null || true
-    else
-      print_verbose "No processes found using VM disk"
-    fi
-
-    fuser -k "$VM_DISK_PATH" 2>/dev/null && print_verbose "fuser killed additional processes" && sleep 1
+  local disk_users
+  disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $1 "(" $2 ")"}' | sort -u | tr '\n' ' ')
+  # With the VM stopped, a holder is other work (a backup's qemu-img, say): never kill it.
+  if [ -n "$disk_users" ]; then
+    print_error "Still using the disk: $disk_users"
+    echo "  Wait for it to finish (or stop it yourself), then run dcvm fix-lock $vm_name again."
+    return 1
   fi
 
   phase_done "Stopped" "VM and its QEMU processes"
@@ -160,13 +153,14 @@ fix_vm_locks() {
       if [ -n "$found_locks" ]; then
         locks_found=true
         print_verbose "Removing locks in $lock_dir:"
-        echo "$found_locks" | while read -r lock_file; do
+        # A here-string, not a pipe: the loop must count step_errors in this shell.
+        while read -r lock_file; do
           print_verbose "  Removing: $lock_file"
           rm -f "$lock_file" 2>/dev/null || {
             print_warning "Failed to remove: $lock_file"
             step_errors=$((step_errors + 1))
           }
-        done
+        done <<<"$found_locks"
       fi
     else
       print_verbose "Lock directory not found: $lock_dir"
@@ -183,13 +177,13 @@ fix_vm_locks() {
   local disk_locks=$(find "$disk_dir" -name "*.lock" 2>/dev/null || true)
   if [ -n "$disk_locks" ]; then
     print_verbose "Found disk locks:"
-    echo "$disk_locks" | while read -r lock_file; do
+    while read -r lock_file; do
       print_verbose "  Removing: $lock_file"
       rm -f "$lock_file" 2>/dev/null || {
         print_warning "Failed to remove disk lock: $lock_file"
         step_errors=$((step_errors + 1))
       }
-    done
+    done <<<"$disk_locks"
   else
     print_verbose "No disk lock files found"
   fi
@@ -365,7 +359,7 @@ fix_vm_locks() {
 
 main() {
   if wants_help "$@"; then
-    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
+    echo "Usage: dcvm fix-lock <vm> [--verbose] | --all [--yes]    Stop the VM, clear stale disk locks, redefine it (restarts libvirtd for admins)"
     exit 0
   fi
   check_permissions
@@ -374,9 +368,16 @@ main() {
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1
 
-  [ "$2" = "--verbose" ] || [ "$VM_NAME" = "--verbose" ] && VERBOSE=true
+  [[ " $* " == *" --verbose "* ]] && VERBOSE=true
 
   if [ "$VM_NAME" = "--all" ]; then
+    if [[ " $* " != *" --yes "* ]]; then
+      [ -t 0 ] || {
+        print_error "fix-lock --all stops every dcvm VM: add --yes"
+        exit 1
+      }
+      confirm_action "Stop every dcvm VM and clear its locks?" || exit 1
+    fi
 
     VM_LIST=$(virsh list --all --name 2>/dev/null | grep -v "^$" || true)
 

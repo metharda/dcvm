@@ -279,29 +279,7 @@ iso_handoff_check() {
 
 select_os() {
   [ "$FORCE_MODE" = true ] && [ -z "$VM_OS_CHOICE" ] && VM_OS_CHOICE="$DEFAULT_OS"
-  if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == *.ISO ]] ||
-    { [ -n "$VM_OS_CHOICE" ] && [ -f "$VM_OS_CHOICE" ]; }; then
-    print_info "Detected ISO file - switching to custom ISO installation mode..."
-    local force_flag=""
-    [ "$FORCE_MODE" = true ] && force_flag="-f"
-    iso_handoff_check
-    [ "$FLAG_JSON" = true ] && exec 1>&3 3>&-
-    exec "$SCRIPT_DIR/custom-iso.sh" "$VM_NAME" --iso "$VM_OS_CHOICE" \
-      ${FLAG_MEMORY:+-m "$FLAG_MEMORY"} \
-      ${FLAG_CPUS:+-c "$FLAG_CPUS"} \
-      ${FLAG_DISK_SIZE:+-d "$FLAG_DISK_SIZE"} \
-      ${FLAG_STATIC_IP:+--ip "$FLAG_STATIC_IP"} \
-      ${FLAG_TTL:+--ttl "$FLAG_TTL"} \
-      ${FLAG_USERNAME:+-u "$FLAG_USERNAME"} \
-      ${FLAG_GRAPHICS:+--graphics "$FLAG_GRAPHICS"} \
-      $([ "$FLAG_UEFI" = true ] && echo --uefi) \
-      $([ "$FLAG_JSON" = true ] && echo --json) \
-      $([ "$FLAG_WAIT" = true ] && echo --wait) \
-      $force_flag
-    exit $?
-  fi
-
-  if [ "$FORCE_MODE" != true ]; then
+  if [ "$FORCE_MODE" != true ] && [ -z "$FLAG_OS" ]; then
     while true; do
       ui_section "Operating system"
       cat <<-EOF
@@ -361,11 +339,12 @@ select_os() {
     VM_OS="fedora44"
     TEMPLATE_FILE="$DATACENTER_BASE/storage/templates/Fedora-Cloud-Base-Generic-44.x86_64.qcow2"
     OS_VARIANT="fedora-unknown"
-    osinfo-query os -f short-id 2>/dev/null | grep -qx fedora44 && OS_VARIANT="fedora44"
+    osinfo-query os -f short-id 2>/dev/null | awk '{print $1}' | grep -qx fedora44 && OS_VARIANT="fedora44"
     ;;
   *)
 
-    if [[ "$VM_OS_CHOICE" == *.iso ]] || [[ "$VM_OS_CHOICE" == /* && -f "$VM_OS_CHOICE" ]]; then
+    # Only a path or an .iso name is an ISO, so a stray file named 4 in the cwd is not.
+    if [[ "$VM_OS_CHOICE" == *.[iI][sS][oO] ]] || [[ "$VM_OS_CHOICE" == */* && -f "$VM_OS_CHOICE" ]]; then
       if [ "$(caller_role)" != root ] && [ "$VM_OS_CHOICE" != "$DATACENTER_BASE/vms/$VM_NAME/installer.iso" ]; then
         print_error "Pass the ISO as a file instead: dcvm create $VM_NAME -o <file.iso>"
         exit 1
@@ -389,7 +368,7 @@ select_os() {
         "${force_flag[@]}"
       exit $?
     fi
-    if [ "$FORCE_MODE" = true ]; then
+    if [ "$FORCE_MODE" = true ] || [ -n "$FLAG_OS" ]; then
       print_error "Invalid OS selection: $VM_OS_CHOICE. Must be 1-9 or path to ISO file."
       exit 1
     else
@@ -473,12 +452,14 @@ setup_user_account() {
 }
 
 setup_root_access() {
+  # Runs once per VM of a batch, so the parsed flags stay untouched.
+  local root_flag="$FLAG_ENABLE_ROOT"
   if [ "$FLAG_DISABLE_ROOT" = true ]; then
     if [ "$VM_USERNAME" = "root" ] || [ -n "$FLAG_ENABLE_ROOT" ]; then
       print_error "--disable-root can't be combined with username root, --enable-root or --root-password"
       exit 1
     fi
-    FLAG_ENABLE_ROOT="n"
+    root_flag="n"
   fi
 
   if [ "$VM_USERNAME" = "root" ]; then
@@ -495,7 +476,7 @@ setup_root_access() {
 
   if [ "$FORCE_MODE" = true ]; then
     print_info "Root access configuration"
-    [ -n "$FLAG_ENABLE_ROOT" ] && ENABLE_ROOT="$FLAG_ENABLE_ROOT" || ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
+    [ -n "$root_flag" ] && ENABLE_ROOT="$root_flag" || ENABLE_ROOT="$DEFAULT_ENABLE_ROOT"
     ROOT_PASSWORD=""
     if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
       if [ -n "$FLAG_ROOT_PASSWORD" ]; then
@@ -513,9 +494,9 @@ setup_root_access() {
       print_success "Root access disabled"
     fi
   else
-    if [ -n "$FLAG_ENABLE_ROOT" ]; then
+    if [ -n "$root_flag" ]; then
       ui_section "Root login"
-      ENABLE_ROOT="$FLAG_ENABLE_ROOT"
+      ENABLE_ROOT="$root_flag"
       ROOT_PASSWORD=""
       if [[ "$ENABLE_ROOT" =~ ^[Yy]$ ]]; then
         if [ -n "$FLAG_ROOT_PASSWORD" ]; then
@@ -1474,7 +1455,7 @@ create_cloud_init_iso() {
     print_error "Failed to create cloud-init ISO"
     exit 1
   }
-  chmod 600 cloud-init.iso
+  chmod 600 cloud-init.iso cloud-init/*
 }
 
 create_vm_disk() {

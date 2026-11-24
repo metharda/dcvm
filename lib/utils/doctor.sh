@@ -59,6 +59,29 @@ package_for() {
   esac
 }
 
+# A seed's user-data holds password hashes and keys: its folder and files are root's alone.
+vm_permissions() {
+  local vms="$DATACENTER_BASE/vms" vm_files vm_dirs seeds open_seeds backups_open=0
+  vm_files=$(find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -printf . 2>/dev/null | wc -c)
+  vm_dirs=$(find "$vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
+  seeds=$(find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -printf . 2>/dev/null | wc -c)
+  open_seeds=$(find "$vms" -mindepth 2 -maxdepth 3 \( -perm /077 -o ! -user root \) \
+    \( \( -type d -path "$vms/*/cloud-init" \) -o \( -type f -path "$vms/*/cloud-init/*" \) \) -printf . 2>/dev/null | wc -c)
+  [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
+  if [ $((vm_files + vm_dirs + open_seeds + backups_open)) -eq 0 ]; then
+    report ok "Permissions" "VM disks, $(plural "$seeds" "cloud-init seed") and backups closed to other users"
+  elif $FIX; then
+    find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -exec chmod go-rwx {} + 2>/dev/null
+    find "$vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
+    find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -exec chown -R root:root {} + -exec chmod 700 {} + 2>/dev/null
+    find "$vms" -mindepth 3 -maxdepth 3 -type f -path "$vms/*/cloud-init/*" -exec chmod 600 {} + 2>/dev/null
+    [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
+    report fixed "Permissions" "closed VM disks, cloud-init seeds and backups to other users"
+  else
+    report warn "Permissions" "VM disks, cloud-init seeds (password hashes) or backups are open to other local users: --fix closes them"
+  fi
+}
+
 check_host() {
   section "Host"
   if [ -e /dev/kvm ] && virsh list >/dev/null 2>&1; then
@@ -153,20 +176,7 @@ check_host() {
     report fail "NFS share" "not squashed, not limited to the share (subtree_check) or open to host users: VMs may reach host files; --fix secures it"
   fi
 
-  local vm_files vm_dirs backups_open=0
-  vm_files=$(find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -printf . 2>/dev/null | wc -c)
-  vm_dirs=$(find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
-  [ -d "$DATACENTER_BASE/backups" ] && [ -n "$(find "$DATACENTER_BASE/backups" -maxdepth 0 -perm /077 2>/dev/null)" ] && backups_open=1
-  if [ $((vm_files + vm_dirs + backups_open)) -eq 0 ]; then
-    report ok "Permissions" "VM disks, seeds and backups closed to other users"
-  elif $FIX; then
-    find "$DATACENTER_BASE/vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /044 -exec chmod go-rwx {} + 2>/dev/null
-    find "$DATACENTER_BASE/vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
-    [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
-    report fixed "Permissions" "closed VM disks, seeds and backups to other users"
-  else
-    report warn "Permissions" "VM disks, cloud-init seeds (password hashes) or backups are readable by every local user: --fix closes them"
-  fi
+  vm_permissions
 
   $FAST && return 0
   local here latest tmp

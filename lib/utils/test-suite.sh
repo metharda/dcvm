@@ -3623,8 +3623,7 @@ test_network_trust() {
       return 0
     }
     ssh() { echo "$*" >>"$t/ssh"; }
-    get_vm_username() { echo ubuntu; }
-    registry_get() { case "$2" in created) echo 123 ;; owner) echo alice ;; esac }
+    registry_get() { case "$2" in created) echo 123 ;; owner) echo alice ;; user) echo ubuntu ;; esac }
     OWNER=1000
     vm_owner_uid() { echo "$OWNER"; }
     check_vm_storage web
@@ -4101,6 +4100,161 @@ XML
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh
+test_create_os_choice_and_batch() {
+  local t r="" f
+  t=$(mktemp -d)
+  mkdir -p "$t/cwd" "$t/storage/templates"
+  : >"$t/cwd/4"
+  for f in ubuntu-24.04-server-cloudimg-amd64.img ubuntu-22.04-server-cloudimg-amd64.img Fedora-Cloud-Base-Generic-44.x86_64.qcow2; do
+    : >"$t/storage/templates/$f"
+  done
+  r=$(
+    cd "$t/cwd" || exit 1
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    DATACENTER_BASE="$t"
+    iso_handoff_check() { exit 9; }
+    osinfo-query() { printf ' Short ID             \n----------------------\n fedora44             \n'; }
+    (FORCE_MODE=true FLAG_OS="" VM_OS_CHOICE=4 && select_os >/dev/null 2>&1 && echo "file4:$VM_OS")
+    (FORCE_MODE=false FLAG_OS=5 VM_OS_CHOICE=5 && select_os >/dev/null 2>&1 <<<"" && echo "flag:$VM_OS")
+    (FORCE_MODE=true FLAG_OS=9 VM_OS_CHOICE=9 && select_os >/dev/null 2>&1 && echo "fedora:$OS_VARIANT")
+    (FORCE_MODE=false FLAG_OS=x VM_OS_CHOICE=x && select_os >/dev/null 2>&1 </dev/null) || echo "bad-flag-exits"
+    (
+      FORCE_MODE=true VM_USERNAME=tester VM_PASSWORD=testpass123 FLAG_DISABLE_ROOT=true
+      setup_root_access >/dev/null 2>&1
+      setup_root_access >/dev/null 2>&1
+      echo "batch:$ENABLE_ROOT[$FLAG_ENABLE_ROOT]"
+    )
+  )
+  r=$(tr '\n' ' ' <<<"$r")
+  if [ "$r" = "file4:ubuntu24.04 flag:ubuntu22.04 fedora:fedora44 bad-flag-exits batch:n[] " ]; then
+    log_test "PASS" "create -o: a file named 4 is not an ISO, -o skips the prompt, fedora44 found in padded osinfo; --disable-root on every VM of a batch"
+  else
+    log_test "FAIL" "create -o: a file named 4 is not an ISO, -o skips the prompt, fedora44 found in padded osinfo; --disable-root on every VM of a batch" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by storage-manager.sh
+test_storage_cleanup_reports() {
+  local t r="" out
+  t=$(mktemp -d)
+  out=$(
+    source "$SCRIPT_DIR/../storage/storage-manager.sh" >/dev/null 2>&1
+    LOG_FILE="$t/storage.log" DATACENTER_BASE="$t" TERM=dumb
+    RC=0
+    ssh() {
+      echo "$*" >>"$t/ssh"
+      [[ "$*" != *"bash -s"* ]] || cat >"$t/script"
+      return "$RC"
+    }
+    registry_get() { case "$2" in created) echo 123 ;; user) [ "$1" = imported ] && echo bob ;; esac }
+    vm_owner_uid() { echo 0; }
+    get_vm_ip_trusted() { echo 10.10.10.50; }
+    check_vm_storage imported
+    check_vm_storage isovm
+    for RC in 0 3 1 255; do cleanup_old_files imported bob@10.10.10.50; done
+  ) 2>&1
+  grep -q 'bob@10.10.10.50 df -P /' "$t/ssh" && ! grep -q 'admin@' "$t/ssh" && r+="login "
+  grep -q 'isovm.*login user unknown' <<<"$out" && r+="iso-skip "
+  [ "$(grep -c 'old logs compressed and archived' <<<"$out")" = 1 ] && grep -q '/mnt/shared is not mounted' <<<"$out" &&
+    grep -q 'cleanup failed (exit 1)' <<<"$out" && grep -q 'SSH to bob@10.10.10.50 did not connect' <<<"$out" && r+="status "
+  grep -q 'find /var/log -type f -name "\*.gz"' "$t/script" && grep -q 'mv -f .* && ln -sf ' "$t/script" && r+="links "
+  if [ "$r" = "login iso-skip status links " ]; then
+    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links"
+  else
+    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by fix-lock.sh
+test_fix_lock_counts_and_spares() {
+  local t r="" out
+  t=$(mktemp -d)
+  : >"$t/fixlocktest.qcow2"
+  : >"$t/fixlocktest.qcow2.lock"
+  out=$(
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    exec 2>&1
+    TERM=dumb DATACENTER_BASE="$t" DCVM_CALLER_ROLE=user
+    HOLDER=""
+    check_vm_exists() { :; }
+    get_vm_disk_path() { echo "$t/fixlocktest.qcow2"; }
+    get_vm_state() { echo "shut off"; }
+    vm_qemu_pid() { return 1; }
+    sleep() { :; }
+    command_exists() { return 1; }
+    kill() { echo "killed $*" >>"$t/kills"; }
+    fuser() { echo "fuser $*" >>"$t/kills"; }
+    lsof() { [ -n "$HOLDER" ] && printf 'COMMAND PID\nqemu-img 2147483646\n'; }
+    virsh() { case "$1" in dumpxml) echo "<domain><devices/></domain>" ;; list) echo " Id Name State" ;; esac }
+    rm() {
+      [[ "$*" == *.lock* ]] && return 1
+      command rm "$@"
+    }
+    fix_vm_locks fixlocktest
+    echo "rc1=$?"
+    HOLDER=1
+    fix_vm_locks fixlocktest
+    echo "rc2=$?"
+    check_permissions() { :; }
+    check_dependencies() { :; }
+    (main --all </dev/null)
+    echo "all=$?"
+  ) 2>&1
+  sed -n '1,/^rc1=/p' <<<"$out" | grep -q 'Locks cleared on fixlocktest with 1 problem' && grep -q '^rc1=1' <<<"$out" && r+="counted "
+  grep -q 'Still using the disk: qemu-img(2147483646)' <<<"$out" && grep -q '^rc2=1' <<<"$out" && [ ! -e "$t/kills" ] && r+="spared "
+  grep -q 'add --yes' <<<"$out" && grep -q '^all=1' <<<"$out" && r+="all-asks "
+  ! grep -q 'virsh shutdown' "$SCRIPT_DIR/fix-lock.sh" && grep -q 'stop_vm_gracefully "$vm_name"' "$SCRIPT_DIR/fix-lock.sh" && r+="no-3s "
+  if [ "$r" = "counted spared all-asks no-3s " ]; then
+    log_test "PASS" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first"
+  else
+    log_test "FAIL" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # globals read by doctor.sh
+test_doctor_seed_permissions() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/web/cloud-init"
+  chmod 711 "$t/vms/web"
+  chmod 755 "$t/vms/web/cloud-init"
+  echo secret >"$t/vms/web/cloud-init/user-data"
+  chmod 644 "$t/vms/web/cloud-init/user-data"
+  : >"$t/vms/web/cloud-init.iso"
+  : >"$t/vms/web/web-disk.qcow2"
+  chmod 600 "$t/vms/web/cloud-init.iso" "$t/vms/web/web-disk.qcow2"
+  out=$(
+    source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+    TERM=dumb DATACENTER_BASE="$t"
+    FIX=false vm_permissions
+    echo "problems=$PROBLEMS"
+    FIX=true vm_permissions
+    FIX=false vm_permissions
+  ) 2>&1
+  grep -q 'open to other local users' <<<"$out" && grep -q '^problems=1' <<<"$out" && r+="found "
+  grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && grep -q '1 cloud-init seed and backups closed' <<<"$out" && r+="fixed "
+  [ "$(stat -c %a "$t/vms/web/cloud-init" "$t/vms/web/cloud-init/user-data" | tr '\n' ' ')" = "700 600 " ] && r+="modes "
+  if [ "$(id -u)" = 0 ]; then
+    chown nobody "$t/vms/web/cloud-init/user-data"
+    out=$(
+      source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+      TERM=dumb DATACENTER_BASE="$t"
+      FIX=true vm_permissions
+    ) 2>&1
+    grep -q 'closed VM disks' <<<"$out" && [ "$(stat -c %U "$t/vms/web/cloud-init/user-data")" = root ] || r+="owner-not-fixed "
+  fi
+  if [ "$r" = "found fixed modes " ]; then
+    log_test "PASS" "doctor checks cloud-init seeds (700/600, root's) and fixes them"
+  else
+    log_test "FAIL" "doctor checks cloud-init seeds (700/600, root's) and fixes them" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_packages() {
   local fam
   for fam in debian arch; do
@@ -4330,6 +4484,10 @@ test_common_functions() {
   test_reap_needs_libvirt
   test_info_and_connect_exit
   test_fix_lock_definition
+  test_create_os_choice_and_batch
+  test_storage_cleanup_reports
+  test_fix_lock_counts_and_spares
+  test_doctor_seed_permissions
   test_backup_list_columns
   test_delete_without_iptables_dir
   test_self_update_keeps_backup
