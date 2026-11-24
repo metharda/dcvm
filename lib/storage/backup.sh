@@ -1010,6 +1010,21 @@ hosts_rename_sed_expr() {
   printf 's/([[:space:]])%s([.[:space:]]|$)/\\1%s\\2/g' "$1" "$2"
 }
 
+# A user's disk is guest-controlled, so root never opens it with libguestfs: the copy gets a
+# new cloud-init instance instead, which regenerates SSH host keys and sets the hostname.
+reseed_restored_guest() {
+  local vm="$1" dir="$DATACENTER_BASE/vms/$1" tool=genisoimage
+  command -v mkisofs >/dev/null 2>&1 && tool=mkisofs
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  mkdir -p -m 700 "$dir/cloud-init" &&
+    (umask 077 && printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$vm" "$(date +%s)" "$vm" >"$dir/cloud-init/meta-data" &&
+      printf '%s\n' '#cloud-config' 'users: []' 'bootcmd:' \
+        '  - [cloud-init-per, instance, dcvm-machine-id, sh, -c, "rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup"]' \
+        >"$dir/cloud-init/user-data" &&
+      "$tool" -output "$dir/cloud-init.iso" -volid cidata -joliet -rock "$dir/cloud-init/" >/dev/null 2>&1) || return 1
+  chmod 600 "$dir/cloud-init.iso"
+}
+
 customize_restored_guest() {
   local disk_path="$1"
   local new_name="$2"
@@ -1024,17 +1039,6 @@ customize_restored_guest() {
     print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
     print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
     return 1
-  fi
-
-  # A user's disk is guest-controlled: its libguestfs appliance runs as an sVirt-confined libvirt domain, never as root.
-  if [ "$(caller_role)" = user ]; then
-    if ! virsh capabilities 2>/dev/null | grep -qE '<model>(selinux|apparmor)</model>'; then
-      print_warning "Not customizing guest: libvirt confines VMs with neither SELinux nor AppArmor here; the copy keeps the hostname, machine-id and SSH host keys of '$old_name'"
-      print_info "Inside the VM run: sudo hostnamectl set-hostname $new_name"
-      print_info "  and reset its identity: sudo truncate -s 0 /etc/machine-id; sudo rm -f /etc/ssh/ssh_host_*; sudo ssh-keygen -A; then reboot"
-      return 1
-    fi
-    local -x LIBGUESTFS_BACKEND=libvirt:qemu:///system
   fi
 
   local -a args=(-q --format qcow2 -a "$disk_path" --hostname "$new_name")
@@ -1417,7 +1421,11 @@ restore_vm() {
 
   print_success "File permissions and ownership set"
 
-  if [ "$renamed" = true ]; then
+  local reseeded=false
+  if [ "$renamed" = true ] && [ "$(caller_role)" = user ]; then
+    reseed_restored_guest "$vm_name" && reseeded=true ||
+      print_warning "Could not give $vm_name a new identity; inside the VM: sudo hostnamectl set-hostname $vm_name, then reset /etc/machine-id and the SSH host keys"
+  elif [ "$renamed" = true ]; then
     customize_restored_guest "$vm_disk_path" "$vm_name" "$backup_vm_name" || true
   fi
 
@@ -1435,6 +1443,11 @@ restore_vm() {
         login=$(vm_login "$vm_name")
       fi
       registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
+      if [ "$reseeded" = true ]; then
+        virsh attach-disk "$vm_name" "$DATACENTER_BASE/vms/$vm_name/cloud-init.iso" sdc --type cdrom --mode readonly --targetbus sata --config >/dev/null 2>&1 &&
+          ui_step ok "Identity" "new hostname, SSH host keys and machine-id on first boot" ||
+          print_warning "Could not attach $vm_name's new cloud-init seed; it keeps the source's identity"
+      fi
       log "INFO" "VM configuration restored for $vm_name on attempt $attempt"
       defined=true
       break

@@ -850,24 +850,21 @@ EOF
     log_test "FAIL" "backup restore <new_name> (hostname + machine-id + SSH host keys)" "$(grep virt-customize "$t/calls" | head -2)"
   fi
 
-  local caps
-  for caps in selinux none; do
-    echo "<secmodel><model>$caps</model></secmodel>" >"$t/caps"
-    echo 1000 >"$t/backups/vm1-$ts/owner"
-    : >"$t/calls"
-    (
-      load_backup_sh_for_test "$t"
-      stub_backup_tools "$t"
-      DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1000 restore_vm vm1 "$ts" "" "" "vm1-u$caps" </dev/null >"$t/out-$caps" 2>&1
-    )
-    rm -f "$t/backups/vm1-$ts/owner"
-    cp "$t/calls" "$t/calls-$caps"
-  done
-  if grep -q "^virt-customize backend=libvirt:qemu:///system .*--hostname vm1-uselinux" "$t/calls-selinux" &&
-    ! grep -q virt-customize "$t/calls-none" && grep -q "keeps the hostname, machine-id and SSH host keys" "$t/out-none"; then
-    log_test "PASS" "backup restore <new_name> by a user (customized under sVirt-confined libguestfs, else warns)"
+  echo 1000 >"$t/backups/vm1-$ts/owner"
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    mkisofs() { while [ $# -gt 0 ]; do [ "$1" = -output ] && echo seed >"$2"; shift; done; }
+    DCVM_CALLER_ROLE=user DCVM_CALLER_UID=1000 restore_vm vm1 "$ts" "" "" "vm1-ucopy" </dev/null >"$t/out-user" 2>&1
+  )
+  rm -f "$t/backups/vm1-$ts/owner"
+  if ! grep -q virt-customize "$t/calls" && grep -q '^local-hostname: vm1-ucopy$' "$t/vms/vm1-ucopy/cloud-init/meta-data" 2>/dev/null &&
+    grep -q '^instance-id: vm1-ucopy-' "$t/vms/vm1-ucopy/cloud-init/meta-data" && grep -q 'systemd-machine-id-setup' "$t/vms/vm1-ucopy/cloud-init/user-data" &&
+    [ -s "$t/vms/vm1-ucopy/cloud-init.iso" ] && grep -q 'attach-disk vm1-ucopy .*cloud-init.iso' "$t/calls"; then
+    log_test "PASS" "backup restore <new_name> by a user (new cloud-init identity, no libguestfs on the user's disk)"
   else
-    log_test "FAIL" "backup restore <new_name> by a user (customized under sVirt-confined libguestfs, else warns)" "$(grep virt-customize "$t/calls-selinux" "$t/calls-none" | head -2)"
+    log_test "FAIL" "backup restore <new_name> by a user (new cloud-init identity, no libguestfs on the user's disk)" "$(tail -2 "$t/out-user" | tr '\n' ' ')"
   fi
 
   if ! grep -qi '<nvram' "$t/defined.xml" 2>/dev/null; then
