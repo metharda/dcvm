@@ -188,21 +188,16 @@ fix_vm_locks() {
 
   phase_done "libvirt locks" "$([ "$locks_found" = true ] && echo "lock and pid files removed" || echo "none found")"
 
-  local disk_dir=$(dirname "$VM_DISK_PATH")
-  print_verbose "Checking disk directory: $disk_dir"
-
-  local disk_locks=$(find "$disk_dir" -name "*.lock" 2>/dev/null || true)
-  if [ -n "$disk_locks" ]; then
-    print_verbose "Found disk locks:"
-    while read -r lock_file; do
-      print_verbose "  Removing: $lock_file"
-      rm -f "$lock_file" 2>/dev/null || {
-        print_warning "Failed to remove disk lock: $lock_file"
-        step_errors=$((step_errors + 1))
-      }
-    done <<<"$disk_locks"
+  # Only this disk's own lock file: other images in the folder may be in use.
+  local disk_lock="$VM_DISK_PATH.lock"
+  if [ -f "$disk_lock" ]; then
+    print_verbose "Removing disk lock: $disk_lock"
+    rm -f "$disk_lock" 2>/dev/null || {
+      print_warning "Failed to remove disk lock: $disk_lock"
+      step_errors=$((step_errors + 1))
+    }
   else
-    print_verbose "No disk lock files found"
+    print_verbose "No disk lock file found"
   fi
 
   if command_exists qemu-img; then
@@ -383,6 +378,7 @@ main() {
   fi
   check_permissions
   check_dependencies virsh lsof
+  load_dcvm_config
   VM_NAME="$1"
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1

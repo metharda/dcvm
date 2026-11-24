@@ -447,9 +447,12 @@ validate_iso_options() {
 
 build_virt_install_opts() {
   validate_iso_options
+  # Undo removes this UUID, never whichever domain holds the name by then.
+  VM_UUID=$(cat /proc/sys/kernel/random/uuid) || exit 1
   # No bus or NIC model: libosinfo picks what the detected OS has drivers for (Windows has no virtio).
   VIRT_INSTALL_OPTS=(
     --name "$VM_NAME"
+    --metadata "uuid=$VM_UUID"
     --memory "$MEMORY"
     --vcpus "$CPUS"
     --disk "path=$DISK_PATH,format=qcow2"
@@ -551,8 +554,10 @@ print_result() {
 # Undo a create that stopped half way: everything here was made by this run.
 undo_on_failure() {
   [ $? -ne 0 ] && [ "${STARTED:-false}" = true ] && [ "${DEFINED:-false}" = false ] || return
-  virsh destroy "$VM_NAME" >/dev/null 2>&1
-  virsh undefine "$VM_NAME" --nvram >/dev/null 2>&1 || virsh undefine "$VM_NAME" >/dev/null 2>&1
+  if [ -n "${VM_UUID:-}" ]; then
+    virsh destroy "$VM_UUID" >/dev/null 2>&1
+    virsh undefine "$VM_UUID" --nvram >/dev/null 2>&1 || virsh undefine "$VM_UUID" >/dev/null 2>&1
+  fi
   [ "${DISK_MADE:-false}" = true ] && rm -f "$DISK_PATH"
   [ "${ISO_COPIED:-false}" = true ] && rm -f "$VM_DIR/installer.iso"
   rmdir "$DATACENTER_BASE/vms/$VM_NAME" 2>/dev/null
@@ -576,6 +581,7 @@ main() {
 
   check_iso_dependencies
   prompt_iso_path
+  lock_vm_name "$VM_NAME" || exit 1
   validate_vm_not_exists
   if [ -e "$DATACENTER_BASE/vms/$VM_NAME/$VM_NAME-disk.qcow2" ]; then
     print_error "$DATACENTER_BASE/vms/$VM_NAME already has a disk; remove it or pick another name"

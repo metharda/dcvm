@@ -1511,7 +1511,11 @@ within_quota() {
       for (n in seen) if (n != vm && v[n, "owner_uid"] == uid) { c += v[n, "cpus"]; m += v[n, "memory_mb"]; d += v[n, "disk_gb"] }
       print c + 0, m + 0, d + 0, v[vm, "cpus"] + 0, v[vm, "memory_mb"] + 0, v[vm, "disk_gb"] + 0
     }' "${files[@]}" /dev/null)
-  if ((uc + cpus > c || um + mem > m || ud + disk > d)); then
+  # Usage that can't be read must refuse: empty values would count as nothing used.
+  if [[ ! "$uc $um $ud $oc $om $od" =~ ^[0-9]+( [0-9]+){5}$ ]]; then
+    print_error "Could not read your VMs' usage; try again"
+    rc=1
+  elif ((uc + cpus > c || um + mem > m || ud + disk > d)); then
     print_error "Over your quota: this VM needs $cpus vCPU, $mem MB, $disk GB; you have $((c - uc)) vCPU, $((m - um)) MB, $((d - ud)) GB left"
     rc=1
   else
@@ -1521,6 +1525,19 @@ within_quota() {
   fi
   exec {lockfd}>&-
   return $rc
+}
+
+# The server's per-VM lock. Root runs modules directly; for anyone else the server already holds it.
+lock_vm_name() {
+  [ -z "${DCVM_CALLER_ROLE:-}" ] || return 0
+  local locks="${DCVM_STATE_DIR:+$DCVM_STATE_DIR/run/locks}"
+  locks=${locks:-/run/dcvm/locks}
+  [ -z "${VM_LOCK_FD:-}" ] || exec {VM_LOCK_FD}>&-
+  if mkdir -p -m 700 "$locks" && exec {VM_LOCK_FD}>>"$locks/vm-$1" && flock -w 30 "$VM_LOCK_FD"; then
+    return 0
+  fi
+  print_error "Another operation on $1 is still running; try again in a moment"
+  return 1
 }
 
 # A failed in-place restore keeps the VM it had, so its old charge comes back.
@@ -1616,7 +1633,8 @@ run_detached() {
       "$(realpath "${BASH_SOURCE[0]}")" "$@" >/dev/null 2>&1; then
     return 0
   fi
-  ("$@") </dev/null >/dev/null 2>&1 3>&- &
+  # It outlives this run, so it must not keep the VM's lock.
+  ({ [ -z "${VM_LOCK_FD:-}" ] || exec {VM_LOCK_FD}>&-; } && "$@") </dev/null >/dev/null 2>&1 3>&- &
 }
 
 # QEMU keeps the old seed open across guest reboots; SSH answers only after cloud-init has read it.

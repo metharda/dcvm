@@ -69,11 +69,15 @@ save_mappings_tmp_to_file() {
     KEPT_MAPPINGS=$(read_port_mappings 2>/dev/null | while read -r vm rest; do
       ! awk -v v="$vm" '$1 == v { f = 1 } END { exit !f }' "$MAPPINGS_TMP" && check_vm_exists "$vm" && echo "$vm $rest"
     done)
-    (umask 077 && {
+    if ! (umask 077 && {
       echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT"
       cat "$MAPPINGS_TMP"
       [ -z "$KEPT_MAPPINGS" ] || echo "$KEPT_MAPPINGS"
-    } >"$map_file.new") && mv -f "$map_file.new" "$map_file"
+    } >"$map_file.new") || ! mv -f "$map_file.new" "$map_file"; then
+      rm -f "$map_file.new"
+      print_error "Could not save the port mappings to $map_file; this run's are kept in $MAPPINGS_TMP"
+      return 1
+    fi
     rm -f "$MAPPINGS_TMP"
     print_success "Port mappings saved to $map_file"
   fi
@@ -139,7 +143,8 @@ cmd_setup() {
   allow_related
   rm -f "$old_rows"
   forwarded=$(cat "$MAPPINGS_TMP")
-  save_mappings_tmp_to_file
+  local saved=true
+  save_mappings_tmp_to_file || saved=false
   command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
   save_iptables_rules
   if [ "$count" -gt 0 ]; then
@@ -155,7 +160,11 @@ cmd_setup() {
     ui_step skip "${item%%|*}" "${item#*|}"
   done
   [ -z "${KEPT_MAPPINGS:-}" ] || echo -e "  ${DIM}$(plural "$(grep -c . <<<"$KEPT_MAPPINGS")" "saved mapping") of VMs not forwarded now kept without rules; dcvm network ports apply restores them${NC}"
-  if [ "$count" -gt 0 ]; then
+  if [ "$saved" = false ]; then
+    ui_done fail "$(plural "$count" VM) forwarded, but the mappings were not saved" "run dcvm network ports setup again"
+    echo ""
+    return 1
+  elif [ "$count" -gt 0 ]; then
     ui_done ok "$(plural "$count" VM) forwarded" "saved to $DATACENTER_BASE/port-mappings.txt"
     echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$SSH_PORT_END and $HTTP_PORT_START-$HTTP_PORT_END in the host firewall.${NC}"
   else
