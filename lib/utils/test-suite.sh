@@ -2812,7 +2812,10 @@ test_disable_root_and_nfs_subnet() {
 # shellcheck disable=SC2317 # stubs
 test_installer_checkout_trust() {
   local base t r=""
-  base=$(mktemp -d "$HOME/.dcvm-trust-test.XXXXXX") || return
+  local parent=$HOME
+  # Every folder above the checkout must be the caller's; CI containers mount HOME from another uid.
+  [ "$(id -u)" = 0 ] && parent=/root
+  base=$(mktemp -d "$parent/.dcvm-trust-test.XXXXXX") || return
   t=$(mktemp -d)
   mk_checkout() {
     mkdir -p "$1/lib/installation" "$1/lib/utils"
