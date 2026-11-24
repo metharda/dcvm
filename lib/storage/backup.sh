@@ -1051,6 +1051,7 @@ customize_restored_guest() {
 
 restore_disk_base() {
   local disk="$1" record="$2" backing img="" build="" how="" sha256 sha512 cur
+  hold_builds
   backing=$(disk_backing "$disk")
   if [ -z "$backing" ]; then
     ui_step ok "Base image" "none needed (standalone disk)"

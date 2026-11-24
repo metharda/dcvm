@@ -363,9 +363,9 @@ leases_table() {
 repo_commit_sha() {
   local url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/commits/${DCVM_REPO_BRANCH:-main}" sha
   if command_exists curl; then
-    sha=$(curl -fsSL -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+    sha=$(curl -fsSL --proto =https --proto-redir =https -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
   else
-    sha=$(wget -q -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+    sha=$(wget -q --max-redirect=0 -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
   fi
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
 }
@@ -373,10 +373,11 @@ repo_commit_sha() {
 fetch_repo_file() {
   local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}"
   mkdir -p "$(dirname "$2")" 2>/dev/null || true
+  # Root runs these files: never over plain http (wget cannot limit where a redirect goes, so it follows none).
   if command_exists curl; then
-    curl -fsSL -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+    curl -fsSL --proto =https --proto-redir =https -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
   else
-    wget -q -O "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+    wget -q --max-redirect=0 -O "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
   fi
 }
 
@@ -409,9 +410,9 @@ list_repo_files() {
   local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}?recursive=1"
   local response files
   if command_exists curl; then
-    response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+    response=$(curl -fsSL --proto =https --proto-redir =https -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
   elif command_exists wget; then
-    response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+    response=$(wget -q --max-redirect=0 -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
   else
     print_error "Neither curl nor wget is available"
     return 1
@@ -657,23 +658,35 @@ legacy_references() {
   return 1
 }
 
+# A build chosen for a new disk is unreferenced until its VM is defined: create and restore hold this until they exit.
+hold_builds() {
+  [ -z "${BUILDS_LOCK_FD:-}" ] || return 0
+  mkdir -p "$(builds_dir)" 2>/dev/null
+  { exec {BUILDS_LOCK_FD}>>"$(builds_dir)/.lock"; } 2>/dev/null && flock -s -w 30 "$BUILDS_LOCK_FD" || BUILDS_LOCK_FD=""
+  return 0
+}
+
 prune_builds() {
-  local b used disks
-  # ponytail: builds staged by a restore in flight aren't counted, so only root and admins prune; add a build lock if that races.
+  local b used disks fd="${BUILDS_LOCK_FD:-}"
   [ "$(caller_role)" = user ] && return 0
-  disks=$(vm_disks) || return 0
-  legacy_references && return 0
-  used=$({
-    cut -f3 <<<"$disks"
-    backup_builds
-    cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
-  } | sed 's#.*/##')
-  for b in "$(builds_dir)"/*; do
-    [ -f "$b" ] && [ "${b##*.}" != sums ] || continue
-    [ "$b" -ef "$(templates_dir)/$(build_image "$b")" ] && continue
-    grep -qxF "${b##*/}" <<<"$used" && continue
-    rm -f "$b" "${b%.*}.sums" && echo "${b##*/}"
-  done
+  [ -n "$fd" ] || { exec {fd}>>"$(builds_dir)/.lock"; } 2>/dev/null || return 0
+  # Skipped while a create or restore holds builds: the next prune removes what is left.
+  if flock -x -n "$fd" && disks=$(vm_disks) && ! legacy_references; then
+    used=$({
+      cut -f3 <<<"$disks"
+      backup_builds
+      cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
+    } | sed 's#.*/##')
+    for b in "$(builds_dir)"/*; do
+      [ -f "$b" ] && [ "${b##*.}" != sums ] || continue
+      [ "$b" -ef "$(templates_dir)/$(build_image "$b")" ] && continue
+      grep -qxF "${b##*/}" <<<"$used" && continue
+      rm -f "$b" "${b%.*}.sums" && echo "${b##*/}"
+    done
+  fi
+  # flock converts a lock by dropping it first, so this process's own hold is taken again.
+  if [ -n "${BUILDS_LOCK_FD:-}" ]; then flock -s -w 30 "$fd"; else exec {fd}>&-; fi
+  return 0
 }
 
 # Moves a stopped VM's disk onto <build> without changing what the VM sees:
