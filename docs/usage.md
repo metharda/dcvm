@@ -346,7 +346,8 @@ dcvm storage           # same as storage-cleanup
 dcvm storage-cleanup   # also run hourly by datacenter-storage.timer
 ```
 
-Connects over SSH to each running dcvm VM and prints its root file system
+Connects over SSH to each running VM root created (users' VMs are skipped:
+root's key is not in them) and prints its root file system
 usage (also logged to `/var/log/datacenter-storage.log`). Over 85% full, it
 gzips old logs and moves old `/tmp` files and logs to the NFS share. See
 [Operations](operations.md#logs-and-monitoring). For disk use on the host,

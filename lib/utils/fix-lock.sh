@@ -25,7 +25,7 @@ phase_done() {
 clean_definition() {
   python3 -I -S - "$@" <<'PY'
 import sys, xml.etree.ElementTree as ET
-path, disk, cloud = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+path, disk, cloud, qcow2 = sys.argv[1], sys.argv[2], sys.argv[3] == "true", sys.argv[4] == "qcow2"
 for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
     ET.register_namespace(prefix, uri)
 tree = ET.parse(path)
@@ -42,7 +42,7 @@ for d in devices.findall("disk"):
     if drv is not None and "cache" in drv.attrib:
         del drv.attrib["cache"]
         done.append("cache setting removed")
-    if drv is not None and drv.get("name") == "qemu" and drv.get("type") != "qcow2":
+    if qcow2 and drv is not None and drv.get("name") == "qemu" and drv.get("type") != "qcow2":
         drv.set("type", "qcow2")
         done.append("disk read as qcow2")
     tgt = d.find("target")
@@ -68,6 +68,11 @@ fix_vm_locks() {
 
   if ! check_vm_exists "$vm_name"; then
     print_error "VM '$vm_name' not found in libvirt"
+    return 1
+  fi
+  # Other libvirt VMs on the host are not dcvm's to stop, chmod or redefine.
+  if ! is_vm_in_network "$vm_name"; then
+    print_error "'$vm_name' is not a dcvm VM (not on ${NETWORK_NAME:-datacenter-net})"
     return 1
   fi
 
@@ -112,30 +117,42 @@ fix_vm_locks() {
   local vm_state=$(get_vm_state "$vm_name")
   print_verbose "Current VM state: $vm_state"
 
+  print_info "Checking processes using VM disk file"
+  local qemu_pid disk_users i
+  qemu_pid=$(vm_qemu_pid "$vm_name")
+  # Any holder but the VM's own QEMU is other work (a backup's qemu-img, say): never stop the VM under it.
+  disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk -v q="$qemu_pid" 'NR>1 && $2 != q {print $1 "(" $2 ")"}' | sort -u | tr '\n' ' ')
+  if [ -n "$disk_users" ]; then
+    print_error "Still using the disk: $disk_users"
+    echo "  Wait for it to finish (or stop it yourself), then run dcvm fix-lock $vm_name again."
+    return 1
+  fi
+
   if [ "$vm_state" = "running" ]; then
     print_info "Shutting down $vm_name (forced off after 60 seconds)"
     stop_vm_gracefully "$vm_name"
   fi
-
-  virsh destroy "$vm_name" >/dev/null 2>&1 || print_verbose "VM destroy command failed or VM was not running"
-  sleep 3
-
-  print_info "Terminating QEMU processes"
-  local qemu_pid
-  if qemu_pid=$(vm_qemu_pid "$vm_name"); then
-    print_verbose "Found QEMU PID: $qemu_pid"
-    kill -TERM "$qemu_pid" 2>/dev/null || true
-    sleep 3
-    qemu_pid=$(vm_qemu_pid "$vm_name") && print_warning "Force killing QEMU process: $qemu_pid" && kill -KILL "$qemu_pid" 2>/dev/null || true
-  else
-    print_verbose "No QEMU process found for $vm_name"
+  if [ "$(get_vm_state "$vm_name")" != "shut off" ] && ! virsh destroy "$vm_name" >/dev/null 2>&1; then
+    print_error "libvirt could not stop $vm_name; its disk was left alone"
+    echo "  Try again in a minute, or restart libvirtd, then run dcvm fix-lock $vm_name again."
+    return 1
   fi
-  sleep 2
 
-  print_info "Checking processes using VM disk file"
-  local disk_users
+  # libvirt calls it off, yet a QEMU it lost track of may hold the disk: SIGTERM lets QEMU flush it, SIGKILL would not.
+  if qemu_pid=$(vm_qemu_pid "$vm_name"); then
+    print_info "Stopping QEMU process $qemu_pid, which libvirt no longer tracks"
+    kill -TERM "$qemu_pid" 2>/dev/null
+    for ((i = 0; i < 30; i++)); do
+      kill -0 "$qemu_pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$qemu_pid" 2>/dev/null; then
+      print_error "QEMU process $qemu_pid did not exit within 30 seconds; its disk was left alone"
+      return 1
+    fi
+  fi
+
   disk_users=$(lsof "$VM_DISK_PATH" 2>/dev/null | awk 'NR>1 {print $1 "(" $2 ")"}' | sort -u | tr '\n' ' ')
-  # With the VM stopped, a holder is other work (a backup's qemu-img, say): never kill it.
   if [ -n "$disk_users" ]; then
     print_error "Still using the disk: $disk_users"
     echo "  Wait for it to finish (or stop it yourself), then run dcvm fix-lock $vm_name again."
@@ -261,11 +278,13 @@ fix_vm_locks() {
 
   phase_done "Permissions" "${target_owner:-unchanged}, mode 600"
 
-  local temp_xml changes cloud=false
+  local temp_xml changes cloud=false format
   temp_xml=$(mktemp)
   [ -f "${DATACENTER_BASE:-/srv/datacenter}/vms/$vm_name/cloud-init/user-data" ] && cloud=true
   # --security-info keeps VNC passwords, which a redefinition would otherwise drop.
-  if ! virsh dumpxml --security-info "$vm_name" >"$temp_xml" 2>/dev/null || ! changes=$(clean_definition "$temp_xml" "$VM_DISK_PATH" "$cloud"); then
+  # Only a disk qemu-img reads as qcow2 may be declared qcow2: a raw one would no longer boot.
+  format=$(qemu-img info -U "$VM_DISK_PATH" 2>/dev/null | sed -n 's/^file format: //p')
+  if ! virsh dumpxml --security-info "$vm_name" >"$temp_xml" 2>/dev/null || ! changes=$(clean_definition "$temp_xml" "$VM_DISK_PATH" "$cloud" "$format"); then
     print_error "Failed to read the VM's XML configuration"
     step_errors=$((step_errors + 1))
     changes="not changed"

@@ -32,6 +32,14 @@ history, so the commit or PR is listed for each release.
 
 - `ports apply` (also run at boot by `dcvm doctor --fix`) skips rows of deleted VMs and addresses another VM holds, so a saved port can't reach someone else's VM (#123).
 - Guest-chosen DHCP hostnames are shown with control characters replaced, so they can't send escape sequences to the admin's terminal (#138).
+- `doctor --fix` and base moves leave the disk of a paused or shutting-down VM alone (#113)
+- `doctor --fix` no longer turns on autostart for a restored copy that keeps another VM's static IP (#114)
+- `fix-lock <vm>` refuses libvirt VMs that aren't dcvm's and never declares a raw disk qcow2 (#118)
+- The hourly storage check drops a guest that stops answering instead of hanging (#141)
+- `doctor --fix` reports a base move, NFS repair or `df` that failed instead of "fixed" (#142)
+- Docs: the storage check skips VMs of users without root (#150)
+- `fix-lock` stops when libvirt can't stop the VM and never SIGKILLs QEMU (#151)
+- `doctor --fix` keeps leftover files that are open or were just copied (#195)
 
 ## [0.9.11] - 2026-11-24
 

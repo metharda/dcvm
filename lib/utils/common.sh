@@ -761,6 +761,8 @@ prepare_vm_disk() {
   local vm="$1" label="${2:-Base image}" disk backing img cur
   disk=$(get_vm_disk_path "$vm")
   [ -n "$disk" ] && [ -f "$disk" ] || return 0
+  # Paused or shutting down, QEMU still writes the disk: a copy made now loses those writes.
+  [ "$(get_vm_state "$vm")" = "shut off" ] || return 0
   backing=$(disk_backing "$disk")
   case "$backing" in
   "$(builds_dir)"/*) img=$(build_image "$backing") ;;
@@ -1706,7 +1708,7 @@ nfs_share_secure() {
 }
 
 secure_nfs_share() {
-  local share="$1" subnet="$2" uid gid quarantine f rel moved=0 tmp
+  local share="$1" subnet="$2" uid gid quarantine f rel moved=0 tmp rc
   if ! id -u "$NFS_SQUASH_USER" >/dev/null 2>&1; then
     useradd --system --no-create-home --home-dir /nonexistent --shell "$(command -v nologin || echo /bin/false)" "$NFS_SQUASH_USER" || return 1
   fi
@@ -1727,9 +1729,10 @@ secure_nfs_share() {
     echo "$share ${subnet}.0/24(rw,sync,subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
   } >"$tmp" &&
     cat "$tmp" >/etc/exports
+  rc=$?
   rm -f "$tmp"
-  command_exists exportfs && exportfs -ra 2>/dev/null
   NFS_QUARANTINED=$moved NFS_QUARANTINE_DIR=$quarantine
+  [ "$rc" = 0 ] && { ! command_exists exportfs || exportfs -ra; }
 }
 
 check_vm_exists() {
