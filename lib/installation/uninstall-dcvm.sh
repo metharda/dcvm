@@ -20,6 +20,14 @@ removable_data_dir() {
   [ -d "$base/vms" ] && [ -d "$base/storage" ] && echo "$base"
 }
 
+domains_using_dir() {
+  local vm used=()
+  for vm in $(virsh list --all --name 2>/dev/null); do
+    virsh domblklist "$vm" --details 2>/dev/null | awk -v d="${1%/}/" 'index($4, d) == 1 { f = 1 } END { exit !f }' && used+=("$vm")
+  done
+  echo "${used[*]}"
+}
+
 main() {
   if [ "${1:-}" = --help ]; then
     echo "Usage: dcvm uninstall     Delete every dcvm VM, all backups, the network, the services and dcvm itself (asks first)"
@@ -105,9 +113,13 @@ main() {
     virsh pool-undefine "$pool" >/dev/null 2>&1 && ui_step ok "Storage pool" "$pool removed"
   done < <(virsh pool-list --all --name 2>/dev/null)
 
-  local data_dir
+  local data_dir in_use
+  in_use=$(domains_using_dir "$DATACENTER_BASE")
   if [ ! -d "$DATACENTER_BASE" ]; then
     ui_step skip "Data" "$DATACENTER_BASE not found"
+  elif [ -n "$in_use" ] || ! virsh list --all --name >/dev/null 2>&1; then
+    # Deleting disks of VMs that still exist (a failed undefine, or libvirt not answering) loses them for good.
+    ui_step warn "Data" "$DATACENTER_BASE left in place: still used by ${in_use:-VMs libvirt could not list}"
   elif data_dir=$(removable_data_dir "$DATACENTER_BASE"); then
     rm -rf "$data_dir"
     ui_step ok "Data" "$data_dir removed"

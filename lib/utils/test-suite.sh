@@ -2845,7 +2845,7 @@ test_uninstall_exact_matches() {
   t=$(mktemp -d)
   mkdir -p "$t/dc/vms" "$t/dc/storage" "$t/other"
   (
-    eval "$(sed -n '/^vm_on_network()/,/^}/p; /^removable_data_dir()/,/^}/p' "$SCRIPT_DIR/../installation/uninstall-dcvm.sh")"
+    eval "$(sed -n '/^vm_on_network()/,/^}/p; /^removable_data_dir()/,/^}/p; /^domains_using_dir()/,/^}/p' "$SCRIPT_DIR/../installation/uninstall-dcvm.sh")"
     virsh() {
       echo " Interface   Type      Source            Model    MAC"
       echo "-------------------------------------------------------------"
@@ -2857,6 +2857,9 @@ test_uninstall_exact_matches() {
     for d in "" / /var /etc/ "$t/other" "$t/dc/../other"; do
       removable_data_dir "$d" >/dev/null && echo "accepted '$d'"
     done
+    virsh() { case "$1" in list) echo keep ;; domblklist) printf ' Type Device Target Source\n file disk vda %s/dc/vms/keep/keep-disk.qcow2\n' "$t" ;; esac; }
+    [ "$(domains_using_dir "$t/dc")" = keep ] || echo "missed a VM still using $t/dc"
+    [ -z "$(domains_using_dir "$t/other")" ] || echo "flagged $t/other"
   ) >"$t/out" 2>&1
   if [ ! -s "$t/out" ]; then
     log_test "PASS" "uninstall matches the network exactly and deletes only a dcvm data folder"
