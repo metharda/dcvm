@@ -3526,6 +3526,134 @@ PY
   rm -rf "$t"
 }
 
+test_socket_admin_locks_and_iso() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "socket server admin locks and ISO quota (python3 not installed)"
+    return
+  fi
+  local t out r="" w want="admin-vms admin-locks short-write iso-quota iso-charged restore-new-quota late-alarm running-kept create-iso-o early-deny "
+  t=$(mktemp -d)
+  mkdir -p "$t/h/vms" "$t/base/backups/web-20260101_120000"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  echo 4242 >"$t/base/backups/web-20260101_120000/owner"
+  printf 'owner_uid=4242\nowner=u\n' >"$t/h/vms/web"
+  echo "iso data" >"$t/x.iso"
+  head -c 5000 /dev/zero >"$t/big.iso"
+  out=$(
+    timeout 120 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, json, os, signal, socket, struct, subprocess, sys, threading, time
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(sys.argv[1], name + ".py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+s, c, t = load("dcvm-server"), load("dcvm-client"), sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS, s.AUDIT = t + "/h", t + "/h/run", t + "/conf", t + "/limits", t + "/h/audit.log"
+user = lambda: {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+admin = lambda: {"uid": 0, "user": "a", "role": "admin", "origin": "agent", "files": {}}
+def denied(f, *a):
+    try:
+        return "allowed %s" % (f(*a),)
+    except s.Denied as e:
+        return str(e)
+av = s.admin_vms
+if av(["backup", "restore", "web", "01.01.2026", "copy", "--yes"]) == ["copy"] and av(["restore", "--base", "x", "web"]) == ["web"] and \
+        av(["start", "web"]) == ["web"] and av(["network", "ports", "add", "web"]) == ["web"] and av(["fix-lock", "--verbose", "web"]) == ["web"] and \
+        av(["backup", "import", "/proc/self/fd/5", "new1"]) == ["new1"] and av(["create", "zz1,web", "-f"]) == ["zz1", "web"] and av(["stop", "--all"]) == []:
+    print("admin-vms")
+s.domain_known = lambda vm: False
+ran = []
+s.run_module = lambda ctx, *_a: ran.append(time.monotonic()) or 0
+def waits(argv):
+    ctx, held = admin(), s.lock("vm-web")
+    final = s.admin_argv(ctx, argv)
+    threading.Timer(0.6, os.close, [held]).start()
+    t0 = time.monotonic()
+    s.execute(ctx, None, final, {"argv": argv}, {})
+    return ran[-1] - t0 >= 0.5
+if waits(["create", "zz1,web", "-f"]) and waits(["backup", "restore", "web", "--yes"]) and waits(["start", "web"]):
+    print("admin-locks")
+real_write = os.write
+os.write = lambda fd, b: real_write(fd, bytes(b[:1000]))
+try:
+    fd = os.open(t + "/big.iso", os.O_RDONLY)
+    path = s.stage_iso(dict(admin(), reserved="iso1"), fd, "iso1")
+finally:
+    os.write = real_write
+if os.path.getsize(path) == 5000:
+    print("short-write")
+with open(t + "/sparse.iso", "wb") as f:
+    f.truncate(1024 ** 3 + 1)
+with open(t + "/limits", "w") as f:
+    f.write("disk_gb=21\n")
+sparse = os.open(t + "/sparse.iso", os.O_RDONLY)
+pc = lambda *a, iso=False: denied(s.parse_create, dict(user(), files={3: sparse}), list(a), iso)
+if "over your disk (GB) quota: 0 used + 22 requested > 21" in pc("isovm", "--iso", "fd:3", iso=True) and pc("cloudvm", "-f", "-d", "20G").startswith("allowed"):
+    print("iso-quota")
+if "allowed" in denied(s.decide_backup, user(), ["restore", "web", "20260101_120000", "copy"]):
+    print("restore-new-quota")
+os.unlink(t + "/limits")
+def module(ctx, *_a):
+    s.registry_write("isovm", dict(s.registry_read("isovm"), state="ready", disk_gb=20))
+    return 0
+s.run_module, s.domain_known = module, lambda vm: s.registry_read(vm) is not None
+ctx, small = user(), os.open(t + "/x.iso", os.O_RDONLY)
+ctx["files"] = {3: small}
+s.execute(ctx, None, ["create-iso"] + s.parse_create(ctx, ["isovm", "--iso", "fd:3"], True), {}, {})
+if s.registry_read("isovm").get("disk_gb") == "21":
+    print("iso-charged")
+s.WRITING = False
+try:
+    s._alarm(signal.SIGALRM, None)
+    print("late-alarm")
+except TimeoutError:
+    pass
+def crash(ctx, *_a):
+    os.makedirs(ctx["staged_dir"])
+    ctx["proc"] = subprocess.Popen(["sleep", "5"])
+    raise RuntimeError("relay broke")
+s.run_module, s.domain_known = crash, lambda vm: False
+ctx = user()
+try:
+    s.execute(ctx, None, ["create"] + s.parse_create(ctx, ["busy", "-f"], False), {}, {})
+except RuntimeError:
+    pass
+ctx["proc"].kill()
+if s.registry_read("busy") and os.path.isdir(t + "/base/vms/busy"):
+    print("running-kept")
+files = c.Files()
+argv = c.attach_files(["create-iso", "ovm", "-o", t + "/x.iso"], files)
+if argv == ["create-iso", "ovm", "--iso", "fd:3"] and pc("ovm", "-o", "fd:3", iso=True).startswith("allowed"):
+    print("create-iso-o")
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(t + "/deny.sock")
+srv.listen(1)
+def deny():
+    conn, _ = srv.accept()
+    d = json.dumps({"exit": 77, "error": "you already have 8 dcvm commands running", "show": True}).encode()
+    conn.sendall(struct.pack(">I", len(d)) + d)
+    conn.close()
+th = threading.Thread(target=deny, daemon=True)
+th.start()
+c.SOCKET = t + "/deny.sock"
+conn = c.connect()
+th.join()
+try:
+    if c.talk(b'{"v": 1}', c.Files(), conn) == 77:
+        print("early-deny")
+except OSError as e:
+    print("client raised %r" % e)
+PY
+  )
+  for w in $want; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  if [ "$r" = "$want" ]; then
+    log_test "PASS" "socket server: admins take every named VM's lock, ISO copy and quota, restore-as-new quota, late alarms, early denials (#119 #120 #135 #143 #186 #187 #188 #189)"
+  else
+    log_test "FAIL" "socket server: admins take every named VM's lock, ISO copy and quota, restore-as-new quota, late alarms, early denials (#119 #120 #135 #143 #186 #187 #188 #189)" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2016,SC2034 # snippets are evaluated in q; the quota vars are read by within_quota
 test_quota_atomic() {
   local t r="" start
@@ -5320,6 +5448,7 @@ test_common_functions() {
   test_import_rejects_hostile_archives
   test_socket_policy
   test_socket_hardening
+  test_socket_admin_locks_and_iso
   test_quota_atomic
   test_services_hardening
   test_registry_visibility

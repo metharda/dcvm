@@ -355,7 +355,7 @@ def parse_create(ctx, args, iso_mode):
                 raise Denied("--os must be 1-9, or an ISO file")
             else:
                 out += ["-o", v]
-        elif opt == "--iso" and iso_mode:
+        elif opt in ("--iso", "-o") and iso_mode:
             v, i = take_value(args, i, opt)
             if not v.startswith("fd:"):
                 raise Denied("pass the ISO as a file")
@@ -383,6 +383,10 @@ def parse_create(ctx, args, iso_mode):
         out = (["--iso"] if iso_mode else ["-o"]) + ["@ISO@"] + out
         if not disk_given:
             disk = 20
+        # The staged copy stays in the VM's folder, so it counts against the disk quota too.
+        ctx["iso_bytes"] = os.fstat(ctx["iso_fd"]).st_size
+        ctx["iso_gb"] = -(-ctx["iso_bytes"] // 1024 ** 3)
+        disk += ctx["iso_gb"]
     check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
     ctx.update(vm=vm, new_vm=True, mutating=True, quota=(cpus, memory, disk))
     return [vm] + out
@@ -577,8 +581,9 @@ def decide_backup(ctx, args):
             raise Denied("invalid backup id")
         if len(rest) == 3:
             target = new_vm_name(rest[2])
-            check_quota(ctx["uid"], ctx["user"], 2, 2048, 30)
-            ctx.update(vm=target, new_vm=True, quota=(2, 2048, 30))
+            # Only the backup knows its size: the module checks and records it under the global lock.
+            check_quota(ctx["uid"], ctx["user"], 0, 0, 0)
+            ctx.update(vm=target, new_vm=True, quota=(0, 0, 0))
         else:
             own_vm(ctx, rest[0])
             protected(rest[0])
@@ -665,6 +670,8 @@ def stage_iso(ctx, fd, vm):
         raise Denied("the ISO must be a regular file")
     if st.st_size > MAX_ISO:
         raise Denied("the ISO is larger than 16 GB")
+    if st.st_size > ctx.get("iso_bytes", st.st_size):
+        raise Denied("the ISO changed while it was being copied")
     base = read_config()["DATACENTER_BASE"]
     vm_dir = os.path.join(base, "vms", vm)
     # Users' names were checked when reserved; anyone else must not stage into (or later remove) a folder in use.
@@ -689,7 +696,11 @@ def stage_iso(ctx, fd, vm):
             # The caller's file may grow after the size check.
             if copied > st.st_size:
                 raise Denied("the ISO changed while it was being copied")
-            os.write(out, chunk)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(out, view):]
+        if copied != st.st_size:
+            raise Denied("the ISO changed while it was being copied")
     except BaseException:
         os.unlink(dest + ".part")
         raise
@@ -793,16 +804,26 @@ def say(fd, text):
     return write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode()) is not None
 
 
+WRITING = False
+
+
 def _alarm(_sig, _frame):
-    raise TimeoutError
+    # A late alarm must not raise in whatever code runs after the write.
+    if WRITING:
+        raise TimeoutError
 
 
 def write_some(fd, data):
     # The caller's descriptor stays blocking (its flags are shared with the caller), so an alarm bounds a stuck write.
+    global WRITING
     signal.signal(signal.SIGALRM, _alarm)
     signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
     try:
-        return os.write(fd, data[:4096])
+        try:
+            WRITING = True
+            return os.write(fd, data[:4096])
+        finally:
+            WRITING = False
     except OSError:
         return None
     finally:
@@ -857,6 +878,7 @@ def run_module(ctx, conn, argv, req, fds):
         outs.append([r, fd, bytearray()])
     proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=child["stdout"],
                             stderr=child["stderr"], pass_fds=pass_fds, start_new_session=True, close_fds=True)
+    ctx["proc"] = proc
     for fd in pass_fds:
         if fd != ctx.get("export_fd") and fd not in ctx.get("keep_fds", []):
             os.close(fd)
@@ -1010,14 +1032,33 @@ def admin_argv(ctx, argv):
             else:
                 raise Denied("unexpected file argument")
     final = [a for a in final if a is not None]
-    if final and final[0] in ("create", "create-iso") and len(final) > 1 and not final[1].startswith("-"):
-        ctx.update(vm=final[1].split(",")[0], new_vm=True, mutating=True)
-    target = next((a for a in final[1:] if not a.startswith("-")), None)
-    if final[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"]) and target and NAME.match(target) and target not in RESERVED:
-        ctx["vm"] = target
+    vms = admin_vms(final)
+    if vms:
+        ctx.update(vm=vms[0], vms=vms, new_vm=final[0] in ("create", "create-iso"))
     ctx["mutating"] = True
     ctx["interactive"] = True
     return final
+
+
+def admin_vms(argv):
+    """The VMs an admin's command changes, so it waits for the same per-VM locks as a user's."""
+    pos = [a for i, a in enumerate(argv) if not a.startswith("-") and (i == 0 or argv[i - 1] != "--base")]
+    names = []
+    if argv[:1] in (["create"], ["create-iso"]) and len(argv) > 1 and not argv[1].startswith("-"):
+        names = argv[1].split(",")
+    elif pos[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"], ["start"], ["stop"], ["restart"], ["fix-lock"]):
+        names = pos[1:2]
+    elif pos[:2] == ["backup", "create"]:
+        names = pos[2:3]
+    elif pos[:1] == ["restore"] or pos[:2] == ["backup", "restore"]:
+        rest = pos[1:] if pos[0] == "restore" else pos[2:]
+        names = rest[2:3] or rest[:1]
+    elif pos[:2] == ["backup", "import"]:
+        # ponytail: without a new name the target is named inside the archive; only the restore's staging is then per-process.
+        names = pos[3:4]
+    elif pos[:2] == ["network", "ports"] and pos[2:3] in (["add"], ["remove"]) or pos[:2] == ["network", "vnc"] and pos[2:3] in (["enable"], ["disable"]):
+        names = pos[3:4]
+    return [n for n in dict.fromkeys(n.strip() for n in names) if NAME.match(n) and n not in RESERVED]
 
 
 def name_taken(vm):
@@ -1036,7 +1077,9 @@ def execute(ctx, conn, argv, req, fds):
             # Before the VM's lock too, so asking for a taken name never holds up its owner.
             name_taken(vm)
         if vm:
-            held.append(lock(ctx.get("lock") or "vm-" + vm))
+            # Sorted, so two commands naming the same VMs can't each hold one the other waits for.
+            for name in [ctx["lock"]] if ctx.get("lock") else ["vm-" + n for n in sorted(ctx.get("vms") or [vm])]:
+                held.append(lock(name))
         if ctx["role"] == "user" and vm and not ctx.get("new_vm"):
             # The policy ran before the lock; a request that waited must not act on a VM that changed hands meanwhile.
             again = {k: ctx[k] for k in ("uid", "user", "role", "origin", "files")}
@@ -1066,7 +1109,9 @@ def execute(ctx, conn, argv, req, fds):
             rc = None
             raise
         finally:
-            if rc is None and ctx.get("reserved") and domain_known(vm) is False:
+            # Never remove the folder under a module that still runs.
+            if rc is None and ctx.get("reserved") and (ctx.get("proc") is None or ctx["proc"].poll() is not None) \
+                    and domain_known(vm) is False:
                 release_reservation(ctx, vm)
         # A declined or failed create may exit 0 too; only a defined domain makes the VM real.
         known = domain_known(vm) if ctx.get("staged_dir") or ctx.get("reserved") else True
@@ -1081,6 +1126,10 @@ def execute(ctx, conn, argv, req, fds):
                 release_reservation(ctx, vm)
             elif entry.get("state") == "creating":
                 entry["state"] = "ready"
+                registry_write(vm, entry)
+            elif ctx.get("iso_gb"):
+                # The module recorded only the disk; the reservation already held both.
+                entry["disk_gb"] = int(entry.get("disk_gb") or 0) + ctx["iso_gb"]
                 registry_write(vm, entry)
         return rc
     finally:

@@ -103,7 +103,7 @@ def attach_files(argv, files):
         rebuilt, i = [], 0
         while i < len(out):
             opt, eq, val = out[i].partition("=")
-            if opt == "--iso" and (eq or i + 1 < len(out)):
+            if opt in ("--iso", "-o") and (eq or i + 1 < len(out)):
                 if "--iso" in rebuilt:
                     fail("give --iso once")
                 if not eq:
@@ -238,7 +238,11 @@ def connect():
 def talk(data, files, conn):
     if len(data) > 262144:
         fail("the command is too long")
-    conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
+    try:
+        conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
+    except OSError:
+        # The server may refuse before reading the request; its answer is still there to read.
+        pass
     for fd in files.fds[3:]:
         os.close(fd)
     interrupts = [0]
