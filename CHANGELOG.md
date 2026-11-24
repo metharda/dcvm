@@ -54,6 +54,11 @@ history, so the commit or PR is listed for each release.
   replaces older rules (#77).
 - `delete --all` removes only the deleted VMs' forwards and keeps a refused
   VM's lease, mapping and rules (#77).
+- `create -o` treats only a path or an `.iso` name as an ISO, skips the OS prompt, and finds Fedora 44's libosinfo variant (#89).
+- `create vm1,vm2 -f --disable-root` creates every VM of the batch (#108).
+- `dcvm storage` logs in as the VM's recorded user, uses `df -P`, reports a failed cleanup as failed and no longer re-archives its own links (#97).
+- `fix-lock` reports a lock it could not remove, never kills another process using the disk, and `--all` asks first (`--yes` without a terminal) (#104).
+- `doctor` checks cloud-init seed folders and files (700/600, owned by root) and `--fix` closes them; new seeds are written 600 (#105).
 
 ### Security
 

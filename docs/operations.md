@@ -160,7 +160,10 @@ When a VM is more than 85% full, it gzips logs older than 7 days and, if the
 NFS share is mounted in the guest, moves `/tmp` files older than 30 days and
 compressed logs older than 30 days to `/mnt/shared/archived-files/<vm>`,
 leaving symlinks. A VM created with `--without-ssh-key` shows
-`could not check disk usage over SSH`.
+`could not check disk usage over SSH`; an ISO-installed VM with no login user
+on record is skipped. If the cleanup fails (no passwordless `sudo` in the VM,
+a file it could not move) the VM is reported as failed, and a share that is
+not mounted as a warning.
 
 ## Settings
 
@@ -197,7 +200,7 @@ and `HTTP_PORT_START=8081`, which can be set in the environment of
 | Port forward not reachable from the host itself | DNAT rules apply to traffic arriving from outside, not to the host's own connections | From the host, use the VM's IP directly |
 | VM has no IP in `dcvm status` | Still booting, or a stale lease | `dcvm network dhcp show`; `dcvm network dhcp cleanup` |
 | `dcvm network dhcp clear` names a missing package | Host installed before 0.9.6 | Install `jq` and `dnsmasq-utils` (Arch: `jq`) |
-| `Failed to get "write" lock` / VM won't start because its disk is locked | Stale QEMU process or libvirt lock, or two VMs using one disk | `dcvm fix-lock <vm>` (force-stops the VM, clears its locks and reports other VMs on the same disk); `--all` for every VM |
+| `Failed to get "write" lock` / VM won't start because its disk is locked | Stale QEMU process or libvirt lock, or two VMs using one disk | `dcvm fix-lock <vm>` (shuts the VM down, forced after 60 s, clears its locks and reports other VMs or processes on the same disk); `--all` for every VM (asks first; `--yes` without a terminal) |
 | Restore says the base build is not on this host or in the archive | The backup's build is gone (a daily build, Kali, or deleted by hand) | Restore on the host it came from, or pass the original build with `--base <file>` |
 | A VM hangs at boot after a template was re-downloaded (before 0.9.9) | The template was replaced under the VM's disk | `dcvm doctor --fix`; if the old base is gone, `dcvm backup restore <vm>` (restore finds the build a backup fits) |
 | VNC port in use | Several VMs with VNC | `dcvm network vnc disable <vm>` on VMs that don't need it |

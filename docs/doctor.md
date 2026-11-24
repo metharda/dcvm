@@ -73,7 +73,7 @@ It takes a few seconds; `--fast` skips the two slow checks.
 | Install | dcvm's files, `/etc/dcvm-install.conf` or a folder above them (such as a group-writable `/usr/local`) changeable by a non-root user, who could then run code as root through dcvm |
 | Users | Members of `dcvm` who are also in `libvirt`, `disk` or `docker`, which is root on the host and bypasses dcvm's limits |
 | NFS share | An export without `all_squash`, a share other host users can open, or setuid/device files left in it: root in a VM could get root on the host this way (see [Security](security.md#network-exposure)) |
-| Permissions | VM disks, cloud-init seeds (password hashes) or installer ISOs readable by every local user, VM folders other users can list, or a backups folder they can open |
+| Permissions | VM disks or installer ISOs open to other local users, cloud-init seed folders and files (password hashes) not 700/600 and owned by root, VM folders other users can list, or a backups folder they can open |
 | dcvm | A newer version on GitHub (skipped with `--fast` and when offline) |
 
 ### Network
