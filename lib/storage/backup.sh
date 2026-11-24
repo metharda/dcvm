@@ -10,7 +10,10 @@ elif [ -f "/usr/local/lib/dcvm/utils/mirror-manager.sh" ]; then
   source "/usr/local/lib/dcvm/utils/mirror-manager.sh"
 fi
 
-[ "${1:-}" = help ] || wants_help "$@" || load_dcvm_config
+BACKUP_SUBCOMMANDS="create, restore, list, delete, export, import, ssh-setup, troubleshoot"
+# main reports an unknown subcommand, even where dcvm isn't installed.
+[ "${1:-}" = help ] || wants_help "$@" ||
+  [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" != -* && ", $BACKUP_SUBCOMMANDS, " != *", ${1:-}, "* ]] || load_dcvm_config
 
 FIX_LOCK_SCRIPT="${FIX_LOCK_SCRIPT:-$(get_fix_lock_script_path 2>/dev/null || echo "$SCRIPT_DIR/../utils/fix-lock.sh")}"
 BACKUP_DIR="$DATACENTER_BASE/backups"
@@ -1867,6 +1870,11 @@ main() {
   local SUBCOMMAND="$1"
   local VM_NAME="$2"
   local BACKUP_DATE="$3"
+  if [[ ", $BACKUP_SUBCOMMANDS, " != *", $SUBCOMMAND, "* ]]; then
+    print_error "Unknown subcommand: $SUBCOMMAND"
+    echo "Valid subcommands: $BACKUP_SUBCOMMANDS"
+    exit 1
+  fi
 
   for cmd in virsh cp gzip gunzip wget qemu-img; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -1951,11 +1959,6 @@ main() {
     fi
     troubleshoot_vm "$VM_NAME"
     exit $?
-    ;;
-  *)
-    print_error "Unknown subcommand: $SUBCOMMAND"
-    echo "Valid subcommands: create, restore, list, delete, export, import, ssh-setup, troubleshoot"
-    exit 1
     ;;
   esac
 }

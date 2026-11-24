@@ -2987,7 +2987,7 @@ test_backup_delete_ids_and_user_export() {
   printf '#!/bin/sh\necho opened >>"%s/guestfish"\n' "$t" >"$t/bin/guestfish"
   chmod +x "$t/bin/guestfish"
   run() { (PATH="$t/bin:$PATH" && load_backup_sh_for_test "$t" && stub_backup_tools "$t" && wget() { :; } && prune_builds() { :; } && "$@") </dev/null >"$t/log" 2>&1; }
-  run eval 'DCVM_CALLER_ROLE=user export_backup vm1 latest "$t/u"'
+  run eval 'DCVM_CALLER_ROLE=user DCVM_CALLER_UID=0 export_backup vm1 latest "$t/u"'
   [ -f "$t/u/vm1-$b.tar.gz" ] && [ ! -e "$t/guestfish" ] && grep -q 'your keys' "$t/log" && r+="user-export-no-guestfish "
   run export_backup vm1 latest "$t/r"
   [ -f "$t/r/vm1-$b.tar.gz" ] && [ -e "$t/guestfish" ] && r+="root-export-scrubs "
@@ -4382,7 +4382,12 @@ test_network_trust() {
       return 0
     }
     ssh() { echo "$*" >>"$t/ssh"; }
-    registry_get() { case "$2" in created) echo 123 ;; owner) echo alice ;; user) echo ubuntu ;; esac }
+    registry_get() {
+      [ "$2" = created ] && echo 123
+      [ "$2" = owner ] && echo alice
+      [ "$2" = user ] && echo ubuntu
+      return 0
+    }
     OWNER=1000
     vm_owner_uid() { echo "$OWNER"; }
     check_vm_storage web
@@ -4947,7 +4952,11 @@ test_storage_cleanup_reports() {
       [[ "$*" != *"bash -s"* ]] || cat >"$t/script"
       return "$RC"
     }
-    registry_get() { case "$2" in created) echo 123 ;; user) [ "$1" = imported ] && echo bob ;; esac }
+    registry_get() {
+      [ "$2" = created ] && echo 123
+      [ "$2" = user ] && [ "$1" = imported ] && echo bob
+      return 0
+    }
     vm_owner_uid() { echo 0; }
     get_vm_ip_trusted() { echo 10.10.10.50; }
     check_vm_storage imported
@@ -4986,8 +4995,13 @@ test_fix_lock_counts_and_spares() {
     command_exists() { return 1; }
     kill() { echo "killed $*" >>"$t/kills"; }
     fuser() { echo "fuser $*" >>"$t/kills"; }
+    chown() { :; }
     lsof() { [ -n "$HOLDER" ] && printf 'COMMAND PID\nqemu-img 2147483646\n'; }
-    virsh() { case "$1" in dumpxml) echo "<domain><devices/></domain>" ;; list) echo " Id Name State" ;; esac }
+    virsh() {
+      [ "$1" = dumpxml ] && echo "<domain><devices/></domain>"
+      [ "$1" = list ] && echo " Id Name State"
+      return 0
+    }
     rm() {
       [[ "$*" == *.lock* ]] && return 1
       command rm "$@"
@@ -5036,7 +5050,8 @@ test_doctor_seed_permissions() {
     FIX=false vm_permissions
   ) 2>&1
   grep -q 'open to other local users' <<<"$out" && grep -q '^problems=1' <<<"$out" && r+="found "
-  grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && grep -q '1 cloud-init seed, backups and network records closed' <<<"$out" && r+="fixed "
+  # Without root the seed can't become root's, so the last check still reports it.
+  grep -q 'closed VM disks, cloud-init seeds' <<<"$out" && { [ "$(id -u)" != 0 ] || grep -q '1 cloud-init seed, backups and network records closed' <<<"$out"; } && r+="fixed "
   [ "$(stat -c %a "$t/vms" "$t/vms/web/cloud-init" "$t/vms/web/cloud-init/user-data" | tr '\n' ' ')" = "711 700 600 " ] && r+="modes "
   if [ "$(id -u)" = 0 ]; then
     chown nobody "$t/vms/web/cloud-init/user-data"
