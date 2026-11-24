@@ -1507,13 +1507,16 @@ size_gb() {
   esac
 }
 
+# At most 3650 days, the same cap as the socket server's.
 ttl_seconds() {
   [[ "$1" =~ ^([1-9][0-9]{0,4})([mhd])$ ]] || return 1
+  local secs
   case "${BASH_REMATCH[2]}" in
-  m) echo $((BASH_REMATCH[1] * 60)) ;;
-  h) echo $((BASH_REMATCH[1] * 3600)) ;;
-  d) echo $((BASH_REMATCH[1] * 86400)) ;;
+  m) secs=$((BASH_REMATCH[1] * 60)) ;;
+  h) secs=$((BASH_REMATCH[1] * 3600)) ;;
+  d) secs=$((BASH_REMATCH[1] * 86400)) ;;
   esac
+  [ "$secs" -le $((3650 * 86400)) ] && echo "$secs"
 }
 
 wait_for_vm() {

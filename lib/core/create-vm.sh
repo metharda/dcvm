@@ -1653,7 +1653,7 @@ main() {
   fi
   [ -n "${DCVM_SECRET_TAILSCALE_AUTHKEY:-}" ] && FLAG_TAILSCALE_AUTHKEY="$DCVM_SECRET_TAILSCALE_AUTHKEY"
   if [ -n "$FLAG_TTL" ] && ! TTL_SECONDS=$(ttl_seconds "$FLAG_TTL"); then
-    print_error "--ttl must look like 90m, 2h or 3d"
+    print_error "--ttl must look like 90m, 2h or 3d (at most 3650d)"
     exit 1
   fi
   if [ "${DCVM_ORIGIN:-terminal}" = agent ] && [ ! -t 0 ] && [ "$FORCE_MODE" != true ]; then

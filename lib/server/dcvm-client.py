@@ -198,20 +198,20 @@ def main(argv):
            "origin": os.environ.get("DCVM_ORIGIN") or ("terminal" if os.isatty(0) and os.isatty(1) else "agent")}
     if secrets:
         req["secrets"] = secrets
-    if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
-        key = public_key()
-        if key:
-            req["pubkey"] = key
     try:
-        sys.exit(talk(json.dumps(req).encode(), files))
+        conn = connect()
+        # After connecting: someone the socket turns away must not get a key made in ~/.ssh.
+        if argv[:1] == ["create"] and "--without-ssh-key" not in argv:
+            key = public_key()
+            if key:
+                req["pubkey"] = key
+        sys.exit(talk(json.dumps(req).encode(), files, conn))
     finally:
         if files.rename and os.path.exists(files.rename[0]):
             os.unlink(files.rename[0])
 
 
-def talk(data, files):
-    if len(data) > 262144:
-        fail("the command is too long")
+def connect():
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         conn.connect(SOCKET)
@@ -221,6 +221,12 @@ def talk(data, files):
         fail("you are not in the dcvm group (or haven't logged in again since being added); ask an admin: sudo dcvm user add %s" % os.environ.get("USER", "<you>"), 77)
     except OSError as e:
         fail("cannot reach the dcvm service at %s: %s; ask an admin to run: sudo dcvm doctor --fix" % (SOCKET, e.strerror), 70)
+    return conn
+
+
+def talk(data, files, conn):
+    if len(data) > 262144:
+        fail("the command is too long")
     conn.sendmsg([struct.pack(">I", len(data)) + data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(files.fds), *files.fds))])
     for fd in files.fds[3:]:
         os.close(fd)

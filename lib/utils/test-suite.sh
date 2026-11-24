@@ -3213,22 +3213,28 @@ def serve():
     conn.sendall(struct.pack(">I", len(d)) + d)
 threading.Thread(target=serve, daemon=True).start()
 c.SOCKET = t + "/fake.sock"
-if c.talk(b'{"v": 1}', c.Files()) == 130:
+if c.talk(b'{"v": 1}', c.Files(), c.connect()) == 130:
     print("client-int")
 class Refused(socket.socket):
     def connect(self, _addr):
         raise PermissionError
 c.socket.socket = Refused
 try:
-    c.talk(b"{}", c.Files())
+    c.connect()
 except SystemExit as e:
     if e.code == 77:
         print("client-group")
+os.environ["HOME"] = t + "/nokey"
+try:
+    c.main(["create", "k1", "-f"])
+except SystemExit as e:
+    if e.code == 77 and not os.path.exists(t + "/nokey/.ssh"):
+        print("client-nokey")
 PY
   )
-  for w in create-release signal-rc client-int client-group; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  for w in create-release signal-rc client-int client-group client-nokey; do grep -qx "$w" <<<"$out" && r+="$w "; done
   echo "$out" >>"$t/answers"
-  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id restore-quota export-full export-fd secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-key admin-leftover create-release signal-rc client-int client-group "
+  local want="list create reserved graphics os-path foreign own yes-needed delete origin backup-prefix backup-delete restore-id restore-quota export-full export-fd secret-forms arg-order help-deny admin-only iso-fd quota iso-unreadable audit no-group admin admin-key admin-leftover create-release signal-rc client-int client-group client-nokey "
   if [ "$r" = "$want" ]; then
     log_test "PASS" "socket server: roles, ownership, quotas, secrets, files and --yes enforced"
   else
@@ -3298,6 +3304,48 @@ if "already have" in answer(b).get("error", ""):
     print("slots")
 for fd in slots:
     os.close(fd)
+def denied(f, *a):
+    try:
+        return "allowed %s" % f(*a)
+    except s.Denied as e:
+        return str(e)
+def frame(payload, extra=b"", fds=()):
+    a, b = socket.socketpair()
+    b.sendmsg([struct.pack(">I", len(payload)) + payload + extra],
+              [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("%di" % len(fds), *fds))] if fds else [])
+    return a, b
+bad = [denied(s.recv_request, frame(p, x)[0]) for p, x in ((b"", b""), (b"{", b""), (b"\xff\xfe", b""),
+                                                            (b'{"v": 1, "argv": []}', b"x"), (b"[" * 5000, b""))]
+if bad == ["malformed request"] * 5 and "don't match" in denied(s.recv_request, frame(b'{"v": true, "argv": []}')[0]):
+    print("malformed")
+a, b = frame(b"{")
+s.handle(a)
+resp = answer(b)
+r, w = os.pipe()
+a, b = frame(json.dumps({"v": 1, "argv": ["bogus"], "stdin": 0, "stdout": 1, "stderr": 3}).encode(), fds=(0, 1, 2, r))
+s.handle(a)
+resp2 = answer(b)
+if resp["exit"] == 77 and resp["error"] == "malformed request" and resp2.get("show") and "unknown command: bogus" in resp2["error"]:
+    print("deny-shown")
+du = lambda *argv: denied(s.decide_user, user(), list(argv))
+if "unknown command: bogus" in du("bogus") and du("list", "extra").startswith("usage: dcvm list") and \
+        du("list", "--bogus").startswith("usage: dcvm list") and du("info", "web", "--json", "extra").startswith("usage: dcvm info") and \
+        du("backup", "restore", "a", "b", "c", "extra").startswith("usage: dcvm backup restore") and \
+        du("owner", "vm1", "alice") == "'owner' needs a dcvm admin" and "unknown command: dcvm template bogus" in du("template", "bogus") and \
+        du("network", "ports", "setup") == "'network ports setup' needs a dcvm admin":
+    print("typos")
+ctx = user()
+if s.decide_user(ctx, ["backup", "delete", "web"]) == ["backup", "delete", "web"] and ctx.get("interactive") and \
+        ctx["lock"] == "backup-4242-web" and "HH:MM:SS" in du("backup", "delete", "web", "bogus"):
+    print("backup-picker")
+pc = lambda *a, iso=False: denied(s.parse_create, dict(user(), files={3: 0}), list(a), iso)
+if "invalid package list" in pc("xvm", "-k", "nginx apache2") and "'-k', 'nginx,curl'" in pc("xvm", "-k", " nginx , curl") and \
+        all(pc(*a) == "give -o once" for a in (("xvm", "-o", "4", "-o", "5"), ("xvm", "-o=fd:3", "--os", "4"), ("xvm", "-o", "4", "-o", "fd:3"))) and \
+        "at most 3650d" in pc("xvm", "--ttl", "99999d") and pc("xvm", "--ttl", "3650d").startswith("allowed") and \
+        "does nothing with an ISO" in pc("xvm", "-k", "vim", iso=True) and "does nothing with an ISO" in pc("xvm", "--enable-root", iso=True) and \
+        "like 20G" in pc("xvm", "-d", "10", iso=True) and \
+        s.redact(["create", "--password=SECRET", "-pSECRET", "--tailscale-authkey=K"]) == ["create", "--password=***", "-p***", "--tailscale-authkey=***"]:
+    print("create-args")
 s.run_module = lambda *_a: 0
 ctx = user()
 argv = s.decide_user(ctx, ["backup", "delete", "web", "01.01.2026-1"])
@@ -3392,8 +3440,8 @@ if cancelled("trap '' INT; read x; exit 5")[0] == 143 and cancelled("sleep 2; ex
     print("tty-escalate")
 PY
   )
-  for w in regex deadline role-first slots backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate; do grep -qx "$w" <<<"$out" && r+="$w "; done
-  if [ "$r" = "regex deadline role-first slots backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate " ]; then
+  for w in regex deadline role-first slots malformed deny-shown typos backup-picker create-args backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  if [ "$r" = "regex deadline role-first slots malformed deny-shown typos backup-picker create-args backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate " ]; then
     log_test "PASS" "socket server: request deadline, per-user slots, locks and re-checks under them, libvirt down, audit size, output relay, abandoned terminal, --ip/--os-variant"
   else
     log_test "FAIL" "socket server: request deadline, per-user slots, locks and re-checks under them, libvirt down, audit size, output relay, abandoned terminal, --ip/--os-variant" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
@@ -3705,8 +3753,10 @@ test_iso_create_options() {
   grep -q -- '--boot uefi,hd,cdrom' <<<"$opts" && grep -q -- '--disk path=/d,format=qcow2 ' <<<"$opts" && grep -q -- '--network network=n ' <<<"$opts" && r+="uefi-win "
   grep -q 'needs a value' <<<"$(timeout 5 bash -c 'source "$1/../core/custom-iso.sh" >/dev/null 2>&1; parse_args web --iso' _ "$SCRIPT_DIR" 2>&1)" && r+="no-loop "
   grep -q 'Unknown option' <<<"$(iso parse_args web --bogus)" && r+="unknown "
+  grep -q 'does nothing with an ISO' <<<"$(iso parse_args web -k vim)" && [ "$(iso ttl_seconds 3650d)" = 315360000 ] &&
+    ! iso ttl_seconds 99999h >/dev/null && r+="cloud-opts-ttl "
   [ "$(PATH="$t/bin:$PATH" get_vm_disk_path vm)" = /srv/vm/vm-disk.qcow2 ] && r+="disk-not-iso "
-  if [ "$r" = "boot uefi-win no-loop unknown disk-not-iso " ]; then
+  if [ "$r" = "boot uefi-win no-loop unknown cloud-opts-ttl disk-not-iso " ]; then
     log_test "PASS" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors"
   else
     log_test "FAIL" "ISO VMs boot disk then ISO in one definition; UEFI, Windows devices, option errors" "$r | $(tr '\n' ' ' <<<"$opts" | cut -c1-300)"
@@ -3727,7 +3777,7 @@ test_iso_and_display_safety() {
     ) 2>&1
   }
   printf 'QFI\xfb\0\0\0\3' >"$t/vms/vm/installer.iso"
-  grep -q 'qcow2 disk image' <<<"$(staged)" && r+="qcow2 "
+  grep -q 'the file you gave is a qcow2 disk image' <<<"$(staged)" && r+="qcow2 "
   { head -c 4096 /dev/zero && printf conectix && head -c 504 /dev/zero; } >"$t/vms/vm/installer.iso"
   grep -q 'vhd disk image' <<<"$(staged)" && r+="vhd-footer "
   head -c 40960 /dev/zero >"$t/vms/vm/installer.iso"
