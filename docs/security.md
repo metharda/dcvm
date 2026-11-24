@@ -93,10 +93,11 @@ shows it.
   matching `FORWARD` rules accept only that forwarded (DNATed) traffic, not
   other traffic routed to a VM's ports 22 and 80.
 - **dcvm owns two port ranges.** `ports setup`, `ports apply` and
-  `ports clear` delete every `PREROUTING` rule on host ports 2220-2299 and
-  8080-8179, and every `FORWARD` rule that mentions the dcvm subnet, before
-  adding their own. Don't use those ranges for other NAT rules on a dcvm
-  host.
+  `ports clear` delete the DNAT rules in dcvm's own shape (to a VM's port 22
+  or 80) on host ports 2221-2299 and 8081-8179 (or the `SSH_PORT_START` and
+  `HTTP_PORT_START` ranges) or in `port-mappings.txt`, and the matching
+  `FORWARD` rules no other DNAT rule still leads to. Don't use those ranges
+  for other NAT rules on a dcvm host.
 - **VMs are not isolated from each other.** They share one bridge and can
   reach each other on every port.
 - **NFS share (optional).** If you answer `y` to the installer's NFS

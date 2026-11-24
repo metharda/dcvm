@@ -183,7 +183,7 @@ dcvm network show
 - DHCP lease management:
 ```bash
 dcvm network dhcp show
-# Clear all leases and make running DHCP VMs ask again (cuts their link for 5 s)
+# Release running DHCP VMs' leases and make them ask again (cuts their link for 5 s)
 dcvm network dhcp renew
 
 # Clear one lease: exact VM hostname (any case) or MAC; no network restart

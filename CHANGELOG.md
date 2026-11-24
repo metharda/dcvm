@@ -22,6 +22,16 @@ history, so the commit or PR is listed for each release.
 - A staged installer ISO counts against the user's disk quota (#187)
 - The client shows the server's reason instead of a traceback when it is refused before the request is read (#188)
 - `create-iso -o <iso>` works for group users, as it does for root (#189)
+- `ports setup` keeps the saved rows of VMs it skips (stopped, no address, no free port), so their host ports are not given to another VM (#122).
+- `dcvm network` and `network show` no longer stop at the DHCP leases when the network is inactive (#129).
+- `dhcp clear --stale` and `dcvm doctor` release no lease when libvirt can't list one VM's interfaces (#139).
+- `dhcp renew` releases only the leases of the VMs whose link it cuts; static and uncut VMs keep theirs (#140).
+- `ports setup`, `apply` and `clear` remove only DNAT rules on dcvm's port ranges or in `port-mappings.txt`; a hand-made DNAT to a VM, and the FORWARD rule it needs, stay (#156).
+
+### Security
+
+- `ports apply` (also run at boot by `dcvm doctor --fix`) skips rows of deleted VMs and addresses another VM holds, so a saved port can't reach someone else's VM (#123).
+- Guest-chosen DHCP hostnames are shown with control characters replaced, so they can't send escape sequences to the admin's terminal (#138).
 
 ## [0.9.11] - 2026-11-24
 
