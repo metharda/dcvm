@@ -23,7 +23,7 @@ history, so the commit or PR is listed for each release.
 - `backup import` records this host's build for the backup, so pruning no longer deletes the base an imported backup needs (#92).
 - `backup export` fails instead of packing a truncated disk or a temporary file when unpacking or recompressing the disk fails (#94).
 - Builds are never pruned when libvirt can't list the VMs or their disks (#102).
-- A user's `backup restore <vm> <id> <new-name>` gives the copy a new hostname, machine-id and SSH host keys too, with libguestfs confined by sVirt; without SELinux or AppArmor it warns and says how to reset them (#107).
+- A user's `backup restore <vm> <id> <new-name>` gives the copy a new hostname, SSH host keys and machine-id on first boot through a fresh cloud-init seed; root never opens the user's disk with libguestfs (#107).
 - `backup create` streams the disk straight into gzip (pigz if installed), so it needs at most the disk's allocated size free, not the disk plus its compressed copy; a failed or interrupted backup leaves no partial file (#47).
 - Arch guests initialise the pacman keyring before installing packages (#45).
 - Ubuntu MySQL keeps `root` on socket login, so `sudo mysql` works; a failed database setup is logged to `/var/log/dcvm-packages.log` (#45, #46).
