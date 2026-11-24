@@ -347,7 +347,8 @@ check_permissions() {
 
 leases_table() {
   local leases
-  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); print $6 "\t" ip "\t" $3 "\t" $1 " " $2 }')
+  # An inactive network fails virsh; the callers run under set -e. The hostname is the guest's choice.
+  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); h = $6; gsub(/[[:cntrl:]]/, "?", h); print h "\t" ip "\t" $3 "\t" $1 " " $2 }') || true
   if [ -z "$leases" ]; then
     echo -e "  ${DIM}none${NC}"
     return
@@ -1611,10 +1612,13 @@ cleanup_port_forwarding_for_vm() {
   save_iptables_rules
 }
 
-# Every rule in the exact shape setup_vm_forwarding makes (old and new), whatever the port; libvirt's, docker's and the RELATED rule stay.
+# Rules in the exact shape setup_vm_forwarding makes (old and new) on a host port of dcvm's ranges or a
+# saved mapping; a FORWARD rule stays while another DNAT leads to it. Libvirt's, docker's and the RELATED rule stay.
 cleanup_port_forwarding() {
   local net="${NETWORK_SUBNET:-10.10.10}" rule args
   local ip="${net//./\\.}\.[0-9]+"
+  local dnat="^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$"
+  local fwd="^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$"
   print_info "Cleaning up existing dcvm port forwarding rules"
   while read -r rule; do
     read -ra args <<<"${rule#-A }"
@@ -1623,9 +1627,20 @@ cleanup_port_forwarding() {
     else
       iptables -w -D "${args[@]}" 2>/dev/null || true
     fi
-  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null | grep -E \
-    -e "^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$" \
-    -e "^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$")
+  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null |
+    DNAT_RE=$dnat FWD_RE=$fwd MAPS=$(read_port_mappings 2>/dev/null) awk -v s="${SSH_PORT_START:-2221}" -v h="${HTTP_PORT_START:-8081}" '
+      BEGIN { n = split(ENVIRON["MAPS"], m, "\n"); for (i = 1; i <= n; i++) if (split(m[i], f, " ") >= 4) { own[f[3] " " f[2] ":22"]; own[f[4] " " f[2] ":80"] } }
+      $2 == "PREROUTING" && / -j DNAT / {
+        d = t = ""; for (i = 3; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
+        p = t; sub(/.*:/, "", p)
+        if ($0 ~ ENVIRON["DNAT_RE"] && ((d " " t) in own || (p == "22" && d + 0 >= s && d + 0 <= s + 78) || (p == "80" && d + 0 >= h && d + 0 <= h + 98))) print
+        else kept[t]
+      }
+      $2 == "FORWARD" && $0 ~ ENVIRON["FWD_RE"] {
+        for (i = 3; i < NF; i++) if ($i == "--dport") d = $(i + 1)
+        t = $4; sub(/\/32$/, "", t)
+        if (!((t ":" d) in kept)) print
+      }')
   print_success "Cleanup completed"
 }
 
@@ -1937,12 +1952,14 @@ cleanup_dhcp_lease_unlocked() {
   return "$rc"
 }
 
-# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer.
+# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer for any of them.
 domain_macs() {
-  local names d
+  local names d ifs
   names=$(virsh list --all --name 2>/dev/null) || return 1
   while read -r d; do
-    [ -n "$d" ] && virsh domiflist -- "$d" 2>/dev/null | awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }'
+    [ -n "$d" ] || continue
+    ifs=$(virsh domiflist -- "$d" 2>/dev/null) || return 1
+    awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }' <<<"$ifs"
   done <<<"$names"
 }
 

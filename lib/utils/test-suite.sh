@@ -2584,25 +2584,29 @@ test_dhcp_renew_link() {
   local t out rc
   t=$(mktemp -d)
   write_lease_fixture "$t"
-  jq '[.[] | select(.hostname == "vm1")]' "$t/br.status" >"$t/s" && cat "$t/s" >"$t/br.status"
+  # The guest asking again while its link is down: only vm1 gets a lease back.
+  jq '[.[] | select(.hostname == "vm1")]' "$t/br.status" >"$t/renewed"
   mkdir -p "$t/config/network"
   : >"$t/config/network/web.conf"
   out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"
-    clear_all_leases() { echo clear_all >>"$t/calls"; }
+    confirm_release() { echo confirmed >>"$t/calls"; }
     is_vm_in_network() { :; }
-    get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    get_vm_mac() { [ "$1" = vm1-copy ] || awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    sleep() { [ "$1" != 5 ] || cp "$t/renewed" "$t/br.status"; }
     ssh() { echo "ssh $*" >>"$t/calls"; }' renew)
   rc=$?
-  if [ "$rc" != 0 ] && grep -qx clear_all "$t/calls" && ! grep -q '^ssh' "$t/calls" &&
+  if [ "$rc" != 0 ] && grep -qx confirmed "$t/calls" && ! grep -q '^ssh' "$t/calls" &&
+    [ "$(grep '^dhcp_release' "$t/calls" | sort | tr '\n' ';')" = "dhcp_release br 10.10.10.10 52:54:00:00:00:10;dhcp_release br 10.10.10.11 52:54:00:00:00:01;" ] &&
+    grep -q 'vm1-copy .*could not cut' <<<"$out" &&
     grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 down' "$t/calls" &&
     grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 up' "$t/calls" &&
     grep -qx 'virsh domif-setlink vm10 52:54:00:00:00:10 up' "$t/calls" &&
     ! grep -q 'domif-setlink web' "$t/calls" &&
     grep -q 'vm1 .*renewed: 10.10.10.11' <<<"$out" && grep -q 'vm10 .*no new lease' <<<"$out" &&
     grep -q 'web .*static IP' <<<"$out"; then
-    log_test "PASS" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)"
+    log_test "PASS" "dhcp renew cuts DHCP VMs' links (not static ones), releases only the cut VMs' leases, reports which got a new lease, fails for the rest, no SSH (#93, #140)"
   else
-    log_test "FAIL" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)" "rc $rc; $(tr '\n' ';' <"$t/calls"); $(tr '\n' ';' <<<"$out")"
+    log_test "FAIL" "dhcp renew cuts DHCP VMs' links (not static ones), releases only the cut VMs' leases, reports which got a new lease, fails for the rest, no SSH (#93, #140)" "rc $rc; $(tr '\n' ';' <"$t/calls"); $(tr '\n' ';' <<<"$out")"
   fi
   rm -rf "$t"
 }
@@ -3647,21 +3651,24 @@ case "$*" in
   '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
   '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
   '-A PREROUTING -p tcp -m tcp --dport 2222 -j DNAT --to-destination 110.10.10.5:22' \
-  '-A PREROUTING -p tcp -j DNAT --to-destination 10.10.10.9:22' ;;
+  '-A PREROUTING -p tcp -j DNAT --to-destination 10.10.10.9:22' \
+  '-A PREROUTING -p tcp -m tcp --dport 19000 -j DNAT --to-destination 10.10.10.7:22' ;;
 *"-S FORWARD"*) printf '%s\n' '-P FORWARD ACCEPT' \
   '-A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT' \
   '-A FORWARD -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
   '-A FORWARD -d 10.10.10.6/32 -p tcp -m tcp --dport 80 -j ACCEPT' \
   '-A FORWARD -d 10.10.10.0/24 -o virbr-dc -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' \
   '-A FORWARD -d 110.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' \
-  '-A FORWARD -s 192.0.2.9/32 -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' ;;
+  '-A FORWARD -s 192.0.2.9/32 -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' \
+  '-A FORWARD -d 10.10.10.7/32 -p tcp -m tcp --dport 22 -j ACCEPT' ;;
 *" -D "*) exit 1 ;;
 esac
 exit 0
 STUB
   chmod +x "$t/bin/iptables"
 
-  (PATH="$t/bin:$PATH" NETWORK_SUBNET=10.10.10 BRIDGE_NAME=virbr-dc && cleanup_port_forwarding) >/dev/null 2>&1
+  echo "old 10.10.10.6 4000 2230" >"$t/cmap"
+  (PATH="$t/bin:$PATH" NETWORK_SUBNET=10.10.10 BRIDGE_NAME=virbr-dc SSH_PORT_START=3000 && get_port_mappings_file() { echo "$t/cmap"; } && cleanup_port_forwarding) >/dev/null 2>&1
   [ "$(grep -- ' -D ' "$t/bin/calls")" = "$(printf '%s\n' \
     '-w -t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
     '-w -t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
@@ -3712,9 +3719,9 @@ STUB
   done
   [ ! -s "$t/swept" ] && r+="locked "
   if [ "$r" = "cleanup-exact half-forward-undone custom-range-free-port locked " ]; then
-    log_test "PASS" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)"
+    log_test "PASS" "port forwards: cleanup takes only dcvm's rules in its ranges or mappings, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87, #156)"
   else
-    log_test "FAIL" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null) $(tr '\n' '|' <"$t/swept")"
+    log_test "FAIL" "port forwards: cleanup takes only dcvm's rules in its ranges or mappings, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87, #156)" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null) $(tr '\n' '|' <"$t/swept")"
   fi
 
   r=""
@@ -3748,6 +3755,89 @@ STUB
     log_test "FAIL" "port mappings and static IP records are readable by root only (#106)" "$r"
   fi
   rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the module
+test_port_mappings_kept_and_checked() {
+  local t r="" out pf="$SCRIPT_DIR/../network/port-forward.sh"
+  t=$(mktemp -d)
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nweb 10.10.10.5 2221 8081\ndb 10.10.10.6 2222 8082\ngone 10.10.10.7 2223 8083\n' >"$t/port-mappings.txt"
+  : >"$t/tmp"
+  out=$(
+    source "$pf"
+    iptables() { :; }
+    ss() { :; }
+    echo "$(free_port 2221 2299 3 web "$t/tmp" "$t/port-mappings.txt") $(free_port 2221 2299 3 new "$t/tmp" "$t/port-mappings.txt")"
+  )
+  [ "$out" = "2221 2224" ] && r+="ports-reserved "
+  echo "web 10.10.10.5 2221 8081" >"$t/tmp"
+  (
+    source "$pf"
+    DATACENTER_BASE="$t" MAPPINGS_TMP="$t/tmp"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    check_vm_exists() { [ "$1" != gone ]; }
+    save_mappings_tmp_to_file
+  ) >/dev/null 2>&1
+  [ "$(grep -v '^#' "$t/port-mappings.txt" | tr '\n' ';')" = "web 10.10.10.5 2221 8081;db 10.10.10.6 2222 8082;" ] && r+="rows-kept "
+  printf 'web 10.10.10.5 2221 8081\ngone 10.10.10.7 2223 8083\nother 10.10.10.8 2224 8084\n' >"$t/port-mappings.txt"
+  (
+    source "$pf"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    lock_port_mappings() { :; }
+    cleanup_port_forwarding() { :; }
+    detect_host_ip() { echo 192.0.2.1; }
+    allow_related() { :; }
+    save_iptables_rules() { :; }
+    check_vm_exists() { [ "$1" != gone ]; }
+    ip_held_by_other_vm() { [ "$1" = 10.10.10.8 ]; }
+    setup_vm_forwarding() { echo "forward $1" >>"$t/calls"; }
+    cmd_apply
+  ) >/dev/null 2>&1 || [ "$(cat "$t/calls" 2>/dev/null)" != "forward web" ] || r+="apply-checked "
+  if [ "$r" = "ports-reserved rows-kept apply-checked " ]; then
+    log_test "PASS" "ports setup keeps the rows of VMs it skipped and never gives their ports away, ports apply skips deleted VMs and addresses other VMs hold (#122, #123)"
+  else
+    log_test "FAIL" "ports setup keeps the rows of VMs it skipped and never gives their ports away, ports apply skips deleted VMs and addresses other VMs hold (#122, #123)" "$r; $out"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
+test_dhcp_hostile_and_partial() {
+  local r="" out esc=$'\e'
+  out=$( (
+    set -euo pipefail
+    NETWORK_NAME=net
+    virsh() { return 1; }
+    leases_table
+    echo REACHED
+  ) 2>&1)
+  grep -q REACHED <<<"$out" && r+="inactive-network "
+  out=$(
+    NETWORK_NAME=net
+    virsh() { printf ' h\n---\n 2030-01-01 00:00:00   52:54:00:00:00:01   ipv4   10.10.10.11/24   x%s[2Jy   -\n' "$esc"; }
+    leases_table
+    source "$SCRIPT_DIR/../network/dhcp.sh"
+    cleanup_dhcp_lease() { return 0; }
+    release_leases "52:54:00:00:00:01|10.10.10.11|a${esc}]52;c;eA==|no VM has this MAC" lease
+  )
+  grep -qF 'x?[2Jy' <<<"$out" && grep -qF 'a?]52;c;eA==' <<<"$out" && ! grep -qF "$esc" <<<"$out" && r+="no-escapes "
+  (
+    virsh() {
+      case "$1" in
+      list) printf 'a\nb\n' ;;
+      domiflist)
+        [ "$3" = a ] && return 1
+        printf ' Interface Type Source Model MAC\n---\n vnet0 network net virtio 52:54:00:00:00:01\n'
+        ;;
+      esac
+    }
+    domain_macs
+  ) >/dev/null 2>&1 || r+="partial-macs "
+  if [ "$r" = "inactive-network no-escapes partial-macs " ]; then
+    log_test "PASS" "DHCP lease tables survive an inactive network under set -e, guest hostnames reach the terminal without escapes, one unreadable VM stops stale-lease cleanup (#129, #138, #139)"
+  else
+    log_test "FAIL" "DHCP lease tables survive an inactive network under set -e, guest hostnames reach the terminal without escapes, one unreadable VM stops stale-lease cleanup (#129, #138, #139)" "$r"
+  fi
 }
 
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by delete_all_vms
@@ -5332,6 +5422,8 @@ test_common_functions() {
   test_dhcp_stale_by_mac
   test_forward_rules_scope
   test_port_forward_records
+  test_port_mappings_kept_and_checked
+  test_dhcp_hostile_and_partial
   test_delete_all_shared_state
   test_installer_network
   test_network_status_no_bridge
