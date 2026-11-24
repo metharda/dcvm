@@ -1966,7 +1966,7 @@ main() {
     ;;
   *)
     print_error "Unknown subcommand: $SUBCOMMAND"
-    echo "Valid subcommands: create, restore, list, delete, export, import, troubleshoot"
+    echo "Valid subcommands: create, restore, list, delete, export, import, ssh-setup, troubleshoot"
     exit 1
     ;;
   esac

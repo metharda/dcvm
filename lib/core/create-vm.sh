@@ -92,6 +92,7 @@ OS:
   9 Fedora 44
 
 Without -f, dcvm asks for every option you did not give.
+Several names, comma separated, create one VM each (root and dcvm admins only).
 Packages: nginx, apache2, mysql-server, postgresql, php, nodejs, docker.io, tailscale, or any other.
 
 Examples:
@@ -1626,6 +1627,10 @@ main() {
     show_usage
     exit 0
   fi
+  if [ $# -lt 1 ]; then
+    show_usage
+    exit 1
+  fi
   load_dcvm_config
 
   [ -f /etc/dcvm-install.conf ] && source /etc/dcvm-install.conf || {
@@ -1636,11 +1641,6 @@ main() {
   DATACENTER_BASE="${DATACENTER_BASE:-/srv/datacenter}"
   NETWORK_NAME="${NETWORK_NAME:-datacenter-net}"
   BRIDGE_NAME="${BRIDGE_NAME:-virbr-dc}"
-
-  if [ $# -lt 1 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-    show_usage
-    exit 0
-  fi
 
   parse_arguments "$@"
   read_dcvm_secrets

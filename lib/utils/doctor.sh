@@ -575,11 +575,13 @@ main() {
     --fast) FAST=true ;;
     --summary) SUMMARY=true QUIET=true FAST=true ;;
     --only)
-      ONLY="${2:-}"
+      [ -n "${2:-}" ] || need_value "$1"
+      ONLY="$2"
       shift
       ;;
     --vm)
-      VM_FILTER="${2:-}"
+      [ -n "${2:-}" ] || need_value "$1"
+      VM_FILTER="$2"
       shift
       ;;
     -h | --help | help)
