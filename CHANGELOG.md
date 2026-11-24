@@ -62,6 +62,18 @@ history, so the commit or PR is listed for each release.
 
 - `--ip` and DHCP network-config match the NIC by its MAC, so they work on Debian, Kali and Fedora, not only with netplan (#130).
 - CPU, memory and disk sizes with a leading zero (`-c 08`, `-m 01000`) are read as decimal in the quota check and size parsing (#131).
+- `backup restore` stops before touching the VM when its definition can't be saved, and reports what it couldn't put back (#111).
+- An interrupted `backup restore` (Ctrl-C, kill) puts the previous VM definition and disk back; the saved definition is kept in the VM's folder (#112).
+- `backup export` assembles the package on the backup file system after a free-space check, not in `/tmp`; restore checks the space for the unpacked disk too (#116).
+- `backup export` takes the VM's lock and never writes through a link planted at the package path; an existing file is refused (#121).
+- `backup import` records and reserves the static IP from the package's `network-config` (#133).
+- `backup delete <vm>-YYYYMMDD_HHMMSS` and `<vm>-latest` work in one argument (#182).
+
+### Security
+
+- `backup ssh-setup` uses the VM's host-side address, keeps the guest's host key in a throwaway `known_hosts`, times out on a stalled sshd and prints guest output without escape sequences (#117, #185).
+- Restore never opens a user's disk with libguestfs to find the base of a pre-0.9.9 backup (#124).
+- A user's backups count toward their `disk_gb` quota; `backup create` reserves room before it writes (#132).
 
 ## [0.9.11] - 2026-11-24
 

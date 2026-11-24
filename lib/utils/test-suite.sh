@@ -3229,6 +3229,268 @@ test_backup_delete_ids_and_user_export() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317 # stubs
+test_backup_restore_rollback() {
+  local t ts=20260101_120000
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  printf "<domain type='kvm'>\n  <name>vm1</name>\n  <devices>\n    <disk type='file' device='disk'><source file='%s'/></disk>\n  </devices>\n</domain>\n" "$t/vms/vm1/vm1-disk.qcow2" >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  run() {
+    echo original >"$t/vms/vm1/vm1-disk.qcow2"
+    printf ' 1    vm1    shut off\n' >"$t/list"
+    echo "shut off" >"$t/state"
+    : >"$t/calls"
+    rm -f "$t/defined.xml"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      eval "$1"
+      restore_vm vm1 "$ts" true >"$t/out" 2>&1
+    )
+  }
+  if ! run 'eval "$(declare -f virsh | sed "1s/virsh/stub_virsh/")"; virsh() { [ "$1" = dumpxml ] && return 1; stub_virsh "$@"; }' &&
+    [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && ! grep -qE '^virsh (undefine|define)' "$t/calls" &&
+    [ ! -e "$t/vms/vm1/.pre-restore.xml" ]; then
+    log_test "PASS" "backup restore (failed dumpxml stops before the VM is undefined)"
+  else
+    log_test "FAIL" "backup restore (failed dumpxml stops before the VM is undefined)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  # A kill between undefine and define (Ctrl-C reaches it the same way) puts the old VM and disk back.
+  run 'normalize_backing_chain() { kill -TERM "$BASHPID"; }'
+  if [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && [ ! -e "$t/vms/vm1/vm1-disk.qcow2.pre-restore" ] &&
+    grep -qx '<domain><name>vm1</name></domain>' "$t/defined.xml" 2>/dev/null && [ ! -e "$t/vms/vm1/.pre-restore.xml" ] &&
+    [ ! -e "$t/backups/.restore-vm1.qcow2" ]; then
+    log_test "PASS" "backup restore (interrupted mid-restore: previous VM and disk are back)"
+  else
+    log_test "FAIL" "backup restore (interrupted mid-restore: previous VM and disk are back)" "$(cat "$t/vms/vm1/vm1-disk.qcow2"); $(ls -A "$t/vms/vm1" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_export_staging() {
+  local t ts=20260101_120000 r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/out"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  run() { (load_backup_sh_for_test "$t" && stub_backup_tools "$t" && eval "$1") </dev/null >"$t/log" 2>&1; }
+  run 'cp() { echo "cp $*" >>"$t/cp"; command cp "$@"; }; export_backup vm1 latest "$t/out"' && [ -f "$t/out/vm1-$ts.tar.gz" ] &&
+    grep -q "^cp $t/backups/vm1-$ts/vm1-disk-$ts.qcow2 $t/backups/.export-" "$t/cp" &&
+    [ -z "$(find "$t/backups" "$t/out" -mindepth 1 -name '.*')" ] && r+="staged-in-backups "
+  rm -f "$t/out/vm1-$ts.tar.gz"
+  ! run 'free_bytes() { echo 0; }; export_backup vm1 latest "$t/out"' && [ ! -e "$t/out/vm1-$ts.tar.gz" ] &&
+    grep -q 'Free space' "$t/log" && r+="free-space "
+  echo victim >"$t/victim"
+  ln -s "$t/victim" "$t/out/vm1-$ts.tar.gz"
+  ! run 'export_backup vm1 latest "$t/out"' && [ "$(cat "$t/victim")" = victim ] && r+="no-symlink-write "
+  if [ "$r" = "staged-in-backups free-space no-symlink-write " ]; then
+    log_test "PASS" "backup export (staged on the backup file system after a free-space check; never writes through a planted link)"
+  else
+    log_test "FAIL" "backup export (staged on the backup file system after a free-space check; never writes through a planted link)" "$r | $(tail -2 "$t/log" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_legacy_base_probe() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/storage/templates" "$t/backups/vm1-20260101_120000"
+  : >"$t/storage/templates/ubuntu.img"
+  probe() {
+    rm -f "$t/probed"
+    (
+      load_backup_sh_for_test "$t"
+      disk_backing() { echo "$t/storage/templates/ubuntu.img"; }
+      legacy_disk_build() { echo probed >"$t/probed"; }
+      eval "$1"
+      restore_disk_base "$t/disk.qcow2" "$t/backups/vm1-20260101_120000/base"
+    ) >/dev/null 2>&1
+  }
+  ! probe 'DCVM_CALLER_ROLE=user' && [ ! -e "$t/probed" ] && r+="user "
+  echo 1000 >"$t/backups/vm1-20260101_120000/owner"
+  ! probe '' && [ ! -e "$t/probed" ] && r+="users-backup "
+  rm "$t/backups/vm1-20260101_120000/owner"
+  probe ''
+  [ -e "$t/probed" ] && r+="root "
+  if [ "$r" = "user users-backup root " ]; then
+    log_test "PASS" "backup restore (no libguestfs base probe on a user's disk; root's old backups still probed)"
+  else
+    log_test "FAIL" "backup restore (no libguestfs base probe on a user's disk; root's old backups still probed)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC2016 # stubs
+test_backup_ssh_setup_untrusted_guest() {
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/.ssh"
+  echo "ssh-ed25519 AAAA test" >"$t/.ssh/id_ed25519.pub"
+  out=$(
+    load_backup_sh_for_test "$t"
+    HOME="$t"
+    sleep() { :; }
+    bash() { return 0; }
+    check_vm_exists() { return 0; }
+    get_vm_state() { echo running; }
+    get_vm_ip() {
+      echo "get_vm_ip $*" >>"$t/calls"
+      echo 10.10.10.50
+    }
+    ssh-copy-id() {
+      echo "ssh-copy-id $*" >>"$t/calls"
+      printf '/usr/bin/ssh-copy-id: INFO: \033]0;pwned\007 and \\033]0;pwned\\007 \\c\n'
+      return 1
+    }
+    ssh_setup_vm vm1 <<<"debian" 2>&1
+  )
+  if grep -qx 'get_vm_ip vm1 1 host' "$t/calls" && grep -q 'StrictHostKeyChecking=accept-new' "$t/calls" &&
+    grep -q "UserKnownHostsFile=" "$t/calls" && grep -q 'ConnectTimeout=' "$t/calls" &&
+    ! grep -q 'StrictHostKeyChecking=no' "$t/calls"; then
+    log_test "PASS" "backup ssh-setup (host-side IP only, throwaway known_hosts, connect timeout)"
+  else
+    log_test "FAIL" "backup ssh-setup (host-side IP only, throwaway known_hosts, connect timeout)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  if ! grep -q $'\033' <<<"$out" && ! grep -q $'\007' <<<"$out" && grep -qF '\033]0;pwned\007 \c' <<<"$out"; then
+    log_test "PASS" "backup ssh-setup (guest output printed without escape sequences)"
+  else
+    log_test "FAIL" "backup ssh-setup (guest output printed without escape sequences)" "$(grep pwned <<<"$out" | od -c | head -3 | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_import_static_ip() {
+  local t ts=20260101_120000
+  t=$(mktemp -d)
+  mkdir -p "$t/pkg/cloud-init" "$t/vms"
+  echo disk >"$t/pkg/vm1-disk-$ts.qcow2"
+  printf "<domain type='kvm'>\n  <name>vm1</name>\n  <devices>\n    <disk type='file' device='disk'><source file='x'/></disk>\n  </devices>\n</domain>\n" >"$t/pkg/vm1-config-$ts.xml"
+  printf 'version: 2\nethernets:\n  id0:\n    dhcp4: false\n    addresses:\n      - 10.10.10.50/24\n    gateway4: 10.10.10.1\n' >"$t/pkg/cloud-init/network-config"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    claim_static_ip() { echo "claim $*" >>"$t/static"; }
+    save_static_ip() { echo "save $*" >>"$t/static"; }
+    ssh_setup_vm() { :; }
+    import_backup "$t/pkg.tar.gz" vm2 </dev/null >"$t/out" 2>&1
+  )
+  if grep -qx 'save vm2 10.10.10.50' "$t/static" 2>/dev/null && grep -q '<name>vm2</name>' "$t/defined.xml" 2>/dev/null; then
+    log_test "PASS" "backup import (static IP from the package's network-config is recorded and reserved)"
+  else
+    log_test "FAIL" "backup import (static IP from the package's network-config is recorded and reserved)" "$(tail -2 "$t/out" | tr '\n' ' ')"
+  fi
+  rm -rf "$t/static" "$t/defined.xml" "$t/backups" "$t/list"
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    claim_static_ip() { return 1; }
+    save_static_ip() { echo "save $*" >>"$t/static"; }
+    import_backup "$t/pkg.tar.gz" vm2 </dev/null >"$t/out" 2>&1
+  )
+  if [ ! -e "$t/static" ] && ! grep -q '^virsh start' "$t/calls" && grep -q 'cannot have here' "$t/out"; then
+    log_test "PASS" "backup import (a static IP this host can't give: warned, not started)"
+  else
+    log_test "FAIL" "backup import (a static IP this host can't give: warned, not started)" "$(tail -3 "$t/out" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_delete_one_arg_ids() {
+  local t a=20260101_100000 b=20260101_120000 ts r=""
+  t=$(mktemp -d)
+  for ts in $a $b; do
+    mkdir -p "$t/backups/vm1-$ts"
+    echo disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+    echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  done
+  run() { (load_backup_sh_for_test "$t" && stub_backup_tools "$t" && wget() { :; } && prune_builds() { :; } && "$@") </dev/null >"$t/log" 2>&1; }
+  run main delete "vm1-$a" && [ ! -d "$t/backups/vm1-$a" ] && [ -d "$t/backups/vm1-$b" ] && r+="timestamp "
+  run main delete vm1-latest && [ ! -d "$t/backups/vm1-$b" ] && r+="latest "
+  if [ "$r" = "timestamp latest " ]; then
+    log_test "PASS" "backup delete <vm>-YYYYMMDD_HHMMSS and <vm>-latest in one argument"
+  else
+    log_test "FAIL" "backup delete <vm>-YYYYMMDD_HHMMSS and <vm>-latest in one argument" "$r | $(tail -1 "$t/log")"
+  fi
+  rm -rf "$t"
+}
+
+test_backup_server_quota_and_ids() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "backup quota and ids in the socket server (python3 not installed)"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/h/vms" "$t/base/backups/web-20260101_120000" "$t/base/vms/web"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  echo 'disk_gb=3' >"$t/limits"
+  echo 4242 >"$t/base/backups/web-20260101_120000/owner"
+  head -c 1048576 /dev/urandom >"$t/base/backups/web-20260101_120000/web-disk-20260101_120000.qcow2.gz"
+  head -c 2097152 /dev/urandom >"$t/base/vms/web/web-disk.qcow2"
+  printf 'owner_uid=4242\nowner=u\ndisk_gb=1\n' >"$t/h/vms/web"
+  out=$(
+    timeout 60 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("dcvm_server", os.path.join(sys.argv[1], "dcvm-server.py"))
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+t = sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS, s.AUDIT = t + "/h", t + "/h/run", t + "/conf", t + "/limits", t + "/h/audit.log"
+s.domain_known = lambda vm: True
+user = lambda: {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+def denied(f, *a, **k):
+    try:
+        return "allowed %s" % (f(*a, **k),)
+    except s.Denied as e:
+        return str(e)
+du = lambda *argv: denied(s.decide_user, user(), list(argv))
+if du("backup", "delete", "web-20260101_120000") == "allowed ['backup', 'delete', 'web', '01.01.2026-12:00:00']" and \
+        du("backup", "delete", "web-latest") == "allowed ['backup', 'delete', 'web', 'latest']":
+    print("delete-ids")
+fd = os.open(t + "/pkg", os.O_WRONLY | os.O_CREAT, 0o600)
+ctx = dict(user(), files={3: fd})
+s.decide_user(ctx, ["backup", "export", "web", "fd:3"])
+if ctx.get("vm") == "web" and ctx.get("lock") is None and not ctx.get("mutating"):
+    print("export-lock")
+if s.check_quota(4242, "u", 0, 0, 0, vms=0) == "8 16384 2" and "1 of it backups" in denied(s.check_quota, 4242, "u", 0, 0, 2, vms=0):
+    print("backups-charged")
+ctx = user()
+argv = s.decide_user(ctx, ["backup", "create", "web"])
+if ctx.get("backup_need", 0) >= 2097152 and argv == ["backup", "create", "web"]:
+    print("create-fits")
+seen = []
+s.run_module = lambda *_a: seen.append(os.listdir(s.RUN + "/reserve")) or 0
+s.execute(ctx, None, argv, {"argv": ["backup", "create", "web"]}, {})
+if seen == [["4242-%d" % os.getpid()]] and not os.listdir(s.RUN + "/reserve"):
+    print("reserved-while-running")
+with open("%s/reserve/4242-%d" % (s.RUN, os.getpid()), "w") as f:
+    f.write("%d\n" % (2 * 1024**3))
+if "over your disk (GB) quota" in du("backup", "create", "web"):
+    print("reservation-counts")
+os.unlink("%s/reserve/4242-%d" % (s.RUN, os.getpid()))
+p = subprocess.Popen(["true"])
+p.wait()
+with open("%s/reserve/4242-%d" % (s.RUN, p.pid), "w") as f:
+    f.write("%d\n" % (2 * 1024**3))
+if du("backup", "create", "web").startswith("allowed") and not os.listdir(s.RUN + "/reserve"):
+    print("stale-reservation-dropped")
+PY
+  )
+  if [ "$(echo $out)" = "delete-ids export-lock backups-charged create-fits reserved-while-running reservation-counts stale-reservation-dropped" ]; then
+    log_test "PASS" "socket server: one-argument backup ids, export takes the VM's lock, backups charged to disk quota with a reservation"
+  else
+    log_test "FAIL" "socket server: one-argument backup ids, export takes the VM's lock, backups charged to disk quota with a reservation" "$(echo $out)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_starts_dcvm_vms_only() {
   local t
   t=$(mktemp -d)
@@ -3413,7 +3675,8 @@ test_socket_policy() {
   out=$(ask backup restore web web-01.01.2026-1)
   grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" &&
     grep -q '"argv": \["backup", "restore", "web", "latest", "--yes"\]' <<<"$(ask backup restore web --yes latest)" && r+="restore-id "
-  grep -q '"DCVM_QUOTA_LIMITS": "8 16384 200"' <<<"$out" && r+="restore-quota "
+  # The two backup folders take a few KB, charged as 1 GB of the 200.
+  grep -q '"DCVM_QUOTA_LIMITS": "8 16384 199"' <<<"$out" && r+="restore-quota "
   grep -q '"argv": \["backup", "export", "web", "20260101_120000", "--full"\]' <<<"$(ask backup export web --full 20260101_120000 "$t")" &&
     grep -q '"argv": \["backup", "export", "web", "--full"\]' <<<"$(ask backup export web "$t" --full)" && r+="export-full "
   raw_export() {
@@ -5976,6 +6239,13 @@ test_common_functions() {
   test_suite_installs_only_on_request
   test_backup_console_password
   test_backup_delete_ids_and_user_export
+  test_backup_restore_rollback
+  test_backup_export_staging
+  test_backup_legacy_base_probe
+  test_backup_ssh_setup_untrusted_guest
+  test_backup_import_static_ip
+  test_backup_delete_one_arg_ids
+  test_backup_server_quota_and_ids
   test_user_remove_and_owner_hint
   test_static_ip_reason
   test_delete_vm_exact_match
