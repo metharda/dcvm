@@ -383,7 +383,14 @@ main() {
   fi
   check_permissions
   check_dependencies virsh lsof
-  VM_NAME="$1"
+  local arg
+  VM_NAME=""
+  for arg in "$@"; do
+    [ "$arg" = --verbose ] || [ "$arg" = --yes ] || {
+      VM_NAME=$arg
+      break
+    }
+  done
 
   [ -z "$VM_NAME" ] && print_error "VM name required. Usage: dcvm fix-lock <vm_name|--all> [--verbose]" && exit 1
 

@@ -246,7 +246,7 @@ check_dependencies() {
 
   if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
     print_error "Network '$NETWORK_NAME' does not exist"
-    echo "Please run 'dcvm install' to set up the dcvm network."
+    echo "Recreate it: sudo bash $SCRIPT_DIR/../installation/install-dcvm.sh --network-only"
     exit 1
   fi
 
@@ -1116,8 +1116,10 @@ generate_cloud_init_userdata() {
         TAILSCALE_REQUESTED=true
         continue
       fi
-      if [ "$package" = mysql-server ] || [ "$package" = default-mysql-server ]; then
+      if [ "$package" = mysql-server ] || [ "$package" = default-mysql-server ] || [ "$package" = mariadb-server ] ||
+        { [ "$package" = mariadb ] && [ "$VM_OS" = archlinux ]; }; then
         MYSQL_REQUESTED=true
+        [[ "$package" == mariadb* ]] && mysql_service=mariadb
         if [ "$package" = mysql-server ] || [ "$VM_OS" = archlinux ] || [[ "$VM_OS" == fedora* ]]; then
           package=$mysql_package
         fi
@@ -1142,7 +1144,7 @@ generate_cloud_init_userdata() {
           APACHE_REQUESTED=true
           package=httpd
           ;;
-        docker.io) package=moby-engine ;;
+        docker | docker.io) package=moby-engine ;;
         esac
       fi
       EXTRA_PACKAGES="${EXTRA_PACKAGES:+$EXTRA_PACKAGES }${package}"
@@ -1234,9 +1236,9 @@ $(
     # shellcheck disable=SC2086 # one package per word
     printf '  - %s\n' $base_packages
   )$(if [ "$VM_OS" = archlinux ]; then echo "
-# The Arch image ships no pacman keyring; package_update runs after bootcmd.
+# The Arch image ships no pacman keyring; package_update runs after bootcmd. Retried until it works once.
 bootcmd:
-  - cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'"; fi)
+  - sh -c 'test -e /var/lib/dcvm-pacman-keyring && exit 0; for i in 1 2 3 4 5 6; do pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring && touch /var/lib/dcvm-pacman-keyring && exit 0; sleep 10; done; exit 1'"; fi)
 
 write_files:
   - content: |

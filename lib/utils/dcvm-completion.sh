@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
 _dcvm_commands() {
-  echo "create create-iso delete list status start stop restart console network backup template storage doctor fix-lock self-update uninstall version help"
+  echo "create create-iso delete list status info start stop restart console ssh exec cp protect unprotect network backup restore template storage doctor fix-lock user owner whoami reap self-update uninstall version help"
 }
 
+# dcvm's own VMs, as the caller may see them (other libvirt domains and other users' VMs are left out).
 _dcvm_vm_list() {
-  command -v virsh >/dev/null 2>&1 || return 0
-  virsh list --all --name 2>/dev/null | grep -v '^$'
+  command -v dcvm >/dev/null 2>&1 || return 0
+  dcvm list --json 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4
 }
 
 _dcvm_dhcp_subs() { echo "show clear cleanup renew files help"; }
@@ -97,7 +98,11 @@ _dcvm_completion() {
   local cmd="${COMP_WORDS[1]}"
 
   case "$cmd" in
-  delete | start | stop | restart | console | status)
+  info | protect | unprotect | ssh | exec | fix-lock | restore)
+    [[ ${COMP_CWORD} -eq 2 ]] && COMPREPLY=($(compgen -W "$(_dcvm_vm_list)" -- "$cur"))
+    ;;
+
+  delete | start | stop | restart | console)
     if [[ ${COMP_CWORD} -ge 2 ]]; then
       local already_selected=""
       local i

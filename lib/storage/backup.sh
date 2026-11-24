@@ -770,7 +770,10 @@ import_backup() {
   fi
 
   local workdir
-  workdir=$(mktemp -d)
+  workdir=$(mktemp -d) && [ -d "$workdir" ] || {
+    print_error "Cannot create a temporary folder"
+    return 1
+  }
 
   if [ -f "$pkg_path" ]; then
     if ! tar --no-same-owner --no-same-permissions -xzf "$pkg_path" -C "$workdir" 2>/dev/null; then
@@ -868,7 +871,7 @@ import_backup() {
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
 
-  if ! IMPORT_STATIC_IP=$static_ip restore_vm "$vm_target" "$date_part" "" "from_import"; then
+  if ! IMPORT_STATIC_IP=$static_ip restore_vm "$vm_target" "$date_part" "$ASSUME_YES" "from_import"; then
     rm -rf "$backup_folder"
     return 1
   fi
@@ -1874,7 +1877,8 @@ Commands:
   create <vm>                         Back up a VM (shuts it down meanwhile, then starts it again)
   list [vm]                           Backups of every VM, or of one
   restore <vm> [id] [new-name]        Put a backup back (newest by default) and start it, or restore it as a new VM
-                                      (replacing a VM asks first; --yes without a terminal)
+                                      (replacing a VM asks first; --yes without a terminal;
+                                      --base <file> gives the base build when it is not on this host, admins only)
   delete <vm>                         Pick backups to delete from a numbered list
   delete <vm> <id> | <vm>-<id>        Delete one backup, without asking
   delete --all                        Delete every backup (asks first; --yes without a terminal)

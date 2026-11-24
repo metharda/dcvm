@@ -187,6 +187,13 @@ rank_mirrors() {
 
 select_best_mirror() { rank_mirrors "$@" | head -1 | cut -d' ' -f1; }
 
+# Only exit 2 is corruption: 1 is a failed check (a VM holds the lock), 3 leaked clusters, 63 no checks for the format.
+template_state() {
+  local rc=0
+  qemu-img check -U "$1" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = 2 ]; then echo corrupt; elif [ "$rc" = 1 ]; then echo unchecked; else echo ok; fi
+}
+
 checksum_for_file() {
   awk -v f="$1" '
     $1 ~ /^SHA(256|512)$/ && $2 == "(" f ")" && $3 == "=" { print tolower($4); exit }
@@ -886,12 +893,14 @@ main() {
       if [ -f "$TEMPLATE_DIR/$img" ]; then
         size=$(format_bytes "$(file_bytes "$TEMPLATE_DIR/$img")")
         vsize=$(qemu-img info "$TEMPLATE_DIR/$img" 2>/dev/null | awk -F': ' '/^virtual size/ { split($2, a, " "); print a[1] " " a[2] }')
-        if qemu-img check "$TEMPLATE_DIR/$img" >/dev/null 2>&1; then
-          rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_OK"$'\n'
-        else
+        case "$(template_state "$TEMPLATE_DIR/$img")" in
+        corrupt)
           rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_FAIL CORRUPT"$'\n'
           corrupt=$((corrupt + 1))
-        fi
+          ;;
+        unchecked) rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_WARN not checked"$'\n' ;;
+        *) rows+="$img"$'\t'"$size"$'\t'"${vsize:--}"$'\t'"$SYM_OK"$'\n' ;;
+        esac
       else
         missing+="$img "
       fi
@@ -913,37 +922,30 @@ main() {
     ;;
   verify)
     ui_title "Image check" "qemu-img check"
-    if [ "$target" = "-a" ] || [ "$target" = "--all" ] || [ -z "$target" ]; then
-      for img in $SUPPORTED_IMAGES; do
-        [ -f "$TEMPLATE_DIR/$img" ] || continue
-        n=$((n + 1))
-        if qemu-img check "$TEMPLATE_DIR/$img" >/dev/null 2>&1; then
-          ui_step ok "$img" "no errors"
-        else
-          ui_step fail "$img" "corrupt"
-          failed=$((failed + 1))
-        fi
-      done
-      [ "$n" -eq 0 ] && echo -e "  ${DIM}No images downloaded yet${NC}"
-    else
+    local imgs=$SUPPORTED_IMAGES checked=0
+    if [ -n "$target" ] && [ "$target" != -a ] && [ "$target" != --all ]; then
       [ -f "$TEMPLATE_DIR/$target" ] || {
         print_error "Not downloaded: $target"
         exit 1
       }
-      n=1
-      if qemu-img check "$TEMPLATE_DIR/$target" >/dev/null 2>&1; then
-        ui_step ok "$target" "no errors"
-      else
-        ui_step fail "$target" "corrupt"
-        failed=1
-      fi
+      imgs=$target
     fi
+    for img in $imgs; do
+      [ -f "$TEMPLATE_DIR/$img" ] || continue
+      n=$((n + 1))
+      case "$(template_state "$TEMPLATE_DIR/$img")" in
+      corrupt) ui_step fail "$img" "corrupt" && failed=$((failed + 1)) ;;
+      unchecked) ui_step warn "$img" "qemu-img could not check it" ;;
+      *) ui_step ok "$img" "no errors" && checked=$((checked + 1)) ;;
+      esac
+    done
+    [ "$n" -eq 0 ] && echo -e "  ${DIM}No images downloaded yet${NC}"
     if [ "$failed" -gt 0 ]; then
       ui_done warn "$failed of $n images corrupt" "dcvm template download <image> --force"
       echo ""
       exit 1
     fi
-    [ "$n" -gt 0 ] && ui_done ok "$(plural "$n" image) OK"
+    [ "$checked" -gt 0 ] && ui_done ok "$(plural "$checked" image) OK"
     echo ""
     ;;
   help | --help | -h | "")

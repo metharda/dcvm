@@ -176,6 +176,15 @@ clear_lease() {
   fi
 }
 
+# Reads force_renew_all's $pending, also from its traps.
+relink_pending() {
+  local vm mac
+  while read -r vm mac; do
+    [ -n "$vm" ] || continue
+    virsh domif-setlink "$vm" "$mac" up >/dev/null 2>&1 || ui_step fail "$vm" "link left down: virsh domif-setlink $vm $mac up"
+  done <<<"$pending"
+}
+
 # A link cut of over 4 s (NetworkManager ignores shorter ones) makes the
 # guest's DHCP client ask again; nothing in the guest is needed.
 force_renew_all() {
@@ -192,6 +201,11 @@ force_renew_all() {
   confirm_release "Release the leases of these VMs and cut their links for 5 s?" || return 1
   ui_quiet
   status_file_readable "$status_file" || return 1
+  # Interrupted (Ctrl-C in the 5 s), the links cut so far come back up.
+  trap relink_pending EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   # Only the leases of VMs whose link is cut: any other VM would not ask again.
   while read -r vm; do
     mac=$(get_vm_mac "$vm" | head -1)
@@ -204,12 +218,10 @@ force_renew_all() {
       ui_step warn "$vm" "could not cut its link; it asks again at its next DHCP renewal"
     fi
   done <<<"$running_vms"
+  [ -n "$pending" ] && sleep 5
+  relink_pending
+  trap - EXIT INT TERM HUP
   [ -n "$pending" ] || return 0
-  sleep 5
-  while read -r vm mac; do
-    [ -n "$vm" ] || continue
-    virsh domif-setlink "$vm" "$mac" up >/dev/null 2>&1 || ui_step fail "$vm" "link left down: virsh domif-setlink $vm $mac up"
-  done <<<"$pending"
   for i in $(seq 30); do
     left=""
     while read -r vm mac; do

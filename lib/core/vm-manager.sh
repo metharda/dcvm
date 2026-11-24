@@ -326,7 +326,7 @@ main() {
     "${cmd}_vms" "${args[0]:---all}" "$force"
     ;;
   status)
-    [[ "${2:-}" != -* ]] || { print_error "Usage: dcvm status" && exit 1; }
+    [ $# -le 1 ] || { print_error "Usage: dcvm status (one VM: dcvm info $2)" && exit 1; }
     show_enhanced_status
     ;;
   list)
