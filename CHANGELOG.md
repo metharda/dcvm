@@ -64,6 +64,11 @@ history, so the commit or PR is listed for each release.
 - `dcvm storage` logs in as the VM's recorded user, uses `df -P`, reports a failed cleanup as failed and no longer re-archives its own links (#97).
 - `fix-lock` reports a lock it could not remove, never kills another process using the disk, and `--all` asks first (`--yes` without a terminal) (#104).
 - `doctor` checks cloud-init seed folders and files (700/600, owned by root) and `--fix` closes them; new seeds are written 600 (#105).
+- IP forwarding counts as persisted only when the last sysctl.d setting is 1; `ip-forwarding off` removes `90-dcvm.conf` (#84).
+- `--network-only --network-name` picks a free subnet, lets libvirt choose the bridge MAC and turns on IP forwarding (#86).
+- `dhcp clear --all` releases leases without restarting the network, which cut every VM off; `dhcp renew` cuts DHCP VMs' links for 5 s and reports which got a new lease (#93).
+- A static `--ip` gets a DHCP reservation, so dnsmasq never leases it to another VM (#95).
+- Lease release passes the lease's client-id to `dhcp_release` (#99).
 
 ### Security
 

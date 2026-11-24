@@ -9,14 +9,6 @@ show_current_leases() {
   echo ""
 }
 
-restart_network() {
-  if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1 && sleep 1 && virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
-    ui_step ok "Network" "$NETWORK_NAME restarted"
-  else
-    ui_step warn "Network" "restart failed (dcvm network start)"
-  fi
-}
-
 lease_cleared() {
   case "$1" in
   0) ui_done ok "DHCP lease of $2 released" ;;
@@ -40,24 +32,64 @@ clear_lease_by_mac() {
   lease_cleared "$rc" "$mac_address"
 }
 
+# Releases each "mac|ip|hostname|reason" line of $1 with cleanup_dhcp_lease; $2 names them.
+release_leases() {
+  local what="$2" removed_count=0 failed=0 rc mac ip hostname reason
+  while IFS='|' read -r mac ip hostname reason; do
+    [ -n "$mac$hostname" ] || continue
+    rc=0
+    cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
+    case "$rc" in
+    0)
+      ui_step ok "$ip" "${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
+      removed_count=$((removed_count + 1))
+      ;;
+    2)
+      ui_step warn "$ip" "not released: ${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
+      failed=$((failed + 1))
+      ;;
+    esac
+  done <<<"$1"
+
+  if [ "$failed" -gt 0 ]; then
+    ui_done warn "Released $removed_count of $(plural "$((removed_count + failed))" "$what")" "see the errors above"
+    echo ""
+    return 1
+  elif [ $removed_count -gt 0 ]; then
+    ui_done ok "Removed $(plural "$removed_count" "$what")"
+  else
+    echo -e "  ${DIM}No ${what}s found${NC}"
+  fi
+  echo ""
+}
+
+status_file_readable() {
+  if ! command_exists jq; then
+    print_error "jq not available; cannot read $1 (install jq)"
+    return 1
+  fi
+  if [ -s "$1" ] && ! jq -e 'type == "array"' "$1" >/dev/null 2>&1; then
+    print_error "Could not parse $1; left unchanged"
+    return 1
+  fi
+}
+
+# One by one in the running dnsmasq: restarting the network would detach
+# every running VM's tap from the bridge.
 clear_all_leases() {
   if [ -t 0 ]; then
     # Declining must stop renew too, which carries on after this returns 0.
-    confirm_action "Release every DHCP lease on $NETWORK_NAME and restart it?" || return 1
+    confirm_action "Release every DHCP lease on $NETWORK_NAME?" || return 1
   else
     print_error "Cannot prompt for confirmation: stdin is not a terminal (non-interactive mode)"
     return 1
   fi
-
-  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-
+  ui_quiet
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" leases=""
+  status_file_readable "$status_file" || return 1
+  [ -s "$status_file" ] && leases=$(jq -r '.[] | [(."mac-address" // ""), (."ip-address" // ""), (.hostname // "")] | join("|")' "$status_file")
   echo ""
-  # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
-  [ -f "$status_file" ] && printf '[]\n' >"$status_file" && ui_step ok "Leases" "cleared $status_file"
-
-  restart_network
-  ui_done ok "All DHCP leases cleared" "VMs get an address again on their next DHCP request"
-  echo ""
+  release_leases "$leases" "DHCP lease"
 }
 
 clear_vm_lease() {
@@ -84,48 +116,13 @@ clear_vm_lease() {
 clear_stale_leases() {
   ui_quiet
   ui_title "Stale DHCP leases" "$NETWORK_NAME"
-  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
-  local removed_count=0 failed=0 rc stale mac ip hostname reason
-
-  if ! command_exists jq; then
-    print_error "jq not available; cannot read $status_file (install jq)"
-    return 1
-  fi
-  if [ -s "$status_file" ] && ! jq -e 'type == "array"' "$status_file" >/dev/null 2>&1; then
-    print_error "Could not parse $status_file; left unchanged"
-    return 1
-  fi
+  local stale
+  status_file_readable "${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" || return 1
   if ! stale=$(stale_leases); then
     print_error "Could not list the VMs' MAC addresses (is libvirt running?); no lease released"
     return 1
   fi
-
-  while IFS='|' read -r mac ip hostname reason; do
-    [ -n "$mac$hostname" ] || continue
-    rc=0
-    cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
-    case "$rc" in
-    0)
-      ui_step ok "$ip" "$reason, ${hostname:-no hostname}, ${mac:-no MAC}"
-      removed_count=$((removed_count + 1))
-      ;;
-    2)
-      ui_step warn "$ip" "not released: $reason, ${hostname:-no hostname}, ${mac:-no MAC}"
-      failed=$((failed + 1))
-      ;;
-    esac
-  done <<<"$stale"
-
-  if [ "$failed" -gt 0 ]; then
-    ui_done warn "Released $removed_count of $(plural "$((removed_count + failed))" "stale lease")" "see the errors above"
-    echo ""
-    return 1
-  elif [ $removed_count -gt 0 ]; then
-    ui_done ok "Removed $(plural "$removed_count" "stale lease")"
-  else
-    echo -e "  ${DIM}No stale leases found${NC}"
-  fi
-  echo ""
+  release_leases "$stale" "stale lease"
 }
 
 clear_lease() {
@@ -173,8 +170,11 @@ clear_lease() {
   fi
 }
 
+# A link cut of over 4 s (NetworkManager ignores shorter ones) makes the
+# guest's DHCP client ask again; nothing in the guest is needed.
 force_renew_all() {
-  local running_vms vm ssh_port
+  local running_vms vm mac pending="" left i
+  local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   running_vms=$(virsh list --name 2>/dev/null | while read -r vm; do [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"; done)
   if [ -z "$running_vms" ]; then
     echo ""
@@ -184,19 +184,41 @@ force_renew_all() {
   fi
   ui_title "DHCP renewal" "$(echo $running_vms)"
   clear_all_leases || return 1
-  sleep 5
   while read -r vm; do
-    [ -n "$vm" ] || continue
-    ssh_port=$(read_port_mappings | awk -v v="$vm" '$1 == v { print $3 }')
-    if [ -n "$ssh_port" ]; then
-      timeout 10 ssh -n -o ConnectTimeout=3 -p "$ssh_port" "$(get_vm_username "$vm")@$(get_host_ip)" "sudo dhclient -r enp1s0; sudo dhclient enp1s0" >/dev/null 2>&1 &
-      ui_step ok "$vm" "asked to renew over SSH"
+    mac=$(get_vm_mac "$vm" | head -1)
+    if [ -f "${DATACENTER_BASE:-/srv/datacenter}/config/network/$vm.conf" ]; then
+      ui_step skip "$vm" "static IP, no DHCP"
+    elif [ -n "$mac" ] && virsh domif-setlink "$vm" "$mac" down >/dev/null 2>&1; then
+      pending+="$vm ${mac,,}"$'\n'
     else
-      ui_step skip "$vm" "no port forward; it renews on its own"
+      ui_step warn "$vm" "could not cut its link; it asks again at its next DHCP renewal"
     fi
   done <<<"$running_vms"
-  echo -e "  ${DIM}Check the new leases in about 30 seconds: dcvm network dhcp show${NC}"
+  [ -n "$pending" ] || return 0
+  sleep 5
+  while read -r vm mac; do
+    [ -n "$vm" ] || continue
+    virsh domif-setlink "$vm" "$mac" up >/dev/null 2>&1 || ui_step fail "$vm" "link left down: virsh domif-setlink $vm $mac up"
+  done <<<"$pending"
+  for i in $(seq 30); do
+    left=""
+    while read -r vm mac; do
+      [ -n "$vm" ] || continue
+      if jq -e --arg m "$mac" 'any(.[]; (."mac-address" // "" | ascii_downcase) == $m)' "$status_file" >/dev/null 2>&1; then
+        ui_step ok "$vm" "renewed: $(jq -r --arg m "$mac" 'first(.[] | select((."mac-address" // "" | ascii_downcase) == $m))."ip-address"' "$status_file")"
+      else
+        left+="$vm $mac"$'\n'
+      fi
+    done <<<"$pending"
+    pending=$left
+    [ -n "$pending" ] && [ "$i" -lt 30 ] || break
+    sleep 1
+  done
+  while read -r vm mac; do
+    [ -n "$vm" ] && ui_step warn "$vm" "no new lease after 30 s; if it has no address: dcvm restart $vm"
+  done <<<"$pending"
   echo ""
+  [ -z "$pending" ]
 }
 
 show_lease_files() {
@@ -221,8 +243,8 @@ Commands:
   clear <vm|mac>       Release one lease (exact VM name or MAC); the network keeps running
   clear --stale, -s    Release leases whose MAC belongs to no VM (expired or not)
   cleanup              Same as clear --stale
-  clear --all, -a      Release every lease and restart the network (asks first)
-  renew                Clear all leases and ask running VMs to renew
+  clear --all, -a      Release every lease; the network keeps running (asks first)
+  renew                Clear all leases, cut running VMs' links for 5 s so they ask again
   files                Lease file location and contents
   help                 Show this help
 

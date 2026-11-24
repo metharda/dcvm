@@ -35,10 +35,11 @@ dcvm create myvm -f -p password123 --ip 10.10.10.50
 - Valid range: `10.10.10.2` - `10.10.10.254`
 - `10.10.10.1` is reserved for the gateway
 - `10.10.10.255` is the broadcast address
-- Prefer addresses outside the DHCP range (`.2`-`.9` or `.201`-`.254`). An
-  address inside it works while the VM is running (dnsmasq checks with a ping
-  before handing an address out), but if the VM is off, DHCP can give its
-  address to another VM.
+- dcvm reserves the address for the VM's MAC in the network's DHCP
+  (`ip-dhcp-host`), so dnsmasq never hands it to another VM, also inside the
+  DHCP range; `dcvm delete` removes the reservation. VMs created by older
+  versions have no reservation: prefer addresses outside the DHCP range (`.2`-`.9` or
+  `.201`-`.254`) for them.
 
 ### Custom ISO VMs
 For custom ISO installations, static IP is noted during creation but must be configured manually inside the VM during OS installation.
@@ -176,14 +177,14 @@ dcvm network show
 - DHCP lease management:
 ```bash
 dcvm network dhcp show
-# Force renewal for all VMs
+# Clear all leases and make running DHCP VMs ask again (cuts their link for 5 s)
 dcvm network dhcp renew
 
 # Clear one lease: exact VM hostname (any case) or MAC; no network restart
 dcvm network dhcp clear <vm_name_or_mac>
 # Clear stale/orphaned leases (no network restart)
 dcvm network dhcp clear -s
-# Clear ALL leases and restart the network (asks first)
+# Clear ALL leases; the network keeps running (asks first)
 dcvm network dhcp clear -a
 ```
 
@@ -204,6 +205,9 @@ dcvm network status
 dcvm network bridge
 dcvm network ip-forwarding on|off|show
 ```
+
+`on` persists it in `/etc/sysctl.d/90-dcvm.conf` and fails, naming the file,
+when a sysctl file read later sets it back to 0. `off` removes that file.
 
 Forwarded ports listen on every host interface, and DNAT applies to
 connections arriving from other machines, not to the host's own connections:

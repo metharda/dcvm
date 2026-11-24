@@ -662,7 +662,6 @@ create_network() {
 	</nat>
   </forward>
   <bridge name='${bridge_name}' stp='on' delay='0'/>
-  <mac address='52:54:00:8a:8b:8c'/>
   <ip address='${ip_addr}' netmask='${netmask}'>
 	<dhcp>
 	  <range start='${dhcp_start}' end='${dhcp_end}'/>
@@ -692,6 +691,24 @@ EOF
 
 # Linux interface names are at most 15 bytes (IFNAMSIZ).
 valid_bridge_name() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
+
+# First <a.b>.N subnet that no host address, route or libvirt network uses.
+unused_subnet() {
+  local base="${NETWORK_SUBNET:-10.10.10}" used n
+  used=$({
+    echo "$base."
+    ip -4 -o addr show
+    ip -4 route show
+    virsh net-list --all --name | while read -r n; do [ -z "$n" ] || virsh net-dumpxml "$n"; done
+  } 2>/dev/null)
+  for n in $(seq 0 254); do
+    grep -qF "${base%.*}.$n." <<<"$used" || {
+      echo "${base%.*}.$n"
+      return 0
+    }
+  done
+  return 1
+}
 
 create_datacenter_network() {
   create_network "$NETWORK_NAME" "$BRIDGE_NAME"
@@ -891,8 +908,8 @@ main() {
     install_required_packages
     start_libvirtd
     local net_name="$NETWORK_NAME"
-    local bridge_name="$BRIDGE_NAME"
-    if [[ -n "$NETWORK_NAME_ARG" ]]; then
+    local bridge_name="$BRIDGE_NAME" subnet_note=""
+    if [[ -n "$NETWORK_NAME_ARG" && "$NETWORK_NAME_ARG" != "$NETWORK_NAME" ]]; then
       net_name="$NETWORK_NAME_ARG"
       bridge_name="virbr-${net_name//[^a-zA-Z0-9]/}"
       bridge_name="${bridge_name:0:15}"
@@ -901,7 +918,17 @@ main() {
       print_status_log "ERROR" "Invalid network name '$net_name' or bridge name '$bridge_name' (letters, digits, - _ .; a bridge at most 15)"
       exit 1
     fi
+    # A second network on the primary's subnet could not start next to it.
+    if [[ "$net_name" != "$NETWORK_NAME" ]] && ! virsh net-info "$net_name" >/dev/null 2>&1; then
+      NETWORK_SUBNET=$(unused_subnet) || {
+        print_status_log "ERROR" "No free subnet for '$net_name'"
+        exit 1
+      }
+      subnet_note="$NETWORK_SUBNET.0/24, "
+    fi
     create_network "$net_name" "$bridge_name" || exit 1
+    enable_ip_forwarding || exit 1
+    ui_done ok "Network $net_name" "${subnet_note}bridge $bridge_name, IP forwarding on"
     exit 0
   fi
 
