@@ -43,20 +43,19 @@ delete_single_vm() {
 
   local MAC_ADDRESS=$(get_vm_mac "$VM_NAME")
   local VM_DISK_PATH=$(get_vm_disk_path "$VM_NAME")
-  local VM_IP=$(get_vm_ip "$VM_NAME")
-  local SSH_PORT=""
-  local HTTP_PORT=""
-  [ "$VM_IP" = "N/A" ] && VM_IP=""
+  local VM_IP="" SSH_PORT="" HTTP_PORT="" lockfd
 
   local port_file=$(get_port_mappings_file)
+  exec {lockfd}>>"$port_file.lock"
+  flock -w 30 "$lockfd" || {
+    print_error "Another port change is running; try again"
+    return 1
+  }
+  # The address the rules were made for, not what the VM has now: a guest can take another VM's.
   if [ -f "$port_file" ]; then
-    local mapping=$(grep "^$VM_NAME " "$port_file")
-    if [ -n "$mapping" ]; then
-      [ -z "$VM_IP" ] && VM_IP=$(echo "$mapping" | awk '{print $2}')
-      SSH_PORT=$(echo "$mapping" | awk '{print $3}')
-      HTTP_PORT=$(echo "$mapping" | awk '{print $4}')
-    fi
+    read -r _ VM_IP SSH_PORT HTTP_PORT < <(awk -v v="$VM_NAME" '$1 == v' "$port_file" | head -1)
   fi
+  [ -n "$VM_IP" ] || VM_IP=$(get_vm_ip_trusted "$VM_NAME") || VM_IP=""
 
   if virsh list | grep -q " $VM_NAME "; then
     stop_vm_gracefully "$VM_NAME" 10
@@ -81,7 +80,8 @@ delete_single_vm() {
   *) ui_step warn "DHCP lease" "not released (see the error above)" ;;
   esac
 
-  [ -f "$port_file" ] && sed -i "/^$VM_NAME /d" "$port_file"
+  [ -f "$port_file" ] && awk -v v="$VM_NAME" '$1 != v' "$port_file" >"$port_file.new" && mv -f "$port_file.new" "$port_file"
+  exec {lockfd}>&-
 
   virsh autostart "$VM_NAME" --disable >/dev/null 2>&1 || true
 
@@ -178,8 +178,10 @@ delete_all_vms() {
     local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
     # Leave an empty JSON array so jq-based readers see valid JSON (libvirt also accepts 0 bytes).
     [ -f "$status_file" ] && printf '[]\n' >"$status_file"
-    local port_file rule_num ip ssh_port http_port
+    local port_file rule_num ip ssh_port http_port lockfd
     port_file=$(get_port_mappings_file)
+    exec {lockfd}>>"$port_file.lock"
+    flock -w 30 "$lockfd" || print_warning "Another port change is running; clearing the port mappings anyway"
     while read -r _ ip ssh_port http_port; do
       [ -n "$ip" ] && cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
     done < <(read_port_mappings 2>/dev/null)
@@ -188,6 +190,7 @@ delete_all_vms() {
       iptables -D FORWARD "$rule_num" 2>/dev/null || true
     done
     save_iptables_rules
+    exec {lockfd}>&-
   fi
   # A VM that was refused (protected) or failed keeps its folder and disk.
   local dir

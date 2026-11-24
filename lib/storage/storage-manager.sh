@@ -12,17 +12,25 @@ report() {
 }
 
 # SSH straight to the VM on the dcvm network with the host's key. BatchMode:
-# the hourly timer has no terminal, so never wait for a password.
+# the hourly timer has no terminal, so never wait for a password. The host key
+# is pinned per VM, as dcvm ssh does, not per address: addresses are reused.
 ssh_vm() {
   local vm_name="$1" ip="$2"
   shift 2
   ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+    -o "HostKeyAlias=dcvm-$vm_name-$(registry_get "$vm_name" created | grep . || echo 0)" \
+    -o 'UserKnownHostsFile=~/.ssh/dcvm_known_hosts' \
     "$(get_vm_username "$vm_name")@$ip" "$@"
 }
 
 check_vm_storage() {
   local vm_name="$1" ip usage
-  if ! ip=$(get_vm_ip "$vm_name"); then
+  # Root's key is only in VMs root created.
+  if [ "$(vm_owner_uid "$vm_name")" != 0 ]; then
+    report skip "$vm_name" "owned by $(registry_get "$vm_name" owner | grep . || echo a user), skipped"
+    return 0
+  fi
+  if ! ip=$(get_vm_ip_trusted "$vm_name"); then
     report skip "$vm_name" "no IP address yet, skipped"
     return 1
   fi

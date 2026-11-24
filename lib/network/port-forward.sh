@@ -24,52 +24,17 @@ cleanup_port_forwarding() {
 }
 
 get_vm_ip_advanced() {
-  local vm_name="$1"
-  local ip=""
-  local attempts=0
-  local subnet="${NETWORK_SUBNET:-10.10.10}"
-  local subnet_regex="${subnet//./\\.}"
-
+  local vm_name="$1" ip="" attempts=0
   print_info "Looking for IP address of $vm_name" >&2
-  while [ -z "$ip" ] && [ $attempts -lt 15 ]; do
-    ip=$(get_vm_ip "$vm_name" 1)
-    if [ "$ip" = "N/A" ] || [ -z "$ip" ]; then
-      local mac=$(get_vm_mac "$vm_name")
-      if [ -n "$mac" ]; then
-        ip=$(ip neigh show | grep "$mac" | grep -oE "${subnet_regex}\.[0-9]+" | head -1)
-        [ -z "$ip" ] && ip=$(arp -a | grep "$mac" | grep -oE "${subnet_regex}\.[0-9]+" | head -1)
-      fi
-    fi
-    if [ -z "$ip" ] || [ "$ip" = "N/A" ]; then
-      if [ $attempts -eq 10 ]; then
-        print_info "Attempting network scan as last resort" >&2
-        for i in {100..254}; do
-          local test_ip="${subnet}.$i"
-          if check_ping "$test_ip"; then
-            local test_mac=$(ip neigh show "$test_ip" 2>/dev/null | awk '{print $5}')
-            local vm_mac=$(get_vm_mac "$vm_name")
-            if [ -n "$test_mac" ] && [ -n "$vm_mac" ] && [ "$test_mac" = "$vm_mac" ]; then
-              ip="$test_ip"
-              break
-            fi
-          fi
-        done
-      fi
-    fi
-    if [ -n "$ip" ] && [ "$ip" != "N/A" ] && [[ $ip =~ ^${subnet_regex}\.[0-9]+$ ]]; then
-      if check_ping "$ip"; then
-        print_success "$vm_name IP found and reachable: $ip" >&2
-        break
-      else
-        print_warning "$vm_name IP found but not reachable: $ip (attempt $((attempts + 1)))" >&2
-        ip=""
-      fi
-    else
-      [ $attempts -eq 0 ] && print_info "Attempt $((attempts + 1)): Waiting for $vm_name to get valid IP address" >&2
-    fi
-    [ -z "$ip" ] || [ "$ip" = "N/A" ] && sleep 3
+  # Host-side records only: neighbour and ARP entries are whatever the guest announces.
+  while [ $attempts -lt 15 ]; do
+    ip=$(get_vm_ip_trusted "$vm_name") && check_ping "$ip" && break
+    ip=""
+    [ $attempts -eq 0 ] && print_info "Attempt 1: Waiting for $vm_name to get valid IP address" >&2
+    sleep 3
     attempts=$((attempts + 1))
   done
+  [ -n "$ip" ] && print_success "$vm_name IP found and reachable: $ip" >&2
   echo "$ip"
 }
 
@@ -79,14 +44,14 @@ setup_vm_forwarding() {
   # Only traffic to this host: routed traffic (VM egress, docker, VPNs) to the same port is never rewritten.
   local match=(! -i "$BRIDGE_NAME" -p tcp -m addrtype --dst-type LOCAL)
   if iptables -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null; then
-    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 22 -j ACCEPT 2>/dev/null
+    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 22 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
     print_success "  SSH: $host_ip:$ssh_port -> $vm_ip:22"
   else
     print_error "  Failed to setup SSH forwarding for $vm"
     return 1
   fi
   if iptables -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null; then
-    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 80 -j ACCEPT 2>/dev/null
+    iptables -I FORWARD -p tcp -d "$vm_ip" --dport 80 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
     print_success "  HTTP: $host_ip:$http_port -> $vm_ip:80"
   else
     print_error "  Failed to setup HTTP forwarding for $vm"
@@ -159,7 +124,7 @@ cmd_setup() {
       skipped+=("$vm|no reachable IP yet; try again once it has booted")
     fi
   done 3<<<"$VM_LIST"
-  iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_mappings_tmp_to_file
   command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
   save_iptables_rules
@@ -218,7 +183,7 @@ cmd_add() {
     ui_done ok "$vm is already forwarded" "SSH $ssh_port, HTTP $http_port"
     return 0
   fi
-  ip=$(get_vm_ip "$vm")
+  ip=$(get_vm_ip_trusted "$vm")
   valid_vm_ip "$ip" || {
     print_error "$vm has no address yet; start it and wait for it to boot"
     return 1
@@ -305,6 +270,10 @@ cmd_apply() {
   ui_title "Port forwarding" "from $map_file"
   while read -r vm ip ssh_port http_port; do
     [[ "$vm" =~ ^#|^$ ]] && continue
+    if ! valid_vm_ip "$ip"; then
+      ui_step fail "$vm" "invalid address $ip in $map_file; dcvm network ports add $vm"
+      continue
+    fi
     if setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$HOST_IP"; then
       ui_step ok "$vm" "$ssh_port $SYM_ARROW $ip:22, $http_port $SYM_ARROW $ip:80"
       count=$((count + 1))
@@ -312,7 +281,7 @@ cmd_apply() {
       ui_step fail "$vm" "could not add the rules"
     fi
   done <"$map_file"
-  iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
   save_iptables_rules
   ui_done ok "$(plural "$count" VM) forwarded" "dcvm network ports test checks them"
   echo ""

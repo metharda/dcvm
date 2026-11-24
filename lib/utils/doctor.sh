@@ -146,11 +146,11 @@ check_host() {
   if ! awk -v p="$share" '$1 == p { f = 1 } END { exit !f }' /etc/exports 2>/dev/null; then
     report skip "NFS share" "not exported"
   elif nfs_share_secure "$share"; then
-    report ok "NFS share" "VM users squashed, closed to host users"
+    report ok "NFS share" "VM users squashed and kept inside the share, closed to host users"
   elif $FIX && secure_nfs_share "$share" "${NETWORK_SUBNET:-10.10.10}"; then
-    report fixed "NFS share" "VM users squashed, share closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
+    report fixed "NFS share" "VM users squashed and kept inside the share, closed to host users$([ "${NFS_QUARANTINED:-0}" -gt 0 ] && echo "; moved $NFS_QUARANTINED setuid or device files to $NFS_QUARANTINE_DIR: a VM may have had root on this host")"
   else
-    report fail "NFS share" "root in any VM can get root on this host: --fix squashes NFS users and closes the share"
+    report fail "NFS share" "not squashed, not limited to the share (subtree_check) or open to host users: VMs may reach host files; --fix secures it"
   fi
 
   local vm_files vm_dirs backups_open=0
@@ -233,7 +233,7 @@ check_network() {
     grep -q -- "--dst-type LOCAL .*--dport $ssh_port .*--to-destination $ip:22" <<<"$rules" || lost=$((lost + 1))
     if check_vm_exists "$vm" && [ "$(get_vm_state "$vm")" = running ]; then
       local now
-      now=$(get_vm_ip "$vm" 2>/dev/null)
+      now=$(get_vm_ip_trusted "$vm" 2>/dev/null)
       [[ "$now" == *.* ]] && [ "$now" != "$ip" ] && moved+="${moved:+, }$vm"
     fi
   done < <(read_port_mappings 2>/dev/null)
