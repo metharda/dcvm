@@ -235,7 +235,9 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
 - **What still connects users:** VMs share one bridge and can reach each
   other, and a guest can set any address on it, including another VM's.
   dcvm refuses a static `--ip` or a port forward to an address another VM
-  holds, but it can't stop a guest's own network settings. For port
+  holds, but it can't stop a guest's own network settings. That refusal
+  tells a user an address is taken, which their own VM can already see by
+  scanning the bridge. For port
   forwards, deletes and the storage check dcvm takes a VM's address only
   from host-side records (its port mapping, its DHCP lease by MAC or its
   static IP), never from what the guest agent reports. The optional NFS

@@ -53,7 +53,7 @@ to 30 minutes for SSH. The JSON adds `"display"` (e.g. `vnc://127.0.0.1:1`) and
 
 ## Other commands you may use on your own VMs
 
-start, stop, restart (a VM name or all; `stop <vm> --force` powers off a guest
+start, stop, restart (a VM name or --all; `stop <vm> --force` powers off a guest
 that ignores shutdown), console, backup create|list|restore|delete|export,
 protect / unprotect (refuses delete and restore), network ports add|remove|show
 (forward SSH and HTTP from the host), network vnc enable|disable|status (VNC with a

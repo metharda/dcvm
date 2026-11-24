@@ -13,6 +13,8 @@ history, so the commit or PR is listed for each release.
 ## [Unreleased]
 
 ### Fixed
+- `start`, `stop` and `restart` take a VM name or `--all`; a bare `all` is a VM name, and `start` with no name no longer starts every VM.
+- A create the server refuses leaves no SSH key behind in the user's `~/.ssh`.
 
 - `dcvm help` lists `backup ssh-setup`/`troubleshoot`, `template check`/`best`, `self-update --force` and `network ports rules`; `backup`'s unknown-subcommand message lists `ssh-setup`.
 - `dcvm create` without arguments exits 1 like `create-iso`; `dcvm doctor --only` or `--vm` without a value is refused instead of checking nothing.
@@ -22,7 +24,6 @@ history, so the commit or PR is listed for each release.
 - `uninstall` needs root, removes the NFS squash user, the storage pools and firewalld services it added, keeps the owner records until the VMs are gone, and never deletes the data folder while a VM still uses a disk in it (#101).
 - The test suite installs packages only with `--install-deps` (#103).
 - A shut-off VM has no IP: `info --json` no longer shows its old lease, `delete` no longer clears rules for an address another VM may hold now, and `network ports add` refuses a VM that isn't running.
-- `dcvm stop` and `restart` without a VM name refuse instead of acting on every VM; use `all`. `dcvm start` without a name still starts every VM.
 - `dcvm stop <vm> --force` powers off a guest that ignores the shutdown request, for the VM's owner too.
 - `start`, `status` and `console` hints name `network ports add <vm>` for users, and a user's `status` counts only their own port forwards.
 - `dcvm console` on a stopped VM says to start it first instead of claiming to connect.
@@ -109,6 +110,7 @@ history, so the commit or PR is listed for each release.
 - `create-iso` for users names "the file you gave" instead of the staged `installer.iso`, says cloud-image options (`-k`, `--enable-root`) do nothing with an ISO, marks `--copy-iso` root-only in its help and asks for a disk size like 20G.
 
 ### Security
+- `backup import` by a dcvm admin takes only a file opened for reading, since root reopens it by path.
 
 - `port-mappings.txt` and `config/network/` (VM names, addresses, host ports) are readable by root only; `doctor --fix` closes existing ones (#106).
 - A user's `backup export` no longer opens their guest-controlled disk with guestfish as root; the package keeps the VM's own `authorized_keys`.

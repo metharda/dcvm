@@ -51,7 +51,7 @@ On their own VMs:
 | :------ | :---- |
 | `create`, `create-iso` | Options are checked against an allowlist (`--graphics` only `none`, `vnc` or `spice`; `--boot` only `cdrom,hd` or `hd,cdrom`). An ISO must be a file the user can read: `-o ./debian.iso`. One VM per command |
 | `list`, `status`, `info`, `whoami` | Only their VMs; `--json` for scripts |
-| `start`, `stop`, `restart` | One VM, or `all` of theirs; `stop <vm> --force` powers off a guest that ignores the shutdown request |
+| `start`, `stop`, `restart` | One VM, or `--all` of theirs; `stop <vm> --force` powers off a guest that ignores the shutdown request |
 | `console`, `ssh`, `exec`, `cp` | `ssh`, `exec` and `cp` use the user's own SSH key |
 | `delete` | Without a terminal it needs `--yes` |
 | `protect`, `unprotect` | A protected VM refuses `delete` and `restore` |
