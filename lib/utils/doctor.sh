@@ -63,7 +63,7 @@ package_for() {
 vm_permissions() {
   local vms="$DATACENTER_BASE/vms" vm_files vm_dirs seeds open_seeds backups_open=0 net_open
   vm_files=$(find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -printf . 2>/dev/null | wc -c)
-  vm_dirs=$(find "$vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
+  vm_dirs=$(find "$vms" -maxdepth 1 -type d -perm /044 -printf . 2>/dev/null | wc -c)
   seeds=$(find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -printf . 2>/dev/null | wc -c)
   open_seeds=$(find "$vms" -mindepth 2 -maxdepth 3 \( -perm /077 -o ! -user root \) \
     \( \( -type d -path "$vms/*/cloud-init" \) -o \( -type f -path "$vms/*/cloud-init/*" \) \) -printf . 2>/dev/null | wc -c)
@@ -73,7 +73,7 @@ vm_permissions() {
     report ok "Permissions" "VM disks, $(plural "$seeds" "cloud-init seed"), backups and network records closed to other users"
   elif $FIX; then
     find "$vms" -mindepth 2 -maxdepth 2 -type f \( -name '*.qcow2' -o -name '*.iso' \) -perm /077 -exec chmod go-rwx {} + 2>/dev/null
-    find "$vms" -mindepth 1 -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
+    find "$vms" -maxdepth 1 -type d -perm /044 -exec chmod 711 {} + 2>/dev/null
     find "$vms" -mindepth 2 -maxdepth 2 -type d -name cloud-init -exec chown -R root:root {} + -exec chmod 700 {} + 2>/dev/null
     find "$vms" -mindepth 3 -maxdepth 3 -type f -path "$vms/*/cloud-init/*" -exec chmod 600 {} + 2>/dev/null
     [ "$backups_open" = 1 ] && chmod 700 "$DATACENTER_BASE/backups"
@@ -234,6 +234,9 @@ check_network() {
     report fixed "IP forwarding" "turned on and persisted in /etc/sysctl.d/90-dcvm.conf"
   else
     report warn "IP forwarding" "$([ "$fwd" = 1 ] && echo "on but not persisted (off after a reboot)" || echo "off: VMs have no internet"): --fix turns it on"
+    # systemd-sysctl reads only sysctl.d; Debian 13 no longer links /etc/sysctl.conf into it.
+    grep -qsE '^[[:space:]]*net[.\/]ipv4[.\/]ip_forward[[:space:]]*=[[:space:]]*1' /etc/sysctl.conf && [ ! -e /etc/sysctl.d/99-sysctl.conf ] &&
+      echo -e "      ${DIM}/etc/sysctl.conf sets it, but systemd-sysctl does not read that file at boot${NC}"
   fi
 
   local vm ip ssh_port http_port rules fwd saved=0 lost=0 moved=""

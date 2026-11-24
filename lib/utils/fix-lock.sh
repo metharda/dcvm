@@ -242,7 +242,7 @@ fix_vm_locks() {
     fi
 
     chmod 600 "$VM_DISK_PATH" 2>/dev/null && print_success "Fixed permissions: $target_owner with 600" || {
-      print_error "Failed to set permissions to 660"
+      print_error "Failed to set permissions to 600"
       step_errors=$((step_errors + 1))
     }
 

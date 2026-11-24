@@ -20,6 +20,7 @@ KEEP_BACKUPS=5
 SHUTDOWN_TIMEOUT=60
 BOOT_GRACE=90
 COMPRESSION_ENABLED=true
+ASSUME_YES=false
 
 log() { log_to_file "$LOG_FILE" "[$1] ${*:2}"; }
 get_backup_folder_path() { echo "$BACKUP_DIR/${1}-${2}"; }
@@ -334,7 +335,7 @@ delete_backups() {
   local arg="$1"
 
   if [ -z "$arg" ]; then
-    print_error "Usage: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>"
+    print_error "Usage: dcvm backup delete <vm> [id] | <vm>-<id> | --all"
     return 1
   fi
 
@@ -355,7 +356,7 @@ delete_backups() {
     [ "$count_folders" -gt 0 ] && ui_kv "Backups" "$count_folders"
     [ "$count_legacy" -gt 0 ] && ui_kv "Old format" "$count_legacy (single files from before 0.9)"
     echo ""
-    confirm_action "Delete them permanently?" || return 0
+    [ "$ASSUME_YES" = true ] || confirm_action "Delete them permanently?" || return 0
 
     local removed=0
     for d in "${__folders[@]}"; do
@@ -377,31 +378,19 @@ delete_backups() {
     return 0
   fi
 
-  local vm_name=""
-  local dmy=""
-  local hms=""
-  local indexN=""
-
-  if [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4})(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?$ ]]; then
-    vm_name="${BASH_REMATCH[1]}"
-    dmy="${BASH_REMATCH[2]}"
-    local tail="${BASH_REMATCH[4]}"
-    if [[ "$tail" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
-      hms="$tail"
-    elif [[ "$tail" =~ ^[0-9]+$ ]]; then
-      indexN="$tail"
-    fi
-  else
-    vm_name="$arg"
+  local vm_name="$arg" sel="${2:-}"
+  if [ -z "$sel" ] && [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?)$ ]]; then
+    vm_name="${BASH_REMATCH[1]}" sel="${BASH_REMATCH[2]}"
   fi
+  sel="${sel#"$vm_name-"}"
 
   mapfile -t backup_dates < <(list_backup_timestamps_desc "$vm_name")
   if [ ${#backup_dates[@]} -eq 0 ]; then
     print_warning "No backups found for VM: $vm_name"
-    return 0
+    return 1
   fi
 
-  if [ -z "$dmy" ]; then
+  if [ -z "$sel" ]; then
     if ! list_backups "$vm_name" true; then
       print_warning "No backups to delete for VM: $vm_name"
       return 0
@@ -449,34 +438,23 @@ delete_backups() {
     return 0
   fi
 
-  local dd=$(echo "$dmy" | cut -d'.' -f1)
-  local mm=$(echo "$dmy" | cut -d'.' -f2)
-  local yyyy=$(echo "$dmy" | cut -d'.' -f3)
-  local yyyymmdd="${yyyy}${mm}${dd}"
-
   local resolved_ts=""
-  if [ -n "$hms" ]; then
-    local HH=$(echo "$hms" | cut -d':' -f1)
-    local MM=$(echo "$hms" | cut -d':' -f2)
-    local SS=$(echo "$hms" | cut -d':' -f3)
-    resolved_ts="${yyyymmdd}_${HH}${MM}${SS}"
-    backup_visible "$(get_backup_folder_path "$vm_name" "$resolved_ts")" || resolved_ts=""
-  elif [ -n "$indexN" ]; then
-    local selector="${dd}.${mm}.${yyyy}-${indexN}"
-    resolved_ts=$(resolve_backup_selector "$vm_name" "$selector") || true
+  if [ "$sel" = latest ]; then
+    resolved_ts="${backup_dates[0]}"
+  elif [[ "$sel" =~ ^([0-9]{2})\.([0-9]{2})\.([0-9]{4})-([0-9]{2}):([0-9]{2}):([0-9]{2})$ ]]; then
+    resolved_ts="${BASH_REMATCH[3]}${BASH_REMATCH[2]}${BASH_REMATCH[1]}_${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
   else
-    resolved_ts=$(resolve_backup_selector "$vm_name" "${dd}.${mm}.${yyyy}") || true
+    resolved_ts=$(resolve_backup_selector "$vm_name" "$sel") || true
   fi
-
-  if [ -z "$resolved_ts" ]; then
-    print_error "No matching backup found: ${vm_name}-${dmy}${hms:+-$hms}${indexN:+-$indexN}"
+  if [ -z "$resolved_ts" ] || ! printf '%s\n' "${backup_dates[@]}" | grep -qxF -- "$resolved_ts"; then
+    print_error "No matching backup found: $vm_name $sel (use dd.mm.yyyy[-N], dd.mm.yyyy-HH:MM:SS, YYYYMMDD_HHMMSS or latest)"
     return 1
   fi
 
   if remove_backup_artifacts "$vm_name" "$resolved_ts" "backup"; then
-    ui_done ok "Backup $arg deleted" "taken $(pretty_ts "$resolved_ts")"
+    ui_done ok "Backup $vm_name-$sel deleted" "taken $(pretty_ts "$resolved_ts")"
   else
-    ui_done fail "Backup $arg could not be deleted" "check the permissions on $BACKUP_DIR"
+    ui_done fail "Backup $vm_name-$sel could not be deleted" "check the permissions on $BACKUP_DIR"
     echo ""
     return 1
   fi
@@ -671,7 +649,10 @@ export_backup() {
 
   local work_disk="$tmpdir/$(basename "$disk_backup")"
   local ssh_cleaned=false img
-  if command -v guestfish >/dev/null 2>&1; then
+  if [ "$(caller_role)" = user ]; then
+    # Root never opens a user's guest-controlled disk; the keys on it are the user's own.
+    ui_step ok "SSH keys" "kept: the archive holds $vm_name's authorized_keys (your keys)"
+  elif command -v guestfish >/dev/null 2>&1; then
     img=$work_disk
     if [[ "$work_disk" == *.gz ]]; then
       img="$tmpdir/.disk.qcow2"
@@ -820,7 +801,7 @@ import_backup() {
     print_error "A backup of $vm_target from $(pretty_ts "$date_part") already exists: $backup_folder"
     return 1
   fi
-  mkdir "$backup_folder" || {
+  mkdir -m 700 "$backup_folder" || {
     rm -rf "$workdir"
     print_error "Cannot create backup folder: $backup_folder"
     return 1
@@ -854,6 +835,7 @@ import_backup() {
     img=$(sed -n 's/^image=//p' "$backup_folder/base" | head -1) sha=$(sed -n 's/^sha256=//p' "$backup_folder/base" | head -1)
     valid_image_name "$img" && valid_sha256 "$sha" && echo "build=$(build_file "$img" "$sha")" >>"$backup_folder/base"
   fi
+  chmod 600 "$backup_folder"/*
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
@@ -894,6 +876,7 @@ write_backup_files() {
     ui_step fail "Save config" "virsh dumpxml failed"
     return 1
   fi
+  chmod 600 "$folder"/*
   ui_step ok "Saved config" "$(basename "$config")"
 }
 
@@ -1814,10 +1797,11 @@ Usage: dcvm backup <command> [args]
 Commands:
   create <vm>                         Back up a VM (shuts it down meanwhile, then starts it again)
   list [vm]                           Backups of every VM, or of one
-  restore <vm> [id] [new-name]        Put a backup back (newest by default), or restore it as a new VM
+  restore <vm> [id] [new-name]        Put a backup back (newest by default) and start it, or restore it as a new VM
+                                      (replacing a VM asks first; --yes without a terminal)
   delete <vm>                         Pick backups to delete from a numbered list
-  delete <id>                         Delete one backup: <vm>-dd.mm.yyyy[-N] or <vm>-dd.mm.yyyy-HH:MM:SS
-  delete --all                        Delete every backup (asks first)
+  delete <vm> <id> | <vm>-<id>        Delete one backup, without asking
+  delete --all                        Delete every backup (asks first; --yes without a terminal)
   export <vm> [id] [dir]              Pack a backup as a .tar.gz for another host (default dir: $BACKUP_DIR/exports)
   import <file|dir> [new-name]        Unpack an exported backup and restore it
   ssh-setup <vm>                      Put this host's SSH key on an imported VM
@@ -1868,6 +1852,10 @@ main() {
       EXPORT_FULL=true
       shift
       ;;
+    -y | --yes)
+      ASSUME_YES=true
+      shift
+      ;;
     *)
       args+=("$1")
       shift
@@ -1910,7 +1898,7 @@ main() {
       print_error "VM name required for 'restore'"
       exit 1
     fi
-    restore_vm "$VM_NAME" "$BACKUP_DATE" "" "" "$4"
+    restore_vm "$VM_NAME" "$BACKUP_DATE" "$ASSUME_YES" "" "$4"
     exit $?
     ;;
   "list")
@@ -1924,10 +1912,10 @@ main() {
     ;;
   "delete")
     if [ -z "$VM_NAME" ]; then
-      print_error "Argument required. Use: dcvm backup delete <vm>|<vm-dd.mm.yyyy>|<vm-dd.mm.yyyy-N>|<vm-dd.mm.yyyy-HH:MM:SS>|--all|all"
+      print_error "Argument required. Use: dcvm backup delete <vm> [id] | <vm>-<id> | --all"
       exit 1
     fi
-    delete_backups "$VM_NAME"
+    delete_backups "$VM_NAME" "$BACKUP_DATE"
     local rc=$?
     prune_builds >/dev/null
     exit $rc

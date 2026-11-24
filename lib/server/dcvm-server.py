@@ -471,6 +471,9 @@ def decide_backup(ctx, args):
     if not args:
         raise Denied("backup needs a command")
     sub, rest = args[0], args[1:]
+    yes = []
+    if sub in ("delete", "restore") and {"-y", "--yes"} & set(rest):
+        yes, rest = ["--yes"], [a for a in rest if a not in ("-y", "--yes")]
     if sub == "create" and len(rest) == 1:
         own_vm(ctx, rest[0])
         ctx.update(vm=rest[0], mutating=True, interactive=True)
@@ -482,23 +485,23 @@ def decide_backup(ctx, args):
     if sub == "delete" and len(rest) in (1, 2):
         day = r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]+|[0-9]{2}:[0-9]{2}:[0-9]{2}))?"
         if len(rest) == 1:
-            # The module takes one <vm>-<id> argument and splits it with the same greedy regex.
+            # Split with the module's own greedy regex for <vm>-<id>, so both name the same backup.
             m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
             if not m:
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]|latest>")
             vm, bid = m.group(1), m.group(2)
         else:
             vm, bid = rest[0], strip_vm(rest[0], rest[1])
             t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
             if t:
                 bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
-            if not re.match(r"^%s\Z" % day, bid):
-                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]>")
+            if bid != "latest" and not re.match(r"^%s\Z" % day, bid):
+                raise Denied("delete takes a backup id: dcvm backup delete <vm> <dd.mm.yyyy[-N]|latest>")
         check_backup_vm(ctx, vm)
         # A stale backup of a name now owned by someone else must not take that VM's lock.
         owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
         ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
-        return ["backup", "delete", "%s-%s" % (vm, bid)]
+        return ["backup", "delete", vm, bid]
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
         rest = rest[:1] + [strip_vm(rest[0], a) for a in rest[1:2]] + rest[2:]
@@ -514,7 +517,7 @@ def decide_backup(ctx, args):
             # The restore replaces the VM's own charge, so a backup of the same size always fits.
             ctx.update(vm=rest[0], quota_limits=check_quota(ctx["uid"], ctx["user"], 0, 0, 0, exclude=rest[0]))
         ctx.update(mutating=True, interactive=True)
-        return ["backup", "restore"] + rest
+        return ["backup", "restore"] + rest + yes
     if sub == "export" and 1 <= len(rest) - rest.count("--full") <= 3:
         full = ["--full"] if "--full" in rest else []
         rest = [a for a in rest if a != "--full"]
