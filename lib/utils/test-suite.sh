@@ -2987,7 +2987,7 @@ test_socket_hardening() {
   printf 'owner_uid=9999\nowner=bob\n' >"$t/h/vms/taken"
   out=$(
     timeout 120 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
-import importlib.util, json, os, socket, struct, sys, threading, time
+import importlib.util, json, os, signal, socket, struct, sys, threading, time
 spec = importlib.util.spec_from_file_location("dcvm_server", os.path.join(sys.argv[1], "dcvm-server.py"))
 s = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(s)
@@ -3037,8 +3037,28 @@ s.run_module = lambda *_a: 0
 ctx = user()
 argv = s.decide_user(ctx, ["backup", "delete", "web", "01.01.2026-1"])
 held, t0 = s.lock("vm-web"), time.monotonic()
-if s.execute(ctx, None, argv, {}, {}) == 0 and time.monotonic() - t0 < 5:
+if s.execute(ctx, None, argv, {"argv": ["backup", "delete", "web", "01.01.2026-1"]}, {}) == 0 and time.monotonic() - t0 < 5:
     print("backup-lock")
+def queued(change):
+    with open(t + "/h/vms/mine", "w") as f:
+        f.write("owner_uid=4242\nowner=u\n")
+    ctx, req = user(), {"argv": ["delete", "mine", "--yes"]}
+    argv, held = s.decide_user(ctx, req["argv"]), s.lock("vm-mine")
+    def admin():
+        with open(t + "/h/vms/mine", "a") as f:
+            f.write(change)
+        os.close(held)
+    threading.Timer(0.5, admin).start()
+    try:
+        return "ran %s" % s.execute(ctx, None, argv, req, {})
+    except s.Denied as e:
+        return str(e)
+if "no VM named mine" in queued("owner_uid=9999\n") and "is protected" in queued("protected=1\n"):
+    print("recheck")
+adm = {"uid": 0, "user": "a", "role": "admin", "origin": "agent", "files": {}}
+s.admin_argv(adm, ["delete", "--yes", "web"])
+if adm.get("vm") == "web" and s.admin_argv(adm, ["owner", "web", "bob"]) and adm["vm"] == "web":
+    print("admin-lock")
 ctx = user()
 argv = ["create"] + s.parse_create(ctx, ["taken", "-f"], False)
 held, t0 = s.lock("vm-taken"), time.monotonic()
@@ -3079,13 +3099,39 @@ for _ in range(300):
 os.set_blocking(err_r, False)
 if done and os.waitstatus_to_exitcode(status) == 3 and b"done" in os.read(err_r, 4096):
     print("relay")
+def cancelled(script, tty=True):
+    master, slave = os.openpty()
+    _r, w = os.pipe()
+    conn, peer = socket.socketpair()
+    t0, pid = time.monotonic(), os.fork()
+    if pid == 0:
+        peer.close()
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        ctx = dict(user(), vm="web", mutating=True, interactive=tty)
+        os._exit(real_run(ctx, conn, ["-c", script], {}, {"stdin": slave, "stdout": w, "stderr": w}))
+    time.sleep(0.5)
+    peer.close()
+    for _ in range(150):
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            os.close(master)
+            return os.waitstatus_to_exitcode(status), time.monotonic() - t0
+        time.sleep(0.1)
+    os.kill(pid, signal.SIGKILL)
+    return None, None
+rc, took = cancelled("read x; exit 5")
+if rc == 130 and took < 3:
+    print("tty-cancel")
+s.CANCEL_GRACE = 1
+if cancelled("trap '' INT; read x; exit 5")[0] == 143 and cancelled("sleep 2; exit 5", tty=False)[0] == 5:
+    print("tty-escalate")
 PY
   )
-  for w in regex deadline role-first slots backup-lock taken-first libvirt-down audit-clip relay; do grep -qx "$w" <<<"$out" && r+="$w "; done
-  if [ "$r" = "regex deadline role-first slots backup-lock taken-first libvirt-down audit-clip relay " ]; then
-    log_test "PASS" "socket server: request deadline, per-user slots, locks, libvirt down, audit size, output relay, --ip/--os-variant"
+  for w in regex deadline role-first slots backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  if [ "$r" = "regex deadline role-first slots backup-lock recheck admin-lock taken-first libvirt-down audit-clip relay tty-cancel tty-escalate " ]; then
+    log_test "PASS" "socket server: request deadline, per-user slots, locks and re-checks under them, libvirt down, audit size, output relay, abandoned terminal, --ip/--os-variant"
   else
-    log_test "FAIL" "socket server: request deadline, per-user slots, locks, libvirt down, audit size, output relay, --ip/--os-variant" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
+    log_test "FAIL" "socket server: request deadline, per-user slots, locks and re-checks under them, libvirt down, audit size, output relay, abandoned terminal, --ip/--os-variant" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
   fi
   rm -rf "$t"
 }

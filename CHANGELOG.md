@@ -87,6 +87,8 @@ history, so the commit or PR is listed for each release.
 - Module output goes through the server, so a caller that stops reading can't stall a command holding a VM or host lock; `backup delete` of an old backup no longer takes the lock of a VM now owned by someone else.
 - The audit log clips long arguments, logs each request before it runs, and is rotated weekly.
 - When libvirt doesn't answer, a create keeps its record and folder instead of freeing a name that may be in use; `--ip` refuses octets with leading zeros or over 255, and `--os-variant` must start with a letter or digit.
+- A user's request checks ownership and protection again once it holds the VM's lock, so a VM handed to someone else or protected while it waited is refused (77); an admin's `delete`, `owner`, `protect` and `unprotect` over the socket take the VM's lock too (#96).
+- Ctrl-C or a closed connection now reaches an interactive command that reads your terminal (create, restore, admin commands) as SIGINT, then SIGTERM after 30 s, so no root process keeps reading your shell or holding the VM's lock (#98).
 
 ## [0.9.10] - 2026-11-23
 
