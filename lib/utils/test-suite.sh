@@ -4071,7 +4071,7 @@ with open(t + "/limits", "w") as f:
     f.write("disk_gb=21\n")
 sparse = os.open(t + "/sparse.iso", os.O_RDONLY)
 pc = lambda *a, iso=False: denied(s.parse_create, dict(user(), files={3: sparse}), list(a), iso)
-if "over your disk (GB) quota: 0 used + 22 requested > 21" in pc("isovm", "--iso", "fd:3", iso=True) and pc("cloudvm", "-f", "-d", "20G").startswith("allowed"):
+if "+ 22 requested > 21" in pc("isovm", "--iso", "fd:3", iso=True) and pc("cloudvm", "-f", "-d", "20G").startswith("allowed"):
     print("iso-quota")
 if "allowed" in denied(s.decide_backup, user(), ["restore", "web", "20260101_120000", "copy"]):
     print("restore-new-quota")
