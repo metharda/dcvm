@@ -24,6 +24,7 @@ REQUEST_TIMEOUT = 15
 MAX_PER_UID = 8
 MAX_PENDING = 1024 * 1024
 WRITE_TIMEOUT = 5
+CANCEL_GRACE = 30
 
 DCVM = "/usr/local/bin/dcvm"
 CONFIG = "/etc/dcvm-install.conf"
@@ -783,10 +784,12 @@ def run_module(ctx, conn, argv, req, fds):
     for name, fd in child.items():
         if fd is not None and fd != fds.get(name):
             os.close(fd)
-    cancelled, ended, wrote = False, None, 0
+    cancelled, ended, wrote, escalate = False, None, 0, []
     while True:
         if ended is None and proc.poll() is not None:
             ended = time.monotonic()
+        while ended is None and escalate and time.monotonic() >= escalate[0][0]:
+            signal_group(proc, escalate.pop(0)[1])
         if ended is not None:
             now = time.monotonic()
             for o in outs:
@@ -830,20 +833,29 @@ def run_module(ctx, conn, argv, req, fds):
             if not data:
                 cancelled = True
                 if not ctx.get("mutating"):
-                    try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                    signal_group(proc, signal.SIGTERM)
                     try:
                         proc.wait(5)
                     except subprocess.TimeoutExpired:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        signal_group(proc, signal.SIGKILL)
+                elif stdin is not subprocess.DEVNULL:
+                    # It reads the caller's terminal, which is the shell's again: pass on the Ctrl-C it never got.
+                    signal_group(proc, signal.SIGINT)
+                    now = time.monotonic()
+                    escalate = [(now + CANCEL_GRACE, signal.SIGTERM), (now + CANCEL_GRACE + 5, signal.SIGKILL)]
     for o in outs:
         if o[0] is not None:
             os.close(o[0])
     rc = proc.wait()
     # A signal death is -N here; callers expect the shell's 128+N.
     return 128 - rc if rc < 0 else rc
+
+
+def signal_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
 
 
 def handle(conn):
@@ -917,6 +929,9 @@ def admin_argv(ctx, argv):
     final = [a for a in final if a is not None]
     if final and final[0] in ("create", "create-iso") and len(final) > 1 and not final[1].startswith("-"):
         ctx.update(vm=final[1].split(",")[0], new_vm=True, mutating=True)
+    target = next((a for a in final[1:] if not a.startswith("-")), None)
+    if final[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"]) and target and NAME.match(target) and target not in RESERVED:
+        ctx["vm"] = target
     ctx["mutating"] = True
     ctx["interactive"] = True
     return final
@@ -939,6 +954,12 @@ def execute(ctx, conn, argv, req, fds):
             name_taken(vm)
         if vm:
             held.append(lock(ctx.get("lock") or "vm-" + vm))
+        if ctx["role"] == "user" and vm and not ctx.get("new_vm"):
+            # The policy ran before the lock; a request that waited must not act on a VM that changed hands meanwhile.
+            again = {k: ctx[k] for k in ("uid", "user", "role", "origin", "files")}
+            decide_user(again, req["argv"])
+            if again.get("lock") != ctx.get("lock"):
+                raise Denied("%s changed while this command waited; run it again" % vm)
         if reserve:
             held.append(lock("global"))
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
