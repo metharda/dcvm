@@ -250,7 +250,8 @@ sudo bash /usr/local/lib/dcvm/installation/uninstall-dcvm.sh
 > - **Permanently delete every DCVM VM** (all VMs attached to the dcvm network, `datacenter-net` by default), including their disks and storage (`virsh undefine --remove-all-storage`). Disk volumes the domain references are removed wherever they live on the host.
 > - **Remove the entire `DATACENTER_BASE` directory** (`rm -rf "$DATACENTER_BASE"`), which includes **all VM backups** stored in `$DATACENTER_BASE/backups`. It is left alone if it has no `vms/` and `storage/` folders or is a system folder such as `/`, `/var` or `/home`.
 > - Remove the dcvm network, port-forwarding rules, DHCP leases, the NFS share's line in `/etc/exports`, the storage service, the `dcvm` command/libraries, and `/etc/dcvm-install.conf`.
-> - Delete `/var/log/datacenter-startup.log`.
+> - Delete `/etc/dcvm` (user limits), `/var/log/dcvm` (the audit log), `/var/log/datacenter-startup.log` and `/var/log/datacenter-storage.log`, and `/var/lib/dcvm` unless it kept a VM.
+> - Leave the NFS server enabled (it may serve other exports) and IP forwarding on until the next boot (its `/etc/sysctl.d/90-dcvm.conf` is removed).
 > - A VM it could not delete keeps its owner record, and the storage pools it removes are only those inside the dcvm data folder.
 > - Remove `alias dcvm` and `dcvm-completion.sh` lines from `~/.bashrc`, `~/.zshrc`, `~/.bash_profile`, and `~/.profile` (leaving `.bak` copies), and remove the bash completion scripts.
 >
