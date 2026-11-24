@@ -249,7 +249,7 @@ check_dependencies() {
     exit 1
   fi
 
-  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+  if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
     print_warning "Network '$NETWORK_NAME' is not active. Starting it..."
     if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
       print_success "Network '$NETWORK_NAME' started"

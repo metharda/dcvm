@@ -422,17 +422,17 @@ start_libvirtd() {
 start_datacenter_network() {
   print_status "INFO" "Checking dcvm network..."
 
-  virsh net-list --all | grep -q "$NETWORK_NAME" || {
+  virsh net-list --all --name | grep -qxF "$NETWORK_NAME" || {
     print_status "ERROR" "Network '$NETWORK_NAME' not found. Please run the setup script first."
     exit 1
   }
 
-  if ! virsh net-list | grep -q "$NETWORK_NAME.*active"; then
+  if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
     print_status_log "INFO" "Starting network '$NETWORK_NAME'..."
     virsh net-start "$NETWORK_NAME"
   fi
 
-  virsh net-list | grep -q "$NETWORK_NAME.*active" && print_status_log "SUCCESS" "Network '$NETWORK_NAME' is active" || {
+  virsh net-list --name | grep -qxF "$NETWORK_NAME" && print_status_log "SUCCESS" "Network '$NETWORK_NAME' is active" || {
     print_status_log "ERROR" "Failed to start network '$NETWORK_NAME'"
     exit 1
   }
