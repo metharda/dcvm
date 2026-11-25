@@ -263,7 +263,8 @@ dcvm network ports setup
 ```
 
 Forwards a host port to each running VM's SSH (from 2221) and HTTP (from
-8081) port. See [Networking](networking.md#port-forwarding).
+8081) port. See [Networking](networking.md#port-forwarding). Add `--dry-run` to see
+what would change first; see [Dry run](networking.md#dry-run).
 
 ### Clean DHCP Leases
 

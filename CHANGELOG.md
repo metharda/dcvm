@@ -12,6 +12,16 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-11-25
+
+### Added
+
+- `--dry-run` (`-n`) for `dcvm network`: `start`, `stop`, `restart`, `ip-forwarding`, `ports setup|add|remove|apply|clear` and `dhcp clear|cleanup|renew` show what they would change and change nothing (#23)
+
+### Changed
+
+- These commands refuse arguments they don't take instead of ignoring them and running (#23)
+
 ## [0.9.12] - 2026-11-25
 
 Bulk bug fixes: GitHub issues #110-#156, #180-#195 and #199 from the 0.9.11
@@ -1100,7 +1110,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.12...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.13...HEAD
+[0.9.13]: https://github.com/metharda/dcvm/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/metharda/dcvm/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/metharda/dcvm/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10

@@ -164,17 +164,26 @@ _dcvm_completion() {
     else
       local sub1="${COMP_WORDS[2]}"
       case "$sub1" in
-      status | start | stop | restart | leases | bridge | config)
+      start | stop | restart)
+        COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
+        ;;
+      status | leases | bridge | config)
         COMPREPLY=()
         ;;
       ip-forwarding)
         if [[ ${COMP_CWORD} -eq 3 ]]; then
           COMPREPLY=($(compgen -W "on off show" -- "$cur"))
+        else
+          COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
         fi
         ;;
       ports)
         if [[ ${COMP_CWORD} -eq 3 ]]; then
           COMPREPLY=($(compgen -W "$(_dcvm_ports_subs)" -- "$cur"))
+        else
+          case "${COMP_WORDS[3]}" in
+          setup | add | remove | apply | clear) COMPREPLY=($(compgen -W "--dry-run" -- "$cur")) ;;
+          esac
         fi
         ;;
       dhcp)
@@ -185,8 +194,13 @@ _dcvm_completion() {
           case "$sub2" in
           clear)
             if [[ ${COMP_CWORD} -eq 4 ]]; then
-              COMPREPLY=($(compgen -W "$(_dcvm_vm_list) $(_dcvm_lease_macs)" -- "$cur"))
+              COMPREPLY=($(compgen -W "$(_dcvm_vm_list) $(_dcvm_lease_macs) --dry-run" -- "$cur"))
+            else
+              COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
             fi
+            ;;
+          cleanup | renew)
+            COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
             ;;
           esac
         fi
