@@ -1574,7 +1574,6 @@ DRY_RUN=false
 DRY_REMOVED=""
 ARGS=()
 
-# parse_dry_run ARG...: sets DRY_RUN, and ARGS to the arguments without the flag.
 parse_dry_run() {
   local a
   ARGS=()
@@ -1590,7 +1589,6 @@ dry_run_title() { [ "$DRY_RUN" != true ] || ui_title "Dry run" "nothing is chang
 
 would() { ui_step skip "would" "$1"; }
 
-# run_or_show COMMAND...: runs it, or in a dry run only prints it.
 run_or_show() {
   if [ "$DRY_RUN" = true ]; then would "run: $*"; else "$@"; fi
 }

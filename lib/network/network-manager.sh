@@ -80,7 +80,6 @@ cmd_status() {
   echo ""
 }
 
-# dry_network ACTION: what start, stop or restart would do.
 dry_network() {
   local state
   if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then

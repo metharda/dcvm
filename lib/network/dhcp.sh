@@ -11,7 +11,13 @@ show_current_leases() {
 
 lease_cleared() {
   case "$1" in
-  0) if [ "$DRY_RUN" = true ]; then ui_done skip "DHCP lease of $2 would be released"; else ui_done ok "DHCP lease of $2 released"; fi ;;
+  0)
+    if [ "$DRY_RUN" = true ]; then
+      ui_done skip "DHCP lease of $2 would be released"
+    else
+      ui_done ok "DHCP lease of $2 released"
+    fi
+    ;;
   1) ui_done skip "No matching DHCP lease found" "for $2; nothing to release" ;;
   *) return 1 ;;
   esac
@@ -218,20 +224,6 @@ force_renew_all() {
   confirm_release "Release the leases of these VMs and cut their links for 5 s?" || return 1
   ui_quiet
   status_file_readable "$status_file" || return 1
-  if [ "$DRY_RUN" = true ]; then
-    while read -r vm; do
-      mac=$(get_vm_mac "$vm" | head -1)
-      if [ -f "${DATACENTER_BASE:-/srv/datacenter}/config/network/$vm.conf" ]; then
-        ui_step skip "$vm" "static IP, no DHCP"
-      elif [ -n "$mac" ]; then
-        would "cut the link of $vm (${mac,,}) for 5 s and release its lease"
-      else
-        ui_step warn "$vm" "could not cut its link; it has no MAC on $NETWORK_NAME"
-      fi
-    done <<<"$running_vms"
-    echo ""
-    return 0
-  fi
   # Interrupted (Ctrl-C in the 5 s), the links cut so far come back up.
   trap relink_pending EXIT
   trap 'exit 130' INT
@@ -242,6 +234,8 @@ force_renew_all() {
     mac=$(get_vm_mac "$vm" | head -1)
     if [ -f "${DATACENTER_BASE:-/srv/datacenter}/config/network/$vm.conf" ]; then
       ui_step skip "$vm" "static IP, no DHCP"
+    elif [ -n "$mac" ] && [ "$DRY_RUN" = true ]; then
+      would "cut the link of $vm (${mac,,}) for 5 s and release its lease"
     elif [ -n "$mac" ] && virsh domif-setlink "$vm" "$mac" down >/dev/null 2>&1; then
       pending+="$vm ${mac,,}"$'\n'
       cleanup_dhcp_lease "${mac,,}" "" || [ $? = 1 ] || ui_step warn "$vm" "old lease not released; it may keep its address"
