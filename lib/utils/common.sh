@@ -45,7 +45,9 @@ ui_step() {
   fail) sym=$SYM_FAIL col=$RED ;;
   *) sym=$SYM_DOT col=$DIM ;;
   esac
-  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$2" "$DIM" "${3:-}" "$NC"
+  # Names and details can come from guests: no escape sequences reach the terminal.
+  local name=${2//[[:cntrl:]]/?} detail=${3:-}
+  printf '  %b%s%b %-15s %b%s%b\n' "$col" "$sym" "$NC" "$name" "$DIM" "${detail//[[:cntrl:]]/?}" "$NC"
 }
 
 ui_live() { [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ "${DCVM_VERBOSE:-0}" != 1 ]; }
@@ -273,7 +275,9 @@ ui_table() {
       # Pad by characters: printf pads by bytes, which breaks on ✓ and ✗.
       pad=""
       [ "$col" -lt $((${#cells[@]} - 1)) ] && printf -v pad '%*s' $((widths[col] - ${#cells[col]})) ''
-      cell=${cells[col]}$pad
+      # Rows are printed with echo -e: data keeps its backslashes and loses control characters.
+      cell=${cells[col]//\\/\\\\}
+      cell=${cell//[[:cntrl:]]/?}$pad
       if [ "$i" -eq 0 ]; then
         cell="${DIM}${cell}${NC}"
       else
@@ -347,7 +351,8 @@ check_permissions() {
 
 leases_table() {
   local leases
-  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); print $6 "\t" ip "\t" $3 "\t" $1 " " $2 }')
+  # An inactive network fails virsh; the callers run under set -e. The hostname is the guest's choice.
+  leases=$(virsh net-dhcp-leases "$NETWORK_NAME" 2>/dev/null | awk 'NR > 2 && NF >= 5 { ip = $5; sub(/\/.*/, "", ip); h = $6; gsub(/[[:cntrl:]]/, "?", h); print h "\t" ip "\t" $3 "\t" $1 " " $2 }') || true
   if [ -z "$leases" ]; then
     echo -e "  ${DIM}none${NC}"
     return
@@ -363,9 +368,9 @@ leases_table() {
 repo_commit_sha() {
   local url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/commits/${DCVM_REPO_BRANCH:-main}" sha
   if command_exists curl; then
-    sha=$(curl -fsSL -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+    sha=$(curl -fsSL --proto =https --proto-redir =https -H "Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
   else
-    sha=$(wget -q -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
+    sha=$(wget -q --max-redirect=0 -O - --header="Accept: application/vnd.github.sha" "$url" 2>>"${LOG_FILE:-/dev/null}")
   fi
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
 }
@@ -373,10 +378,11 @@ repo_commit_sha() {
 fetch_repo_file() {
   local base_url="https://raw.githubusercontent.com/${DCVM_REPO_SLUG:-metharda/dcvm}/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}"
   mkdir -p "$(dirname "$2")" 2>/dev/null || true
+  # Root runs these files: never over plain http (wget cannot limit where a redirect goes, so it follows none).
   if command_exists curl; then
-    curl -fsSL -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+    curl -fsSL --proto =https --proto-redir =https -o "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
   else
-    wget -q -O "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
+    wget -q --max-redirect=0 -O "$2" "$base_url/$1" 2>>"${LOG_FILE:-/dev/null}"
   fi
 }
 
@@ -409,9 +415,9 @@ list_repo_files() {
   local api_url="https://api.github.com/repos/${DCVM_REPO_SLUG:-metharda/dcvm}/git/trees/${DCVM_REPO_REF:-${DCVM_REPO_BRANCH:-main}}?recursive=1"
   local response files
   if command_exists curl; then
-    response=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+    response=$(curl -fsSL --proto =https --proto-redir =https -H "Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
   elif command_exists wget; then
-    response=$(wget -q -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
+    response=$(wget -q --max-redirect=0 -O - --header="Accept: application/vnd.github.v3+json" "$api_url" 2>>"${LOG_FILE:-/dev/null}")
   else
     print_error "Neither curl nor wget is available"
     return 1
@@ -484,9 +490,9 @@ print(b)' <<<"$info") || return 1
 }
 
 sanitize_domain_xml() {
-  python3 -I -S - "$1" "$2" "$3" "$4" <<'PY'
-import os, sys, xml.etree.ElementTree as ET
-path, name, disk, renamed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+  python3 -I -S - "$1" "$2" "$3" "$4" "${NETWORK_NAME:-datacenter-net}" <<'PY'
+import os, secrets, string, sys, xml.etree.ElementTree as ET
+path, name, disk, renamed, network = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true", sys.argv[5]
 tree = ET.parse(path)
 dom = tree.getroot()
 if dom.tag != "domain":
@@ -494,8 +500,28 @@ if dom.tag != "domain":
 top = {"name", "title", "description", "memory", "currentMemory", "maxMemory", "vcpu", "vcpus", "iothreads",
        "cputune", "numatune", "memtune", "os", "features", "cpu", "clock", "on_poweroff", "on_reboot",
        "on_crash", "on_lockfailure", "pm", "devices", "genid", "sysinfo", "perf"}
-devs = {"disk", "controller", "interface", "input", "graphics", "video", "sound", "audio", "memballoon", "rng",
-        "watchdog", "panic", "tpm", "vsock", "hub", "serial", "console", "channel", "iommu"}
+# A kept device keeps only these attributes and children: any other can name a host file, device or network.
+devs = {
+    "disk": ({"type", "device"}, {"target", "address"}),
+    "controller": ({"type", "index", "model", "ports", "vectors"}, {"model", "target", "driver", "master", "address"}),
+    "interface": ({"type"}, {"mac", "model", "address"}),
+    "input": ({"type", "bus"}, {"address"}),
+    "graphics": ({"type", "passwd"}, set()),
+    "video": (set(), {"model", "address"}),
+    "sound": ({"model"}, {"address"}),
+    "audio": ({"id", "type"}, set()),
+    "memballoon": ({"model", "autodeflate", "freePageReporting"}, {"stats", "address"}),
+    "rng": ({"model"}, {"backend", "rate", "address"}),
+    "watchdog": ({"model", "action"}, {"address"}),
+    "panic": ({"model"}, {"address"}),
+    "tpm": ({"model"}, {"backend"}),
+    "vsock": ({"model"}, {"address"}),
+    "hub": ({"type"}, {"address"}),
+    "serial": ({"type"}, {"target", "address"}),
+    "console": ({"type"}, {"target", "address"}),
+    "channel": ({"type"}, {"source", "target", "address"}),
+    "iommu": ({"model"}, {"driver", "address"}),
+}
 for child in list(dom):
     if child.tag not in top:
         dom.remove(child)
@@ -503,11 +529,16 @@ for el in list(dom.iter()):
     for sub in [c for c in el if c.tag == "seclabel"]:
         el.remove(sub)
 dom.find("name").text = name
+sysinfo = dom.find("sysinfo")
+if sysinfo is not None and sysinfo.get("type") != "smbios":
+    dom.remove(sysinfo)
 osel = dom.find("os")
 if osel is not None:
     for child in list(osel):
         text = (child.text or "").strip()
         if child.tag in ("kernel", "initrd", "cmdline", "dtb", "acpi", "init", "initarg", "initenv", "initdir", "inituser", "initgroup", "shim"):
+            osel.remove(child)
+        elif child.tag == "boot" and child.get("dev") != "hd":
             osel.remove(child)
         elif child.tag == "loader" and (not text.startswith("/usr/share/") or ".." in text):
             osel.remove(child)
@@ -528,42 +559,77 @@ kept_disk = False
 for d in list(devices):
     tag = d.tag
     keep = tag in devs
+    if keep:
+        attrs, children = devs[tag]
+        d.attrib = {k: v for k, v in d.attrib.items() if k in attrs}
+        for c in [c for c in d if c.tag not in children]:
+            d.remove(c)
     if tag == "disk":
         keep = d.get("device", "disk") == "disk" and not kept_disk
         if keep:
             kept_disk = True
             d.set("type", "file")
             d.set("device", "disk")
-            for c in [c for c in d if c.tag in ("source", "backingStore", "driver", "auth", "mirror", "encryption", "reservations")]:
-                d.remove(c)
             ET.SubElement(d, "driver", {"name": "qemu", "type": "qcow2"})
             ET.SubElement(d, "source", {"file": disk})
     elif tag == "controller":
         keep = d.get("type") != "ide"
     elif tag == "interface":
+        # Every NIC goes on dcvm's network: a host bridge or another network is outside what dcvm manages.
         keep = d.get("type") in ("network", "bridge")
-        for c in [c for c in d if c.tag in ("script", "downscript", "backenddomain", "teaming", "portForward")]:
-            d.remove(c)
+        d.set("type", "network")
+        ET.SubElement(d, "source", {"network": network})
+        model = d.find("model")
+        if model is not None:
+            mtype = model.get("type")
+            model.attrib = {"type": mtype if mtype in ("virtio", "e1000e", "e1000", "rtl8139") else "virtio"}
+            for c in list(model):
+                model.remove(c)
         mac = d.find("mac")
+        if mac is not None:
+            mac.attrib = {"address": mac.get("address", "")}
         if keep and renamed and mac is not None:
             b = os.urandom(3)
             mac.set("address", "52:54:00:%02x:%02x:%02x" % (b[0], b[1], b[2]))
     elif tag == "graphics":
         keep = d.get("type") in ("vnc", "spice")
         if keep:
-            if d.get("listen") is not None:
-                d.set("listen", "127.0.0.1")
-            for c in [c for c in d if c.tag == "listen"]:
-                d.remove(c)
+            # Archives carry no password: without one any local user could open the console.
+            if renamed or not d.get("passwd"):
+                d.set("passwd", "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8)))
+            d.set("autoport", "yes")
+            d.set("listen", "127.0.0.1")
             ET.SubElement(d, "listen", {"type": "address", "address": "127.0.0.1"})
+    elif tag == "input":
+        keep = d.get("type") in ("tablet", "mouse", "keyboard")
+    elif tag == "video":
+        model = d.find("model")
+        keep = model is None or model.get("type") in ("virtio", "qxl", "vga", "cirrus", "bochs", "ramfb", "none")
+        if model is not None:
+            model.attrib = {k: v for k, v in model.attrib.items() if k in ("type", "vram", "ram", "vgamem", "vram64", "heads", "primary")}
+            for c in list(model):
+                model.remove(c)
+    elif tag == "watchdog":
+        if d.get("action") not in (None, "reset", "shutdown", "poweroff", "pause", "none", "inject-nmi"):
+            del d.attrib["action"]
+    elif tag == "vsock":
+        ET.SubElement(d, "cid", {"auto": "yes"})
     elif tag == "audio":
         keep = d.get("type") in ("none", "spice")
     elif tag == "rng":
         b = d.find("backend")
         keep = b is not None and b.get("model") == "random" and (b.text or "/dev/urandom").strip() in ("/dev/urandom", "/dev/random")
+        if keep:
+            b.attrib = {"model": "random"}
+            for c in list(b):
+                b.remove(c)
     elif tag == "tpm":
         b = d.find("backend")
         keep = b is not None and b.get("type") == "emulator"
+        if keep:
+            b.attrib = {k: v for k, v in b.attrib.items() if k in ("type", "version")}
+            for c in [c for c in b if c.tag != "active_pcr_banks"]:
+                b.remove(c)
     elif tag in ("serial", "console"):
         keep = d.get("type") == "pty"
     elif tag == "channel":
@@ -657,23 +723,35 @@ legacy_references() {
   return 1
 }
 
+# A build chosen for a new disk is unreferenced until its VM is defined: create and restore hold this until they exit.
+hold_builds() {
+  [ -z "${BUILDS_LOCK_FD:-}" ] || return 0
+  mkdir -p "$(builds_dir)" 2>/dev/null
+  { exec {BUILDS_LOCK_FD}>>"$(builds_dir)/.lock"; } 2>/dev/null && flock -s -w 30 "$BUILDS_LOCK_FD" || BUILDS_LOCK_FD=""
+  return 0
+}
+
 prune_builds() {
-  local b used disks
-  # ponytail: builds staged by a restore in flight aren't counted, so only root and admins prune; add a build lock if that races.
+  local b used disks fd="${BUILDS_LOCK_FD:-}"
   [ "$(caller_role)" = user ] && return 0
-  disks=$(vm_disks) || return 0
-  legacy_references && return 0
-  used=$({
-    cut -f3 <<<"$disks"
-    backup_builds
-    cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
-  } | sed 's#.*/##')
-  for b in "$(builds_dir)"/*; do
-    [ -f "$b" ] && [ "${b##*.}" != sums ] || continue
-    [ "$b" -ef "$(templates_dir)/$(build_image "$b")" ] && continue
-    grep -qxF "${b##*/}" <<<"$used" && continue
-    rm -f "$b" "${b%.*}.sums" && echo "${b##*/}"
-  done
+  [ -n "$fd" ] || { exec {fd}>>"$(builds_dir)/.lock"; } 2>/dev/null || return 0
+  # Skipped while a create or restore holds builds: the next prune removes what is left.
+  if flock -x -n "$fd" && disks=$(vm_disks) && ! legacy_references; then
+    used=$({
+      cut -f3 <<<"$disks"
+      backup_builds
+      cat "${DATACENTER_BASE:-/srv/datacenter}"/vms/*/base.pending 2>/dev/null
+    } | sed 's#.*/##')
+    for b in "$(builds_dir)"/*; do
+      [ -f "$b" ] && [ "${b##*.}" != sums ] || continue
+      [ "$b" -ef "$(templates_dir)/$(build_image "$b")" ] && continue
+      grep -qxF "${b##*/}" <<<"$used" && continue
+      rm -f "$b" "${b%.*}.sums" && echo "${b##*/}"
+    done
+  fi
+  # flock converts a lock by dropping it first, so this process's own hold is taken again.
+  if [ -n "${BUILDS_LOCK_FD:-}" ]; then flock -s -w 30 "$fd"; else exec {fd}>&-; fi
+  return 0
 }
 
 # Moves a stopped VM's disk onto <build> without changing what the VM sees:
@@ -760,6 +838,8 @@ prepare_vm_disk() {
   local vm="$1" label="${2:-Base image}" disk backing img cur
   disk=$(get_vm_disk_path "$vm")
   [ -n "$disk" ] && [ -f "$disk" ] || return 0
+  # Paused or shutting down, QEMU still writes the disk: a copy made now loses those writes.
+  [ "$(get_vm_state "$vm")" = "shut off" ] || return 0
   backing=$(disk_backing "$disk")
   case "$backing" in
   "$(builds_dir)"/*) img=$(build_image "$backing") ;;
@@ -1362,14 +1442,19 @@ libvirt_nft_rejects_forwards() {
   command_exists nft && nft list table inet libvirt_network 2>/dev/null | grep -qF "\"${BRIDGE_NAME:-virbr-dc}\""
 }
 
-registry_file() { echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
+# Name characters only: a name becomes a path, and "../" would leave the folder.
+safe_vm_name() { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]]; }
+registry_file() { safe_vm_name "$1" && echo "${DCVM_STATE_DIR:-/var/lib/dcvm}/vms/$1"; }
 registry_get() { sed -n "s/^$2=//p" "$(registry_file "$1")" 2>/dev/null | head -1; }
-registry_remove() { rm -f "$(registry_file "$1")"; }
+registry_remove() {
+  local f
+  f=$(registry_file "$1") && rm -f "$f"
+}
 
 registry_set() {
   local vm="$1" file tmp kv
   shift
-  file=$(registry_file "$vm")
+  file=$(registry_file "$vm") || return 1
   mkdir -p -m 700 "${file%/*}" || return 1
   tmp="$file.tmp.$$"
   {
@@ -1414,6 +1499,8 @@ within_quota() {
     print_error "Could not check your quota"
     return 1
   fi
+  # A leading zero would make bash read octal: "08" is an error, "01000" is 512.
+  cpus=$((10#$cpus)) mem=$((10#$mem)) disk=$((10#$disk))
   if ! { mkdir -p "$locks" && exec {lockfd}>>"$locks/global" && flock -w 30 "$lockfd"; }; then
     print_error "Could not lock the quota check; try again"
     return 1
@@ -1428,7 +1515,11 @@ within_quota() {
       for (n in seen) if (n != vm && v[n, "owner_uid"] == uid) { c += v[n, "cpus"]; m += v[n, "memory_mb"]; d += v[n, "disk_gb"] }
       print c + 0, m + 0, d + 0, v[vm, "cpus"] + 0, v[vm, "memory_mb"] + 0, v[vm, "disk_gb"] + 0
     }' "${files[@]}" /dev/null)
-  if ((uc + cpus > c || um + mem > m || ud + disk > d)); then
+  # Usage that can't be read must refuse: empty values would count as nothing used.
+  if [[ ! "$uc $um $ud $oc $om $od" =~ ^[0-9]+( [0-9]+){5}$ ]]; then
+    print_error "Could not read your VMs' usage; try again"
+    rc=1
+  elif ((uc + cpus > c || um + mem > m || ud + disk > d)); then
     print_error "Over your quota: this VM needs $cpus vCPU, $mem MB, $disk GB; you have $((c - uc)) vCPU, $((m - um)) MB, $((d - ud)) GB left"
     rc=1
   else
@@ -1438,6 +1529,19 @@ within_quota() {
   fi
   exec {lockfd}>&-
   return $rc
+}
+
+# The server's per-VM lock. Root runs modules directly; for anyone else the server already holds it.
+lock_vm_name() {
+  [ -z "${DCVM_CALLER_ROLE:-}" ] || return 0
+  local locks="${DCVM_STATE_DIR:+$DCVM_STATE_DIR/run/locks}"
+  locks=${locks:-/run/dcvm/locks}
+  [ -z "${VM_LOCK_FD:-}" ] || exec {VM_LOCK_FD}>&-
+  if mkdir -p -m 700 "$locks" && exec {VM_LOCK_FD}>>"$locks/vm-$1" && flock -w 30 "$VM_LOCK_FD"; then
+    return 0
+  fi
+  print_error "Another operation on $1 is still running; try again in a moment"
+  return 1
 }
 
 # A failed in-place restore keeps the VM it had, so its old charge comes back.
@@ -1506,10 +1610,10 @@ size_gb() {
     return
   }
   case "$v" in
-  *M) echo $(((${v%M} + 1023) / 1024)) ;;
-  *G) echo "${v%G}" ;;
-  *T) echo $((${v%T} * 1024)) ;;
-  *) echo "${v:-0}" ;;
+  *M) echo $(((10#${v%M} + 1023) / 1024)) ;;
+  *G) echo $((10#${v%G})) ;;
+  *T) echo $((10#${v%T} * 1024)) ;;
+  *) echo $((10#$v)) ;;
   esac
 }
 
@@ -1523,6 +1627,30 @@ ttl_seconds() {
   d) secs=$((BASH_REMATCH[1] * 86400)) ;;
   esac
   [ "$secs" -le $((3650 * 86400)) ] && echo "$secs"
+}
+
+# A socket request's service is stopped with every process left in it, so a job that must outlive
+# the request gets a transient unit of its own; it runs with dcvm's config loaded.
+run_detached() {
+  if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ] &&
+    systemd-run --quiet --collect bash -c 'source "$1" && load_dcvm_config >/dev/null 2>&1 && shift && "$@"' _ \
+      "$(realpath "${BASH_SOURCE[0]}")" "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+  # It outlives this run, so it must not keep the VM's lock.
+  ({ [ -z "${VM_LOCK_FD:-}" ] || exec {VM_LOCK_FD}>&-; } && "$@") </dev/null >/dev/null 2>&1 3>&- &
+}
+
+# QEMU keeps the old seed open across guest reboots; SSH answers only after cloud-init has read it.
+# Gives up once the VM it was started for (by UUID) is gone, so a later VM of that name is left alone.
+swap_cloud_init_seed() {
+  local tries=60
+  until wait_for_vm "$1" 30 >/dev/null; do
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] && [ "$(virsh domuuid "$1" 2>/dev/null)" = "$4" ] || return 1
+  done
+  [ "$(virsh domuuid "$1" 2>/dev/null)" = "$4" ] && virsh change-media "$1" "$2" --eject --live --force &&
+    virsh change-media "$1" "$2" "$3" --insert --live
 }
 
 wait_for_vm() {
@@ -1570,7 +1698,7 @@ print(d.findtext("name"))' "$dir/all" "$dir/domain.xml" >"$dir/name"; then
   return $rc
 }
 
-vnc_password_of() { virsh dumpxml --security-info -- "$1" 2>/dev/null | sed -n "s/.*<graphics[^>]* passwd='\([^']*\)'.*/\1/p" | head -1; }
+vnc_password_of() { virsh dumpxml --security-info -- "$1" 2>/dev/null | sed -n "s/.*<graphics type='vnc'[^>]* passwd='\([^']*\)'.*/\1/p" | head -1; }
 
 cleanup_port_forwarding_for_vm() {
   local vm_ip="$1"
@@ -1611,10 +1739,13 @@ cleanup_port_forwarding_for_vm() {
   save_iptables_rules
 }
 
-# Every rule in the exact shape setup_vm_forwarding makes (old and new), whatever the port; libvirt's, docker's and the RELATED rule stay.
+# Rules in the exact shape setup_vm_forwarding makes (old and new) on a host port of dcvm's ranges or a
+# saved mapping; a FORWARD rule stays while another DNAT leads to it. Libvirt's, docker's and the RELATED rule stay.
 cleanup_port_forwarding() {
   local net="${NETWORK_SUBNET:-10.10.10}" rule args
   local ip="${net//./\\.}\.[0-9]+"
+  local dnat="^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$"
+  local fwd="^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$"
   print_info "Cleaning up existing dcvm port forwarding rules"
   while read -r rule; do
     read -ra args <<<"${rule#-A }"
@@ -1623,9 +1754,20 @@ cleanup_port_forwarding() {
     else
       iptables -w -D "${args[@]}" 2>/dev/null || true
     fi
-  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null | grep -E \
-    -e "^-A PREROUTING (! -i ${BRIDGE_NAME:-virbr-dc} )?-p tcp (-m addrtype --dst-type LOCAL )?(-m tcp )?--dport [0-9]+ -j DNAT --to-destination $ip:(22|80)$" \
-    -e "^-A FORWARD -d $ip/32 -p tcp (-m tcp )?--dport (22|80) (-m conntrack --ctstate DNAT )?-j ACCEPT$")
+  done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null |
+    DNAT_RE=$dnat FWD_RE=$fwd MAPS=$(read_port_mappings 2>/dev/null) awk -v s="${SSH_PORT_START:-2221}" -v h="${HTTP_PORT_START:-8081}" '
+      BEGIN { n = split(ENVIRON["MAPS"], m, "\n"); for (i = 1; i <= n; i++) if (split(m[i], f, " ") >= 4) { own[f[3] " " f[2] ":22"]; own[f[4] " " f[2] ":80"] } }
+      $2 == "PREROUTING" && / -j DNAT / {
+        d = t = ""; for (i = 3; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
+        p = t; sub(/.*:/, "", p)
+        if ($0 ~ ENVIRON["DNAT_RE"] && ((d " " t) in own || (p == "22" && d + 0 >= s && d + 0 <= s + 78) || (p == "80" && d + 0 >= h && d + 0 <= h + 98))) print
+        else kept[t]
+      }
+      $2 == "FORWARD" && $0 ~ ENVIRON["FWD_RE"] {
+        for (i = 3; i < NF; i++) if ($i == "--dport") d = $(i + 1)
+        t = $4; sub(/\/32$/, "", t)
+        if (!((t ":" d) in kept)) print
+      }')
   print_success "Cleanup completed"
 }
 
@@ -1691,7 +1833,7 @@ nfs_share_secure() {
 }
 
 secure_nfs_share() {
-  local share="$1" subnet="$2" uid gid quarantine f rel moved=0 tmp
+  local share="$1" subnet="$2" uid gid quarantine f rel moved=0 tmp rc
   if ! id -u "$NFS_SQUASH_USER" >/dev/null 2>&1; then
     useradd --system --no-create-home --home-dir /nonexistent --shell "$(command -v nologin || echo /bin/false)" "$NFS_SQUASH_USER" || return 1
   fi
@@ -1712,9 +1854,10 @@ secure_nfs_share() {
     echo "$share ${subnet}.0/24(rw,sync,subtree_check,all_squash,anonuid=$uid,anongid=$gid)"
   } >"$tmp" &&
     cat "$tmp" >/etc/exports
+  rc=$?
   rm -f "$tmp"
-  command_exists exportfs && exportfs -ra 2>/dev/null
   NFS_QUARANTINED=$moved NFS_QUARANTINE_DIR=$quarantine
+  [ "$rc" = 0 ] && { ! command_exists exportfs || exportfs -ra; }
 }
 
 check_vm_exists() {
@@ -1759,7 +1902,7 @@ check_ping() {
 require_confirmation() {
   local message="$1"
   print_warning "$message"
-  confirm_action "Are you sure?" || exit 0
+  confirm_action "Are you sure?" || exit 1
 }
 
 validate_memory_size() {
@@ -1937,12 +2080,14 @@ cleanup_dhcp_lease_unlocked() {
   return "$rc"
 }
 
-# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer.
+# MACs (lower case) of every interface of every defined domain; fails when libvirt does not answer for any of them.
 domain_macs() {
-  local names d
+  local names d ifs
   names=$(virsh list --all --name 2>/dev/null) || return 1
   while read -r d; do
-    [ -n "$d" ] && virsh domiflist -- "$d" 2>/dev/null | awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }'
+    [ -n "$d" ] || continue
+    ifs=$(virsh domiflist -- "$d" 2>/dev/null) || return 1
+    awk 'NR > 2 && $5 ~ /:/ { print tolower($5) }' <<<"$ifs"
   done <<<"$names"
 }
 
@@ -2157,7 +2302,7 @@ export -f log log_message log_to_file
 export -f load_dcvm_config require_root check_permissions command_exists check_dependencies
 export -f validate_vm_name validate_vm_name_list validate_package_list trim_whitespace validate_username validate_password
 export -f vm_exists get_vm_state get_vm_ip get_vm_ip_trusted get_vm_mac vm_network_macs get_vm_disk_path get_vm_username valid_ipv4 valid_vm_ip
-export -f registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
+export -f safe_vm_name registry_file registry_get caller_uid caller_user caller_role vm_owner_uid vm_visible
 export -f read_password generate_password_hash generate_random_mac
 export -f format_bytes create_dir_safe backup_file confirm_action
 export -f get_system_info get_host_info

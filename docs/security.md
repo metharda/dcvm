@@ -34,7 +34,7 @@ treated as untrusted: see [Users without root](#users-without-root).
 password (and the root password, when root login is on) into a salted
 SHA-512 crypt hash (`openssl passwd -6`) and writes only the hash to the
 cloud-init `user-data`. The plain password never appears in a guest shell
-command, the YAML, or dcvm's output; the interactive summary prints `****`.
+command, the YAML, or dcvm's output; the interactive summary doesn't show it.
 Passwords are applied once, at first boot, so changing a password later
 inside the VM with `passwd` sticks.
 
@@ -47,8 +47,12 @@ Exceptions to know about:
 | `--tailscale-authkey` | Plain text in `user-data` (`tailscale up --authkey=...`) | Use a one-off, short-lived or ephemeral auth key |
 
 The VM's `cloud-init/` folder is created with mode 700 (root only).
-`cloud-init.iso`, built from it, stays in the VM folder because QEMU has to
-read it; it contains the same `user-data`.
+`cloud-init.iso`, built from it, is the VM's seed CD-ROM. Once the VM is
+created, dcvm replaces it with a copy without `user-data` (same instance-id
+and network config, so cloud-init doesn't run again), and swaps it into the
+running VM as soon as SSH answers; until then (or until the VM is next powered
+off, if SSH never answers) the VM user can read the first seed. At the end of
+its first boot the guest deletes cloud-init's own copies of the `user-data`.
 
 **SSH keys.** Unless you pass `--without-ssh-key`, dcvm adds the creator's
 public key to the VM user's `authorized_keys`: for root, `~/.ssh/id_rsa.pub`
@@ -93,10 +97,11 @@ shows it.
   matching `FORWARD` rules accept only that forwarded (DNATed) traffic, not
   other traffic routed to a VM's ports 22 and 80.
 - **dcvm owns two port ranges.** `ports setup`, `ports apply` and
-  `ports clear` delete every `PREROUTING` rule on host ports 2220-2299 and
-  8080-8179, and every `FORWARD` rule that mentions the dcvm subnet, before
-  adding their own. Don't use those ranges for other NAT rules on a dcvm
-  host.
+  `ports clear` delete the DNAT rules in dcvm's own shape (to a VM's port 22
+  or 80) on host ports 2221-2299 and 8081-8179 (or the `SSH_PORT_START` and
+  `HTTP_PORT_START` ranges) or in `port-mappings.txt`, and the matching
+  `FORWARD` rules no other DNAT rule still leads to. Don't use those ranges
+  for other NAT rules on a dcvm host.
 - **VMs are not isolated from each other.** They share one bridge and can
   reach each other on every port.
 - **NFS share (optional).** If you answer `y` to the installer's NFS
@@ -127,16 +132,16 @@ shows it.
   servers and well-known mirrors listed in `lib/utils/mirror-manager.sh`.
   Each download must be at least 100 MB and must match the checksum its
   publisher lists next to it: `SHA256SUMS` or `SHA512SUMS` in the same folder,
-  or `<file>.SHA256`, looked up first on the official server (the first
-  mirror listed), then on the mirror it came from and the other mirrors that
-  serve the same file name (the official servers publish them for all nine
-  images). The first server that publishes a checksum decides, so while the
-  official server answers, a mirror can't vouch for its own file. A download
-  that doesn't match is discarded and the next mirror is tried. If no mirror
-  publishes a checksum, dcvm keeps the file and prints `download not
-  verified`. GPG signatures are not checked, so a checksum file only proves
-  the download is intact and is the one that server lists, not who built it.
-  curl refuses a redirect from HTTPS to plain HTTP. Before an image becomes a
+  or `<file>.SHA256`, taken only from the official server (the first mirror
+  listed; the official servers publish them for all nine images), so no
+  mirror can vouch for its own file. A download that doesn't match is
+  discarded and the next mirror is tried; if the official server gives no
+  checksum (it is down, for example), the download is refused. GPG
+  signatures are not checked, so a checksum file only proves the download is
+  intact and is the one that server lists, not who built it. curl refuses a
+  redirect from HTTPS to plain HTTP; aria2c has no such option, so a mirror
+  that redirects to HTTP is left out when the mirrors are tested, and the
+  checksum catches one that does it later. Before an image becomes a
   template (Kali: after its conversion to qcow2), it must be a plain qcow2
   with no backing file or external data file, since every VM's disk is
   backed by it.
@@ -147,7 +152,8 @@ shows it.
 - **The installer** runs as root. The README's
   [review-first install](../README.md#quick-start) downloads it to a file so
   you can read it before running it; it then fetches the rest of dcvm from the
-  same repository over HTTPS, every file from the one commit the branch
+  same repository over HTTPS (curl refuses a redirect to plain HTTP, wget
+  follows no redirect), every file from the one commit the branch
   pointed to when it started. It installs from the folder it sits in only
   when that is a dcvm checkout (`lib/installation/install-dcvm.sh` next to
   the `dcvm` script) that no other user can change: owned by root or the
@@ -155,8 +161,8 @@ shows it.
   writable by group or others. Otherwise, a copy run from `/tmp` or through
   `bash -c` for example, it ignores the files around it and downloads.
 - **`dcvm self-update`** downloads the files from GitHub (`metharda/dcvm`,
-  `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, with no
-  signature check, all from one commit, into a staging folder, and replaces
+  `main`, or `DCVM_REPO_SLUG` / `DCVM_REPO_BRANCH`) over HTTPS, like the
+  installer, with no signature check, all from one commit, into a staging folder, and replaces
   the installed files in one swap only when every file arrived. It refuses a
   version older than the installed one unless you pass `--force`. Every installed file is owned by root
   with fixed modes, never inherited from the folder (on Debian, `/usr/local`
@@ -182,7 +188,8 @@ shows it.
   missing), and the package carries only the seed's `meta-data` and
   `network-config`: `user-data` holds the password hash and any Tailscale key
   or MySQL password, and stays on the host. Run `dcvm backup ssh-setup <vm>`
-  after import to add a key.
+  after import to add a key; it keeps the guest's host key in a throwaway
+  `known_hosts`, never in root's, and gives up on an sshd that stalls.
 - **Imports and restores treat the backup as untrusted.** An archive may
   contain only plain files (no links or devices), and its file names must
   give a valid VM name and backup date. The disk must be a plain qcow2 image:
@@ -191,10 +198,12 @@ shows it.
   `templates/builds/` (or a template, for backups from before 0.9.9). The
   base record's image name and checksums are checked before use. The VM
   definition is rebuilt from an allowlist: one disk (the restored one),
-  network interfaces without scripts, pty serial ports, graphics on
-  127.0.0.1; host devices, shared folders, `qemu:commandline`, security
-  labels, kernel and initrd paths, file-backed memory or audio and any other
-  element dcvm doesn't know are dropped.
+  network interfaces moved onto dcvm's network, pty serial ports, graphics on
+  127.0.0.1 with a password (a new one when the backup has none); every
+  kept device keeps only the attributes and child elements dcvm lists, so
+  host devices, host bridges, shared folders, `qemu:commandline`, security
+  labels, kernel and initrd paths, network boot, file-backed memory, audio,
+  input or TPM state and any other element dcvm doesn't know are dropped.
 - **Restored copies get new identities.** `dcvm backup restore <vm> <date>
   <new_name>` gives the copy new MAC addresses and, with `virt-customize`, a
   new hostname, machine-id and SSH host keys, so two VMs don't share host keys.
@@ -238,7 +247,7 @@ Since 0.9.10 members of the `dcvm` group run dcvm without sudo (see
   holds, but it can't stop a guest's own network settings. That refusal
   tells a user an address is taken, which their own VM can already see by
   scanning the bridge. For port
-  forwards, deletes and the storage check dcvm takes a VM's address only
+  forwards, deletes, the storage check and `backup ssh-setup` dcvm takes a VM's address only
   from host-side records (its port mapping, its DHCP lease by MAC or its
   static IP), never from what the guest agent reports. The optional NFS
   share is one folder for every VM. Don't enable

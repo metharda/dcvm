@@ -284,6 +284,8 @@ do_revert() {
   if [[ -x "$INSTALL_LIB/installation/pre-revert.sh" ]]; then
     "$INSTALL_LIB/installation/pre-revert.sh" || {
       rm -rf "$stage"
+      # It may have removed part of this version's units before failing.
+      install_dcvm_services || print_warning "Could not restore the dcvm services: dcvm doctor --fix"
       print_error "Could not undo this version's setup; nothing was reverted"
       exit 1
     }
@@ -297,9 +299,21 @@ do_revert() {
   }
   rm -rf "$stage"
   ui_step ok "dcvm" "$INSTALL_BIN/dcvm and $INSTALL_LIB"
+  # pre-revert removed the socket and timer: the restored version installs its own.
+  if [[ -x "$INSTALL_LIB/installation/post-update.sh" ]]; then
+    "$INSTALL_LIB/installation/post-update.sh" || print_warning "Could not install the services of the restored version: dcvm doctor --fix"
+  fi
 
   ui_done ok "Reverted to $(get_current_version)" "dcvm self-update installs the latest again"
   echo ""
+}
+
+# Two updates at once would swap their trees into each other.
+lock_self_update() {
+  create_backup_dir
+  exec {SELF_UPDATE_LOCK_FD}>>"$BACKUP_DIR/.lock" && flock -n "$SELF_UPDATE_LOCK_FD" && return 0
+  print_error "Another dcvm self-update is running; try again when it is done"
+  exit 1
 }
 
 main() {
@@ -333,6 +347,7 @@ main() {
     esac
   done
 
+  [[ "$CHECK_ONLY" == "true" && "$REVERT" != "true" ]] || lock_self_update
   if [[ "$REVERT" == "true" ]]; then
     do_revert
   elif [[ "$CHECK_ONLY" == "true" ]]; then

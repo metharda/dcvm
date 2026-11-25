@@ -88,7 +88,7 @@ Be careful to choose a base IP with enough free addresses in your subnet. If DCV
 - `--tailscale-authkey`: Tailscale auth key for automatic VPN connection (also installs Tailscale if not in `-k`)
 - `--with-ssh-key`: Enable SSH key authentication
 - `--without-ssh-key`: Disable SSH key (password only)
-- `--graphics`: Graphics mode - `vnc`, `vnc,listen=127.0.0.1`, or `none` (default: auto based on OS)
+- `--graphics`: Graphics mode - `vnc`, `spice` or `none` (default: auto based on OS). Admins may add options such as `vnc,listen=127.0.0.1`; for users the display always listens on `127.0.0.1`
 - `-f, --force`: Force mode (no prompts)
 
 ### Creating a VM from Custom ISO
@@ -346,9 +346,11 @@ dcvm storage           # same as storage-cleanup
 dcvm storage-cleanup   # also run hourly by datacenter-storage.timer
 ```
 
-Connects over SSH to each running dcvm VM and prints its root file system
+Connects over SSH to each running VM root created (users' VMs are skipped:
+root's key is not in them) and prints its root file system
 usage (also logged to `/var/log/datacenter-storage.log`). Over 85% full, it
-gzips old logs and moves old `/tmp` files and logs to the NFS share. See
+gzips old logs and moves old `/tmp` files and logs to a root-only folder on
+the host, `$DATACENTER_BASE/archived-files/<vm>/`. See
 [Operations](operations.md#logs-and-monitoring). For disk use on the host,
 run `du -sh /srv/datacenter/*`.
 
@@ -577,7 +579,7 @@ After VM creation with Tailscale:
 
 ```bash
 # Check VM status
-dcvm status myvm
+dcvm info myvm
 
 # Check system logs
 journalctl -xe
@@ -590,7 +592,7 @@ dcvm fix-lock myvm
 
 ```bash
 # Verify VM is running
-dcvm status myvm
+dcvm info myvm
 
 # Check network
 dcvm network

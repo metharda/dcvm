@@ -43,11 +43,12 @@ setup_vm_forwarding() {
   return 0
 }
 
+# free_port FIRST LAST COLUMN VM FILE...: a port in another VM's row of the files is taken.
 free_port() {
   local port rules
   rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null)
   for ((port = $1; port <= $2; port++)); do
-    awk -v c="$3" -v p="$port" '!/^#/ && $c == p { f = 1 } END { exit !f }' "$4" 2>/dev/null && continue
+    awk -v c="$3" -v p="$port" -v v="$4" '!/^#/ && $1 != v && $c == p { f = 1 } END { exit !f }' "${@:5}" 2>/dev/null && continue
     grep -q -- "--dport $port " <<<"$rules" && continue
     ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
     echo "$port"
@@ -63,11 +64,20 @@ allow_related() {
 save_mappings_tmp_to_file() {
   if [ -n "${MAPPINGS_TMP:-}" ] && [ -f "$MAPPINGS_TMP" ]; then
     create_dir_safe "$DATACENTER_BASE"
-    local map_file="$DATACENTER_BASE/port-mappings.txt"
-    (umask 077 && {
+    local map_file="$DATACENTER_BASE/port-mappings.txt" vm rest
+    # A VM not forwarded this time keeps its row, so its ports never go to another VM.
+    KEPT_MAPPINGS=$(read_port_mappings 2>/dev/null | while read -r vm rest; do
+      ! awk -v v="$vm" '$1 == v { f = 1 } END { exit !f }' "$MAPPINGS_TMP" && check_vm_exists "$vm" && echo "$vm $rest"
+    done)
+    if ! (umask 077 && {
       echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT"
       cat "$MAPPINGS_TMP"
-    } >"$map_file.new") && mv -f "$map_file.new" "$map_file"
+      [ -z "$KEPT_MAPPINGS" ] || echo "$KEPT_MAPPINGS"
+    } >"$map_file.new") || ! mv -f "$map_file.new" "$map_file"; then
+      rm -f "$map_file.new"
+      print_error "Could not save the port mappings to $map_file; this run's are kept in $MAPPINGS_TMP"
+      return 1
+    fi
     rm -f "$MAPPINGS_TMP"
     print_success "Port mappings saved to $map_file"
   fi
@@ -106,8 +116,10 @@ cmd_setup() {
   local ssh_port http_port
   local subnet="${NETWORK_SUBNET:-10.10.10}"
   local subnet_regex="${subnet//./\\.}"
-  local skipped=() count=0
+  local skipped=() count=0 old_rows forwarded
   MAPPINGS_TMP=$(mktemp)
+  old_rows=$(mktemp)
+  read_port_mappings >"$old_rows" 2>/dev/null
   while read -r vm <&3; do
     [ -z "$vm" ] && continue
     if ! virsh list | grep -q "$vm.*running"; then
@@ -119,8 +131,8 @@ cmd_setup() {
       skipped+=("$vm|no reachable IP yet; try again once it has booted")
     elif ip_held_by_other_vm "$vm_ip" "$vm"; then
       skipped+=("$vm|$vm_ip is leased to another VM; check the address set inside $vm")
-    elif ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$MAPPINGS_TMP") ||
-      ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$MAPPINGS_TMP"); then
+    elif ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$vm" "$MAPPINGS_TMP" "$old_rows") ||
+      ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$vm" "$MAPPINGS_TMP" "$old_rows"); then
       skipped+=("$vm|no free ports left in $SSH_PORT_START-$SSH_PORT_END, $HTTP_PORT_START-$HTTP_PORT_END")
     elif setup_vm_forwarding "$vm" "$vm_ip" "$ssh_port" "$http_port" "$HOST_IP"; then
       count=$((count + 1))
@@ -129,22 +141,30 @@ cmd_setup() {
     fi
   done 3<<<"$VM_LIST"
   allow_related
-  save_mappings_tmp_to_file
+  rm -f "$old_rows"
+  forwarded=$(cat "$MAPPINGS_TMP")
+  local saved=true
+  save_mappings_tmp_to_file || saved=false
   command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
   save_iptables_rules
   if [ "$count" -gt 0 ]; then
     {
       printf 'VM\tIP\tSSH\tHTTP\n'
-      read_port_mappings | while read -r vm ip sp hp; do
+      while read -r vm ip sp hp; do
         [ -n "$vm" ] && printf '%s\t%s\t%s\t%s\n' "$vm" "$ip" "ssh -p $sp $(vm_login "$vm" | grep . || echo '<user>')@$HOST_IP" "http://$HOST_IP:$hp"
-      done
+      done <<<"$forwarded"
     } | ui_table
   fi
   local item
   for item in "${skipped[@]}"; do
     ui_step skip "${item%%|*}" "${item#*|}"
   done
-  if [ "$count" -gt 0 ]; then
+  [ -z "${KEPT_MAPPINGS:-}" ] || echo -e "  ${DIM}$(plural "$(grep -c . <<<"$KEPT_MAPPINGS")" "saved mapping") of VMs not forwarded now kept without rules; dcvm network ports apply restores them${NC}"
+  if [ "$saved" = false ]; then
+    ui_done fail "$(plural "$count" VM) forwarded, but the mappings were not saved" "run dcvm network ports setup again"
+    echo ""
+    return 1
+  elif [ "$count" -gt 0 ]; then
     ui_done ok "$(plural "$count" VM) forwarded" "saved to $DATACENTER_BASE/port-mappings.txt"
     echo -e "  ${DIM}From other machines, allow TCP $SSH_PORT_START-$SSH_PORT_END and $HTTP_PORT_START-$HTTP_PORT_END in the host firewall.${NC}"
   else
@@ -194,8 +214,8 @@ cmd_add() {
     print_error "$ip is leased to another VM; check the address set inside $vm"
     return 1
   fi
-  if ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$map_file") ||
-    ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$map_file"); then
+  if ! ssh_port=$(free_port "$SSH_PORT_START" "$SSH_PORT_END" 3 "$vm" "$map_file") ||
+    ! http_port=$(free_port "$HTTP_PORT_START" "$HTTP_PORT_END" 4 "$vm" "$map_file"); then
     print_error "No free ports left in dcvm's ranges ($SSH_PORT_START-$SSH_PORT_END, $HTTP_PORT_START-$HTTP_PORT_END)"
     return 1
   fi
@@ -258,23 +278,33 @@ cmd_apply() {
   lock_port_mappings || exit 1
   echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
   cleanup_port_forwarding
-  local HOST_IP=$(detect_host_ip) count=0
+  local HOST_IP=$(detect_host_ip) count=0 failed=0
   ui_title "Port forwarding" "from $map_file"
+  # The checks setup and add make: at boot a deleted VM's address may be another VM's by now.
   while read -r vm ip ssh_port http_port; do
     [[ "$vm" =~ ^#|^$ ]] && continue
     if ! valid_vm_ip "$ip"; then
-      ui_step fail "$vm" "invalid address $ip in $map_file; dcvm network ports add $vm"
-      continue
-    fi
-    if setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$HOST_IP"; then
+      ui_step fail "$vm" "invalid address $ip in $map_file; dcvm network ports setup"
+    elif ! check_vm_exists "$vm"; then
+      ui_step fail "$vm" "no such VM; dcvm network ports setup drops its row"
+    elif ip_held_by_other_vm "$ip" "$vm"; then
+      ui_step fail "$vm" "$ip is leased to another VM; dcvm network ports setup"
+    elif setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$HOST_IP"; then
       ui_step ok "$vm" "$ssh_port $SYM_ARROW $ip:22, $http_port $SYM_ARROW $ip:80"
       count=$((count + 1))
+      continue
     else
       ui_step fail "$vm" "could not add the rules"
     fi
+    failed=$((failed + 1))
   done <"$map_file"
   allow_related
   save_iptables_rules
+  if [ "$failed" -gt 0 ]; then
+    ui_done warn "$(plural "$count" VM) forwarded, $failed not" "see above"
+    echo ""
+    return 1
+  fi
   ui_done ok "$(plural "$count" VM) forwarded" "dcvm network ports test checks them"
   echo ""
 }

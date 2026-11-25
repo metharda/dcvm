@@ -12,6 +12,115 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-11-25
+
+Bulk bug fixes: GitHub issues #110-#156, #180-#195 and #199 from the 0.9.11
+audit. See the PR for the list.
+
+### Fixed
+
+- Admin commands over the socket take the same per-VM lock as users' (backup, restore, start/stop, ports, fix-lock); a restore stages its disk under a per-process name (#119)
+- `create a,b,c` locks every named VM, not just the first (#120)
+- An ISO copy that hits a short write or changes size is refused instead of published (#135)
+- `backup restore <vm> <id> <new>` no longer reserves a fixed 2 vCPU/2 GB/30 GB; the backup's real size is checked (#143)
+- A late write timeout can no longer fail a request and remove a VM folder while its module still runs (#186)
+- A staged installer ISO counts against the user's disk quota (#187)
+- The client shows the server's reason instead of a traceback when it is refused before the request is read (#188)
+- `create-iso -o <iso>` works for group users, as it does for root (#189)
+- `ports setup` keeps the saved rows of VMs it skips (stopped, no address, no free port), so their host ports are not given to another VM (#122).
+- `dcvm network` and `network show` no longer stop at the DHCP leases when the network is inactive (#129).
+- `dhcp clear --stale` and `dcvm doctor` release no lease when libvirt can't list one VM's interfaces (#139).
+- `dhcp renew` releases only the leases of the VMs whose link it cuts; static and uncut VMs keep theirs (#140).
+- `ports setup`, `apply` and `clear` remove only DNAT rules on dcvm's port ranges or in `port-mappings.txt`; a hand-made DNAT to a VM, and the FORWARD rule it needs, stay (#156).
+- `self-update` and `--revert` refresh the installed bash completion (#199)
+- The XML sanitizer test plants a foreign network and catches a kept `<source network|bridge>` (#199)
+- Tests count exit 126/127 as a failure, not an expected refusal; `--quick` runs the help and mirror tests (#199)
+- `backup export` refuses a target that is the caller's own stdout or stderr file (#199)
+- A quota check that can't read the VMs' usage refuses instead of allowing the create (#199)
+- `user.<name>.*` limits win over global lines wherever they stand in `limits.conf` (#199)
+- `fix-lock` reads the install's network name and folder, so `--all` finds VMs on custom installs (#199)
+- `fix-lock` removes only the VM disk's own `.lock` file, not every lock file under its folder (#199)
+- `ports setup` reports a mapping file it couldn't write instead of "saved", and keeps the run's mappings (#199)
+- A revert's `pre-revert.sh` fails when a dcvm unit stays active, and the revert then restores the services (#199)
+- `create` undoes a half-made VM on error or Ctrl-C (only what it made) and refuses a disk left in the folder (#199)
+- `create` and `create-iso` run by root take the per-VM lock; an ISO create's undo removes only the domain it defined (#199)
+- `-k docker` installs `moby-engine` on Fedora (#199).
+- The Arch pacman keyring setup is retried at boot until it works once (#199).
+- `-k mariadb` on Arch and `-k mariadb-server` set up and start the database like `mysql-server` (#199).
+- `template status` and `verify` call only real corruption corrupt; an image a VM holds shows as not checked (#199).
+- An interrupted `dhcp renew` brings the VM links it cut back up (#199).
+- `fix-lock --verbose <vm>` works, the missing-network error names the installer instead of `dcvm install`, and `backup --help` lists `--base` (#199).
+- `dcvm status <vm>` is refused with a pointer to `dcvm info` instead of ignoring the name (#199).
+- `backup import` stops when it can't make its temporary folder and passes `--yes` to the restore (#199).
+- `uninstall` also removes `/etc/dcvm`, the audit and storage logs and `/var/lib/dcvm`, and a cancel exits 1 (#199).
+- Docs: static IPs get a DHCP reservation, the create summary doesn't show the password, `--graphics` options are for admins, what uninstall leaves (#199).
+
+### Security
+
+- `ports apply` (also run at boot by `dcvm doctor --fix`) skips rows of deleted VMs and addresses another VM holds, so a saved port can't reach someone else's VM (#123).
+- Guest-chosen DHCP hostnames are shown with control characters replaced, so they can't send escape sequences to the admin's terminal (#138).
+- Tables and step lines show control characters and backslash escapes in their text literally, so no guest-supplied text sends escape sequences (#199).
+- Bash completion offers only the caller's dcvm VMs (from `dcvm list --json`), not every libvirt domain (#199).
+- The storage check archives old guest files into a root-only folder on the host, not the NFS share every VM can read and plant links in (#199).
+- `doctor --fix` and base moves leave the disk of a paused or shutting-down VM alone (#113)
+- `doctor --fix` no longer turns on autostart for a restored copy that keeps another VM's static IP (#114)
+- `fix-lock <vm>` refuses libvirt VMs that aren't dcvm's and never declares a raw disk qcow2 (#118)
+- The hourly storage check drops a guest that stops answering instead of hanging (#141)
+- `doctor --fix` reports a base move, NFS repair or `df` that failed instead of "fixed" (#142)
+- Docs: the storage check skips VMs of users without root (#150)
+- `fix-lock` stops when libvirt can't stop the VM and never SIGKILLs QEMU (#151)
+- `doctor --fix` keeps leftover files that are open or were just copied (#195)
+- `self-update --revert` installs the restored version's socket and timers instead of leaving them removed (#125).
+- `self-update` installs dcvm's services when they are missing or old instead of running `doctor --fix --only host` (#145).
+- Only one `self-update` or `--revert` runs at a time (#194).
+- A template download no longer deletes a build a create or restore is still setting up (#137).
+- `uninstall` fills in empty settings from the defaults, removes only storage pools inside a real dcvm data folder, keeps the owner records of VMs it could not delete, and reports a firewalld change only when it worked (#154, #155, #192).
+
+### Security
+- `template download` accepts only the exact supported image names and downloads to an unpredictable temporary file (#126).
+- The installer and `self-update` fetch dcvm only over https: curl refuses a redirect to http and wget follows no redirect (#127).
+- A downloaded image is checked only against the official server's checksum and refused when it gives none, so no mirror vouches for its own file (#136).
+- Mirrors that redirect to http are not ranked, so aria2c never downloads from them (#193).
+- The installer refuses a `DATACENTER_BASE` that another user owns or can write to, and makes the folders it uses inside it root-owned (#191).
+### Security
+
+- Backup restore moves every network interface onto dcvm's network and drops host bridges, `<target>`, `<filterref>`, `<virtualport>`, VLANs and network boot; graphics get autoport and a password (#115).
+- Backup restore keeps only listed attributes and child elements on every device, so `<input type='evdev'>`, a vhost-user video driver, a TPM state path or `<sysinfo type='fwcfg'>` file no longer survive (#190).
+- The cloud-init seed CD-ROM loses its `user-data` (password hashes, Tailscale key, MySQL password) once the guest has read it, and the guest deletes cloud-init's copies at the end of its first boot (#134).
+
+### Fixed
+
+- `--ip` and DHCP network-config match the NIC by its MAC, so they work on Debian, Kali and Fedora, not only with netplan (#130).
+- CPU, memory and disk sizes with a leading zero (`-c 08`, `-m 01000`) are read as decimal in the quota check and size parsing (#131).
+- `backup restore` stops before touching the VM when its definition can't be saved, and reports what it couldn't put back (#111).
+- An interrupted `backup restore` (Ctrl-C, kill) puts the previous VM definition and disk back; the saved definition is kept in the VM's folder (#112).
+- `backup export` assembles the package on the backup file system after a free-space check, not in `/tmp`; restore checks the space for the unpacked disk too (#116).
+- `backup export` takes the VM's lock and never writes through a link planted at the package path; an existing file is refused (#121).
+- `backup import` records and reserves the static IP from the package's `network-config` (#133).
+- `backup delete <vm>-YYYYMMDD_HHMMSS` and `<vm>-latest` work in one argument (#182).
+
+### Security
+
+- `backup ssh-setup` uses the VM's host-side address, keeps the guest's host key in a throwaway `known_hosts`, times out on a stalled sshd and prints guest output without escape sequences (#117, #185).
+- Restore never opens a user's disk with libguestfs to find the base of a pre-0.9.9 backup (#124).
+- A user's backups count toward their `disk_gb` quota; `backup create` reserves room before it writes (#132).
+### Security
+
+- `dcvm delete` refuses a name with `../` instead of deleting the host file it points to; owner records check names too (#180)
+- `dcvm ssh`, `exec` and `cp` connect only to an address the host knows, never one the guest agent reports (#149)
+
+### Fixed
+
+- `dcvm delete --all` stops when libvirt stops answering instead of removing every VM folder, mapping and rule (#110)
+- `start`, `stop` and `restart` with an empty VM name fail instead of acting on every VM (#128)
+- `network vnc enable/disable` can offer to stop a running VM for users too (#144)
+- `dcvm owner` refuses an account that isn't a dcvm user (#146)
+- `dcvm user remove` hands the user's VMs to root, and `user add` does so for VMs of an earlier account with the same UID (#147)
+- The reaper and `delete` clear a VM gone from libvirt completely: record, folder, static IP and port forwards (#148)
+- `dcvm delete` refuses a libvirt domain that isn't on the dcvm network (#152)
+- `dcvm delete` refuses a protected VM even when its domain is already gone (#153)
+- `network vnc` leaves a SPICE display and its password alone (#181)
+
 ## [0.9.11] - 2026-11-24
 
 Bulk bug fixes: GitHub issues #42-#47 and #68-#108, a security audit, and a
@@ -991,7 +1100,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.12...HEAD
+[0.9.12]: https://github.com/metharda/dcvm/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/metharda/dcvm/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10
 [0.9.9.1]: https://github.com/metharda/dcvm/pull/64

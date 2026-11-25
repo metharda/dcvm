@@ -317,14 +317,16 @@ main() {
     done
     local n=${#args[@]}
     [ "$every" = true ] && n=$((n + 1))
-    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$force" = true ] && [ "$every" = true ]; }; then
+    # An empty name (an unset variable) must not fall through to --all.
+    if [ "$n" -ne 1 ] || [[ "${args[0]:-}" == -* ]] || { [ "$every" = false ] && [ -z "${args[0]}" ]; } ||
+      { [ "$force" = true ] && [ "$every" = true ]; }; then
       print_error "Usage: dcvm $cmd <vm> | --all$([ "$cmd" = stop ] && echo ", or dcvm stop <vm> --force")"
       exit 1
     fi
     "${cmd}_vms" "${args[0]:---all}" "$force"
     ;;
   status)
-    [[ "${2:-}" != -* ]] || { print_error "Usage: dcvm status" && exit 1; }
+    [ $# -le 1 ] || { print_error "Usage: dcvm status (one VM: dcvm info $2)" && exit 1; }
     show_enhanced_status
     ;;
   list)

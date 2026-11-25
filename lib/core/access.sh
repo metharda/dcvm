@@ -22,7 +22,8 @@ show_info() {
     return 1
   fi
   state=$(get_vm_state "$vm")
-  ip=$(get_vm_ip "$vm")
+  # dcvm ssh/exec/cp connect to this address; a guest agent could name another VM's.
+  ip=$(get_vm_ip_trusted "$vm")
   [ "$ip" = N/A ] && ip=""
   cpus=$(virsh dominfo -- "$vm" 2>/dev/null | awk '/^CPU\(s\)/ { print $2 }')
   mem=$(virsh dominfo -- "$vm" 2>/dev/null | awk '/^Max memory/ { print int($3 / 1024) }')
@@ -61,9 +62,9 @@ set_protected() {
 }
 
 reap_expired() {
-  local f vm expires now names count=0
-  # One listing, not a lookup per VM: without libvirt every VM looks gone, and its record would be lost.
-  names=$(virsh list --all --name 2>/dev/null) || {
+  local f vm expires now count=0
+  # Without libvirt every VM looks gone, and its folder and record would be lost.
+  virsh list --all --name >/dev/null 2>&1 || {
     echo "dcvm reap: libvirt is not answering; trying again next run" >&2
     return 1
   }
@@ -76,15 +77,12 @@ reap_expired() {
     if [ "$(registry_get "$vm" protected)" = 1 ]; then
       continue
     fi
-    if grep -qxF -- "$vm" <<<"$names"; then
-      # The server holds this lock while a user works on the VM; a busy VM waits for the next run.
-      mkdir -p -m 700 /run/dcvm/locks
-      if flock -n "/run/dcvm/locks/vm-$vm" "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1; then
-        count=$((count + 1))
-        log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
-      fi
-    else
-      registry_remove "$vm"
+    # The server holds this lock while a user works on the VM; a busy VM waits for the next run.
+    # delete-vm.sh also clears what a VM already gone from libvirt left: folder, static IP, port forwards.
+    mkdir -p -m 700 /run/dcvm/locks
+    if flock -n "/run/dcvm/locks/vm-$vm" "$SCRIPT_DIR/delete-vm.sh" "$vm" >/dev/null 2>&1; then
+      count=$((count + 1))
+      log_to_file "/var/log/dcvm-reaper.log" "deleted $vm (ttl ended $(date -d "@$expires" -Is))" 2>/dev/null
     fi
   done
   [ "$count" -gt 0 ] && echo "dcvm reap: deleted $(plural "$count" VM) whose time ran out"
@@ -99,17 +97,34 @@ require_admin() {
   exit 1
 }
 
+# Ownership is a UID: VMs left to a removed account would pass to whoever gets its UID next.
+# With a name, only records naming another account move (a reused UID); without, all of them.
+hand_vms_to_root() {
+  local uid="$1" keep="${2:-}" f vm owner n=0
+  for f in "${DCVM_STATE_DIR:-/var/lib/dcvm}"/vms/*; do
+    vm=${f##*/}
+    [ "$(registry_get "$vm" owner_uid)" = "$uid" ] || continue
+    owner=$(registry_get "$vm" owner)
+    [ -n "$keep" ] && { [ -z "$owner" ] || [ "$owner" = "$keep" ]; } && continue
+    registry_set "$vm" "owner_uid=0" "owner=root" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
 manage_users() {
   require_admin
-  local action="${1:-list}" name="${2:-}" member
+  local action="${1:-list}" name="${2:-}" member uid n
   case "$action" in
   add)
-    [ -n "$name" ] && id -u "$name" >/dev/null 2>&1 || {
+    [ -n "$name" ] && uid=$(id -u "$name" 2>/dev/null) || {
       print_error "No such user: ${name:-<user>}"
       return 1
     }
     ensure_dcvm_groups || return 1
     usermod -aG "$DCVM_USER_GROUP" "$name" || return 1
+    n=0
+    [ "$uid" != 0 ] && n=$(hand_vms_to_root "$uid" "$name")
+    [ "$n" -gt 0 ] && print_warning "$(plural "$n" VM) of an earlier account with UID $uid moved to root"
     if [ "${3:-}" = --admin ]; then
       usermod -aG "$DCVM_ADMIN_GROUP" "$name" || return 1
       ui_done ok "$name is a dcvm admin" "admins can do everything root can; it takes effect at their next login"
@@ -129,7 +144,9 @@ manage_users() {
       print_error "$name is not a dcvm user"
       return 1
     fi
-    ui_done ok "$name can no longer use dcvm" "their VMs stay; dcvm owner <vm> <user> hands them to someone else"
+    n=0
+    uid=$(id -u "$name" 2>/dev/null) && [ "$uid" != 0 ] && n=$(hand_vms_to_root "$uid")
+    ui_done ok "$name can no longer use dcvm" "$(plural "$n" VM) of theirs moved to root; dcvm owner <vm> <user> hands them to someone else"
     ;;
   list)
     {
@@ -160,6 +177,11 @@ set_owner() {
     print_error "No such user: $name"
     return 1
   }
+  # The server serves only group members, so anyone else could never reach the VM.
+  if [ "$uid" != 0 ] && ! id -nG "$name" 2>/dev/null | tr ' ' '\n' | grep -qxE "$DCVM_USER_GROUP|$DCVM_ADMIN_GROUP"; then
+    print_error "$name is not a dcvm user; first: dcvm user add $name"
+    return 1
+  fi
   registry_set "$vm" "owner_uid=$uid" "owner=$name"
   ui_done ok "$vm now belongs to $name" "its existing backups stay with their owner"
   echo -e "      ${DIM}The VM still holds only the previous owner's SSH key: $name logs in with the VM's password (dcvm console $vm) and adds their key to ~/.ssh/authorized_keys.${NC}"

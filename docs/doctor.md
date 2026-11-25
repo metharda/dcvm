@@ -172,7 +172,7 @@ dcvm runs the doctor by itself where problems usually show up:
 
 | When | What runs | Why |
 | :--- | :-------- | :-- |
-| After `dcvm self-update` | `--quiet --fast --only host,vms` | Self-update only replaces files: this shows tools a release needs, services to install and VMs to pin |
+| After `dcvm self-update` | `--quiet --fast --only host,vms` | Self-update replaces the files and installs dcvm's services when they are missing or old; this shows the rest: tools a release needs and VMs to pin |
 | At boot (`dcvm-boot.service`) | `--fix --quiet --only network` | iptables rules are not saved across reboots: the network and port forwards come back on their own |
 | `dcvm start`, `restart` or a restore fails | `--quiet --fast --only host,network,vms --vm <vm>` | The reason (lock, base image, network) and the fix, right after the error |
 | `dcvm create` fails | `--quiet --fast --only host,network,storage` | Missing tools, network or disk space |

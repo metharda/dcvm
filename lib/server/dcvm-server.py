@@ -206,7 +206,7 @@ def lock(name):
 
 
 def limits_for(user):
-    limits = dict(DEFAULT_LIMITS)
+    limits, mine = dict(DEFAULT_LIMITS), {}
     try:
         with open(LIMITS) as f:
             for line in f:
@@ -215,12 +215,15 @@ def limits_for(user):
                 k, v = k.strip(), v.strip()
                 if not v.isdigit():
                     continue
+                prefix, _, name = k.rpartition(".")
                 if k in limits:
                     limits[k] = int(v)
-                elif k.startswith("user.%s." % user) and k.rsplit(".", 1)[-1] in limits:
-                    limits[k.rsplit(".", 1)[-1]] = int(v)
+                elif prefix == "user." + user and name in limits:
+                    mine[name] = int(v)
     except OSError:
         pass
+    # A user's own line wins over a global one wherever either stands in the file.
+    limits.update(mine)
     return limits
 
 
@@ -235,22 +238,60 @@ def size_gb(value, default):
     return int(v.rstrip("G"))
 
 
-def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None):
+def gib(n):
+    return -(-n // 1024**3)
+
+
+def backup_bytes(uid):
+    """What uid's backups take on disk, plus what backups still being written have reserved."""
+    total = 0
+    d = os.path.join(read_config()["DATACENTER_BASE"], "backups")
+    for f in os.scandir(d) if os.path.isdir(d) else []:
+        if not re.search(r"-[0-9]{8}_[0-9]{6}\Z", f.name) or not f.is_dir(follow_symlinks=False):
+            continue
+        try:
+            with open(os.path.join(f.path, "owner")) as fh:
+                if fh.read().strip() != str(uid):
+                    continue
+            total += sum(e.stat(follow_symlinks=False).st_blocks * 512 for e in os.scandir(f.path))
+        except OSError:
+            continue
+    r = os.path.join(RUN, "reserve")
+    for n in os.listdir(r) if os.path.isdir(r) else []:
+        owner, _, pid = n.partition("-")
+        if owner != str(uid):
+            continue
+        try:
+            os.kill(int(pid), 0)
+            with open(os.path.join(r, n)) as fh:
+                total += int(fh.read().strip() or 0)
+        except (ValueError, ProcessLookupError):
+            # Its server process is gone, so nothing is being written for it.
+            os.unlink(os.path.join(r, n))
+        except OSError:
+            continue
+    return total
+
+
+def check_quota(uid, user, cpus, memory_mb, disk_gb, exclude=None, vms=1):
     limits = limits_for(user)
     mine = [e for n, e in registry_all().items() if e.get("owner_uid") == str(uid) and n != exclude]
+    backups = gib(backup_bytes(uid))
     used = {
         "vms": len(mine),
         "vcpus": sum(int(e.get("cpus", "0") or 0) for e in mine),
         "memory_mb": sum(int(e.get("memory_mb", "0") or 0) for e in mine),
-        "disk_gb": sum(int(e.get("disk_gb", "0") or 0) for e in mine),
+        "disk_gb": sum(int(e.get("disk_gb", "0") or 0) for e in mine) + backups,
     }
-    want = {"vms": 1, "vcpus": cpus, "memory_mb": memory_mb, "disk_gb": disk_gb}
+    want = {"vms": vms, "vcpus": cpus, "memory_mb": memory_mb, "disk_gb": disk_gb}
     names = {"vms": "VM", "vcpus": "vCPU", "memory_mb": "memory (MB)", "disk_gb": "disk (GB)"}
     for k, n in want.items():
         if used[k] + n > limits[k]:
-            raise Denied("over your %s quota: %d used + %d requested > %d (ask an admin to raise it in %s)"
-                         % (names[k], used[k], n, limits[k], LIMITS))
-    return "%d %d %d" % tuple(limits[k] for k in ("vcpus", "memory_mb", "disk_gb"))
+            of = " (%d of it backups: dcvm backup delete <vm>)" % backups if k == "disk_gb" and backups else ""
+            raise Denied("over your %s quota: %d used%s + %d requested > %d (ask an admin to raise it in %s)"
+                         % (names[k], used[k], of, n, limits[k], LIMITS))
+    # Backups hold part of the disk quota, so the module's own checks see only what is left for VMs.
+    return "%d %d %d" % (limits["vcpus"], limits["memory_mb"], max(0, limits["disk_gb"] - backups))
 
 
 def take_value(args, i, opt):
@@ -355,7 +396,7 @@ def parse_create(ctx, args, iso_mode):
                 raise Denied("--os must be 1-9, or an ISO file")
             else:
                 out += ["-o", v]
-        elif opt == "--iso" and iso_mode:
+        elif opt in ("--iso", "-o") and iso_mode:
             v, i = take_value(args, i, opt)
             if not v.startswith("fd:"):
                 raise Denied("pass the ISO as a file")
@@ -383,6 +424,10 @@ def parse_create(ctx, args, iso_mode):
         out = (["--iso"] if iso_mode else ["-o"]) + ["@ISO@"] + out
         if not disk_given:
             disk = 20
+        # The staged copy stays in the VM's folder, so it counts against the disk quota too.
+        ctx["iso_bytes"] = os.fstat(ctx["iso_fd"]).st_size
+        ctx["iso_gb"] = -(-ctx["iso_bytes"] // 1024 ** 3)
+        disk += ctx["iso_gb"]
     check_quota(ctx["uid"], ctx["user"], cpus, memory, disk)
     ctx.update(vm=vm, new_vm=True, mutating=True, quota=(cpus, memory, disk))
     return [vm] + out
@@ -410,9 +455,7 @@ def decide_user(ctx, argv):
 
     if cmd in ("list",) and not plain:
         return argv
-    if cmd == "status" and len(plain) <= 1:
-        if plain:
-            own_vm(ctx, plain[0])
+    if cmd == "status" and not plain:
         return argv
     if cmd == "info" and len(plain) == 1:
         own_vm(ctx, plain[0])
@@ -473,7 +516,8 @@ def decide_user(ctx, argv):
         return argv
     if cmd == "network" and plain[:1] == ["vnc"] and len(plain) == 3 and plain[1] in ("enable", "disable", "status"):
         own_vm(ctx, plain[2])
-        ctx.update(vm=plain[2], mutating=plain[1] != "status")
+        # enable/disable offer to stop a running VM, which needs the user's terminal.
+        ctx.update(vm=plain[2], mutating=plain[1] != "status", interactive=plain[1] != "status")
         return argv
     if cmd == "restore":
         return decide_backup(ctx, ["restore"] + args)
@@ -500,7 +544,7 @@ SUBCOMMANDS = {
 }
 USAGE = {
     "list": "dcvm list [--json]",
-    "status": "dcvm status [vm]",
+    "status": "dcvm status (one VM: dcvm info <vm>)",
     "info": "dcvm info <vm> [--json]",
     "protect": "dcvm protect <vm>",
     "unprotect": "dcvm unprotect <vm>",
@@ -539,7 +583,13 @@ def decide_backup(ctx, args):
         yes, rest = ["--yes"], [a for a in rest if a not in ("-y", "--yes")]
     if sub == "create" and len(rest) == 1:
         own_vm(ctx, rest[0])
-        ctx.update(vm=rest[0], mutating=True, interactive=True)
+        # A backup is never larger than the disk's allocated blocks; that much is charged before it is written.
+        try:
+            need = os.stat(os.path.join(read_config()["DATACENTER_BASE"], "vms", rest[0], rest[0] + "-disk.qcow2")).st_blocks * 512
+        except OSError:
+            need = 0
+        check_quota(ctx["uid"], ctx["user"], 0, 0, gib(need), vms=0)
+        ctx.update(vm=rest[0], mutating=True, interactive=True, backup_need=need)
         return ["backup", "create", rest[0]]
     if sub == "list" and len(rest) <= 1:
         if rest:
@@ -549,7 +599,7 @@ def decide_backup(ctx, args):
         day = r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]+|[0-9]{2}:[0-9]{2}:[0-9]{2}))?"
         if len(rest) == 1:
             # Split with the module's own greedy regex for <vm>-<id>, so both name the same backup.
-            m = re.match(r"^(.+)-(%s)\Z" % day, rest[0])
+            m = re.match(r"^(.+)-([0-9]{8}_[0-9]{6}|latest|%s)\Z" % day, rest[0])
             if m:
                 vm, bid = m.group(1), m.group(2)
             elif NAME.match(rest[0]):
@@ -560,15 +610,15 @@ def decide_backup(ctx, args):
                 raise Denied("usage: %s" % USAGE["backup delete"])
         else:
             vm, bid = rest[0], strip_vm(rest[0], rest[1])
+        if bid is not None:
             t = re.match(r"^([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\Z", bid)
             if t:
                 bid = "%s.%s.%s-%s:%s:%s" % (t.group(3), t.group(2), t.group(1), t.group(4), t.group(5), t.group(6))
             if bid != "latest" and not re.match(r"^%s\Z" % day, bid):
                 raise Denied("usage: %s" % USAGE["backup delete"])
         check_backup_vm(ctx, vm)
-        # A stale backup of a name now owned by someone else must not take that VM's lock.
-        owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
-        ctx.update(vm=vm, mutating=True, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
+        backup_lock(ctx, vm)
+        ctx["mutating"] = True
         return ["backup", "delete", vm] + ([] if bid is None else [bid])
     if sub == "restore" and 1 <= len(rest) <= 3:
         check_backup_vm(ctx, rest[0])
@@ -577,8 +627,9 @@ def decide_backup(ctx, args):
             raise Denied("invalid backup id")
         if len(rest) == 3:
             target = new_vm_name(rest[2])
-            check_quota(ctx["uid"], ctx["user"], 2, 2048, 30)
-            ctx.update(vm=target, new_vm=True, quota=(2, 2048, 30))
+            # Only the backup knows its size: the module checks and records it under the global lock.
+            check_quota(ctx["uid"], ctx["user"], 0, 0, 0)
+            ctx.update(vm=target, new_vm=True, quota=(0, 0, 0))
         else:
             own_vm(ctx, rest[0])
             protected(rest[0])
@@ -595,16 +646,27 @@ def decide_backup(ctx, args):
             raise Denied("invalid backup id")
         if not rest[-1].startswith("fd:") or any(a.startswith("fd:") for a in rest[:-1]):
             raise Denied("export writes to a file you pass")
-        ctx["export_fd"] = export_fd(fd_ref(ctx, rest[-1]))
+        ctx["export_fd"] = export_fd(ctx, fd_ref(ctx, rest[-1]))
+        # Not mutating: a client that goes away cancels the export.
+        backup_lock(ctx, rest[0])
         return ["backup", "export"] + [a for a in rest if not a.startswith("fd:")] + full
     refuse(["backup"] + args)
 
 
-def export_fd(fd):
+def backup_lock(ctx, vm):
+    # A stale backup of a name now owned by someone else must not take that VM's lock.
+    owns = registry_read(vm) is not None and owner_of(vm) == ctx["uid"]
+    ctx.update(vm=vm, lock=None if owns else "backup-%d-%s" % (ctx["uid"], vm))
+
+
+def export_fd(ctx, fd):
     # Root writes the package through this descriptor, so only the caller's own write access may count.
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     if not stat.S_ISREG(os.fstat(fd).st_mode) or flags & getattr(os, "O_PATH", 0) or (flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
         raise Denied("export writes to a regular file you opened for writing")
+    # dcvm's own messages would be written into the archive.
+    if any(os.path.samestat(os.fstat(fd), os.fstat(o)) for o in ctx.get("output_fds", ())):
+        raise Denied("export cannot write to the file your output goes to")
     return fd
 
 
@@ -665,6 +727,8 @@ def stage_iso(ctx, fd, vm):
         raise Denied("the ISO must be a regular file")
     if st.st_size > MAX_ISO:
         raise Denied("the ISO is larger than 16 GB")
+    if st.st_size > ctx.get("iso_bytes", st.st_size):
+        raise Denied("the ISO changed while it was being copied")
     base = read_config()["DATACENTER_BASE"]
     vm_dir = os.path.join(base, "vms", vm)
     # Users' names were checked when reserved; anyone else must not stage into (or later remove) a folder in use.
@@ -689,7 +753,11 @@ def stage_iso(ctx, fd, vm):
             # The caller's file may grow after the size check.
             if copied > st.st_size:
                 raise Denied("the ISO changed while it was being copied")
-            os.write(out, chunk)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(out, view):]
+        if copied != st.st_size:
+            raise Denied("the ISO changed while it was being copied")
     except BaseException:
         os.unlink(dest + ".part")
         raise
@@ -793,16 +861,26 @@ def say(fd, text):
     return write_some(fd, ("\033[0;31m✗\033[0m %s\n" % text if os.isatty(fd) else "error: %s\n" % text).encode()) is not None
 
 
+WRITING = False
+
+
 def _alarm(_sig, _frame):
-    raise TimeoutError
+    # A late alarm must not raise in whatever code runs after the write.
+    if WRITING:
+        raise TimeoutError
 
 
 def write_some(fd, data):
     # The caller's descriptor stays blocking (its flags are shared with the caller), so an alarm bounds a stuck write.
+    global WRITING
     signal.signal(signal.SIGALRM, _alarm)
     signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
     try:
-        return os.write(fd, data[:4096])
+        try:
+            WRITING = True
+            return os.write(fd, data[:4096])
+        finally:
+            WRITING = False
     except OSError:
         return None
     finally:
@@ -857,6 +935,7 @@ def run_module(ctx, conn, argv, req, fds):
         outs.append([r, fd, bytearray()])
     proc = subprocess.Popen([DCVM] + argv, env=env, stdin=stdin, stdout=child["stdout"],
                             stderr=child["stderr"], pass_fds=pass_fds, start_new_session=True, close_fds=True)
+    ctx["proc"] = proc
     for fd in pass_fds:
         if fd != ctx.get("export_fd") and fd not in ctx.get("keep_fds", []):
             os.close(fd)
@@ -957,6 +1036,7 @@ def handle(conn):
             if isinstance(i, int) and 0 <= i < len(files):
                 fdmap[name] = files[i]
         ctx["files"] = {i: fd for i, fd in enumerate(files)}
+        ctx["output_fds"] = [fdmap[n] for n in ("stdout", "stderr") if n in fdmap]
         # A client may say "agent" on a terminal, never "terminal" without one.
         ttys = all(fdmap.get(n) is not None and os.isatty(fdmap[n]) for n in ("stdin", "stdout"))
         ctx["origin"] = "terminal" if req.get("origin") == "terminal" and ttys else "agent"
@@ -998,7 +1078,7 @@ def admin_argv(ctx, argv):
                 ctx["iso_fd"] = fd
                 final[i] = "@ISO@"
             elif final[:2] == ["backup", "export"]:
-                ctx["export_fd"] = export_fd(fd)
+                ctx["export_fd"] = export_fd(ctx, fd)
                 final[i] = None
             elif final[:2] == ["backup", "import"] or final[0] == "import":
                 # Root reopens it by path, so only a file the caller opened for reading may count.
@@ -1010,14 +1090,33 @@ def admin_argv(ctx, argv):
             else:
                 raise Denied("unexpected file argument")
     final = [a for a in final if a is not None]
-    if final and final[0] in ("create", "create-iso") and len(final) > 1 and not final[1].startswith("-"):
-        ctx.update(vm=final[1].split(",")[0], new_vm=True, mutating=True)
-    target = next((a for a in final[1:] if not a.startswith("-")), None)
-    if final[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"]) and target and NAME.match(target) and target not in RESERVED:
-        ctx["vm"] = target
+    vms = admin_vms(final)
+    if vms:
+        ctx.update(vm=vms[0], vms=vms, new_vm=final[0] in ("create", "create-iso"))
     ctx["mutating"] = True
     ctx["interactive"] = True
     return final
+
+
+def admin_vms(argv):
+    """The VMs an admin's command changes, so it waits for the same per-VM locks as a user's."""
+    pos = [a for i, a in enumerate(argv) if not a.startswith("-") and (i == 0 or argv[i - 1] != "--base")]
+    names = []
+    if argv[:1] in (["create"], ["create-iso"]) and len(argv) > 1 and not argv[1].startswith("-"):
+        names = argv[1].split(",")
+    elif pos[:1] in (["delete"], ["owner"], ["protect"], ["unprotect"], ["start"], ["stop"], ["restart"], ["fix-lock"]):
+        names = pos[1:2]
+    elif pos[:2] == ["backup", "create"]:
+        names = pos[2:3]
+    elif pos[:1] == ["restore"] or pos[:2] == ["backup", "restore"]:
+        rest = pos[1:] if pos[0] == "restore" else pos[2:]
+        names = rest[2:3] or rest[:1]
+    elif pos[:2] == ["backup", "import"]:
+        # ponytail: without a new name the target is named inside the archive; only the restore's staging is then per-process.
+        names = pos[3:4]
+    elif pos[:2] == ["network", "ports"] and pos[2:3] in (["add"], ["remove"]) or pos[:2] == ["network", "vnc"] and pos[2:3] in (["enable"], ["disable"]):
+        names = pos[3:4]
+    return [n for n in dict.fromkeys(n.strip() for n in names) if NAME.match(n) and n not in RESERVED]
 
 
 def name_taken(vm):
@@ -1036,13 +1135,24 @@ def execute(ctx, conn, argv, req, fds):
             # Before the VM's lock too, so asking for a taken name never holds up its owner.
             name_taken(vm)
         if vm:
-            held.append(lock(ctx.get("lock") or "vm-" + vm))
+            # Sorted, so two commands naming the same VMs can't each hold one the other waits for.
+            for name in [ctx["lock"]] if ctx.get("lock") else ["vm-" + n for n in sorted(ctx.get("vms") or [vm])]:
+                held.append(lock(name))
         if ctx["role"] == "user" and vm and not ctx.get("new_vm"):
             # The policy ran before the lock; a request that waited must not act on a VM that changed hands meanwhile.
             again = {k: ctx[k] for k in ("uid", "user", "role", "origin", "files")}
             decide_user(again, req["argv"])
             if again.get("lock") != ctx.get("lock"):
                 raise Denied("%s changed while this command waited; run it again" % vm)
+        if ctx.get("backup_need") is not None:
+            # Checked and reserved under the global lock: two backups can't both fit in the same free quota.
+            held.append(lock("global"))
+            check_quota(ctx["uid"], ctx["user"], 0, 0, gib(ctx["backup_need"]), vms=0)
+            os.makedirs(os.path.join(RUN, "reserve"), mode=0o700, exist_ok=True)
+            ctx["reservation"] = os.path.join(RUN, "reserve", "%d-%d" % (ctx["uid"], os.getpid()))
+            with open(ctx["reservation"], "w") as f:
+                f.write("%d\n" % ctx["backup_need"])
+            os.close(held.pop())
         if reserve:
             held.append(lock("global"))
             # Nothing was there, so whatever a failed run leaves in it is ours to remove.
@@ -1066,7 +1176,9 @@ def execute(ctx, conn, argv, req, fds):
             rc = None
             raise
         finally:
-            if rc is None and ctx.get("reserved") and domain_known(vm) is False:
+            # Never remove the folder under a module that still runs.
+            if rc is None and ctx.get("reserved") and (ctx.get("proc") is None or ctx["proc"].poll() is not None) \
+                    and domain_known(vm) is False:
                 release_reservation(ctx, vm)
         # A declined or failed create may exit 0 too; only a defined domain makes the VM real.
         known = domain_known(vm) if ctx.get("staged_dir") or ctx.get("reserved") else True
@@ -1082,13 +1194,18 @@ def execute(ctx, conn, argv, req, fds):
             elif entry.get("state") == "creating":
                 entry["state"] = "ready"
                 registry_write(vm, entry)
+            elif ctx.get("iso_gb"):
+                # The module recorded only the disk; the reservation already held both.
+                entry["disk_gb"] = int(entry.get("disk_gb") or 0) + ctx["iso_gb"]
+                registry_write(vm, entry)
         return rc
     finally:
         for fd in held:
             os.close(fd)
-        if ctx.get("pubkey_file"):
+        for f in (ctx.get("pubkey_file"), ctx.get("reservation")):
             try:
-                os.unlink(ctx["pubkey_file"])
+                if f:
+                    os.unlink(f)
             except OSError:
                 pass
 

@@ -34,18 +34,21 @@ clear_lease_by_mac() {
 
 # Releases each "mac|ip|hostname|reason" line of $1 with cleanup_dhcp_lease; $2 names them.
 release_leases() {
-  local what="$2" removed_count=0 failed=0 rc mac ip hostname reason
+  local what="$2" removed_count=0 failed=0 rc mac ip hostname reason shown
   while IFS='|' read -r mac ip hostname reason; do
     [ -n "$mac$hostname" ] || continue
     rc=0
     cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
+    # The hostname is the guest's choice: no escape sequences into the admin's terminal.
+    shown="${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
+    shown=${shown//[[:cntrl:]]/?}
     case "$rc" in
     0)
-      ui_step ok "$ip" "${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
+      ui_step ok "${ip//[[:cntrl:]]/?}" "$shown"
       removed_count=$((removed_count + 1))
       ;;
     2)
-      ui_step warn "$ip" "not released: ${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
+      ui_step warn "${ip//[[:cntrl:]]/?}" "not released: $shown"
       failed=$((failed + 1))
       ;;
     esac
@@ -74,16 +77,19 @@ status_file_readable() {
   fi
 }
 
-# One by one in the running dnsmasq: restarting the network would detach
-# every running VM's tap from the bridge.
-clear_all_leases() {
+confirm_release() {
   if [ -t 0 ]; then
-    # Declining must stop renew too, which carries on after this returns 0.
-    confirm_action "Release every DHCP lease on $NETWORK_NAME?" || return 1
+    confirm_action "$1"
   else
     print_error "Cannot prompt for confirmation: stdin is not a terminal (non-interactive mode)"
     return 1
   fi
+}
+
+# One by one in the running dnsmasq: restarting the network would detach
+# every running VM's tap from the bridge.
+clear_all_leases() {
+  confirm_release "Release every DHCP lease on $NETWORK_NAME?" || return 1
   ui_quiet
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status" leases=""
   status_file_readable "$status_file" || return 1
@@ -170,6 +176,15 @@ clear_lease() {
   fi
 }
 
+# Reads force_renew_all's $pending, also from its traps.
+relink_pending() {
+  local vm mac
+  while read -r vm mac; do
+    [ -n "$vm" ] || continue
+    virsh domif-setlink "$vm" "$mac" up >/dev/null 2>&1 || ui_step fail "$vm" "link left down: virsh domif-setlink $vm $mac up"
+  done <<<"$pending"
+}
+
 # A link cut of over 4 s (NetworkManager ignores shorter ones) makes the
 # guest's DHCP client ask again; nothing in the guest is needed.
 force_renew_all() {
@@ -183,23 +198,30 @@ force_renew_all() {
     return 0
   fi
   ui_title "DHCP renewal" "$(echo $running_vms)"
-  clear_all_leases || return 1
+  confirm_release "Release the leases of these VMs and cut their links for 5 s?" || return 1
+  ui_quiet
+  status_file_readable "$status_file" || return 1
+  # Interrupted (Ctrl-C in the 5 s), the links cut so far come back up.
+  trap relink_pending EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  # Only the leases of VMs whose link is cut: any other VM would not ask again.
   while read -r vm; do
     mac=$(get_vm_mac "$vm" | head -1)
     if [ -f "${DATACENTER_BASE:-/srv/datacenter}/config/network/$vm.conf" ]; then
       ui_step skip "$vm" "static IP, no DHCP"
     elif [ -n "$mac" ] && virsh domif-setlink "$vm" "$mac" down >/dev/null 2>&1; then
       pending+="$vm ${mac,,}"$'\n'
+      cleanup_dhcp_lease "${mac,,}" "" || [ $? = 1 ] || ui_step warn "$vm" "old lease not released; it may keep its address"
     else
       ui_step warn "$vm" "could not cut its link; it asks again at its next DHCP renewal"
     fi
   done <<<"$running_vms"
+  [ -n "$pending" ] && sleep 5
+  relink_pending
+  trap - EXIT INT TERM HUP
   [ -n "$pending" ] || return 0
-  sleep 5
-  while read -r vm mac; do
-    [ -n "$vm" ] || continue
-    virsh domif-setlink "$vm" "$mac" up >/dev/null 2>&1 || ui_step fail "$vm" "link left down: virsh domif-setlink $vm $mac up"
-  done <<<"$pending"
   for i in $(seq 30); do
     left=""
     while read -r vm mac; do
@@ -244,7 +266,7 @@ Commands:
   clear --stale, -s    Release leases whose MAC belongs to no VM (expired or not)
   cleanup              Same as clear --stale
   clear --all, -a      Release every lease; the network keeps running (asks first)
-  renew                Clear all leases, cut running VMs' links for 5 s so they ask again
+  renew                Release running DHCP VMs' leases, cut their links for 5 s so they ask again
   files                Lease file location and contents
   help                 Show this help
 

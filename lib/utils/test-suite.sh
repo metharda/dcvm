@@ -166,7 +166,11 @@ run_test_expect_fail() {
   output=$(eval "$cmd" 2>&1)
   exit_code=$?
 
-  if [ $exit_code -ne 0 ]; then
+  # 126/127 mean the code under test is missing, not that it refused.
+  if [ $exit_code -eq 126 ] || [ $exit_code -eq 127 ]; then
+    log_test "FAIL" "$test_name" "Not run (exit $exit_code): ${output:0:200}"
+    return 1
+  elif [ $exit_code -ne 0 ]; then
     log_test "PASS" "$test_name (expected failure)"
     return 0
   else
@@ -620,6 +624,7 @@ test_delete_vm_keeps_network() {
     restart_network() { echo "restart_network" >>"$t/calls"; }
     cleanup_dhcp_lease() { echo "cleanup_dhcp_lease $*" >>"$t/calls"; }
     check_vm_exists() { return 0; }
+    is_vm_in_network() { :; }
     get_vm_mac() { echo 52:54:00:ab:cd:ef; }
     get_vm_disk_path() { :; }
     get_vm_ip() { :; }
@@ -967,7 +972,7 @@ NET
     grep -qi 'keeps static IP 10.10.10.50 from vm1' "$t/out-static" &&
     grep -qi "Not starting 'vm1-static'" "$t/out-static" &&
     ! grep -qE 'virsh start vm1-static$' "$t/calls" &&
-    ! grep -qE 'virsh autostart vm1-static$' "$t/calls"; then
+    ! grep -qE 'virsh autostart vm1-static$' "$t/calls" && [ "$(registry_get vm1-static autostart)" = off ]; then
     log_test "PASS" "backup restore <new_name> (static IP copy skips start/autostart)"
   else
     log_test "FAIL" "backup restore <new_name> (static IP copy skips start/autostart)" "$(tail -5 "$t/out-static")"
@@ -1798,16 +1803,18 @@ test_guest_setup_userdata() {
   local t r="" os
   t=$(mktemp -d)
   generate_test_userdata tester n "" "$t/arch.yaml" mariadb pw1234 archlinux
-  [ "$(ud_py "$t/arch.yaml" 'd["bootcmd"]' 2>/dev/null)" = "[\"cloud-init-per once dcvm-pacman-keyring sh -c 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring'\"]" ] && r+="keyring "
+  [ "$(ud_py "$t/arch.yaml" 'd["bootcmd"]' 2>/dev/null)" = "[\"sh -c 'test -e /var/lib/dcvm-pacman-keyring && exit 0; for i in 1 2 3 4 5 6; do pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring && touch /var/lib/dcvm-pacman-keyring && exit 0; sleep 10; done; exit 1'\"]" ] && r+="keyring "
   generate_test_userdata tester n "" "$t/d11.yaml" "" pw1234 debian11
   generate_test_userdata tester n "" "$t/d12.yaml" "" pw1234 debian12
   ud_py "$t/d11.yaml" '[w["content"] for w in d["write_files"] if w["path"] == "/etc/apt/sources.list"][0]' 2>/dev/null |
     grep -qx 'deb http://archive.debian.org/debian-security bullseye-security main' &&
     ! grep -q 'sources.list\|bootcmd' "$t/d12.yaml" && r+="bullseye "
-  for os in debian12 ubuntu24.04 kali archlinux; do
+  for os in debian12 ubuntu24.04 kali archlinux fedora44; do
     generate_test_userdata tester n "" "$t/u.yaml" docker pw1234 "$os"
     if [ "$os" = archlinux ]; then
       grep -qx '    for pkg in docker; do' "$t/u.yaml" && r+="$os "
+    elif [ "$os" = fedora44 ]; then
+      grep -qx '    for pkg in moby-engine; do' "$t/u.yaml" && grep -qx '  - systemctl enable docker' "$t/u.yaml" && r+="$os "
     else
       grep -qx '    for pkg in docker.io; do' "$t/u.yaml" && grep -qx '  - systemctl enable docker' "$t/u.yaml" && r+="$os "
     fi
@@ -1824,10 +1831,15 @@ FLUSH PRIVILEGES;" ] && [ "$(ud_py "$t/myroot.yaml" "$ud_sql_expr" 2>/dev/null)"
     ADDITIONAL_PACKAGES="nginx, apache2" web_servers_clash && ADDITIONAL_PACKAGES="apache,nginx" web_servers_clash &&
       ! ADDITIONAL_PACKAGES="nginx,libapache2-mod-php,apache2-utils" web_servers_clash && ! ADDITIONAL_PACKAGES="apache2" web_servers_clash
   ) && r+="clash "
-  if [ "$r" = "keyring bullseye debian12 ubuntu24.04 kali archlinux socket reported clash " ]; then
-    log_test "PASS" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)"
+  grep -qx '  - mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql' "$t/arch.yaml" &&
+    grep -qx '  - systemctl enable mariadb' "$t/arch.yaml" && grep -q dcvm-mysql-init "$t/arch.yaml" && r+="arch-mariadb "
+  generate_test_userdata tester n "" "$t/mdb.yaml" mariadb-server pw1234 ubuntu24.04
+  grep -qx '    for pkg in mariadb-server; do' "$t/mdb.yaml" && grep -qx '  - systemctl enable mariadb' "$t/mdb.yaml" &&
+    ud_py "$t/mdb.yaml" "$ud_sql_expr" 2>/dev/null | grep -q "IDENTIFIED VIA unix_socket" && r+="mariadb-server "
+  if [ "$r" = "keyring bullseye debian12 ubuntu24.04 kali archlinux fedora44 socket reported clash arch-mariadb mariadb-server " ]; then
+    log_test "PASS" "guest setup: Arch keyring retried, Debian 11 archive, docker is docker.io/moby-engine, MySQL root on auth_socket, -k mariadb set up, SQL failure logged, nginx+apache2 refused (#45, #46, #199)"
   else
-    log_test "FAIL" "guest setup: Arch keyring, Debian 11 archive, apt docker is docker.io, MySQL root on auth_socket, SQL failure logged, nginx+apache2 refused (#45, #46)" "$r"
+    log_test "FAIL" "guest setup: Arch keyring retried, Debian 11 archive, docker is docker.io/moby-engine, MySQL root on auth_socket, -k mariadb set up, SQL failure logged, nginx+apache2 refused (#45, #46, #199)" "$r"
   fi
   rm -rf "$t"
 }
@@ -2185,6 +2197,7 @@ test_delete_vm_exact_match() {
       }
       dhcp_release() { echo "dhcp_release $*" >>"$t/calls"; }
       check_vm_exists() { return 0; }
+      is_vm_in_network() { :; }
       get_vm_disk_path() { :; }
       get_vm_ip() { :; }
       get_port_mappings_file() { echo "$t/port-mappings.txt"; }
@@ -2327,6 +2340,7 @@ EOF
     }
     cleanup_dhcp_lease() { return 2; }
     check_vm_exists() { [ ! -e "$t/gone" ]; }
+    is_vm_in_network() { :; }
     registry_get() { :; }
     registry_remove() { :; }
     get_vm_mac() { echo 52:54:00:00:00:01; }
@@ -2584,25 +2598,29 @@ test_dhcp_renew_link() {
   local t out rc
   t=$(mktemp -d)
   write_lease_fixture "$t"
-  jq '[.[] | select(.hostname == "vm1")]' "$t/br.status" >"$t/s" && cat "$t/s" >"$t/br.status"
+  # The guest asking again while its link is down: only vm1 gets a lease back.
+  jq '[.[] | select(.hostname == "vm1")]' "$t/br.status" >"$t/renewed"
   mkdir -p "$t/config/network"
   : >"$t/config/network/web.conf"
   out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"
-    clear_all_leases() { echo clear_all >>"$t/calls"; }
+    confirm_release() { echo confirmed >>"$t/calls"; }
     is_vm_in_network() { :; }
-    get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    get_vm_mac() { [ "$1" = vm1-copy ] || awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    sleep() { [ "$1" != 5 ] || cp "$t/renewed" "$t/br.status"; }
     ssh() { echo "ssh $*" >>"$t/calls"; }' renew)
   rc=$?
-  if [ "$rc" != 0 ] && grep -qx clear_all "$t/calls" && ! grep -q '^ssh' "$t/calls" &&
+  if [ "$rc" != 0 ] && grep -qx confirmed "$t/calls" && ! grep -q '^ssh' "$t/calls" &&
+    [ "$(grep '^dhcp_release' "$t/calls" | sort | tr '\n' ';')" = "dhcp_release br 10.10.10.10 52:54:00:00:00:10;dhcp_release br 10.10.10.11 52:54:00:00:00:01;" ] &&
+    grep -q 'vm1-copy .*could not cut' <<<"$out" &&
     grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 down' "$t/calls" &&
     grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 up' "$t/calls" &&
     grep -qx 'virsh domif-setlink vm10 52:54:00:00:00:10 up' "$t/calls" &&
     ! grep -q 'domif-setlink web' "$t/calls" &&
     grep -q 'vm1 .*renewed: 10.10.10.11' <<<"$out" && grep -q 'vm10 .*no new lease' <<<"$out" &&
     grep -q 'web .*static IP' <<<"$out"; then
-    log_test "PASS" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)"
+    log_test "PASS" "dhcp renew cuts DHCP VMs' links (not static ones), releases only the cut VMs' leases, reports which got a new lease, fails for the rest, no SSH (#93, #140)"
   else
-    log_test "FAIL" "dhcp renew cuts DHCP VMs' links (not static ones), reports which got a new lease, fails for the rest, no SSH (#93)" "rc $rc; $(tr '\n' ';' <"$t/calls"); $(tr '\n' ';' <<<"$out")"
+    log_test "FAIL" "dhcp renew cuts DHCP VMs' links (not static ones), releases only the cut VMs' leases, reports which got a new lease, fails for the rest, no SSH (#93, #140)" "rc $rc; $(tr '\n' ';' <"$t/calls"); $(tr '\n' ';' <<<"$out")"
   fi
   rm -rf "$t"
 }
@@ -2748,17 +2766,233 @@ test_published_checksum() {
     echo "none=$?"
     check_download x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" "" 2>/dev/null
     echo "none_check=$?"
+    get_mirrors() { printf '%s\n' "file://$t/gone/img.qcow2" "file://$t/m2/img.qcow2"; }
+    verify_published_checksum x "file://$t/m2/img.qcow2" "$t/m2/img.qcow2" 2>/dev/null
+    echo "official_down=$?"
+    get_mirrors() { echo "file://$t/m3/img.qcow2"; }
     (cd "$t/m3" && sha512sum img.qcow2 | sed 's/  / */' >SHA512SUMS)
     verify_published_checksum x "file://$t/m3/img.qcow2" "$t/m3/img.qcow2" 2>/dev/null
     echo "sha512=$?"
   ) >"$t/out"
-  for rc in same=0 other=0 tampered=1 tampered_check=1 self_vouched=1 none=2 none_check=0 sha512=0; do
+  for rc in same=0 other=0 tampered=1 tampered_check=1 self_vouched=1 none=2 none_check=1 official_down=2 sha512=0; do
     if grep -qx "$rc" "$t/out"; then
       log_test "PASS" "published checksum ($rc)"
     else
       log_test "FAIL" "published checksum ($rc)" "$(tr '\n' ' ' <"$t/out")"
     fi
   done
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_download_hardening() {
+  local t r
+  t=$(mktemp -d)
+  r=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    [ -z "$(get_mirrors 'Fedora-Cloud-Base-Generic-../../../../etc/x.x86_64.qcow2')" ] && echo "traversal-refused"
+    [ -n "$(get_mirrors "Fedora-Cloud-Base-Generic-${FEDORA_VERSION}.x86_64.qcow2")" ] && echo "fedora-known"
+    curl() {
+      printf '%s\n' "$@" >"$t/args"
+      return 1
+    }
+    test_mirror_speed https://m1/img.qcow2 "$t" 0
+    grep -qx -- '--proto-redir' "$t/args" && echo "ranking-https-only"
+    rank_mirrors() { :; }
+    curl() {
+      while [ $# -gt 0 ]; do
+        [ "$1" = -o ] && echo "$2" >"$t/tmpname"
+        shift
+      done
+      return 1
+    }
+    download_with_mirrors debian-13-genericcloud-amd64.qcow2 "$t/img.qcow2" 1024 >/dev/null 2>&1
+    [[ "$(cat "$t/tmpname" 2>/dev/null)" == "$t/img.qcow2.tmp."* && "$(cat "$t/tmpname")" != "$t/img.qcow2.tmp.$$" ]] && echo "random-temp"
+  )
+  if [ "$(echo $r)" = "traversal-refused fedora-known ranking-https-only random-temp" ]; then
+    log_test "PASS" "template download: exact image names, https-only mirror ranking, unpredictable temp file (#126, #193)"
+  else
+    log_test "FAIL" "template download: exact image names, https-only mirror ranking, unpredictable temp file (#126, #193)" "$(echo $r)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_repo_fetch_https() {
+  local t
+  t=$(mktemp -d)
+  (
+    curl() {
+      echo "$*" >>"$t/curl"
+      return 1
+    }
+    wget() {
+      echo "$*" >>"$t/wget"
+      return 1
+    }
+    fetch_repo_file dcvm "$t/x"
+    repo_commit_sha
+    list_repo_files
+    command_exists() { [ "$1" != curl ]; }
+    fetch_repo_file dcvm "$t/x"
+    repo_commit_sha
+    list_repo_files
+    eval "$(sed -n '/^load_common()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+    DCVM_CHECKOUT=""
+    load_common
+  ) >/dev/null 2>&1
+  if [ "$(grep -c . "$t/curl")" = 5 ] && [ "$(grep -c -- '--proto =https --proto-redir =https' "$t/curl")" = 5 ] &&
+    [ "$(grep -c . "$t/wget")" = 5 ] && [ "$(grep -c -- '--max-redirect=0' "$t/wget")" = 5 ]; then
+    log_test "PASS" "installer and self-update fetch code over https only, without following redirects to http (#127)"
+  else
+    log_test "FAIL" "installer and self-update fetch code over https only, without following redirects to http (#127)" "$(cat "$t/curl" "$t/wget" 2>&1 | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs and the paths do_revert reads
+test_self_update_revert_and_lock() {
+  local t r="" f="$SCRIPT_DIR/../installation/self-update.sh" post="$SCRIPT_DIR/../installation/post-update.sh"
+  t=$(mktemp -d)
+  mkdir -p "$t/lib/installation" "$t/backups/dcvm-backup-1/lib/installation"
+  printf '#!/bin/sh\necho pre-revert >>"%s/calls"\n' "$t" >"$t/lib/installation/pre-revert.sh"
+  printf '#!/bin/sh\necho post-update >>"%s/calls"\n' "$t" >"$t/backups/dcvm-backup-1/lib/installation/post-update.sh"
+  chmod +x "$t/lib/installation/pre-revert.sh" "$t/backups/dcvm-backup-1/lib/installation/post-update.sh"
+  echo old >"$t/backups/dcvm-backup-1/dcvm"
+  (
+    eval "$(sed -n '/^new_stage()/,/^}/p; /^do_revert()/,/^}/p' "$f")"
+    INSTALL_BIN="$t" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups"
+    get_current_version() { echo 0.9.11; }
+    create_backup_dir() { :; }
+    validate_backup() { :; }
+    install_dcvm_tree() { rm -rf "$3" && mv "$1/lib" "$3" && mv "$1/dcvm" "$2/dcvm"; }
+    do_revert <<<1
+  ) >"$t/out" 2>&1
+  [ "$(tr '\n' ' ' <"$t/calls" 2>/dev/null)" = "pre-revert post-update " ] && r+="services-after-revert "
+  (
+    eval "$(sed -n '/^lock_self_update()/,/^}/p' "$f")"
+    BACKUP_DIR="$t/backups"
+    create_backup_dir() { :; }
+    exec 8>>"$t/backups/.lock"
+    flock 8
+    (lock_self_update) && echo "second-update-ran"
+    exec 8>&-
+    (lock_self_update) && echo "lock-free-again"
+  ) >"$t/lock" 2>&1
+  grep -q 'Another dcvm self-update is running' "$t/lock" && ! grep -q second-update-ran "$t/lock" &&
+    grep -q lock-free-again "$t/lock" && r+="one-at-a-time "
+  ! grep -q -- '--fix' "$post" && grep -q 'install_dcvm_services' "$post" && r+="no-silent-fix "
+  if [ "$r" = "services-after-revert one-at-a-time no-silent-fix " ]; then
+    log_test "PASS" "self-update: revert reinstalls the services, one update at a time, no doctor --fix after an update (#125, #145, #194)"
+  else
+    log_test "FAIL" "self-update: revert reinstalls the services, one update at a time, no doctor --fix after an update (#125, #145, #194)" "$r; $(tr '\n' ';' <"$t/lock")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_build_lock() {
+  local t b out
+  t=$(mktemp -d)
+  b="$t/storage/templates/builds"
+  mkdir -p "$b"
+  out=$(
+    DATACENTER_BASE="$t" DCVM_CALLER_ROLE=root
+    vm_disks() { :; }
+    legacy_references() { return 1; }
+    backup_builds() { :; }
+    : >"$b/test-aaaaaaaaaaaa.img"
+    exec 8>>"$b/.lock"
+    flock -s 8
+    [ -z "$(prune_builds)" ] && [ -f "$b/test-aaaaaaaaaaaa.img" ] && echo "kept while a create holds builds"
+    exec 8>&-
+    hold_builds
+    [ "$(prune_builds)" = test-aaaaaaaaaaaa.img ] && echo "own hold prunes"
+    (
+      exec 9>>"$b/.lock"
+      flock -n -s 9 && ! flock -n -x 9
+    ) && echo "hold kept shared"
+  )
+  if [ "$(echo $out)" = "kept while a create holds builds own hold prunes hold kept shared" ]; then
+    log_test "PASS" "builds: no prune while a create or restore holds builds (#137)"
+  else
+    log_test "FAIL" "builds: no prune while a create or restore holds builds (#137)" "$(echo $out)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_installer_base_owner() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/dc"
+  chmod 777 "$t/dc"
+  run() {
+    (
+      eval "$(sed -n '/^check_directory_structure()/,/^}/p' "$SCRIPT_DIR/../installation/install-dcvm.sh")"
+      print_status_log() { :; }
+      chown() { echo "chown $*" >>"$t/calls"; }
+      DATACENTER_BASE="$t/dc"
+      eval "${1:-}"
+      check_directory_structure
+    ) >/dev/null 2>&1
+  }
+  run || [ -e "$t/dc/vms" ] || r+="open-base-refused "
+  chmod 755 "$t/dc"
+  run 'stat() { echo "0 755"; }' && grep -q "chown root:root $t/dc/vms " "$t/calls" 2>/dev/null && r+="root-base-used "
+  if [ "$r" = "open-base-refused root-base-used " ]; then
+    log_test "PASS" "installer refuses a data folder other users own or can write, and makes its folders root-owned (#191)"
+  else
+    log_test "FAIL" "installer refuses a data folder other users own or can write, and makes its folders root-owned (#191)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# Functions only, never main: it would uninstall the test host.
+# shellcheck disable=SC2317 # stubs
+test_uninstall_survivors_and_pools() {
+  local t f="$SCRIPT_DIR/../installation/uninstall-dcvm.sh" out
+  t=$(mktemp -d)
+  mkdir -p "$t/rec" "$t/dc/vms" "$t/dc/storage"
+  touch "$t/rec/a" "$t/rec/b"
+  (
+    eval "$(sed -n '/^removable_data_dir()/,/^}/p; /^delete_network_vms()/,/^}/p; /^bridge_zone()/,/^}/p; /^remove_dcvm_pools()/,/^}/p' "$f")"
+    ui_step() { :; }
+    vm_on_network() { :; }
+    virsh() {
+      case "$1" in
+      list) printf 'a\nb\n' ;;
+      undefine) [ "$2" = a ] ;;
+      pool-list) printf 'p1\np2\n' ;;
+      pool-dumpxml) if [ "$2" = p1 ]; then echo "<path>$t/dc/storage/pool</path>"; else echo "<path>/var/lib/libvirt/images</path>"; fi ;;
+      pool-undefine) echo "$2" >>"$t/pools" ;;
+      esac
+    }
+    delete_network_vms net "$t/rec"
+    [ "$DELETED_VMS/$KEPT_VMS" = 1/b ] && [ ! -e "$t/rec/a" ] && [ -e "$t/rec/b" ] && echo "survivor keeps its record"
+    remove_dcvm_pools ""
+    remove_dcvm_pools /
+    [ ! -e "$t/pools" ] && echo "empty base removes no pool"
+    remove_dcvm_pools "$t/dc"
+    [ "$(cat "$t/pools" 2>/dev/null)" = p1 ] && echo "only the dcvm pool"
+    virsh() { [ "$1" != list ]; }
+    delete_network_vms net "$t/rec"
+    [ -e "$t/rec/b" ] && echo "unlisted keeps records"
+    virsh() { [ "$1" != list ] || echo b; }
+    delete_network_vms net "$t/rec"
+    [ ! -e "$t/rec" ] && echo "records go with the last VM"
+    firewall-cmd() { echo "no zone"; }
+    [ "$(bridge_zone virbr-dc)" = libvirt ] && echo "no zone falls back"
+    firewall-cmd() { echo trusted; }
+    [ "$(bridge_zone virbr-dc)" = trusted ] && echo "bound zone kept"
+  ) >"$t/out" 2>/dev/null
+  out=$(cat "$t/out")
+  if [ "$(echo $out)" = "survivor keeps its record empty base removes no pool only the dcvm pool unlisted keeps records records go with the last VM no zone falls back bound zone kept" ] &&
+    grep -q 'load_dcvm_config "$CONFIG_FILE"' "$f"; then
+    log_test "PASS" "uninstall keeps surviving VMs' owner records, removes only dcvm's pools, falls back from 'no zone' (#154, #155, #192)"
+  else
+    log_test "FAIL" "uninstall keeps surviving VMs' owner records, removes only dcvm's pools, falls back from 'no zone' (#154, #155, #192)" "$(echo $out)"
+  fi
   rm -rf "$t"
 }
 
@@ -3009,6 +3243,268 @@ test_backup_delete_ids_and_user_export() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317 # stubs
+test_backup_restore_rollback() {
+  local t ts=20260101_120000
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/vms/vm1"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  printf "<domain type='kvm'>\n  <name>vm1</name>\n  <devices>\n    <disk type='file' device='disk'><source file='%s'/></disk>\n  </devices>\n</domain>\n" "$t/vms/vm1/vm1-disk.qcow2" >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  run() {
+    echo original >"$t/vms/vm1/vm1-disk.qcow2"
+    printf ' 1    vm1    shut off\n' >"$t/list"
+    echo "shut off" >"$t/state"
+    : >"$t/calls"
+    rm -f "$t/defined.xml"
+    (
+      load_backup_sh_for_test "$t"
+      stub_backup_tools "$t"
+      eval "$1"
+      restore_vm vm1 "$ts" true >"$t/out" 2>&1
+    )
+  }
+  if ! run 'eval "$(declare -f virsh | sed "1s/virsh/stub_virsh/")"; virsh() { [ "$1" = dumpxml ] && return 1; stub_virsh "$@"; }' &&
+    [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && ! grep -qE '^virsh (undefine|define)' "$t/calls" &&
+    [ ! -e "$t/vms/vm1/.pre-restore.xml" ]; then
+    log_test "PASS" "backup restore (failed dumpxml stops before the VM is undefined)"
+  else
+    log_test "FAIL" "backup restore (failed dumpxml stops before the VM is undefined)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  # A kill between undefine and define (Ctrl-C reaches it the same way) puts the old VM and disk back.
+  run 'normalize_backing_chain() { kill -TERM "$BASHPID"; }'
+  if [ "$(cat "$t/vms/vm1/vm1-disk.qcow2")" = original ] && [ ! -e "$t/vms/vm1/vm1-disk.qcow2.pre-restore" ] &&
+    grep -qx '<domain><name>vm1</name></domain>' "$t/defined.xml" 2>/dev/null && [ ! -e "$t/vms/vm1/.pre-restore.xml" ] &&
+    [ ! -e "$t/backups/.restore-vm1.qcow2" ]; then
+    log_test "PASS" "backup restore (interrupted mid-restore: previous VM and disk are back)"
+  else
+    log_test "FAIL" "backup restore (interrupted mid-restore: previous VM and disk are back)" "$(cat "$t/vms/vm1/vm1-disk.qcow2"); $(ls -A "$t/vms/vm1" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_export_staging() {
+  local t ts=20260101_120000 r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/backups/vm1-$ts" "$t/out"
+  echo backup-disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+  echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  run() { (load_backup_sh_for_test "$t" && stub_backup_tools "$t" && eval "$1") </dev/null >"$t/log" 2>&1; }
+  run 'cp() { echo "cp $*" >>"$t/cp"; command cp "$@"; }; export_backup vm1 latest "$t/out"' && [ -f "$t/out/vm1-$ts.tar.gz" ] &&
+    grep -q "^cp $t/backups/vm1-$ts/vm1-disk-$ts.qcow2 $t/backups/.export-" "$t/cp" &&
+    [ -z "$(find "$t/backups" "$t/out" -mindepth 1 -name '.*')" ] && r+="staged-in-backups "
+  rm -f "$t/out/vm1-$ts.tar.gz"
+  ! run 'free_bytes() { echo 0; }; export_backup vm1 latest "$t/out"' && [ ! -e "$t/out/vm1-$ts.tar.gz" ] &&
+    grep -q 'Free space' "$t/log" && r+="free-space "
+  echo victim >"$t/victim"
+  ln -s "$t/victim" "$t/out/vm1-$ts.tar.gz"
+  ! run 'export_backup vm1 latest "$t/out"' && [ "$(cat "$t/victim")" = victim ] && r+="no-symlink-write "
+  if [ "$r" = "staged-in-backups free-space no-symlink-write " ]; then
+    log_test "PASS" "backup export (staged on the backup file system after a free-space check; never writes through a planted link)"
+  else
+    log_test "FAIL" "backup export (staged on the backup file system after a free-space check; never writes through a planted link)" "$r | $(tail -2 "$t/log" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_legacy_base_probe() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/storage/templates" "$t/backups/vm1-20260101_120000"
+  : >"$t/storage/templates/ubuntu.img"
+  probe() {
+    rm -f "$t/probed"
+    (
+      load_backup_sh_for_test "$t"
+      disk_backing() { echo "$t/storage/templates/ubuntu.img"; }
+      legacy_disk_build() { echo probed >"$t/probed"; }
+      eval "$1"
+      restore_disk_base "$t/disk.qcow2" "$t/backups/vm1-20260101_120000/base"
+    ) >/dev/null 2>&1
+  }
+  ! probe 'DCVM_CALLER_ROLE=user' && [ ! -e "$t/probed" ] && r+="user "
+  echo 1000 >"$t/backups/vm1-20260101_120000/owner"
+  ! probe '' && [ ! -e "$t/probed" ] && r+="users-backup "
+  rm "$t/backups/vm1-20260101_120000/owner"
+  probe ''
+  [ -e "$t/probed" ] && r+="root "
+  if [ "$r" = "user users-backup root " ]; then
+    log_test "PASS" "backup restore (no libguestfs base probe on a user's disk; root's old backups still probed)"
+  else
+    log_test "FAIL" "backup restore (no libguestfs base probe on a user's disk; root's old backups still probed)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC2016 # stubs
+test_backup_ssh_setup_untrusted_guest() {
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/.ssh"
+  echo "ssh-ed25519 AAAA test" >"$t/.ssh/id_ed25519.pub"
+  out=$(
+    load_backup_sh_for_test "$t"
+    HOME="$t"
+    sleep() { :; }
+    bash() { return 0; }
+    check_vm_exists() { return 0; }
+    get_vm_state() { echo running; }
+    get_vm_ip() {
+      echo "get_vm_ip $*" >>"$t/calls"
+      echo 10.10.10.50
+    }
+    ssh-copy-id() {
+      echo "ssh-copy-id $*" >>"$t/calls"
+      printf '/usr/bin/ssh-copy-id: INFO: \033]0;pwned\007 and \\033]0;pwned\\007 \\c\n'
+      return 1
+    }
+    ssh_setup_vm vm1 <<<"debian" 2>&1
+  )
+  if grep -qx 'get_vm_ip vm1 1 host' "$t/calls" && grep -q 'StrictHostKeyChecking=accept-new' "$t/calls" &&
+    grep -q "UserKnownHostsFile=" "$t/calls" && grep -q 'ConnectTimeout=' "$t/calls" &&
+    ! grep -q 'StrictHostKeyChecking=no' "$t/calls"; then
+    log_test "PASS" "backup ssh-setup (host-side IP only, throwaway known_hosts, connect timeout)"
+  else
+    log_test "FAIL" "backup ssh-setup (host-side IP only, throwaway known_hosts, connect timeout)" "$(tr '\n' ';' <"$t/calls")"
+  fi
+  if ! grep -q $'\033' <<<"$out" && ! grep -q $'\007' <<<"$out" && grep -qF '\033]0;pwned\007 \c' <<<"$out"; then
+    log_test "PASS" "backup ssh-setup (guest output printed without escape sequences)"
+  else
+    log_test "FAIL" "backup ssh-setup (guest output printed without escape sequences)" "$(grep pwned <<<"$out" | od -c | head -3 | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_import_static_ip() {
+  local t ts=20260101_120000
+  t=$(mktemp -d)
+  mkdir -p "$t/pkg/cloud-init" "$t/vms"
+  echo disk >"$t/pkg/vm1-disk-$ts.qcow2"
+  printf "<domain type='kvm'>\n  <name>vm1</name>\n  <devices>\n    <disk type='file' device='disk'><source file='x'/></disk>\n  </devices>\n</domain>\n" >"$t/pkg/vm1-config-$ts.xml"
+  printf 'version: 2\nethernets:\n  id0:\n    dhcp4: false\n    addresses:\n      - 10.10.10.50/24\n    gateway4: 10.10.10.1\n' >"$t/pkg/cloud-init/network-config"
+  tar -czf "$t/pkg.tar.gz" -C "$t/pkg" .
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    claim_static_ip() { echo "claim $*" >>"$t/static"; }
+    save_static_ip() { echo "save $*" >>"$t/static"; }
+    ssh_setup_vm() { :; }
+    import_backup "$t/pkg.tar.gz" vm2 </dev/null >"$t/out" 2>&1
+  )
+  if grep -qx 'save vm2 10.10.10.50' "$t/static" 2>/dev/null && grep -q '<name>vm2</name>' "$t/defined.xml" 2>/dev/null; then
+    log_test "PASS" "backup import (static IP from the package's network-config is recorded and reserved)"
+  else
+    log_test "FAIL" "backup import (static IP from the package's network-config is recorded and reserved)" "$(tail -2 "$t/out" | tr '\n' ' ')"
+  fi
+  rm -rf "$t/static" "$t/defined.xml" "$t/backups" "$t/list"
+  : >"$t/calls"
+  (
+    load_backup_sh_for_test "$t"
+    stub_backup_tools "$t"
+    claim_static_ip() { return 1; }
+    save_static_ip() { echo "save $*" >>"$t/static"; }
+    import_backup "$t/pkg.tar.gz" vm2 </dev/null >"$t/out" 2>&1
+  )
+  if [ ! -e "$t/static" ] && ! grep -q '^virsh start' "$t/calls" && grep -q 'cannot have here' "$t/out"; then
+    log_test "PASS" "backup import (a static IP this host can't give: warned, not started)"
+  else
+    log_test "FAIL" "backup import (a static IP this host can't give: warned, not started)" "$(tail -3 "$t/out" | tr '\n' ' ')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317 # stubs
+test_backup_delete_one_arg_ids() {
+  local t a=20260101_100000 b=20260101_120000 ts r=""
+  t=$(mktemp -d)
+  for ts in $a $b; do
+    mkdir -p "$t/backups/vm1-$ts"
+    echo disk >"$t/backups/vm1-$ts/vm1-disk-$ts.qcow2"
+    echo '<domain><name>vm1</name></domain>' >"$t/backups/vm1-$ts/vm1-config-$ts.xml"
+  done
+  run() { (load_backup_sh_for_test "$t" && stub_backup_tools "$t" && wget() { :; } && prune_builds() { :; } && "$@") </dev/null >"$t/log" 2>&1; }
+  run main delete "vm1-$a" && [ ! -d "$t/backups/vm1-$a" ] && [ -d "$t/backups/vm1-$b" ] && r+="timestamp "
+  run main delete vm1-latest && [ ! -d "$t/backups/vm1-$b" ] && r+="latest "
+  if [ "$r" = "timestamp latest " ]; then
+    log_test "PASS" "backup delete <vm>-YYYYMMDD_HHMMSS and <vm>-latest in one argument"
+  else
+    log_test "FAIL" "backup delete <vm>-YYYYMMDD_HHMMSS and <vm>-latest in one argument" "$r | $(tail -1 "$t/log")"
+  fi
+  rm -rf "$t"
+}
+
+test_backup_server_quota_and_ids() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "backup quota and ids in the socket server (python3 not installed)"
+    return
+  fi
+  local t out
+  t=$(mktemp -d)
+  mkdir -p "$t/h/vms" "$t/base/backups/web-20260101_120000" "$t/base/vms/web"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  echo 'disk_gb=3' >"$t/limits"
+  echo 4242 >"$t/base/backups/web-20260101_120000/owner"
+  head -c 1048576 /dev/urandom >"$t/base/backups/web-20260101_120000/web-disk-20260101_120000.qcow2.gz"
+  head -c 2097152 /dev/urandom >"$t/base/vms/web/web-disk.qcow2"
+  printf 'owner_uid=4242\nowner=u\ndisk_gb=1\n' >"$t/h/vms/web"
+  out=$(
+    timeout 60 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("dcvm_server", os.path.join(sys.argv[1], "dcvm-server.py"))
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+t = sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS, s.AUDIT = t + "/h", t + "/h/run", t + "/conf", t + "/limits", t + "/h/audit.log"
+s.domain_known = lambda vm: True
+user = lambda: {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+def denied(f, *a, **k):
+    try:
+        return "allowed %s" % (f(*a, **k),)
+    except s.Denied as e:
+        return str(e)
+du = lambda *argv: denied(s.decide_user, user(), list(argv))
+if du("backup", "delete", "web-20260101_120000") == "allowed ['backup', 'delete', 'web', '01.01.2026-12:00:00']" and \
+        du("backup", "delete", "web-latest") == "allowed ['backup', 'delete', 'web', 'latest']":
+    print("delete-ids")
+fd = os.open(t + "/pkg", os.O_WRONLY | os.O_CREAT, 0o600)
+ctx = dict(user(), files={3: fd})
+s.decide_user(ctx, ["backup", "export", "web", "fd:3"])
+if ctx.get("vm") == "web" and ctx.get("lock") is None and not ctx.get("mutating"):
+    print("export-lock")
+if s.check_quota(4242, "u", 0, 0, 0, vms=0) == "8 16384 2" and "1 of it backups" in denied(s.check_quota, 4242, "u", 0, 0, 2, vms=0):
+    print("backups-charged")
+ctx = user()
+argv = s.decide_user(ctx, ["backup", "create", "web"])
+if ctx.get("backup_need", 0) >= 2097152 and argv == ["backup", "create", "web"]:
+    print("create-fits")
+seen = []
+s.run_module = lambda *_a: seen.append(os.listdir(s.RUN + "/reserve")) or 0
+s.execute(ctx, None, argv, {"argv": ["backup", "create", "web"]}, {})
+if seen == [["4242-%d" % os.getpid()]] and not os.listdir(s.RUN + "/reserve"):
+    print("reserved-while-running")
+with open("%s/reserve/4242-%d" % (s.RUN, os.getpid()), "w") as f:
+    f.write("%d\n" % (2 * 1024**3))
+if "over your disk (GB) quota" in du("backup", "create", "web"):
+    print("reservation-counts")
+os.unlink("%s/reserve/4242-%d" % (s.RUN, os.getpid()))
+p = subprocess.Popen(["true"])
+p.wait()
+with open("%s/reserve/4242-%d" % (s.RUN, p.pid), "w") as f:
+    f.write("%d\n" % (2 * 1024**3))
+if du("backup", "create", "web").startswith("allowed") and not os.listdir(s.RUN + "/reserve"):
+    print("stale-reservation-dropped")
+PY
+  )
+  if [ "$(echo $out)" = "delete-ids export-lock backups-charged create-fits reserved-while-running reservation-counts stale-reservation-dropped" ]; then
+    log_test "PASS" "socket server: one-argument backup ids, export takes the VM's lock, backups charged to disk quota with a reservation"
+  else
+    log_test "FAIL" "socket server: one-argument backup ids, export takes the VM's lock, backups charged to disk quota with a reservation" "$(echo $out)"
+  fi
+  rm -rf "$t"
+}
+
 test_installer_starts_dcvm_vms_only() {
   local t
   t=$(mktemp -d)
@@ -3193,7 +3689,8 @@ test_socket_policy() {
   out=$(ask backup restore web web-01.01.2026-1)
   grep -q '"argv": \["backup", "restore", "web", "01.01.2026-1"\]' <<<"$out" &&
     grep -q '"argv": \["backup", "restore", "web", "latest", "--yes"\]' <<<"$(ask backup restore web --yes latest)" && r+="restore-id "
-  grep -q '"DCVM_QUOTA_LIMITS": "8 16384 200"' <<<"$out" && r+="restore-quota "
+  # The two backup folders take a few KB, charged as 1 GB of the 200.
+  grep -q '"DCVM_QUOTA_LIMITS": "8 16384 199"' <<<"$out" && r+="restore-quota "
   grep -q '"argv": \["backup", "export", "web", "20260101_120000", "--full"\]' <<<"$(ask backup export web --full 20260101_120000 "$t")" &&
     grep -q '"argv": \["backup", "export", "web", "--full"\]' <<<"$(ask backup export web "$t" --full)" && r+="export-full "
   raw_export() {
@@ -3526,6 +4023,134 @@ PY
   rm -rf "$t"
 }
 
+test_socket_admin_locks_and_iso() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "socket server admin locks and ISO quota (python3 not installed)"
+    return
+  fi
+  local t out r="" w want="admin-vms admin-locks short-write iso-quota iso-charged restore-new-quota late-alarm running-kept create-iso-o early-deny "
+  t=$(mktemp -d)
+  mkdir -p "$t/h/vms" "$t/base/backups/web-20260101_120000"
+  printf 'DATACENTER_BASE="%s"\n' "$t/base" >"$t/conf"
+  echo 4242 >"$t/base/backups/web-20260101_120000/owner"
+  printf 'owner_uid=4242\nowner=u\n' >"$t/h/vms/web"
+  echo "iso data" >"$t/x.iso"
+  head -c 5000 /dev/zero >"$t/big.iso"
+  out=$(
+    timeout 120 python3 -I -S - "$SCRIPT_DIR/../server" "$t" 2>&1 <<'PY'
+import importlib.util, json, os, signal, socket, struct, subprocess, sys, threading, time
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(sys.argv[1], name + ".py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+s, c, t = load("dcvm-server"), load("dcvm-client"), sys.argv[2]
+s.STATE, s.RUN, s.CONFIG, s.LIMITS, s.AUDIT = t + "/h", t + "/h/run", t + "/conf", t + "/limits", t + "/h/audit.log"
+user = lambda: {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+admin = lambda: {"uid": 0, "user": "a", "role": "admin", "origin": "agent", "files": {}}
+def denied(f, *a):
+    try:
+        return "allowed %s" % (f(*a),)
+    except s.Denied as e:
+        return str(e)
+av = s.admin_vms
+if av(["backup", "restore", "web", "01.01.2026", "copy", "--yes"]) == ["copy"] and av(["restore", "--base", "x", "web"]) == ["web"] and \
+        av(["start", "web"]) == ["web"] and av(["network", "ports", "add", "web"]) == ["web"] and av(["fix-lock", "--verbose", "web"]) == ["web"] and \
+        av(["backup", "import", "/proc/self/fd/5", "new1"]) == ["new1"] and av(["create", "zz1,web", "-f"]) == ["zz1", "web"] and av(["stop", "--all"]) == []:
+    print("admin-vms")
+s.domain_known = lambda vm: False
+ran = []
+s.run_module = lambda ctx, *_a: ran.append(time.monotonic()) or 0
+def waits(argv):
+    ctx, held = admin(), s.lock("vm-web")
+    final = s.admin_argv(ctx, argv)
+    threading.Timer(0.6, os.close, [held]).start()
+    t0 = time.monotonic()
+    s.execute(ctx, None, final, {"argv": argv}, {})
+    return ran[-1] - t0 >= 0.5
+if waits(["create", "zz1,web", "-f"]) and waits(["backup", "restore", "web", "--yes"]) and waits(["start", "web"]):
+    print("admin-locks")
+real_write = os.write
+os.write = lambda fd, b: real_write(fd, bytes(b[:1000]))
+try:
+    fd = os.open(t + "/big.iso", os.O_RDONLY)
+    path = s.stage_iso(dict(admin(), reserved="iso1"), fd, "iso1")
+finally:
+    os.write = real_write
+if os.path.getsize(path) == 5000:
+    print("short-write")
+with open(t + "/sparse.iso", "wb") as f:
+    f.truncate(1024 ** 3 + 1)
+with open(t + "/limits", "w") as f:
+    f.write("disk_gb=21\n")
+sparse = os.open(t + "/sparse.iso", os.O_RDONLY)
+pc = lambda *a, iso=False: denied(s.parse_create, dict(user(), files={3: sparse}), list(a), iso)
+if "+ 22 requested > 21" in pc("isovm", "--iso", "fd:3", iso=True) and pc("cloudvm", "-f", "-d", "20G").startswith("allowed"):
+    print("iso-quota")
+if "allowed" in denied(s.decide_backup, user(), ["restore", "web", "20260101_120000", "copy"]):
+    print("restore-new-quota")
+os.unlink(t + "/limits")
+def module(ctx, *_a):
+    s.registry_write("isovm", dict(s.registry_read("isovm"), state="ready", disk_gb=20))
+    return 0
+s.run_module, s.domain_known = module, lambda vm: s.registry_read(vm) is not None
+ctx, small = user(), os.open(t + "/x.iso", os.O_RDONLY)
+ctx["files"] = {3: small}
+s.execute(ctx, None, ["create-iso"] + s.parse_create(ctx, ["isovm", "--iso", "fd:3"], True), {}, {})
+if s.registry_read("isovm").get("disk_gb") == "21":
+    print("iso-charged")
+s.WRITING = False
+try:
+    s._alarm(signal.SIGALRM, None)
+    print("late-alarm")
+except TimeoutError:
+    pass
+def crash(ctx, *_a):
+    os.makedirs(ctx["staged_dir"])
+    ctx["proc"] = subprocess.Popen(["sleep", "5"])
+    raise RuntimeError("relay broke")
+s.run_module, s.domain_known = crash, lambda vm: False
+ctx = user()
+try:
+    s.execute(ctx, None, ["create"] + s.parse_create(ctx, ["busy", "-f"], False), {}, {})
+except RuntimeError:
+    pass
+ctx["proc"].kill()
+if s.registry_read("busy") and os.path.isdir(t + "/base/vms/busy"):
+    print("running-kept")
+files = c.Files()
+argv = c.attach_files(["create-iso", "ovm", "-o", t + "/x.iso"], files)
+if argv == ["create-iso", "ovm", "--iso", "fd:3"] and pc("ovm", "-o", "fd:3", iso=True).startswith("allowed"):
+    print("create-iso-o")
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(t + "/deny.sock")
+srv.listen(1)
+def deny():
+    conn, _ = srv.accept()
+    d = json.dumps({"exit": 77, "error": "you already have 8 dcvm commands running", "show": True}).encode()
+    conn.sendall(struct.pack(">I", len(d)) + d)
+    conn.close()
+th = threading.Thread(target=deny, daemon=True)
+th.start()
+c.SOCKET = t + "/deny.sock"
+conn = c.connect()
+th.join()
+try:
+    if c.talk(b'{"v": 1}', c.Files(), conn) == 77:
+        print("early-deny")
+except OSError as e:
+    print("client raised %r" % e)
+PY
+  )
+  for w in $want; do grep -qx "$w" <<<"$out" && r+="$w "; done
+  if [ "$r" = "$want" ]; then
+    log_test "PASS" "socket server: admins take every named VM's lock, ISO copy and quota, restore-as-new quota, late alarms, early denials (#119 #120 #135 #143 #186 #187 #188 #189)"
+  else
+    log_test "FAIL" "socket server: admins take every named VM's lock, ISO copy and quota, restore-as-new quota, late alarms, early denials (#119 #120 #135 #143 #186 #187 #188 #189)" "$r | $(tr '\n' ' ' <<<"$out" | cut -c1-600)"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2016,SC2034 # snippets are evaluated in q; the quota vars are read by within_quota
 test_quota_atomic() {
   local t r="" start
@@ -3647,21 +4272,24 @@ case "$*" in
   '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
   '-A PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
   '-A PREROUTING -p tcp -m tcp --dport 2222 -j DNAT --to-destination 110.10.10.5:22' \
-  '-A PREROUTING -p tcp -j DNAT --to-destination 10.10.10.9:22' ;;
+  '-A PREROUTING -p tcp -j DNAT --to-destination 10.10.10.9:22' \
+  '-A PREROUTING -p tcp -m tcp --dport 19000 -j DNAT --to-destination 10.10.10.7:22' ;;
 *"-S FORWARD"*) printf '%s\n' '-P FORWARD ACCEPT' \
   '-A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT' \
   '-A FORWARD -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT' \
   '-A FORWARD -d 10.10.10.6/32 -p tcp -m tcp --dport 80 -j ACCEPT' \
   '-A FORWARD -d 10.10.10.0/24 -o virbr-dc -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' \
   '-A FORWARD -d 110.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' \
-  '-A FORWARD -s 192.0.2.9/32 -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' ;;
+  '-A FORWARD -s 192.0.2.9/32 -d 10.10.10.5/32 -p tcp -m tcp --dport 22 -j ACCEPT' \
+  '-A FORWARD -d 10.10.10.7/32 -p tcp -m tcp --dport 22 -j ACCEPT' ;;
 *" -D "*) exit 1 ;;
 esac
 exit 0
 STUB
   chmod +x "$t/bin/iptables"
 
-  (PATH="$t/bin:$PATH" NETWORK_SUBNET=10.10.10 BRIDGE_NAME=virbr-dc && cleanup_port_forwarding) >/dev/null 2>&1
+  echo "old 10.10.10.6 4000 2230" >"$t/cmap"
+  (PATH="$t/bin:$PATH" NETWORK_SUBNET=10.10.10 BRIDGE_NAME=virbr-dc SSH_PORT_START=3000 && get_port_mappings_file() { echo "$t/cmap"; } && cleanup_port_forwarding) >/dev/null 2>&1
   [ "$(grep -- ' -D ' "$t/bin/calls")" = "$(printf '%s\n' \
     '-w -t nat -D PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 3000 -j DNAT --to-destination 10.10.10.5:22' \
     '-w -t nat -D PREROUTING -p tcp -m tcp --dport 2230 -j DNAT --to-destination 10.10.10.6:80' \
@@ -3712,9 +4340,9 @@ STUB
   done
   [ ! -s "$t/swept" ] && r+="locked "
   if [ "$r" = "cleanup-exact half-forward-undone custom-range-free-port locked " ]; then
-    log_test "PASS" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)"
+    log_test "PASS" "port forwards: cleanup takes only dcvm's rules in its ranges or mappings, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87, #156)"
   else
-    log_test "FAIL" "port forwards: cleanup takes only dcvm's rules, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87)" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null) $(tr '\n' '|' <"$t/swept")"
+    log_test "FAIL" "port forwards: cleanup takes only dcvm's rules in its ranges or mappings, a half-made forward is undone and not recorded, custom ranges and busy ports, every writer locks (#85, #87, #156)" "$r; $(tr '\n' '|' <"$t/bin/calls" 2>/dev/null) $(tr '\n' '|' <"$t/swept")"
   fi
 
   r=""
@@ -3748,6 +4376,89 @@ STUB
     log_test "FAIL" "port mappings and static IP records are readable by root only (#106)" "$r"
   fi
   rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the module
+test_port_mappings_kept_and_checked() {
+  local t r="" out pf="$SCRIPT_DIR/../network/port-forward.sh"
+  t=$(mktemp -d)
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nweb 10.10.10.5 2221 8081\ndb 10.10.10.6 2222 8082\ngone 10.10.10.7 2223 8083\n' >"$t/port-mappings.txt"
+  : >"$t/tmp"
+  out=$(
+    source "$pf"
+    iptables() { :; }
+    ss() { :; }
+    echo "$(free_port 2221 2299 3 web "$t/tmp" "$t/port-mappings.txt") $(free_port 2221 2299 3 new "$t/tmp" "$t/port-mappings.txt")"
+  )
+  [ "$out" = "2221 2224" ] && r+="ports-reserved "
+  echo "web 10.10.10.5 2221 8081" >"$t/tmp"
+  (
+    source "$pf"
+    DATACENTER_BASE="$t" MAPPINGS_TMP="$t/tmp"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    check_vm_exists() { [ "$1" != gone ]; }
+    save_mappings_tmp_to_file
+  ) >/dev/null 2>&1
+  [ "$(grep -v '^#' "$t/port-mappings.txt" | tr '\n' ';')" = "web 10.10.10.5 2221 8081;db 10.10.10.6 2222 8082;" ] && r+="rows-kept "
+  printf 'web 10.10.10.5 2221 8081\ngone 10.10.10.7 2223 8083\nother 10.10.10.8 2224 8084\n' >"$t/port-mappings.txt"
+  (
+    source "$pf"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    lock_port_mappings() { :; }
+    cleanup_port_forwarding() { :; }
+    detect_host_ip() { echo 192.0.2.1; }
+    allow_related() { :; }
+    save_iptables_rules() { :; }
+    check_vm_exists() { [ "$1" != gone ]; }
+    ip_held_by_other_vm() { [ "$1" = 10.10.10.8 ]; }
+    setup_vm_forwarding() { echo "forward $1" >>"$t/calls"; }
+    cmd_apply
+  ) >/dev/null 2>&1 || [ "$(cat "$t/calls" 2>/dev/null)" != "forward web" ] || r+="apply-checked "
+  if [ "$r" = "ports-reserved rows-kept apply-checked " ]; then
+    log_test "PASS" "ports setup keeps the rows of VMs it skipped and never gives their ports away, ports apply skips deleted VMs and addresses other VMs hold (#122, #123)"
+  else
+    log_test "FAIL" "ports setup keeps the rows of VMs it skipped and never gives their ports away, ports apply skips deleted VMs and addresses other VMs hold (#122, #123)" "$r; $out"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
+test_dhcp_hostile_and_partial() {
+  local r="" out esc=$'\e'
+  out=$( (
+    set -euo pipefail
+    NETWORK_NAME=net
+    virsh() { return 1; }
+    leases_table
+    echo REACHED
+  ) 2>&1)
+  grep -q REACHED <<<"$out" && r+="inactive-network "
+  out=$(
+    NETWORK_NAME=net
+    virsh() { printf ' h\n---\n 2030-01-01 00:00:00   52:54:00:00:00:01   ipv4   10.10.10.11/24   x%s[2Jy   -\n' "$esc"; }
+    leases_table
+    source "$SCRIPT_DIR/../network/dhcp.sh"
+    cleanup_dhcp_lease() { return 0; }
+    release_leases "52:54:00:00:00:01|10.10.10.11|a${esc}]52;c;eA==|no VM has this MAC" lease
+  )
+  grep -qF 'x?[2Jy' <<<"$out" && grep -qF 'a?]52;c;eA==' <<<"$out" && ! grep -qF "$esc" <<<"$out" && r+="no-escapes "
+  (
+    virsh() {
+      case "$1" in
+      list) printf 'a\nb\n' ;;
+      domiflist)
+        [ "$3" = a ] && return 1
+        printf ' Interface Type Source Model MAC\n---\n vnet0 network net virtio 52:54:00:00:00:01\n'
+        ;;
+      esac
+    }
+    domain_macs
+  ) >/dev/null 2>&1 || r+="partial-macs "
+  if [ "$r" = "inactive-network no-escapes partial-macs " ]; then
+    log_test "PASS" "DHCP lease tables survive an inactive network under set -e, guest hostnames reach the terminal without escapes, one unreadable VM stops stale-lease cleanup (#129, #138, #139)"
+  else
+    log_test "FAIL" "DHCP lease tables survive an inactive network under set -e, guest hostnames reach the terminal without escapes, one unreadable VM stops stale-lease cleanup (#129, #138, #139)" "$r"
+  fi
 }
 
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by delete_all_vms
@@ -4385,6 +5096,10 @@ test_network_trust() {
       return 0
     }
     ssh() { echo "$*" >>"$t/ssh"; }
+    timeout() {
+      shift
+      "$@"
+    }
     registry_get() {
       [ "$2" = created ] && echo 123
       [ "$2" = owner ] && echo alice
@@ -4448,7 +5163,8 @@ test_sanitize_domain_xml() {
   <name>old</name><uuid>1</uuid><memory unit='KiB'>1048576</memory><vcpu>1</vcpu>
   <metadata><x/></metadata><seclabel type='none'/>
   <memoryBacking><source type='file'/></memoryBacking>
-  <os><type arch='x86_64' machine='pc-q35-8.2'>hvm</type><kernel>/etc/shadow</kernel><loader>/etc/passwd</loader><nvram>/var/lib/libvirt/qemu/nvram/old.fd</nvram></os>
+  <sysinfo type='fwcfg'><entry name='opt/x' file='/etc/gshadow'/></sysinfo>
+  <os><type arch='x86_64' machine='pc-q35-8.2'>hvm</type><boot dev='network'/><boot dev='hd'/><kernel>/etc/shadow</kernel><loader>/etc/passwd</loader><nvram>/var/lib/libvirt/qemu/nvram/old.fd</nvram></os>
   <devices>
     <emulator>/tmp/evil</emulator>
     <disk type='block' device='disk'><driver name='qemu' type='raw'/><source dev='/dev/sda'/><target dev='vda' bus='virtio'/></disk>
@@ -4456,10 +5172,14 @@ test_sanitize_domain_xml() {
     <disk type='file' device='cdrom'><source file='/etc/shadow'/><target dev='sda' bus='sata'/></disk>
     <hostdev mode='subsystem' type='pci'/><filesystem type='mount'><source dir='/'/><target dir='r'/></filesystem>
     <interface type='ethernet'><script path='/tmp/x'/></interface>
-    <interface type='network'><mac address='52:54:00:11:22:33'/><source network='datacenter-net'/></interface>
+    <interface type='network'><mac address='52:54:00:11:22:33'/><source network='host-lan'/></interface>
+    <interface type='bridge'><mac address='52:54:00:44:55:66'/><source bridge='br0'/><target dev='tapx'/><filterref filter='f'/><virtualport type='openvswitch'/><vlan><tag id='5'/></vlan><model type='vhost-user'/></interface>
+    <input type='evdev'><source dev='/dev/input/event0' grab='all'/></input><input type='tablet' bus='usb'/>
+    <video><driver name='vhostuser'/><model type='virtio' heads='1'><acceleration accel3d='yes' rendernode='/dev/dri/renderD128'/></model></video>
+    <tpm model='tpm-crb'><backend type='emulator' version='2.0'><source type='file' path='/etc/tpmstate'/></backend></tpm>
     <serial type='file'><source path='/etc/cron.d/x'/></serial><serial type='pty'/>
     <channel type='unix'><source mode='bind' path='/etc/x'/><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
-    <graphics type='vnc' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>
+    <graphics type='vnc' port='5901' autoport='no' passwd='knownpw' listen='0.0.0.0'><listen type='address' address='0.0.0.0'/></graphics>
     <audio id='1' type='file'><output path='/etc/y'/></audio>
     <controller type='ide' index='0'/><controller type='usb' index='0'/>
   </devices>
@@ -4475,13 +5195,108 @@ XML
   }
   out=$(cat "$t/vm.xml")
   local leaked
-  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35' <<<"$out" | sort -u | tr '\n' ' ')
+  leaked=$(grep -oE '/etc/[a-z.]+|/dev/sda|/tmp/[a-z]+|commandline|hostdev|filesystem|seclabel|memoryBacking|<emulator|ethernet|0\.0\.0\.0|type="ide"|<uuid|<metadata|bob\.qcow2|52:54:00:11:22:33|pc-q35|br0|tapx|filterref|virtualport|vlan|vhost|evdev|/dev/[a-z]+|accel|dev="network"|5901|knownpw|fwcfg|host-lan|source bridge' <<<"$out" | sort -u | tr '\n' ' ')
   if [ -z "$leaked" ] && grep -q '<name>new</name>' <<<"$out" && [ "$(grep -o '<disk ' <<<"$out" | wc -l)" -eq 1 ] &&
     grep -q 'file="/srv/datacenter/vms/new/new-disk.qcow2"' <<<"$out" && grep -q 'type="pty"' <<<"$out" &&
-    grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out"; then
-    log_test "PASS" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override"
+    grep -q 'machine="q35"' <<<"$out" && grep -q 'guest_agent' <<<"$out" && grep -q 'type="usb"' <<<"$out" &&
+    [ "$(grep -o '<source network="datacenter-net" />' <<<"$out" | wc -l)" -eq 2 ] && grep -q '<boot dev="hd" />' <<<"$out" &&
+    grep -qE '<graphics type="vnc" passwd="[A-Za-z0-9]{8}" autoport="yes" listen="127.0.0.1"><listen' <<<"$out" &&
+    grep -q '<input type="tablet" bus="usb" />' <<<"$out" && grep -q '<model type="virtio" heads="1" />' <<<"$out" &&
+    grep -q '<backend type="emulator" version="2.0" />' <<<"$out"; then
+    log_test "PASS" "domain XML sanitizer keeps one dcvm disk, puts NICs on dcvm's network, drops every host path, device and override"
   else
-    log_test "FAIL" "domain XML sanitizer keeps one dcvm disk and drops every host path, device and override" "leaked: $leaked"
+    log_test "FAIL" "domain XML sanitizer keeps one dcvm disk, puts NICs on dcvm's network, drops every host path, device and override" "leaked: $leaked"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh
+test_create_network_by_mac() {
+  local t r=""
+  t=$(mktemp -d)
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    virt-install() { printf '%s\n' "$@" >"$t/args"; }
+    virsh() { :; }
+    DATACENTER_BASE="$t" VM_NAME=nettest VM_OS=debian12 NETWORK_NAME=datacenter-net NETWORK_SUBNET=10.10.10
+    FORCE_MODE=true FLAG_GRAPHICS="" FLAG_UEFI=false VM_MEMORY=2048 VM_CPUS=2 OS_VARIANT=debian12
+    mkdir -p "$t/vms/nettest/cloud-init"
+    FLAG_STATIC_IP=10.10.10.50 generate_cloud_init_network && cp "$t/vms/nettest/cloud-init/network-config" "$t/static"
+    FLAG_STATIC_IP="" generate_cloud_init_network && install_vm >/dev/null 2>&1
+  )
+  local nc="$t/vms/nettest/cloud-init/network-config" mac
+  mac=$(sed -n 's/^      macaddress: "\(.*\)"$/\1/p' "$nc")
+  for f in "$t/static" "$nc"; do
+    grep -qE '^      macaddress: "52:54:00(:[0-9a-f]{2}){3}"$' "$f" && grep -q '^    set-name: enp1s0$' "$f" && ! grep -q 'name: "e\*"' "$f" && r+="config "
+  done
+  grep -q '^    dhcp4: false$' "$t/static" && grep -qxF -- "network=datacenter-net,mac=$mac" "$t/args" 2>/dev/null && r+="nic"
+  if [ "$r" = "config config nic" ]; then
+    log_test "PASS" "create: network-config matches the NIC by the MAC virt-install is given (cloud-init without netplan)"
+  else
+    log_test "FAIL" "create: network-config matches the NIC by the MAC virt-install is given (cloud-init without netplan)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh
+test_create_scrubs_seed() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/seedtest/cloud-init"
+  printf 'instance-id: seedtest-1\n' >"$t/vms/seedtest/cloud-init/meta-data"
+  printf 'version: 2\n' >"$t/vms/seedtest/cloud-init/network-config"
+  printf '#cloud-config\npasswd: secret-hash\n' >"$t/vms/seedtest/cloud-init/user-data"
+  echo first-seed >"$t/vms/seedtest/cloud-init.iso"
+  (
+    source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+    mkisofs() { cat "${!#}"/* >"$2"; }
+    wait_for_vm() { echo 10.10.10.9; }
+    virsh() {
+      if [ "$1" = domblklist ]; then
+        printf ' Type   Device   Target   Source\n file   cdrom    sda      x\n'
+      elif [ "$1" = domuuid ]; then
+        cat "$t/uuid" 2>/dev/null
+      else
+        echo "$*" >>"$t/virsh"
+      fi
+    }
+    run_detached() { echo "$1" >"$t/detached" && "$@"; }
+    DATACENTER_BASE="$t" VM_NAME=seedtest
+    echo u-1 >"$t/uuid"
+    scrub_cloud_init_seed
+    # A VM of the same name made later has another UUID: the old job leaves its CD-ROM alone.
+    echo u-2 >"$t/uuid"
+    swap_cloud_init_seed seedtest sda "$t/vms/seedtest/cloud-init.iso" u-1 || echo gone >"$t/gone"
+  )
+  grep -q 'instance-id: seedtest-1' "$t/vms/seedtest/cloud-init.iso" && ! grep -q 'secret-hash\|first-seed' "$t/vms/seedtest/cloud-init.iso" &&
+    grep -q secret-hash "$t/vms/seedtest/cloud-init/user-data" && r+="iso "
+  [ "$(cat "$t/virsh" 2>/dev/null)" = "change-media seedtest sda --eject --live --force
+change-media seedtest sda $t/vms/seedtest/cloud-init.iso --insert --live" ] && [ "$(cat "$t/detached")" = swap_cloud_init_seed ] && [ -f "$t/gone" ] && r+="swap "
+  generate_test_userdata tester n "" "$t/ud"
+  grep -q '^  - rm -f /var/lib/cloud/instance/user-data.txt\* .*obj.pkl' "$t/ud" && r+="guest"
+  if [ "$r" = "iso swap guest" ]; then
+    log_test "PASS" "create: the cloud-init seed loses its user-data once the guest has read it"
+  else
+    log_test "FAIL" "create: the cloud-init seed loses its user-data once the guest has read it" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC1091 # the quota vars are read by within_quota
+test_numbers_leading_zeros() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms"
+  printf 'owner_uid=1001\nstate=creating\ncpus=0\nmemory_mb=0\ndisk_gb=0\n' >"$t/vms/z"
+  [ "$(size_gb 08G)/$(size_gb 010T)/$(size_gb 0900M)" = "8/10240/1" ] 2>/dev/null && r+="size "
+  (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 1000 100" && within_quota 08 0800 09 z) >/dev/null 2>&1 &&
+    [ "$(DCVM_STATE_DIR="$t" registry_get z cpus)/$(DCVM_STATE_DIR="$t" registry_get z memory_mb)" = 8/800 ] && r+="quota "
+  ! (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 900 100" && within_quota 1 01000 1 z) >/dev/null 2>&1 && r+="octal "
+  (source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1 && validate_disk_size 090G debian12) >/dev/null 2>&1 && r+="disk"
+  if [ "$r" = "size quota octal disk" ]; then
+    log_test "PASS" "sizes and quota read leading-zero numbers as decimal"
+  else
+    log_test "FAIL" "sizes and quota read leading-zero numbers as decimal" "$r"
   fi
   rm -rf "$t"
 }
@@ -4764,6 +5579,60 @@ STUB
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2317,SC2030,SC2031,SC2034 # stubs; globals read by doctor.sh
+test_doctor_fix_guards() {
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/storage/templates/builds" "$t/vms/web" "$t/vms/tpl" "$t/state/vms"
+  : >"$t/storage/templates/builds/img-old.qcow2"
+  : >"$t/storage/templates/img.qcow2"
+  : >"$t/vms/tpl/base.pending"
+  touch -d '2 days ago' "$t/vms/web/web-disk.qcow2.rebase"
+  out=$(
+    source "$SCRIPT_DIR/doctor.sh" >/dev/null 2>&1
+    TERM=dumb DATACENTER_BASE="$t" DCVM_STATE_DIR="$t/state" FIX=true FAST=true
+    (
+      get_vm_disk_path() { echo "$t/storage/templates/img.qcow2"; }
+      get_vm_state() { echo paused; }
+      disk_backing() { echo "prepared paused" >>"$t/calls"; }
+      prepare_vm_disk web
+    )
+    current_build() { echo "$t/storage/templates/builds/img-new.qcow2"; }
+    disk_backing() { echo "$t/storage/templates/builds/img-old.qcow2"; }
+    prepare_vm_disk() { echo "prepared $1" >>"$t/calls"; }
+    echo "paused=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" paused)"
+    echo "failed=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" "shut off")"
+    # shellcheck disable=SC2218 # base_status comes from doctor.sh; the stub below replaces it afterwards
+    echo "pending=$(FIX=false base_status tpl "$t/vms/tpl/tpl-disk.qcow2" "$t/storage/templates/img.qcow2" "shut off")"
+    registry_set copy "autostart=off"
+    vm_disks() { printf 'copy\t%s\t\n' "$t/vms/copy/copy-disk.qcow2"; }
+    is_vm_in_network() { :; }
+    get_vm_state() { echo "shut off"; }
+    base_status() { echo "ok|fine"; }
+    virsh() {
+      echo "virsh $*" >>"$t/calls"
+      [ "$1" = dominfo ] && echo "Autostart:      disable"
+      [ "$1" = list ] && echo copy
+      return 0
+    }
+    check_vms
+    df() { return 1; }
+    check_vm_exists() { :; }
+    check_storage
+  ) 2>&1
+  grep -q '^paused=skip|' <<<"$out" && [ "$(grep -c prepared "$t/calls")" = 1 ] && r+="paused "
+  grep -q '^failed=warn|on an older build: could not move' <<<"$out" && r+="failed "
+  ! grep -q '^pending=ok|pinned' <<<"$out" && r+="pending "
+  grep -q 'autostart left off' <<<"$out" && ! grep -q 'virsh autostart' "$t/calls" && r+="autostart "
+  grep -q 'df could not read' <<<"$out" && grep -q 'no files from interrupted operations' <<<"$out" && [ -f "$t/vms/web/web-disk.qcow2.rebase" ] && r+="leftovers "
+  if [ "$r" = "paused failed pending autostart leftovers " ]; then
+    log_test "PASS" "doctor --fix leaves paused disks, copies in progress and restored static-IP copies alone, and reports failed repairs"
+  else
+    log_test "FAIL" "doctor --fix leaves paused disks, copies in progress and restored static-IP copies alone, and reports failed repairs" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
 # shellcheck disable=SC2317,SC2034 # stubs; groups are read by manage_users
 test_user_remove_and_owner_hint() {
   local r
@@ -4777,13 +5646,234 @@ test_user_remove_and_owner_hint() {
     check_vm_exists() { :; }
     is_vm_in_network() { :; }
     registry_set() { :; }
-    id() { echo 1001; }
+    id() { [ "$1" = -nG ] && echo "bob dcvm" || echo 1001; }
     set_owner web bob 2>&1 | grep -q 'dcvm console web' && echo owner-hint
   )
   if [ "$(tr '\n' ' ' <<<"$r")" = "stranger-fails member-ok owner-hint " ]; then
     log_test "PASS" "user remove fails for a non-member; owner tells the new owner how to log in"
   else
     log_test "FAIL" "user remove fails for a non-member; owner tells the new owner how to log in" "$(tr '\n' ' ' <<<"$r")"
+  fi
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs; groups are read by manage_users
+test_owner_records_follow_accounts() {
+  local t r=""
+  t=$(mktemp -d)
+  r=$(
+    DCVM_STATE_DIR="$t" DCVM_USER_GROUP=dcvm DCVM_ADMIN_GROUP=dcvm-admin
+    eval "$(sed -n '/^hand_vms_to_root()/,/^}/p; /^manage_users()/,/^}/p; /^set_owner()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    require_admin() { :; }
+    ensure_dcvm_groups() { :; }
+    usermod() { :; }
+    gpasswd() { [ "$3" = dcvm ]; }
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    id() {
+      case "$1 $2" in
+      "-u alice" | "-u carol") echo 1001 ;;
+      "-u bob") echo 1002 ;;
+      "-nG alice") echo "alice dcvm" ;;
+      "-nG bob") echo "bob users" ;;
+      *) return 1 ;;
+      esac
+    }
+    registry_set a1 owner_uid=1001 owner=alice
+    registry_set a2 owner_uid=1001 owner=alice
+    registry_set b1 owner_uid=1002 owner=bob
+    set_owner b1 bob >/dev/null 2>&1 || echo non-member-refused
+    set_owner b1 alice >/dev/null 2>&1 && [ "$(registry_get b1 owner)" = alice ] && echo member-ok
+    manage_users add carol >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 0 ] && [ "$(registry_get a2 owner_uid)" = 0 ] && [ "$(registry_get b1 owner_uid)" = 0 ] && echo reused-uid-to-root
+    registry_set a1 owner_uid=1001 owner=alice
+    manage_users add alice >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 1001 ] && echo own-kept
+    manage_users remove alice >/dev/null 2>&1
+    [ "$(registry_get a1 owner_uid)" = 0 ] && [ "$(registry_get a1 owner)" = root ] && echo removed-to-root
+  )
+  if [ "$(tr '\n' ' ' <<<"$r")" = "non-member-refused member-ok reused-uid-to-root own-kept removed-to-root " ]; then
+    log_test "PASS" "owner needs a dcvm user; user remove, or a reused UID at user add, hands the old VMs to root (#146 #147)"
+  else
+    log_test "FAIL" "owner needs a dcvm user; user remove, or a reused UID at user add, hands the old VMs to root (#146 #147)" "$(tr '\n' ' ' <<<"$r")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by delete_single_vm
+test_delete_names_and_leftovers() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/etc" "$t/base/vms/gone/sub" "$t/base/config/network" "$t/state/vms"
+  echo secret >"$t/etc/shadow"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\ngone 10.10.10.7 2230 8090\nweb 10.10.10.8 2231 8091\n' >"$t/base/port-mappings.txt"
+  echo IP=10.10.10.7 >"$t/base/config/network/gone.conf"
+  printf 'owner_uid=0\n' >"$t/state/vms/gone"
+  printf 'owner_uid=0\nprotected=1\n' >"$t/state/vms/kept"
+  run_del() {
+    (
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t/base" DCVM_STATE_DIR="$t/state" NETWORK_NAME=net
+      virsh() {
+        echo "virsh $*" >>"$t/calls"
+        if [ "$1 $2" = "list --all" ]; then
+          [ -e "$t/down" ] && return 1
+          printf 'web\nforeign\n'
+        fi
+        return 0
+      }
+      check_vm_exists() { [ "$1" = web ] || [ "$1" = foreign ]; }
+      is_vm_in_network() { [ "$1" = web ]; }
+      cleanup_port_forwarding_for_vm() { echo "cleanup $*" >>"$t/calls"; }
+      delete_single_vm "$1"
+    ) >/dev/null 2>&1
+  }
+  (
+    DCVM_STATE_DIR="$t/state"
+    registry_remove ../../etc/shadow
+    registry_set ../../etc/x a=1
+  ) 2>/dev/null
+  ! run_del ../../etc/shadow && [ -f "$t/etc/shadow" ] && [ ! -e "$t/etc/x" ] && r+="traversal "
+  ! run_del kept && [ -f "$t/state/vms/kept" ] && r+="protected "
+  ! run_del foreign && ! grep -q undefine "$t/calls" && r+="foreign "
+  : >"$t/down"
+  ! run_del gone && [ -f "$t/state/vms/gone" ] && [ -d "$t/base/vms/gone" ] && r+="libvirt-down "
+  rm -f "$t/down"
+  run_del gone && [ ! -e "$t/state/vms/gone" ] && [ ! -e "$t/base/vms/gone" ] && [ ! -e "$t/base/config/network/gone.conf" ] &&
+    ! grep -q '^gone ' "$t/base/port-mappings.txt" && grep -q '^web ' "$t/base/port-mappings.txt" &&
+    grep -qx 'cleanup 10.10.10.7 2230 8090' "$t/calls" && r+="leftovers "
+  if [ "$r" = "traversal protected foreign libvirt-down leftovers " ]; then
+    log_test "PASS" "delete refuses ../ names, protected records and foreign domains; a gone VM's record, folder, IP and ports go, not while libvirt is down (#148 #152 #153 #180)"
+  else
+    log_test "FAIL" "delete refuses ../ names, protected records and foreign domains; a gone VM's record, folder, IP and ports go, not while libvirt is down (#148 #152 #153 #180)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by delete_all_vms
+test_delete_all_libvirt_down() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/vms/vm1" "$t/vms/vm2"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nvm1 10.10.10.5 2230 8090\n' >"$t/port-mappings.txt"
+  cp "$t/port-mappings.txt" "$t/map.orig"
+  run_all() {
+    (
+      source "$SCRIPT_DIR/../core/delete-vm.sh" >/dev/null 2>&1
+      DATACENTER_BASE="$t" NETWORK_NAME=net BRIDGE_NAME=br DNSMASQ_DIR="$t" DCVM_STATE_DIR="$t/state"
+      # libvirt answers until the VM listing, then goes down for the rest of the run.
+      virsh() {
+        [ -e "$t/listed" ] && return 1
+        [ "$1" = list ] || return 0
+        [ "${3:-}" = --name ] && return 0
+        : >"$t/listed"
+        printf ' 1 vm1 running\n 2 vm2 running\n'
+      }
+      is_vm_in_network() { :; }
+      get_vm_state() { echo running; }
+      shuf() { echo 1234; }
+      get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+      save_iptables_rules() { :; }
+      iptables() { echo "$*" >>"$t/calls"; }
+      delete_single_vm() { return 1; }
+      eval "$1"
+      delete_all_vms
+    ) <<<$'yes\n1234' >/dev/null 2>&1
+  }
+  run_all 'virsh() { return 1; }; delete_single_vm() { : >"$t/deleted"; }'
+  [ ! -e "$t/deleted" ] && r+="refused "
+  ! run_all '' && [ -d "$t/vms/vm1" ] && [ -d "$t/vms/vm2" ] && cmp -s "$t/port-mappings.txt" "$t/map.orig" && [ ! -e "$t/calls" ] && r+="kept "
+  if [ "$r" = "refused kept " ]; then
+    log_test "PASS" "delete --all without libvirt deletes nothing and keeps every folder, mapping and rule (#110)"
+  else
+    log_test "FAIL" "delete --all without libvirt deletes nothing and keeps every folder, mapping and rule (#110)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by cmd_vnc
+test_vnc_keeps_spice() {
+  local t r="" out
+  t=$(mktemp -d)
+  vnc() {
+    (
+      source "$SCRIPT_DIR/../network/network-manager.sh" >/dev/null 2>&1
+      check_vm_exists() { :; }
+      virsh() {
+        case "$1" in
+        dumpxml) cat "$t/in.xml" ;;
+        define) cp "$2" "$t/out.xml" ;;
+        esac
+      }
+      cmd_vnc "$1" vm 2>&1
+    )
+  }
+  printf "<domain><devices>\n<graphics type='spice' autoport='yes' passwd='sp'>\n<listen type='address'/>\n</graphics>\n<graphics type='vnc' port='-1'/>\n<video>\n<model type='qxl'/>\n</video>\n</devices></domain>\n" >"$t/in.xml"
+  vnc disable >/dev/null
+  grep -q "type='spice'" "$t/out.xml" && grep -q "passwd='sp'" "$t/out.xml" && ! grep -q "type='vnc'" "$t/out.xml" && grep -q qxl "$t/out.xml" && r+="disable-keeps-spice "
+  grep -v "type='vnc'" "$t/in.xml" >"$t/spice.xml" && mv "$t/spice.xml" "$t/in.xml"
+  rm -f "$t/out.xml"
+  out=$(vnc disable)
+  grep -q 'already off' <<<"$out" && [ ! -e "$t/out.xml" ] && r+="spice-is-not-vnc "
+  vnc enable >/dev/null
+  grep -q "type='spice'" "$t/out.xml" && grep -q 'type="vnc"' "$t/out.xml" && [ "$(grep -o '<video>' "$t/out.xml" | wc -l)" = 1 ] && r+="enable-adds-vnc "
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+for a in ("enable", "disable", "status"):
+    ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "terminal", "files": {}}
+    s.decide_user(ctx, ["network", "vnc", a, "web"])
+    print(a, bool(ctx.get("interactive")))
+PY
+    )
+    [ "$(tr '\n' ' ' <<<"$out")" = "enable True disable True status False " ] && r+="interactive "
+  else
+    r+="interactive "
+  fi
+  if [ "$r" = "disable-keeps-spice spice-is-not-vnc enable-adds-vnc interactive " ]; then
+    log_test "PASS" "network vnc leaves a SPICE display and its password alone; enable/disable get the user's terminal (#144 #181)"
+  else
+    log_test "FAIL" "network vnc leaves a SPICE display and its password alone; enable/disable get the user's terminal (#144 #181)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC1090,SC1091 # stubs
+test_empty_name_and_trusted_info() {
+  local r="" out
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    load_dcvm_config() { :; }
+    stop_vms() { echo "stop:$*"; }
+    start_vms() { echo "start:$*"; }
+    (main stop "" 2>&1)
+    (main start "" --all 2>&1)
+  )
+  grep -q Usage <<<"$out" && ! grep -q 'stop:\|start:' <<<"$out" && r+="empty-name "
+  out=$(
+    eval "$(sed -n '/^json_str()/p; /^show_info()/,/^}/p' "$SCRIPT_DIR/../core/access.sh")"
+    check_vm_exists() { :; }
+    is_vm_in_network() { :; }
+    get_vm_state() { echo running; }
+    virsh() { :; }
+    registry_get() { :; }
+    vm_login() { echo u; }
+    # Only the guest agent claims an address, and it may be another VM's.
+    get_vm_ip() {
+      [ "${3:-}" = host ] && echo N/A && return 1
+      echo 10.10.10.40
+    }
+    show_info web --json
+  )
+  grep -q '"ip":null' <<<"$out" && r+="trusted-ip "
+  if [ "$r" = "empty-name trusted-ip " ]; then
+    log_test "PASS" "start/stop/restart refuse an empty VM name instead of acting on every VM; info never takes the guest's word for its address (#128 #149)"
+  else
+    log_test "FAIL" "start/stop/restart refuse an empty VM name instead of acting on every VM; info never takes the guest's word for its address (#128 #149)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
   fi
 }
 
@@ -4815,21 +5905,21 @@ test_reap_needs_libvirt() {
     registry_set alive "expires=1"
     mkdir() { :; }
     flock() {
-      echo "${*: -1}" >"$t/flocked"
+      echo "${*: -1}" >>"$t/flocked"
       return 1
     }
     virsh() { return 1; }
     reap_expired 2>/dev/null
-    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && echo kept
+    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && [ ! -e "$t/flocked" ] && echo kept
     virsh() { [ "$*" = "list --all --name" ] && echo alive; }
     reap_expired
-    [ -f "$t/vms/gone" ] || echo gone-removed
-    [ -f "$t/vms/alive" ] && [ "$(cat "$t/flocked")" = alive ] && echo alive-kept
+    # A VM already gone from libvirt goes through delete-vm.sh too, which also clears its folder and ports.
+    [ -f "$t/vms/gone" ] && [ -f "$t/vms/alive" ] && [ "$(sort "$t/flocked" | tr '\n' ' ')" = "alive gone " ] && echo both-deleted
   )
-  if [ "$(tr '\n' ' ' <<<"$r")" = "kept gone-removed alive-kept " ]; then
-    log_test "PASS" "the TTL reaper keeps every owner record while libvirt is not answering"
+  if [ "$(tr '\n' ' ' <<<"$r")" = "kept both-deleted " ]; then
+    log_test "PASS" "the TTL reaper keeps every owner record while libvirt is not answering; a VM gone from libvirt goes through delete too (#148)"
   else
-    log_test "FAIL" "the TTL reaper keeps every owner record while libvirt is not answering" "$(tr '\n' ' ' <<<"$r")"
+    log_test "FAIL" "the TTL reaper keeps every owner record while libvirt is not answering; a VM gone from libvirt goes through delete too (#148)" "$(tr '\n' ' ' <<<"$r")"
   fi
   rm -rf "$t"
 }
@@ -4889,20 +5979,22 @@ XML
   cp "$t/vm.xml" "$t/iso.xml"
   (
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
-    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" = "cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
+    cp "$t/vm.xml" "$t/raw.xml"
+    [ "$(clean_definition "$t/raw.xml" /srv/vms/web/web-disk.qcow2 false raw)" = "cache setting removed" ] && grep -q "type=.raw. */><source file=./srv/vms/web/web-disk" "$t/raw.xml" && echo raw
+    [ "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true qcow2)" = "cache setting removed, disk read as qcow2, disk on virtio" ] && echo cloud
     cp "$t/vm.xml" "$t/again.xml"
-    [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
-    [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false)" = "cache setting removed, disk read as qcow2" ] && echo iso
+    [ -z "$(clean_definition "$t/vm.xml" /srv/vms/web/web-disk.qcow2 true qcow2)" ] && cmp -s "$t/vm.xml" "$t/again.xml" && echo unchanged
+    [ "$(clean_definition "$t/iso.xml" /srv/vms/web/web-disk.qcow2 false qcow2)" = "cache setting removed, disk read as qcow2" ] && echo iso
   ) >"$t/out"
   out=$(tr -d '\n' <"$t/vm.xml")
   grep -q "target dev=.vda. bus=.virtio." <<<"$out" && grep -q "cloud-init.iso" <<<"$out" && ! grep -q "writeback\|type=.drive." <<<"$out" &&
     grep -q "cache=.none.*target dev=.sdb. bus=.sata." <<<"$out" && grep -q "libosinfo:os" <<<"$out" && echo xml >>"$t/out"
   grep -q "cdrom" "$t/iso.xml" && grep -q "dev=.sda. bus=.sata." "$t/iso.xml" && echo iso-xml >>"$t/out"
   r=$(tr '\n' ' ' <"$t/out")
-  if [ "$r" = "cloud unchanged iso xml iso-xml " ]; then
-    log_test "PASS" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed"
+  if [ "$r" = "raw cloud unchanged iso xml iso-xml " ]; then
+    log_test "PASS" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, never calls a raw disk qcow2, and says when nothing changed"
   else
-    log_test "FAIL" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, and says when nothing changed" "$r"
+    log_test "FAIL" "fix-lock repairs virsh's single-quoted definition, only the VM's own disk, never calls a raw disk qcow2, and says when nothing changed" "$r"
   fi
   rm -rf "$t"
 }
@@ -4946,14 +6038,23 @@ test_create_os_choice_and_batch() {
 test_storage_cleanup_reports() {
   local t r="" out
   t=$(mktemp -d)
+  mkdir -p "$t/fx/tmp" && echo old >"$t/fx/tmp/x" && tar -czf "$t/old.tar.gz" -C "$t/fx" tmp/x
   out=$(
     source "$SCRIPT_DIR/../storage/storage-manager.sh" >/dev/null 2>&1
     LOG_FILE="$t/storage.log" DATACENTER_BASE="$t" TERM=dumb
     RC=0
     ssh() {
       echo "$*" >>"$t/ssh"
-      [[ "$*" != *"bash -s"* ]] || cat >"$t/script"
-      return "$RC"
+      if [[ "$*" == *"bash -s"* ]]; then
+        cat >"$t/script"
+        [ "$RC" = 1 ] || cat "$t/old.tar.gz"
+      fi
+      [[ "$*" != *"bash -s"* ]] || return "$RC"
+    }
+    timeout() {
+      echo "$1" >>"$t/timeout"
+      shift
+      "$@"
     }
     registry_get() {
       [ "$2" = created ] && echo 123
@@ -4968,15 +6069,186 @@ test_storage_cleanup_reports() {
   ) 2>&1
   grep -q 'bob@10.10.10.50 df -P /' "$t/ssh" && ! grep -q 'admin@' "$t/ssh" && r+="login "
   grep -q 'isovm.*login user unknown' <<<"$out" && r+="iso-skip "
-  [ "$(grep -c 'old logs compressed and archived' <<<"$out")" = 1 ] && grep -q '/mnt/shared is not mounted' <<<"$out" &&
+  [ "$(grep -c "old logs compressed; 1 old files archived to $t/archived-files/imported" <<<"$out")" = 1 ] &&
+    grep -q 'some logs could not be compressed; 1 old files archived' <<<"$out" &&
     grep -q 'cleanup failed (exit 1)' <<<"$out" && grep -q 'SSH to bob@10.10.10.50 did not connect' <<<"$out" && r+="status "
-  grep -q 'find /var/log -type f -name "\*.gz"' "$t/script" && grep -q 'mv -f .* && ln -sf ' "$t/script" && r+="links "
-  if [ "$r" = "login iso-skip status links " ]; then
-    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links"
+  [ "$(find "$t/archived-files/imported" -name '*.tar.gz' | wc -l)" -ge 1 ] && [ -z "$(find "$t/archived-files" -name '*.part')" ] &&
+    [ "$(stat -c %a "$t/archived-files" "$t/archived-files/imported" | sort -u)" = 700 ] && r+="host-archive "
+  [ "$(grep -c 'xargs -0 rm -f -- </run/dcvm-archive.list' "$t/ssh")" = 2 ] && ! grep -q '/mnt/shared' "$t/script" &&
+    grep -q 'find tmp var/log -xdev -type f' "$t/script" && r+="removed-after "
+  ! grep -qv 'ServerAliveInterval=15 -o ServerAliveCountMax=2' "$t/ssh" && [ "$(sort -u "$t/timeout")" = 600 ] && r+="bounded "
+  if [ "$r" = "login iso-skip status host-archive removed-after bounded " ]; then
+    log_test "PASS" "dcvm storage logs in as the registry's user, uses df -P, pulls old files into a root-only host folder (not the NFS share) and removes them only then, never hangs on one guest (#199)"
   else
-    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, reports cleanup by its exit status, never re-archives its links" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "dcvm storage logs in as the registry's user, uses df -P, pulls old files into a root-only host folder (not the NFS share) and removes them only then, never hangs on one guest (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by mirror-manager.sh
+test_template_check_codes() {
+  local out
+  out=$(
+    source "$SCRIPT_DIR/mirror-manager.sh" >/dev/null 2>&1
+    qemu-img() {
+      [ "$2" = -U ] || return 9
+      return "${3##*/}"
+    }
+    for rc in 0 1 2 3 63; do printf '%s=%s ' "$rc" "$(template_state "/x/$rc")"; done
+  )
+  if [ "$out" = "0=ok 1=unchecked 2=corrupt 3=ok 63=ok " ]; then
+    log_test "PASS" "template status/verify: only qemu-img check exit 2 is corrupt, 1 is not checked, -U for images in use (#199)"
+  else
+    log_test "FAIL" "template status/verify: only qemu-img check exit 2 is corrupt, 1 is not checked, -U for images in use (#199)" "$out"
+  fi
+}
+
+# shellcheck disable=SC2016 # $t expands inside run_dhcp_fixture
+test_dhcp_renew_interrupted() {
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp renew brings the cut links back up when interrupted (#199)" "jq not available"
+    return
+  fi
+  local t out rc
+  t=$(mktemp -d)
+  write_lease_fixture "$t"
+  out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"
+    confirm_release() { :; }
+    is_vm_in_network() { :; }
+    get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }
+    sleep() { [ "$1" != 5 ] || kill -INT "$BASHPID"; }' renew)
+  rc=$?
+  if [ "$rc" = 130 ] && grep -qx 'virsh domif-setlink vm1 52:54:00:00:00:01 up' "$t/calls" &&
+    grep -qx 'virsh domif-setlink web 52:54:00:ab:c2:54 up' "$t/calls" && ! grep -q renewed <<<"$out"; then
+    log_test "PASS" "dhcp renew brings the cut links back up when interrupted (#199)"
+  else
+    log_test "FAIL" "dhcp renew brings the cut links back up when interrupted (#199)" "rc $rc; $(grep setlink "$t/calls" | tr '\n' ';')"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by the modules
+test_cli_args_and_completion() {
+  local r="" out
+  out=$(
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    check_permissions() { :; }
+    check_dependencies() { :; }
+    load_dcvm_config() { :; }
+    fix_vm_locks() { echo "fixed $1 verbose=$VERBOSE"; }
+    main --verbose web
+  ) 2>&1
+  [ "$out" = "fixed web verbose=true" ] && r+="fix-lock-flag "
+  out=$(
+    source "$SCRIPT_DIR/dcvm-completion.sh"
+    dcvm() { [ "$*" = "list --json" ] && echo '[{"name":"web","owner":"root","state":"running","ip":null,"vcpus":2,"memory_mb":2048},{"name":"db2","owner":"bob"}]'; }
+    virsh() { echo foreign; }
+    _dcvm_vm_list | tr '\n' ' '
+    COMP_WORDS=(dcvm info "") COMP_CWORD=2
+    _dcvm_completion
+    echo "| ${COMPREPLY[*]} |"
+    _dcvm_commands
+  )
+  [[ "$out" == "web db2 | web db2 |"* ]] && [ "$(tail -1 <<<"$out" | tr ' ' '\n' | grep -cxE 'info|ssh|exec|cp|owner|restore')" = 6 ] && r+="completion "
+  out=$(
+    source "$SCRIPT_DIR/../core/vm-manager.sh" >/dev/null 2>&1
+    exec 2>&1
+    load_dcvm_config() { :; }
+    show_enhanced_status() { echo shown; }
+    main status web
+  ) 2>&1
+  grep -q 'dcvm info web' <<<"$out" && ! grep -q shown <<<"$out" && r+="status-name "
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "terminal", "files": {}}
+print(s.decide_user(ctx, ["status"]))
+try:
+    s.decide_user(ctx, ["status", "web"])
+    print("allowed")
+except s.Denied as e:
+    print("denied", e)
+PY
+    )
+    [ "$(head -1 <<<"$out")" = "['status']" ] && grep -q '^denied .*dcvm info' <<<"$out" && r+="server-status "
+  else
+    r+="server-status "
+  fi
+  grep -q -- '--base <file>' <<<"$(bash "$SCRIPT_DIR/../storage/backup.sh" --help 2>&1)" && r+="base-help "
+  grep -q 'install-dcvm.sh --network-only' "$SCRIPT_DIR/../core/create-vm.sh" && ! grep -q "run 'dcvm install'" "$SCRIPT_DIR/../core/create-vm.sh" && r+="no-dcvm-install "
+  if [ "$r" = "fix-lock-flag completion status-name server-status base-help no-dcvm-install " ]; then
+    log_test "PASS" "fix-lock --verbose <vm>, completion lists dcvm's VMs and every command, status refuses a VM name, help names --base, no 'dcvm install' (#199)"
+  else
+    log_test "FAIL" "fix-lock --verbose <vm>, completion lists dcvm's VMs and every command, status refuses a VM name, help names --base, no 'dcvm install' (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+  fi
+}
+
+# shellcheck disable=SC2030,SC2031,SC2317 # stubs in subshells
+test_import_tmp_and_yes() {
+  local t r=""
+  t=$(mktemp -d)
+  mkdir -p "$t/pkg"
+  echo x >"$t/pkg/web-disk-20260101_000000.qcow2"
+  echo x >"$t/pkg/web-config-20260101_000000.xml"
+  (
+    load_backup_sh_for_test "$t"
+    BACKUP_DIR="$t/backups"
+    mktemp() { return 1; }
+    cp() { echo "cp $*" >>"$t/cp"; }
+    import_backup "$t/pkg" >/dev/null 2>&1 || echo refused >"$t/rc"
+  )
+  [ "$(cat "$t/rc" 2>/dev/null)" = refused ] && [ ! -e "$t/cp" ] && r+="mktemp "
+  (
+    load_backup_sh_for_test "$t"
+    BACKUP_DIR="$t/backups" ASSUME_YES=true
+    caller_uid() { echo 0; }
+    restore_vm() { echo "force=$3 $4" >"$t/restore"; }
+    import_backup "$t/pkg" >/dev/null 2>&1
+  )
+  [ "$(cat "$t/restore" 2>/dev/null)" = "force=true from_import" ] && r+="yes "
+  if [ "$r" = "mktemp yes " ]; then
+    log_test "PASS" "backup import stops when mktemp fails and passes --yes to the restore (#199)"
+  else
+    log_test "FAIL" "backup import stops when mktemp fails and passes --yes to the restore (#199)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2317,SC1091 # stubs
+test_uninstall_leftovers() {
+  local r="" main_text
+  main_text=$(sed -n '/^main()/,/^}/p' "$SCRIPT_DIR/../installation/uninstall-dcvm.sh")
+  grep -q 'rm -rf .* /etc/dcvm /var/log/dcvm' <<<"$main_text" && grep -qF '[ -n "$KEPT_VMS" ] || rm -rf /var/lib/dcvm' <<<"$main_text" && r+="removed "
+  (
+    source "$SCRIPT_DIR/common.sh" >/dev/null 2>&1
+    confirm_action() { return 1; }
+    require_confirmation "x" >/dev/null 2>&1
+    echo "unreached"
+  ) >/dev/null
+  [ $? = 1 ] && r+="cancel "
+  if [ "$r" = "removed cancel " ]; then
+    log_test "PASS" "uninstall removes limits, audit and storage logs and dcvm's state; a cancel exits 1 (#199)"
+  else
+    log_test "FAIL" "uninstall removes limits, audit and storage logs and dcvm's state; a cancel exits 1 (#199)" "$r"
+  fi
+}
+
+test_ui_escapes_guest_text() {
+  local out
+  out=$(TERM=xterm-256color LANG=C.UTF-8 bash -c 'source "$1" >/dev/null 2>&1
+    printf "NAME\tHOST\nweb\t%s\nweb2\t%s\n" "x\\033]52;c;aGk=\\a" "$(printf "y\033[2J")" | ui_table
+    ui_step ok "$(printf "n\033]0;t\007")" "$(printf "d\033[31m")"' _ "$SCRIPT_DIR/common.sh")
+  if ! grep -qE $'\033(\\]|\\[2J|\\[31m)' <<<"$out" && grep -qF 'x\033]52;c;aGk=\a' <<<"$out" && grep -qF 'y?[2J' <<<"$out" &&
+    grep -qF 'n?]0;t?' <<<"$out"; then
+    log_test "PASS" "ui_table and ui_step print guest text without escape sequences (#199)"
+  else
+    log_test "FAIL" "ui_table and ui_step print guest text without escape sequences (#199)" "$(tr '\n' '|' <<<"$out" | cat -v)"
+  fi
 }
 
 # shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC2016,SC1091 # stubs; globals are read by fix-lock.sh
@@ -4989,10 +6261,11 @@ test_fix_lock_counts_and_spares() {
     source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
     exec 2>&1
     TERM=dumb DATACENTER_BASE="$t" DCVM_CALLER_ROLE=user
-    HOLDER=""
+    HOLDER="" STATE="shut off"
     check_vm_exists() { :; }
+    is_vm_in_network() { [ "$1" = fixlocktest ]; }
     get_vm_disk_path() { echo "$t/fixlocktest.qcow2"; }
-    get_vm_state() { echo "shut off"; }
+    get_vm_state() { echo "$STATE"; }
     vm_qemu_pid() { return 1; }
     sleep() { :; }
     command_exists() { return 1; }
@@ -5001,9 +6274,10 @@ test_fix_lock_counts_and_spares() {
     chown() { :; }
     lsof() { [ -n "$HOLDER" ] && printf 'COMMAND PID\nqemu-img 2147483646\n'; }
     virsh() {
+      echo "virsh $*" >>"$t/virsh"
       [ "$1" = dumpxml ] && echo "<domain><devices/></domain>"
       [ "$1" = list ] && echo " Id Name State"
-      return 0
+      [ "$1" != destroy ]
     }
     rm() {
       [[ "$*" == *.lock* ]] && return 1
@@ -5014,19 +6288,29 @@ test_fix_lock_counts_and_spares() {
     HOLDER=1
     fix_vm_locks fixlocktest
     echo "rc2=$?"
+    HOLDER="" STATE=paused
+    vm_qemu_pid() { echo 2147483646; }
+    fix_vm_locks fixlocktest
+    echo "rc3=$?"
+    : >"$t/virsh"
+    fix_vm_locks foreign
+    echo "rc4=$?"
     check_permissions() { :; }
     check_dependencies() { :; }
+    load_dcvm_config() { :; }
     (main --all </dev/null)
     echo "all=$?"
   ) 2>&1
   sed -n '1,/^rc1=/p' <<<"$out" | grep -q 'Locks cleared on fixlocktest with 1 problem' && grep -q '^rc1=1' <<<"$out" && r+="counted "
   grep -q 'Still using the disk: qemu-img(2147483646)' <<<"$out" && grep -q '^rc2=1' <<<"$out" && [ ! -e "$t/kills" ] && r+="spared "
+  grep -q 'libvirt could not stop fixlocktest' <<<"$out" && grep -q '^rc3=1' <<<"$out" && [ ! -e "$t/kills" ] && r+="no-kill "
+  grep -q "'foreign' is not a dcvm VM" <<<"$out" && grep -q '^rc4=1' <<<"$out" && ! grep -qv 'virsh list' "$t/virsh" && r+="foreign "
   grep -q 'add --yes' <<<"$out" && grep -q '^all=1' <<<"$out" && r+="all-asks "
   ! grep -q 'virsh shutdown' "$SCRIPT_DIR/fix-lock.sh" && grep -q 'stop_vm_gracefully "$vm_name"' "$SCRIPT_DIR/fix-lock.sh" && r+="no-3s "
-  if [ "$r" = "counted spared all-asks no-3s " ]; then
-    log_test "PASS" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first"
+  if [ "$r" = "counted spared no-kill foreign all-asks no-3s " ]; then
+    log_test "PASS" "fix-lock counts a lock it could not remove, never kills another disk user or a VM libvirt could not stop, leaves other libvirt VMs alone, --all asks first"
   else
-    log_test "FAIL" "fix-lock counts a lock it could not remove, never kills another disk user, --all asks first" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+    log_test "FAIL" "fix-lock counts a lock it could not remove, never kills another disk user or a VM libvirt could not stop, leaves other libvirt VMs alone, --all asks first" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
   fi
   rm -rf "$t"
 }
@@ -5178,6 +6462,227 @@ PY
   fi
 }
 
+test_expect_fail_needs_code() {
+  local out
+  out=$(
+    run_test_expect_fail "probe-missing" "no_such_function_199" 2>&1
+    run_test_expect_fail "probe-refused" "false" 2>&1
+  )
+  if grep -q 'FAIL.*probe-missing' <<<"$out" && grep -q 'PASS.*probe-refused' <<<"$out"; then
+    log_test "PASS" "test suite: an expected failure from a missing command (exit 126/127) counts as a failed test (#199)"
+  else
+    log_test "FAIL" "test suite: an expected failure from a missing command (exit 126/127) counts as a failed test (#199)" "$(tr '\n' ' ' <<<"$out")"
+  fi
+}
+
+# shellcheck disable=SC2034,SC2317 # stubs; globals are read by the code under test
+test_update_completion_and_units() {
+  local t r="" inst="$SCRIPT_DIR/../installation"
+  t=$(mktemp -d)
+  echo old >"$t/share.sh"
+  (
+    eval "$(sed -n '/^refresh_completion()/,/^}/p' "$inst/post-update.sh")"
+    SCRIPT_DIR="$inst"
+    refresh_completion "$t/share.sh" "$t/absent.sh"
+  ) >/dev/null 2>&1
+  cmp -s "$t/share.sh" "$SCRIPT_DIR/dcvm-completion.sh" && [ ! -e "$t/absent.sh" ] && r+="completion "
+  units() {
+    (
+      eval "$(sed -n '/^remove_units()/,/^}/p' "$inst/pre-revert.sh")"
+      rm() { echo "rm $*" >>"$t/rm"; }
+      systemctl() {
+        [ "$1" != disable ] || return 1
+        [ "$1" != is-active ] || [ "$ACTIVE" = 1 ]
+      }
+      remove_units
+    ) >/dev/null 2>&1
+  }
+  ACTIVE=0 units && ! ACTIVE=1 units && grep -q 'dcvm-reaper.timer' "$t/rm" && r+="units-checked "
+  mkdir -p "$t/lib/installation" "$t/backups/dcvm-backup-1/lib"
+  printf '#!/bin/sh\nexit 1\n' >"$t/lib/installation/pre-revert.sh"
+  chmod +x "$t/lib/installation/pre-revert.sh"
+  echo old >"$t/backups/dcvm-backup-1/dcvm"
+  (
+    eval "$(sed -n '/^new_stage()/,/^}/p; /^do_revert()/,/^}/p' "$inst/self-update.sh")"
+    INSTALL_BIN="$t" INSTALL_LIB="$t/lib" BACKUP_DIR="$t/backups"
+    get_current_version() { echo 0.9.11; }
+    create_backup_dir() { :; }
+    validate_backup() { :; }
+    install_dcvm_tree() { echo tree >>"$t/calls"; }
+    install_dcvm_services() { echo restored >>"$t/calls"; }
+    do_revert <<<1
+  ) >/dev/null 2>&1
+  [ "$(cat "$t/calls" 2>/dev/null)" = restored ] && r+="revert-restores "
+  if [ "$r" = "completion units-checked revert-restores " ]; then
+    log_test "PASS" "self-update refreshes the installed completion; pre-revert fails while a unit stays active and revert then restores the services (#199)"
+  else
+    log_test "FAIL" "self-update refreshes the installed completion; pre-revert fails while a unit stays active and revert then restores the services (#199)" "$r"
+  fi
+  rm -rf "$t"
+}
+
+test_quota_reads_and_export_target() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    log_test "SKIP" "quota and export target checks (python3 not installed)"
+    return
+  fi
+  local t r="" out
+  t=$(mktemp -d)
+  mkdir -p "$t/vms"
+  ! (DCVM_STATE_DIR="$t" DCVM_CALLER_UID=1001 DCVM_QUOTA_LIMITS="8 16384 200" && awk() { return 1; } && within_quota 1 512 1 q1) >"$t/out" 2>&1 &&
+    grep -q 'Could not read' "$t/out" && r+="quota-closed "
+  out=$(
+    python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" "$t" <<'PY' 2>&1
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+t = sys.argv[2]
+out = os.open(os.path.join(t, "out"), os.O_WRONLY)
+same = os.open(os.path.join(t, "out"), os.O_WRONLY)
+pkg = os.open(os.path.join(t, "pkg"), os.O_WRONLY | os.O_CREAT, 0o600)
+def ask(fd):
+    try:
+        return "ok" if s.export_fd({"output_fds": [out]}, fd) == fd else "wrong"
+    except s.Denied:
+        return "denied"
+r = [ask(same), ask(pkg)]
+s.LIMITS = os.path.join(t, "limits.conf")
+open(s.LIMITS, "w").write("user.bob.vms=10\nuser.bob.x.vcpus=64\nvms=3\n")
+bob, alice = s.limits_for("bob"), s.limits_for("alice")
+print(" ".join(r + [str(bob["vms"]), str(bob["vcpus"]), str(alice["vms"])]))
+PY
+  )
+  [ "$out" = "denied ok 10 8 3" ] && r+="export-limits "
+  if [ "$r" = "quota-closed export-limits " ]; then
+    log_test "PASS" "quota refuses when usage can't be read; export never writes into the caller's own output; per-user limits win over later global lines (#199)"
+  else
+    log_test "FAIL" "quota refuses when usage can't be read; export never writes into the caller's own output; per-user limits win over later global lines (#199)" "$r; $out"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by fix-lock.sh
+test_fix_lock_config_and_own_lock() {
+  local t r="" out d
+  t=$(mktemp -d)
+  d="$t/vms/fixlockown199"
+  mkdir -p "$d/sub"
+  : >"$d/fixlockown199-disk.qcow2"
+  : >"$d/fixlockown199-disk.qcow2.lock"
+  : >"$d/other.qcow2.lock"
+  : >"$d/sub/x.lock"
+  out=$(
+    source "$SCRIPT_DIR/fix-lock.sh" >/dev/null 2>&1
+    exec 2>&1
+    TERM=dumb DCVM_CALLER_ROLE=user
+    check_permissions() { :; }
+    check_dependencies() { :; }
+    load_dcvm_config() { NETWORK_NAME=custom-net DATACENTER_BASE="$t"; }
+    is_vm_in_network() { [ "$NETWORK_NAME" = custom-net ]; }
+    check_vm_exists() { :; }
+    get_vm_disk_path() { echo "$d/fixlockown199-disk.qcow2"; }
+    get_vm_state() { echo "shut off"; }
+    vm_qemu_pid() { return 1; }
+    command_exists() { return 1; }
+    chown() { :; }
+    lsof() { :; }
+    rm() {
+      if [[ "$*" == *"$t/"* ]]; then command rm "$@"; else echo "refused $*" >>"$t/refused"; fi
+    }
+    virsh() {
+      [ "$1" != list ] || echo fixlockown199
+      [ "$1" != dumpxml ] || echo "<domain><devices/></domain>"
+      return 0
+    }
+    NETWORK_NAME=custom-net fix_vm_locks fixlockown199
+    echo "rc=$?"
+    fix_vm_locks() { echo "fixed $1"; }
+    (main --all --yes </dev/null)
+  ) 2>&1
+  grep -q 'Locks cleared on fixlockown199' <<<"$out" && [ ! -e "$d/fixlockown199-disk.qcow2.lock" ] && [ -e "$d/other.qcow2.lock" ] && [ -e "$d/sub/x.lock" ] && r+="own-lock "
+  grep -q '^fixed fixlockown199' <<<"$out" && grep -q 'all 1 VMs' <<<"$out" && r+="config "
+  if [ "$r" = "own-lock config " ]; then
+    log_test "PASS" "fix-lock reads the install's network name and removes only the VM disk's own lock file (#199)"
+  else
+    log_test "FAIL" "fix-lock reads the install's network name and removes only the VM disk's own lock file (#199)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2317,SC1090 # stubs are called by the code under test
+test_port_mappings_save_failure() {
+  local t out
+  t=$(mktemp -d)
+  echo "web 10.10.10.5 2221 8081" >"$t/tmp"
+  out=$(
+    source "$SCRIPT_DIR/../network/port-forward.sh"
+    DATACENTER_BASE="$t" MAPPINGS_TMP="$t/tmp"
+    get_port_mappings_file() { echo "$t/port-mappings.txt"; }
+    mv() { return 1; }
+    save_mappings_tmp_to_file
+    echo "rc=$?"
+  ) 2>&1
+  if grep -q '^rc=1' <<<"$out" && [ -s "$t/tmp" ] && ! grep -q 'mappings saved' <<<"$out" && [ ! -e "$t/port-mappings.txt.new" ]; then
+    log_test "PASS" "ports setup reports a mapping file it could not write and keeps this run's mappings (#199)"
+  else
+    log_test "FAIL" "ports setup reports a mapping file it could not write and keeps this run's mappings (#199)" "$(tr '\n' ' ' <<<"$out")"
+  fi
+  rm -rf "$t"
+}
+
+# shellcheck disable=SC2034,SC2030,SC2031,SC2317,SC1091 # stubs; globals are read by create-vm.sh and custom-iso.sh
+test_create_undo_and_name_lock() {
+  local t r=""
+  t=$(mktemp -d)
+  undo() {
+    (
+      source "$SCRIPT_DIR/../core/create-vm.sh" >/dev/null 2>&1
+      virsh() { echo "virsh $*" >>"$t/virsh"; }
+      check_vm_exists() { [ "${EXISTS:-0}" = 1 ]; }
+      DATACENTER_BASE="$t" VM_NAME=web CREATING=true VM_UUID=u-1 VM_DIR_MADE=$1 DISK_MADE=true
+      (exit 1)
+      undo_create
+    ) >/dev/null 2>&1
+  }
+  mkdir -p "$t/vms/web"
+  undo true
+  [ ! -e "$t/vms/web" ] && grep -q '^virsh destroy u-1' "$t/virsh" && ! grep -q ' web' "$t/virsh" && r+="made-folder "
+  mkdir -p "$t/vms/web"
+  : >"$t/vms/web/web-disk.qcow2"
+  : >"$t/vms/web/keep"
+  EXISTS=1 undo false
+  [ -e "$t/vms/web/web-disk.qcow2" ] && r+="other-domain "
+  undo false
+  [ ! -e "$t/vms/web/web-disk.qcow2" ] && [ -e "$t/vms/web/keep" ] && r+="old-folder "
+  : >"$t/virsh"
+  (
+    source "$SCRIPT_DIR/../core/custom-iso.sh" >/dev/null 2>&1
+    virsh() { echo "virsh $*" >>"$t/virsh"; }
+    DATACENTER_BASE="$t" VM_NAME=web STARTED=true DEFINED=false VM_UUID=u-2
+    (exit 1)
+    undo_on_failure
+  ) >/dev/null 2>&1
+  grep -q '^virsh destroy u-2' "$t/virsh" && ! grep -q ' web' "$t/virsh" && r+="iso-uuid "
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$t/run/locks"
+    flock "$t/run/locks/vm-web" sleep 2 &
+    sleep 0.5
+    lock() { (unset DCVM_CALLER_ROLE && DCVM_STATE_DIR="$t" && flock() { command flock -n "${@: -1}"; } && eval "$1") >/dev/null 2>&1; }
+    ! lock 'lock_vm_name web' && lock 'DCVM_CALLER_ROLE=user lock_vm_name web' && r+="held "
+    wait
+    lock 'lock_vm_name web' && r+="free "
+  else
+    r+="held free "
+  fi
+  if [ "$r" = "made-folder other-domain old-folder iso-uuid held free " ]; then
+    log_test "PASS" "create undoes only what it made, by the UUID it gave the VM; root's create takes the server's per-VM lock (#199)"
+  else
+    log_test "FAIL" "create undoes only what it made, by the UUID it gave the VM; root's create takes the server's per-VM lock (#199)" "$r; $(tr '\n' ' ' <"$t/virsh")"
+  fi
+  rm -rf "$t"
+}
+
 test_common_functions() {
   echo ""
   log_test "INFO" "═══ COMMON.SH FUNCTION TESTS ═══"
@@ -5316,10 +6821,14 @@ test_common_functions() {
   test_vm_ip_sources
   test_network_trust
   test_sanitize_domain_xml
+  test_create_network_by_mac
+  test_create_scrubs_seed
+  test_numbers_leading_zeros
   test_check_disk_image
   test_import_rejects_hostile_archives
   test_socket_policy
   test_socket_hardening
+  test_socket_admin_locks_and_iso
   test_quota_atomic
   test_services_hardening
   test_registry_visibility
@@ -5332,6 +6841,8 @@ test_common_functions() {
   test_dhcp_stale_by_mac
   test_forward_rules_scope
   test_port_forward_records
+  test_port_mappings_kept_and_checked
+  test_dhcp_hostile_and_partial
   test_delete_all_shared_state
   test_installer_network
   test_network_status_no_bridge
@@ -5341,12 +6852,19 @@ test_common_functions() {
   test_base_builds
   test_doctor_report
   test_doctor_lock_checks
+  test_doctor_fix_guards
   test_reap_needs_libvirt
   test_info_and_connect_exit
   test_fix_lock_definition
   test_create_os_choice_and_batch
   test_storage_cleanup_reports
   test_fix_lock_counts_and_spares
+  test_template_check_codes
+  test_dhcp_renew_interrupted
+  test_cli_args_and_completion
+  test_import_tmp_and_yes
+  test_uninstall_leftovers
+  test_ui_escapes_guest_text
   test_doctor_seed_permissions
   test_backup_list_columns
   test_delete_without_iptables_dir
@@ -5354,6 +6872,12 @@ test_common_functions() {
   test_self_update_failure_paths
   test_aria2c_download
   test_published_checksum
+  test_download_hardening
+  test_repo_fetch_https
+  test_self_update_revert_and_lock
+  test_build_lock
+  test_installer_base_owner
+  test_uninstall_survivors_and_pools
   test_disable_root_and_nfs_subnet
   test_installer_starts_dcvm_vms_only
   test_installer_checkout_trust
@@ -5363,11 +6887,29 @@ test_common_functions() {
   test_suite_installs_only_on_request
   test_backup_console_password
   test_backup_delete_ids_and_user_export
+  test_backup_restore_rollback
+  test_backup_export_staging
+  test_backup_legacy_base_probe
+  test_backup_ssh_setup_untrusted_guest
+  test_backup_import_static_ip
+  test_backup_delete_one_arg_ids
+  test_backup_server_quota_and_ids
   test_user_remove_and_owner_hint
+  test_owner_records_follow_accounts
+  test_delete_names_and_leftovers
+  test_delete_all_libvirt_down
+  test_vnc_keeps_spice
+  test_empty_name_and_trusted_info
   test_static_ip_reason
   test_delete_vm_exact_match
   test_bulk_status_reset
   test_get_vm_ip_exact
+  test_expect_fail_needs_code
+  test_update_completion_and_units
+  test_quota_reads_and_export_target
+  test_fix_lock_config_and_own_lock
+  test_port_mappings_save_failure
+  test_create_undo_and_name_lock
 }
 
 test_cli_help() {
@@ -5389,7 +6931,7 @@ test_cli_help() {
   run_test "dcvm -v" "$dcvm_cmd -v"
   run_test "dcvm create --help" "$dcvm_cmd create --help"
   run_test "dcvm backup --help" "$dcvm_cmd backup --help"
-  run_test "dcvm network help" "$dcvm_cmd network help" || true
+  run_test "dcvm network --help" "$dcvm_cmd network --help"
   run_test_output_contains "dcvm help contains 'create'" "create" "$dcvm_cmd help"
   run_test_output_contains "dcvm help contains 'delete'" "delete" "$dcvm_cmd help"
   run_test_output_contains "dcvm help contains 'network'" "network" "$dcvm_cmd help"
@@ -5478,7 +7020,7 @@ test_vm_listing() {
 
     local test_vm=$(virsh list --all --name 2>/dev/null | head -1)
     if [ -n "$test_vm" ]; then
-      run_test "dcvm status <vm>" "$dcvm_cmd status $test_vm" || true
+      run_test "dcvm status <vm> refuses the name, points to dcvm info" "! $dcvm_cmd status $test_vm >/dev/null 2>&1 && $dcvm_cmd status $test_vm 2>&1 | grep -q 'dcvm info'" || true
     fi
   fi
 }
@@ -5638,7 +7180,7 @@ test_vm_lifecycle() {
       log_test "FAIL" "VM exists in libvirt"
     fi
 
-    run_test "dcvm status $TEST_VM_NAME" "$dcvm_cmd status $TEST_VM_NAME" || true
+    run_test "dcvm info $TEST_VM_NAME" "$dcvm_cmd info $TEST_VM_NAME" || true
     run_test "dcvm stop $TEST_VM_NAME" "$dcvm_cmd stop $TEST_VM_NAME" || true
     sleep 3
     run_test "dcvm start $TEST_VM_NAME" "$dcvm_cmd start $TEST_VM_NAME" || true
@@ -5789,15 +7331,15 @@ main() {
     test_configuration
     test_dependencies
     test_common_functions
+    test_cli_help
+    test_mirror_manager_functions
 
     if [ "$QUICK_MODE" != true ]; then
       test_libvirt
       test_directory_structure
-      test_cli_help
       test_vm_listing
       test_network_commands
       test_storage_commands
-      test_mirror_manager_functions
       test_template_commands
       test_self_update
       test_fix_lock

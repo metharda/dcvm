@@ -148,22 +148,27 @@ du -sh /srv/datacenter/{vms,backups,storage/templates}
 
 **Storage check.** The installer adds a systemd timer,
 `datacenter-storage.timer`, that runs `dcvm storage-cleanup` every hour;
-`dcvm storage` runs the same check by hand. For each running dcvm VM it
-connects over SSH to the VM's IP with the host root's key (never prompting
-for a password) and prints and logs the root file system usage:
+`dcvm storage` runs the same check by hand. For each running VM root created
+it connects over SSH to the VM's IP with the host root's key (never prompting
+for a password) and prints and logs the root file system usage. VMs of users
+without root are skipped (`owned by <user>, skipped`): root's key is not in
+them, so their owners watch their own disk use. A guest that stops answering
+is dropped after 30 seconds, and a check that hangs after 10 minutes, so it
+cannot hold up the other VMs:
 
 ```
   ✓ web             root file system 7% used
 ```
 
-When a VM is more than 85% full, it gzips logs older than 7 days and, if the
-NFS share is mounted in the guest, moves `/tmp` files older than 30 days and
-compressed logs older than 30 days to `/mnt/shared/archived-files/<vm>`,
-leaving symlinks. A VM created with `--without-ssh-key` shows
+When a VM is more than 85% full, it gzips logs older than 7 days and moves
+`/tmp` files older than 30 days and compressed logs older than 30 days into a
+`.tar.gz` in `$DATACENTER_BASE/archived-files/<vm>/` on the host (root only;
+not the NFS share, which every VM can read). The files leave the VM only once
+the host has the archive. A VM created with `--without-ssh-key` shows
 `could not check disk usage over SSH`; an ISO-installed VM with no login user
 on record is skipped. If the cleanup fails (no passwordless `sudo` in the VM,
-a file it could not move) the VM is reported as failed, and a share that is
-not mounted as a warning.
+files it could not archive) the VM is reported as failed, and logs it could
+not compress as a warning.
 
 ## Settings
 

@@ -34,7 +34,7 @@ Members of both groups are admins. `dcvm whoami` prints your role.
 sudo dcvm user add alice            # a user
 sudo dcvm user add carol --admin    # an admin
 sudo dcvm user list                 # members, roles and how many VMs each owns
-sudo dcvm user remove alice         # their VMs stay; hand them over with dcvm owner
+sudo dcvm user remove alice         # their VMs pass to root; hand them over with dcvm owner
 ```
 
 Group membership takes effect at the user's next login (or `newgrp dcvm`).
@@ -76,12 +76,15 @@ Every VM has an owner, kept in `/var/lib/dcvm/vms/<vm>` (owner, resources,
 login user, `--ttl` expiry, protection). Users see only the VMs and backups
 they own. Root and admins see an OWNER column in `dcvm list` and
 `dcvm status`, and `dcvm list --json` has an `owner` field. VMs from before 0.9.10 belong to root, so only admins see them;
-`sudo dcvm owner <vm> <user>` hands one over. VM names stay global: two users
+`sudo dcvm owner <vm> <user>` hands one over to a dcvm user. VM names stay global: two users
 can't both have a VM called `web`.
 
 Backups record the owner of the VM they were taken from, in an `owner` file
 next to the backup. A later VM with the same name never sees, restores or
-rotates away the previous owner's backups.
+rotates away the previous owner's backups. `dcvm owner` doesn't move them
+either: the previous owner keeps the VM's existing backups (they can still
+list, export and delete them, and restore them under a new name), and they
+stay on that owner's disk quota until deleted.
 
 ## Quotas
 
@@ -101,6 +104,13 @@ user.alice.memory_mb=32768
 
 The values above are the defaults when the file doesn't exist. A request that
 would go over a limit is refused before anything is created.
+
+`disk_gb` covers a user's backups too: the VMs' disk sizes plus what their
+backups take on disk (compressed, rounded up to whole GB). `dcvm backup create`
+needs room for the VM disk's allocated size until the backup is written (the
+finished backup is usually much smaller), and is checked before the oldest
+backup is rotated away. When it doesn't fit, free space with
+`dcvm backup delete <vm>`.
 
 ## Agents
 

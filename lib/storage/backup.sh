@@ -382,7 +382,7 @@ delete_backups() {
   fi
 
   local vm_name="$arg" sel="${2:-}"
-  if [ -z "$sel" ] && [[ "$arg" =~ ^(.+)-([0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?)$ ]]; then
+  if [ -z "$sel" ] && [[ "$arg" =~ ^(.+)-([0-9]{8}_[0-9]{6}|latest|[0-9]{2}\.[0-9]{2}\.[0-9]{4}(-([0-9]{2}:[0-9]{2}:[0-9]{2}|[0-9]+))?)$ ]]; then
     vm_name="${BASH_REMATCH[1]}" sel="${BASH_REMATCH[2]}"
   fi
   sel="${sel#"$vm_name-"}"
@@ -609,16 +609,34 @@ export_backup() {
 
   local pkg_name="${vm_name}-${backup_date}.tar.gz"
   local pkg_path="$export_base/$pkg_name"
+  if [[ ! "${DCVM_EXPORT_FD:-}" =~ ^[0-9]+$ ]] && { [ -e "$pkg_path" ] || [ -L "$pkg_path" ]; }; then
+    print_error "$pkg_path already exists; delete it or export to another folder"
+    return 1
+  fi
+  local need
+  need=$(file_bytes "$disk_backup")
+  if [ "$(free_bytes "$BACKUP_DIR")" -lt "$need" ]; then
+    ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; the export needs $(format_bytes "$need")"
+    return 1
+  fi
 
-  local tmpdir
-  tmpdir=$(mktemp -d) || return 1
-  trap 'rm -rf "$tmpdir"' EXIT
+  local tmpdir part=""
+  # On the backup file system, not in /tmp (often RAM): a --full export unpacks the whole disk.
+  tmpdir=$(mktemp -d "$BACKUP_DIR/.export-XXXXXX") || return 1
+  trap 'rm -rf "$tmpdir" "$part"' EXIT
   if [ "${EXPORT_FULL:-false}" = true ]; then
     local full_disk="$tmpdir/$(basename "${disk_backup%.gz}")"
     stage_backup_disk "$disk_backup" "$tmpdir/staged.qcow2" "$(dirname "$disk_backup")/base" || {
       rm -rf "$tmpdir"
       return 1
     }
+    # The flattened copy holds at most the overlay's and the base's data.
+    need=$(($(file_bytes "$tmpdir/staged.qcow2") + $(file_bytes "$(disk_backing "$tmpdir/staged.qcow2")")))
+    if [ "$(free_bytes "$BACKUP_DIR")" -lt "$need" ]; then
+      rm -rf "$tmpdir"
+      ui_step fail "Free space" "$(format_bytes "$(free_bytes "$BACKUP_DIR")") free in $BACKUP_DIR; flattening needs up to $(format_bytes "$need")"
+      return 1
+    fi
     if ! ui_run "Flattening disk" qemu-img convert -f qcow2 -c -O qcow2 "$tmpdir/staged.qcow2" "$full_disk"; then
       rm -rf "$tmpdir"
       ui_step fail "Disk" "flattening failed"
@@ -711,7 +729,9 @@ EOF
     # /dev/fd/N would be reopened by path as root; write through the caller's descriptor.
     ui_run "Packing" bash -c 'tar -czf - -C "$1" . >&"$2"' _ "$tmpdir" "$DCVM_EXPORT_FD"
   else
-    ui_run "Packing" tar -czf "$pkg_path" -C "$tmpdir" .
+    # A new file renamed into place: a link planted at the package's path is replaced, never written through.
+    part=$(mktemp "$export_base/.$pkg_name.XXXXXX") && ui_run "Packing" tar -czf "$part" -C "$tmpdir" . &&
+      mv -fT "$part" "$pkg_path" && part=""
   fi || {
     rm -rf "$tmpdir"
     ui_step fail "Archive" "tar failed"
@@ -750,7 +770,10 @@ import_backup() {
   fi
 
   local workdir
-  workdir=$(mktemp -d)
+  workdir=$(mktemp -d) && [ -d "$workdir" ] || {
+    print_error "Cannot create a temporary folder"
+    return 1
+  }
 
   if [ -f "$pkg_path" ]; then
     if ! tar --no-same-owner --no-same-permissions -xzf "$pkg_path" -C "$workdir" 2>/dev/null; then
@@ -839,11 +862,16 @@ import_backup() {
     valid_image_name "$img" && valid_sha256 "$sha" && echo "build=$(build_file "$img" "$sha")" >>"$backup_folder/base"
   fi
   chmod 600 "$backup_folder"/*
+  local static_ip="" netcfg="$workdir/cloud-init/network-config"
+  if [ -f "$netcfg" ] && grep -qE '^[[:space:]]*dhcp4:[[:space:]]*false' "$netcfg"; then
+    static_ip=$(sed -nE 's#^[[:space:]]*-[[:space:]]*([0-9.]+)/[0-9]+[[:space:]]*$#\1#p' "$netcfg" | head -1)
+    valid_ipv4 "$static_ip" || static_ip=""
+  fi
 
   rm -rf "$workdir"
   ui_step ok "Imported" "backup $(pretty_ts "$date_part") into $backup_folder"
 
-  if ! restore_vm "$vm_target" "$date_part" "" "from_import"; then
+  if ! IMPORT_STATIC_IP=$static_ip restore_vm "$vm_target" "$date_part" "$ASSUME_YES" "from_import"; then
     rm -rf "$backup_folder"
     return 1
   fi
@@ -1051,6 +1079,7 @@ customize_restored_guest() {
 
 restore_disk_base() {
   local disk="$1" record="$2" backing img="" build="" how="" sha256 sha512 cur
+  hold_builds
   backing=$(disk_backing "$disk")
   if [ -z "$backing" ]; then
     ui_step ok "Base image" "none needed (standalone disk)"
@@ -1089,6 +1118,11 @@ restore_disk_base() {
   elif ! inside_dir "$backing" "$(templates_dir)"; then
     ui_step fail "Base image" "the disk's base is outside dcvm's templates: $backing"
     return 1
+  elif [ "$(caller_role)" = user ] || [ "$(backup_owner "${record%/*}")" != 0 ]; then
+    # Matching a build opens the disk with libguestfs, and root never opens a user's disk.
+    ui_step fail "Base image" "the backup does not record the $(image_label "$img") build it was made on"
+    echo -e "      ${DIM}A dcvm admin can restore it with --base <file>, giving that build.${NC}"
+    return 1
   else
     if ui_run "Checking base" legacy_disk_build "$disk" "$img" && [ -n "$(tail -1 "$UI_RUN_LOG")" ]; then
       build=$(tail -1 "$UI_RUN_LOG")
@@ -1122,13 +1156,19 @@ restore_disk_base() {
 }
 
 stage_backup_disk() {
-  local disk="$1" staged="$2" record="$3"
+  local disk="$1" staged="$2" record="$3" need
   rm -f "$staged"
+  need=$(file_bytes "$disk")
+  # One pass both tests the archive and gives the unpacked size.
+  if [[ "$disk" == *.gz ]] && ! need=$(set -o pipefail && gunzip -c "$disk" 2>/dev/null | wc -c); then
+    print_error "Compressed backup file is corrupted: $disk"
+    return 1
+  fi
+  if [ "$(free_bytes "${staged%/*}")" -lt "$need" ]; then
+    ui_step fail "Free space" "$(format_bytes "$(free_bytes "${staged%/*}")") free in ${staged%/*}; the unpacked disk needs $(format_bytes "$need")"
+    return 1
+  fi
   if [[ "$disk" == *.gz ]]; then
-    if ! gunzip -t "$disk" >/dev/null 2>&1; then
-      print_error "Compressed backup file is corrupted: $disk"
-      return 1
-    fi
     ui_run "Unpacking disk" sh -c 'gunzip -c "$1" >"$2"' _ "$disk" "$staged"
   else
     ui_run "Copying disk" cp --sparse=always "$disk" "$staged"
@@ -1153,11 +1193,16 @@ stage_backup_disk() {
 undo_restore() {
   local vm_name="$1" prev_xml="$2" prev_disk="$3" disk="$4"
   quota_release "$vm_name"
-  [ -n "$prev_disk" ] && mv -f "$prev_disk" "$disk"
-  if [ -s "$prev_xml" ] && virsh define "$prev_xml" >/dev/null 2>&1; then
-    print_warning "Restore failed: the previous $vm_name is back"
+  if [ -n "$prev_disk" ] && [ -e "$prev_disk" ] && ! mv -f "$prev_disk" "$disk"; then
+    print_error "Could not put $vm_name's disk back; it is $prev_disk"
   fi
-  rm -f "$prev_xml"
+  [ -s "$prev_xml" ] || return 0
+  if virsh define "$prev_xml" >/dev/null 2>&1; then
+    print_warning "Restore failed: the previous $vm_name is back"
+    rm -f "$prev_xml"
+  else
+    print_error "Could not define the previous $vm_name again; its definition is in $prev_xml (virsh define $prev_xml)"
+  fi
 }
 
 restore_vm() {
@@ -1234,7 +1279,7 @@ restore_vm() {
     ui_title "Restoring $vm_name" "backup $backup_date ${SYM_DOT} $(get_file_size "$disk_backup")"
   fi
 
-  local staged="$BACKUP_DIR/.restore-${vm_name}.qcow2"
+  local staged="$BACKUP_DIR/.restore-${vm_name}.$$.qcow2"
   local vm_exists=false vm_state=""
   if check_vm_exists "$vm_name"; then
     vm_exists=true
@@ -1275,6 +1320,16 @@ restore_vm() {
       [ -n "$static_ip_copy" ] || static_ip_copy="unknown"
       print_warning "The copy keeps static IP $static_ip_copy from $backup_vm_name (set inside the guest); change it before starting $vm_name"
       print_info "'$vm_name' will not be started or set to autostart"
+    fi
+  fi
+  # An imported guest keeps the static IP its package's network-config set; this host must record and reserve it.
+  local static_ip_new=""
+  if [ -z "$static_ip_copy" ] && [ -n "${IMPORT_STATIC_IP:-}" ] && [ ! -f "$DATACENTER_BASE/config/network/$vm_name.conf" ]; then
+    if claim_static_ip "$vm_name" "$IMPORT_STATIC_IP"; then
+      static_ip_new=$IMPORT_STATIC_IP
+    else
+      static_ip_copy=$IMPORT_STATIC_IP
+      print_warning "The guest is set to static IP $static_ip_copy, which it cannot have here; change it before starting $vm_name"
     fi
   fi
 
@@ -1319,6 +1374,19 @@ restore_vm() {
 
   local prev_xml="" prev_disk=""
   if [ "$vm_exists" = true ]; then
+    # Saved before anything changes: a restore that fails later redefines the VM from it.
+    prev_xml="$vm_dir/.pre-restore.xml"
+    if ! (umask 077 && virsh dumpxml --inactive --security-info "$vm_name" >"$prev_xml") 2>/dev/null || [ ! -s "$prev_xml" ]; then
+      print_error "Could not save $vm_name's definition (virsh dumpxml failed); it was left as it is"
+      quota_release "$vm_name"
+      rm -f "$prev_xml" "$temp_config" "$staged"
+      return 1
+    fi
+  fi
+  # A Ctrl-C (the server passes it on) or kill mid-restore puts the previous VM and disk back.
+  trap 'undo_restore "$vm_name" "$prev_xml" "$prev_disk" "$vm_disk_path"; rm -f "$temp_config" "$staged"; exit 130' INT TERM HUP
+  trap 'trap - INT TERM HUP RETURN' RETURN
+  if [ "$vm_exists" = true ]; then
     vm_state=$(get_vm_state "$vm_name")
     if [ "$vm_state" = "running" ]; then
       print_info "Stopping existing VM..."
@@ -1338,12 +1406,10 @@ restore_vm() {
     if [ "$(get_vm_state "$vm_name")" != "shut off" ]; then
       print_error "Could not stop $vm_name; it was left as it is"
       quota_release "$vm_name"
-      rm -f "$temp_config" "$staged"
+      rm -f "$temp_config" "$staged" "$prev_xml"
       return 1
     fi
 
-    prev_xml=$(mktemp)
-    virsh dumpxml --inactive --security-info "$vm_name" >"$prev_xml" 2>/dev/null
     print_info "Removing existing VM definition (keeping storage)..."
     # Keep a UEFI VM's variables: a rollback redefines it with the same NVRAM file.
     virsh undefine "$vm_name" --keep-nvram >/dev/null 2>&1 || virsh undefine "$vm_name" >/dev/null 2>&1 || true
@@ -1429,6 +1495,7 @@ restore_vm() {
         login=$(vm_login "$vm_name")
       fi
       registry_set "$vm_name" "cpus=${cpus:-1}" "memory_mb=$mem_mb" "disk_gb=$disk_gb" "user=$login"
+      [ -n "$static_ip_new" ] && save_static_ip "$vm_name" "$static_ip_new" && ui_step ok "Static IP" "$static_ip_new recorded and reserved"
       if [ "$reseeded" = true ]; then
         virsh attach-disk "$vm_name" "$DATACENTER_BASE/vms/$vm_name/cloud-init.iso" sdc --type cdrom --mode readonly --targetbus sata --config >/dev/null 2>&1 &&
           ui_step ok "Identity" "new hostname, SSH host keys and machine-id on first boot" ||
@@ -1484,11 +1551,13 @@ restore_vm() {
     return 1
   fi
   rm -f "$prev_disk" "$prev_xml"
+  trap - INT TERM HUP
 
   rm -f "$temp_config"
 
   if [ -n "$static_ip_copy" ]; then
     print_warning "Autostart not enabled: '$vm_name' keeps static IP $static_ip_copy from '$backup_vm_name'"
+    registry_set "$vm_name" "autostart=off"
   elif virsh autostart "$vm_name" >/dev/null 2>&1; then
     print_success "VM autostart enabled"
   else
@@ -1662,7 +1731,7 @@ ssh_setup_vm() {
   local ip_deadline=$((SECONDS + ip_wait_total))
   print_info "Waiting up to ${ip_wait_total}s for the VM IP address (checked every 2s)..."
   while :; do
-    vm_ip=$(get_vm_ip "$vm_name" 1 2>/dev/null)
+    vm_ip=$(get_vm_ip_trusted "$vm_name" 1 2>/dev/null)
     if [ -n "$vm_ip" ] && [ "$vm_ip" != "N/A" ]; then
       break
     fi
@@ -1716,11 +1785,17 @@ ssh_setup_vm() {
   fifo_dir=$(mktemp -d)
   tmp_fifo="$fifo_dir/out"
   mkfifo "$tmp_fifo"
+  # The guest is untrusted: its host key goes to a throwaway known_hosts, and a stalled sshd times out.
+  local -a ssh_opts=(-o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$fifo_dir/known_hosts"
+    -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
 
-  (ssh-copy-id -o StrictHostKeyChecking=no -i "$ssh_pubkey" "${target_user}@${vm_ip}" >"$tmp_fifo" 2>&1) &
+  (ssh-copy-id "${ssh_opts[@]}" -i "$ssh_pubkey" "${target_user}@${vm_ip}" >"$tmp_fifo" 2>&1) &
   local scp_pid=$!
   while IFS= read -r line; do
-    echo "$line" >>"$tmp_out"
+    # Guest output: no escape sequences, and backslashes doubled for print_*'s echo -e.
+    line=${line//[[:cntrl:]]/}
+    line=${line//\\/\\\\}
+    printf '%s\n' "$line" >>"$tmp_out"
 
     local normalized="$line"
     normalized=${normalized#/usr/bin/ssh-copy-id: }
@@ -1744,7 +1819,7 @@ ssh_setup_vm() {
       print_warning "${normalized#*: WARNING: }"
       ;;
     *"'s password:"* | *" password:"* | *Password:*)
-      printf "%s\n" "$normalized"
+      printf '%b\n' "$normalized"
       ;;
     *)
       if echo "$normalized" | grep -qi "permission denied"; then
@@ -1757,7 +1832,8 @@ ssh_setup_vm() {
   done <"$tmp_fifo"
 
   wait "$scp_pid"
-  local scp_rc=$?
+  local scp_rc=$? key_login=false
+  [ $scp_rc -eq 0 ] && ssh -o BatchMode=yes "${ssh_opts[@]}" "${target_user}@${vm_ip}" true </dev/null 2>/dev/null && key_login=true
   local scp_output
   scp_output=$(cat "$tmp_out") || scp_output=""
   rm -rf "$tmp_out" "$fifo_dir"
@@ -1774,7 +1850,7 @@ ssh_setup_vm() {
   fi
 
   if [ $scp_rc -eq 0 ]; then
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${target_user}@${vm_ip}" true 2>/dev/null; then
+    if [ "$key_login" = true ]; then
       ui_done ok "SSH key installed for $target_user" "key login tested"
     else
       ui_done warn "SSH key copied for $target_user" "but a key login did not work yet"
@@ -1801,7 +1877,8 @@ Commands:
   create <vm>                         Back up a VM (shuts it down meanwhile, then starts it again)
   list [vm]                           Backups of every VM, or of one
   restore <vm> [id] [new-name]        Put a backup back (newest by default) and start it, or restore it as a new VM
-                                      (replacing a VM asks first; --yes without a terminal)
+                                      (replacing a VM asks first; --yes without a terminal;
+                                      --base <file> gives the base build when it is not on this host, admins only)
   delete <vm>                         Pick backups to delete from a numbered list
   delete <vm> <id> | <vm>-<id>        Delete one backup, without asking
   delete --all                        Delete every backup (asks first; --yes without a terminal)
