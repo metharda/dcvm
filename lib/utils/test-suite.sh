@@ -5602,6 +5602,7 @@ test_doctor_fix_guards() {
     prepare_vm_disk() { echo "prepared $1" >>"$t/calls"; }
     echo "paused=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" paused)"
     echo "failed=$(base_status web "$t/vms/web/web-disk.qcow2" "$t/storage/templates/builds/img-old.qcow2" "shut off")"
+    # shellcheck disable=SC2218 # base_status comes from doctor.sh; the stub below replaces it afterwards
     echo "pending=$(FIX=false base_status tpl "$t/vms/tpl/tpl-disk.qcow2" "$t/storage/templates/img.qcow2" "shut off")"
     registry_set copy "autostart=off"
     vm_disks() { printf 'copy\t%s\t\n' "$t/vms/copy/copy-disk.qcow2"; }
