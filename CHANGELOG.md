@@ -12,6 +12,11 @@ history, so the commit or PR is listed for each release.
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-11-25
+
+Bulk bug fixes: GitHub issues #110-#156, #180-#195 and #199 from the 0.9.11
+audit. See the PR for the list.
+
 ### Fixed
 
 - Admin commands over the socket take the same per-VM lock as users' (backup, restore, start/stop, ports, fix-lock); a restore stages its disk under a per-process name (#119)
@@ -1095,7 +1100,8 @@ after the `v0.5.2` tag, so they are listed under 0.7.1.
 
 - Modular `bin/` + `lib/` layout and project documentation (#12, de6400d).
 
-[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/metharda/dcvm/compare/v0.9.12...HEAD
+[0.9.12]: https://github.com/metharda/dcvm/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/metharda/dcvm/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/metharda/dcvm/compare/v0.9.9...v0.9.10
 [0.9.9.1]: https://github.com/metharda/dcvm/pull/64
