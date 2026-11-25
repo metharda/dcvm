@@ -56,7 +56,7 @@ On their own VMs:
 | `delete` | Without a terminal it needs `--yes` |
 | `protect`, `unprotect` | A protected VM refuses `delete` and `restore` |
 | `backup create`, `list`, `delete`, `restore`, `export` | Only their own backups. `delete <vm>` picks from a list (needs a terminal); `delete <vm> <id>` takes a backup ID or `latest` and doesn't ask; restoring over a VM without a terminal needs `--yes`. `export` writes to a file in the user's own folder and keeps the VM's `authorized_keys` (root never opens a user's disk) |
-| `network ports add`, `remove`, `show` | Forwards SSH and HTTP for one VM from dcvm's port ranges |
+| `network ports add`, `remove`, `show` | Forwards SSH and HTTP for one VM from dcvm's port ranges; `add` and `remove` take `--dry-run` |
 | `network vnc enable`, `disable`, `status` | VNC gets a random password, shown only to the VM's owner |
 | `fix-lock` | Without restarting libvirt, which serves every user |
 | `template list`, `status` | A missing image is downloaded when `create` needs it |
