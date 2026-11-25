@@ -80,7 +80,32 @@ cmd_status() {
   echo ""
 }
 
+# dry_network ACTION: what start, stop or restart would do.
+dry_network() {
+  local state
+  if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
+    print_error "$NETWORK_NAME does not exist; re-run the installer with --network-only"
+    return 1
+  fi
+  state=$(network_state)
+  case "$1:$state" in
+  start:active | stop:inactive)
+    ui_done fail "$NETWORK_NAME would not $1" "already $state"
+    echo ""
+    return 1
+    ;;
+  esac
+  [ "$1" = start ] || [ "$state" = inactive ] || would "run: virsh net-destroy $NETWORK_NAME (its VMs lose the network)"
+  [ "$1" = stop ] || would "run: virsh net-start $NETWORK_NAME"
+  echo ""
+}
+
 cmd_start() {
+  no_args "dcvm network start" "$@"
+  if [ "$DRY_RUN" = true ]; then
+    dry_network start
+    return
+  fi
   if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
     ui_done ok "$NETWORK_NAME started"
   else
@@ -90,6 +115,11 @@ cmd_start() {
   echo ""
 }
 cmd_stop() {
+  no_args "dcvm network stop" "$@"
+  if [ "$DRY_RUN" = true ]; then
+    dry_network stop
+    return
+  fi
   if virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1; then
     ui_done ok "$NETWORK_NAME stopped" "VMs on it have no network until it starts again"
   else
@@ -99,6 +129,11 @@ cmd_stop() {
   echo ""
 }
 cmd_restart() {
+  no_args "dcvm network restart" "$@"
+  if [ "$DRY_RUN" = true ]; then
+    dry_network restart
+    return
+  fi
   virsh net-destroy "$NETWORK_NAME" >/dev/null 2>&1 || true
   sleep 1
   if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
@@ -132,6 +167,26 @@ cmd_bridge() {
 
 cmd_ip_forwarding() {
   local action="${1:-show}"
+  if [ $# -gt 1 ]; then
+    print_error "Usage: dcvm network ip-forwarding [on|off|show] [--dry-run]"
+    exit 1
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    case "$action" in
+    on | enable)
+      would "set net.ipv4.ip_forward to 1"
+      ip_forwarding_persisted || would "write /etc/sysctl.d/90-dcvm.conf"
+      echo ""
+      return 0
+      ;;
+    off | disable)
+      would "set net.ipv4.ip_forward to 0 (VMs lose internet access and port forwards stop working)"
+      [ ! -f /etc/sysctl.d/90-dcvm.conf ] || would "remove /etc/sysctl.d/90-dcvm.conf"
+      echo ""
+      return 0
+      ;;
+    esac
+  fi
   case "$action" in
   on | enable)
     enable_ip_forwarding || {
@@ -332,6 +387,10 @@ Commands:
   dhcp <command>          DHCP leases (dcvm network dhcp help)
   vnc <action> <vm>       VNC on a VM: enable, disable, status
 
+Options:
+  -n, --dry-run           With start, stop, restart, ip-forwarding, ports or dhcp:
+                          show what would change, change nothing
+
 Examples:
   dcvm network
   dcvm network ports setup
@@ -352,12 +411,19 @@ main() {
   ports:--help) exec "$SCRIPT_DIR/port-forward.sh" --help ;;
   dhcp:--help) exec "$SCRIPT_DIR/dhcp.sh" --help ;;
   esac
+  parse_dry_run "$@"
+  set -- "${ARGS[@]}"
+  if [ "$DRY_RUN" = true ] && [ "${1:-}" = vnc ]; then
+    print_error "dcvm network vnc has no --dry-run"
+    exit 1
+  fi
   load_dcvm_config
   require_root
   check_dependencies virsh iptables
 
   local subcmd="${1:-show}"
   shift || true
+  case "$subcmd" in ports | dhcp) ;; *) dry_run_title ;; esac
   case "$subcmd" in
   show | info)
     [ $# -eq 0 ] || { print_error "Usage: dcvm network show" && exit 1; }
@@ -369,11 +435,12 @@ main() {
   restart) cmd_restart "$@" ;;
   leases) cmd_leases "$@" ;;
   bridge) cmd_bridge "$@" ;;
-  ip-forwarding | ipfwd) cmd_ip_forwarding "${1:-show}" ;;
+  ip-forwarding | ipfwd) cmd_ip_forwarding "$@" ;;
   config) cmd_config "$@" ;;
   help | -h | --help) cmd_help ;;
   ports | dhcp)
     set +e
+    [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
     if [ "$subcmd" = "ports" ]; then exec "$SCRIPT_DIR/port-forward.sh" "$@"; else exec "$SCRIPT_DIR/dhcp.sh" "$@"; fi
     ;;
   vnc)

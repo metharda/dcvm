@@ -15,6 +15,7 @@ get_vm_ip_advanced() {
   while [ $attempts -lt 15 ]; do
     ip=$(get_vm_ip_trusted "$vm_name") && check_ping "$ip" && break
     ip=""
+    [ "$DRY_RUN" != true ] || break
     [ $attempts -eq 0 ] && print_info "Attempt 1: Waiting for $vm_name to get valid IP address" >&2
     sleep 3
     attempts=$((attempts + 1))
@@ -28,10 +29,10 @@ setup_vm_forwarding() {
   print_info "Setting up port forwarding for $vm ($vm_ip)"
   # Only traffic to this host: routed traffic (VM egress, docker, VPNs) to the same port is never rewritten.
   local match=(! -i "$BRIDGE_NAME" -p tcp -m addrtype --dst-type LOCAL)
-  if iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null &&
-    iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 22 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null &&
-    iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null &&
-    iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 80 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null; then
+  if run_or_show iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$ssh_port" -j DNAT --to-destination "$vm_ip:22" 2>/dev/null &&
+    run_or_show iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 22 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null &&
+    run_or_show iptables -w -t nat -I PREROUTING "${match[@]}" --dport "$http_port" -j DNAT --to-destination "$vm_ip:80" 2>/dev/null &&
+    run_or_show iptables -w -I FORWARD -p tcp -d "$vm_ip" --dport 80 -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null; then
     print_success "  SSH: $host_ip:$ssh_port -> $vm_ip:22"
     print_success "  HTTP: $host_ip:$http_port -> $vm_ip:80"
   else
@@ -47,6 +48,8 @@ setup_vm_forwarding() {
 free_port() {
   local port rules
   rules=$(iptables -w -t nat -S PREROUTING 2>/dev/null)
+  # A dry run leaves the rules setup would have removed by now in place.
+  [ -z "$DRY_REMOVED" ] || rules=$(grep -vxF -- "$DRY_REMOVED" <<<"$rules")
   for ((port = $1; port <= $2; port++)); do
     awk -v c="$3" -v p="$port" -v v="$4" '!/^#/ && $1 != v && $c == p { f = 1 } END { exit !f }' "${@:5}" 2>/dev/null && continue
     grep -q -- "--dport $port " <<<"$rules" && continue
@@ -58,17 +61,22 @@ free_port() {
 }
 
 allow_related() {
-  iptables -w -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -w -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  iptables -w -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || run_or_show iptables -w -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 }
 
 save_mappings_tmp_to_file() {
   if [ -n "${MAPPINGS_TMP:-}" ] && [ -f "$MAPPINGS_TMP" ]; then
-    create_dir_safe "$DATACENTER_BASE"
+    [ "$DRY_RUN" = true ] || create_dir_safe "$DATACENTER_BASE"
     local map_file="$DATACENTER_BASE/port-mappings.txt" vm rest
     # A VM not forwarded this time keeps its row, so its ports never go to another VM.
     KEPT_MAPPINGS=$(read_port_mappings 2>/dev/null | while read -r vm rest; do
       ! awk -v v="$vm" '$1 == v { f = 1 } END { exit !f }' "$MAPPINGS_TMP" && check_vm_exists "$vm" && echo "$vm $rest"
     done)
+    if [ "$DRY_RUN" = true ]; then
+      would "save the mappings to $map_file"
+      rm -f "$MAPPINGS_TMP"
+      return 0
+    fi
     if ! (umask 077 && {
       echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT"
       cat "$MAPPINGS_TMP"
@@ -83,7 +91,16 @@ save_mappings_tmp_to_file() {
   fi
 }
 
+forwarding_on() {
+  if [ "$DRY_RUN" != true ]; then
+    echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+  elif [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" != 1 ]; then
+    would "turn IP forwarding on"
+  fi
+}
+
 cmd_setup() {
+  no_args "dcvm network ports setup" "$@"
   ui_quiet
   lock_port_mappings || exit 1
   if ! virsh net-info "$NETWORK_NAME" >/dev/null 2>&1; then
@@ -92,15 +109,17 @@ cmd_setup() {
     exit 1
   fi
   if ! virsh net-list --name | grep -qxF "$NETWORK_NAME"; then
-    print_warning "$NETWORK_NAME is not active, starting it"
-    if virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
+    [ "$DRY_RUN" = true ] || print_warning "$NETWORK_NAME is not active, starting it"
+    if [ "$DRY_RUN" = true ]; then
+      would "start $NETWORK_NAME, which is not active"
+    elif virsh net-start "$NETWORK_NAME" >/dev/null 2>&1; then
       sleep 3
     else
       print_error "Failed to start $NETWORK_NAME"
       exit 1
     fi
   fi
-  echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+  forwarding_on
   VM_LIST=""
   while read -r vm; do
     [ -n "$vm" ] && is_vm_in_network "$vm" && VM_LIST="${VM_LIST}${vm}"$'\n'
@@ -145,7 +164,7 @@ cmd_setup() {
   forwarded=$(cat "$MAPPINGS_TMP")
   local saved=true
   save_mappings_tmp_to_file || saved=false
-  command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
+  [ "$DRY_RUN" != true ] && command_exists iptables-save && create_dir_safe "${IPTABLES_RULES_FILE%/*}"
   save_iptables_rules
   if [ "$count" -gt 0 ]; then
     {
@@ -160,7 +179,9 @@ cmd_setup() {
     ui_step skip "${item%%|*}" "${item#*|}"
   done
   [ -z "${KEPT_MAPPINGS:-}" ] || echo -e "  ${DIM}$(plural "$(grep -c . <<<"$KEPT_MAPPINGS")" "saved mapping") of VMs not forwarded now kept without rules; dcvm network ports apply restores them${NC}"
-  if [ "$saved" = false ]; then
+  if [ "$DRY_RUN" = true ]; then
+    ui_done skip "$(plural "$count" VM) would be forwarded" "run it without --dry-run to apply"
+  elif [ "$saved" = false ]; then
     ui_done fail "$(plural "$count" VM) forwarded, but the mappings were not saved" "run dcvm network ports setup again"
     echo ""
     return 1
@@ -189,8 +210,8 @@ cmd_show() {
 
 cmd_add() {
   local vm="${1:-}" map_file line ip ssh_port http_port host_ip
-  if [ -z "$vm" ] || ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then
-    print_error "Usage: dcvm network ports add <your vm>"
+  if [ $# -ne 1 ] || [ -z "$vm" ] || ! check_vm_exists "$vm" || ! is_vm_in_network "$vm"; then
+    print_error "Usage: dcvm network ports add <your vm> [--dry-run]"
     return 1
   fi
   map_file=$(get_port_mappings_file)
@@ -220,6 +241,14 @@ cmd_add() {
     return 1
   fi
   host_ip=$(detect_host_ip)
+  if [ "$DRY_RUN" = true ]; then
+    ui_quiet
+    setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$host_ip"
+    allow_related
+    would "add $vm's row to $map_file"
+    ui_done skip "$vm would be forwarded" "SSH $ssh_port, HTTP $http_port"
+    return 0
+  fi
   setup_vm_forwarding "$vm" "$ip" "$ssh_port" "$http_port" "$host_ip" >/dev/null || return 1
   [ -s "$map_file" ] || echo "# VM_NAME VM_IP SSH_PORT HTTP_PORT" >"$map_file"
   chmod 600 "$map_file"
@@ -231,8 +260,8 @@ cmd_add() {
 
 cmd_remove() {
   local vm="${1:-}" line ip ssh_port http_port
-  if [ -z "$vm" ] || ! is_vm_in_network "$vm"; then
-    print_error "Usage: dcvm network ports remove <your vm>"
+  if [ $# -ne 1 ] || [ -z "$vm" ] || ! is_vm_in_network "$vm"; then
+    print_error "Usage: dcvm network ports remove <your vm> [--dry-run]"
     return 1
   fi
   lock_port_mappings || return 1
@@ -242,6 +271,13 @@ cmd_remove() {
     return 0
   fi
   read -r _ ip ssh_port http_port <<<"$line"
+  if [ "$DRY_RUN" = true ]; then
+    ui_quiet
+    cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port"
+    drop_port_mapping "$vm"
+    ui_done skip "$vm's port forwards would be removed" "SSH $ssh_port, HTTP $http_port"
+    return 0
+  fi
   cleanup_port_forwarding_for_vm "$ip" "$ssh_port" "$http_port" >/dev/null
   drop_port_mapping "$vm"
   ui_done ok "$vm's port forwards removed" "SSH $ssh_port, HTTP $http_port"
@@ -260,15 +296,22 @@ cmd_rules() {
 }
 
 cmd_clear() {
+  no_args "dcvm network ports clear" "$@"
   ui_quiet
   lock_port_mappings || exit 1
   cleanup_port_forwarding
   save_iptables_rules
+  if [ "$DRY_RUN" = true ]; then
+    ui_done skip "Port forward rules would be removed" "the saved mappings stay"
+    echo ""
+    return 0
+  fi
   ui_done ok "Port forward rules removed" "the saved mappings stay; dcvm network ports apply restores them"
   echo ""
 }
 
 cmd_apply() {
+  no_args "dcvm network ports apply" "$@"
   ui_quiet
   local map_file=$(get_port_mappings_file)
   if [ ! -f "$map_file" ]; then
@@ -276,7 +319,7 @@ cmd_apply() {
     exit 1
   fi
   lock_port_mappings || exit 1
-  echo 1 >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+  forwarding_on
   cleanup_port_forwarding
   local HOST_IP=$(detect_host_ip) count=0 failed=0
   ui_title "Port forwarding" "from $map_file"
@@ -300,6 +343,12 @@ cmd_apply() {
   done <"$map_file"
   allow_related
   save_iptables_rules
+  if [ "$DRY_RUN" = true ]; then
+    ui_done skip "$(plural "$count" VM) would be forwarded, $failed not" "run it without --dry-run to apply"
+    echo ""
+    [ "$failed" -eq 0 ]
+    return
+  fi
   if [ "$failed" -gt 0 ]; then
     ui_done warn "$(plural "$count" VM) forwarded, $failed not" "see above"
     echo ""
@@ -348,7 +397,11 @@ Commands:
   clear   Remove the rules; the saved mappings stay
   help    Show this help
 
+Options:
+  -n, --dry-run  With setup, add, remove, apply or clear: show what would change, change nothing
+
 Examples:
+  dcvm network ports setup --dry-run
   dcvm network ports setup
   dcvm network ports test
 EOF
@@ -360,9 +413,12 @@ main() {
     exit 0
     ;;
   esac
+  parse_dry_run "$@"
+  set -- "${ARGS[@]}"
   load_dcvm_config
   require_root
   check_dependencies iptables virsh
+  dry_run_title
 
   local subcmd="${1:-help}"
   case "$subcmd" in

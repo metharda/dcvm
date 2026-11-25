@@ -4422,6 +4422,140 @@ test_port_mappings_kept_and_checked() {
   rm -rf "$t"
 }
 
+# shellcheck disable=SC2034,SC2317,SC1090,SC1091,SC2016 # stubs are called by the code under test
+test_network_dry_run() {
+  local t r="" out a pf="$SCRIPT_DIR/../network/port-forward.sh" nm="$SCRIPT_DIR/../network/network-manager.sh"
+  t=$(mktemp -d)
+  mkdir -p "$t/base" "$t/bin"
+  cat >"$t/bin/iptables" <<'STUB'
+#!/bin/bash
+case "$*" in
+*"-S PREROUTING"*)
+  printf '%s\n' '-A PREROUTING ! -i virbr-dc -p tcp -m addrtype --dst-type LOCAL -m tcp --dport 2221 -j DNAT --to-destination 10.10.10.5:22' \
+    '-A PREROUTING -p tcp -m tcp --dport 2222 -j DNAT --to-destination 192.0.2.9:22'
+  ;;
+*"-C FORWARD"*) [[ "$*" != *"--dport 80 "* && "$*" == *ctstate* ]] ;;
+*"-S FORWARD"*) ;;
+*) echo "iptables $*" >>"${0%/*}/../calls" ;;
+esac
+STUB
+  chmod +x "$t/bin/iptables"
+  printf '# VM_NAME VM_IP SSH_PORT HTTP_PORT\nweb 10.10.10.5 2221 8081\n' >"$t/base/port-mappings.txt"
+  cp "$t/base/port-mappings.txt" "$t/before"
+  local stubs='
+    PATH="$t/bin:$PATH" DATACENTER_BASE="$t/base" BRIDGE_NAME=virbr-dc NETWORK_NAME=net NETWORK_SUBNET=10.10.10
+    IPTABLES_RULES_FILE="$t/base/rules.v4"
+    load_dcvm_config() { :; }
+    require_root() { :; }
+    check_dependencies() { :; }
+    virsh() {
+      case "$*" in
+      "list --all" | list) printf " 1 web running\n 2 db running\n" ;;
+      "net-list --name") [ -z "${DOWN:-}" ] && echo net ;;
+      net-list) [ -n "${DOWN:-}" ] || echo " net active yes yes" ;;
+      net-info*) : ;;
+      *) echo "virsh $*" >>"$t/calls" ;;
+      esac
+      return 0
+    }
+    is_vm_in_network() { :; }
+    check_vm_exists() { :; }
+    get_vm_state() { echo running; }
+    get_vm_ip_trusted() { case "$1" in web) echo 10.10.10.5 ;; db) echo 10.10.10.6 ;; esac; }
+    check_ping() { :; }
+    ip_held_by_other_vm() { return 1; }
+    detect_host_ip() { echo 192.0.2.1; }
+    vm_login() { echo u; }
+    ss() { :; }
+    sleep() { echo "sleep $*" >>"$t/calls"; }'
+  ports() { (source "$pf" && eval "$stubs" && main "$@") </dev/null 2>&1; }
+  network() { (source "$nm" && set +e && eval "$stubs" && main "$@") </dev/null 2>&1; }
+
+  # web gets its own port back although its rule is still there; a foreign rule's port is skipped.
+  out=$(ports setup --dry-run)
+  grep -q -- '-D PREROUTING .*--dport 2221 ' <<<"$out" && grep -q -- '-I PREROUTING .*--dport 2221 .*10.10.10.5:22' <<<"$out" &&
+    grep -q -- '-I PREROUTING .*--dport 2223 .*10.10.10.6:22' <<<"$out" && grep -q '2 VMs would be forwarded' <<<"$out" &&
+    ! grep -q -- '-D .*192.0.2.9' <<<"$out" && r+="setup "
+  grep -q 'start net, which is not active' <<<"$(DOWN=1 ports -n setup)" && r+="setup-down "
+  grep -q 'db would be forwarded' <<<"$(ports add db --dry-run)" && r+="add "
+  out=$(ports remove web -n)
+  grep -q -- '-D PREROUTING .*--dport 2221' <<<"$out" && [ "$(grep -c -- '-D FORWARD' <<<"$out")" = 1 ] &&
+    grep -q "drop web's row" <<<"$out" && r+="remove "
+  grep -q '1 VM would be forwarded, 0 not' <<<"$(ports apply -n)" && r+="apply "
+  grep -q 'rules would be removed' <<<"$(ports clear -n)" && r+="clear "
+  grep -q 'virsh net-destroy net' <<<"$(network stop --dry-run)" && grep -q 'virsh net-start net' <<<"$(DOWN=1 network --dry-run start)" &&
+    ! network start -n >/dev/null && [ "$(network restart -n | grep -c 'run: virsh')" = 2 ] && r+="network "
+  grep -q 'ip_forward to 0' <<<"$(network ip-forwarding off --dry-run)" && r+="ip-forwarding "
+  ! network vnc enable web --dry-run >/dev/null && r+="vnc "
+  for a in "setup" "apply" "clear" "add db" "remove web"; do
+    # shellcheck disable=SC2086
+    ports $a --dry-rnu >/dev/null && r+="BAD:$a "
+  done
+  for a in start stop restart "ip-forwarding off"; do
+    # shellcheck disable=SC2086
+    network $a --dry-rnu >/dev/null && r+="BAD:$a "
+  done
+  [ ! -e "$t/calls" ] && cmp -s "$t/before" "$t/base/port-mappings.txt" && [ "$(ls -A "$t/base")" = port-mappings.txt ] && r+="unchanged "
+  unset -f ports network
+  if [ "$r" = "setup setup-down add remove apply clear network ip-forwarding vnc unchanged " ]; then
+    log_test "PASS" "network and ports --dry-run show the changes and make none; unknown arguments run nothing (#23)"
+  else
+    log_test "FAIL" "network and ports --dry-run show the changes and make none; unknown arguments run nothing (#23)" "$r; $(tr '\n' ';' <"$t/calls" 2>/dev/null); $(tr '\n' '|' <<<"$out" | cut -c1-400)"
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_test "SKIP" "dhcp --dry-run (#23)" "jq not available"
+  else
+    r=""
+    rm -rf "$t"
+    t=$(mktemp -d)
+    write_lease_fixture "$t"
+    cp "$t/br.status" "$t/before"
+    [ "$(run_dhcp_fixture "$t" "" clear --all -n | grep -c 'would .*release ')" = 5 ] && r+="all "
+    out=$(run_dhcp_fixture "$t" "" cleanup --dry-run)
+    [ "$(grep -c 'would .*release ' <<<"$out")" = 1 ] && grep -q '10.10.10.66' <<<"$out" && r+="stale "
+    grep -q 'release the lease of 10.10.10.11' <<<"$(run_dhcp_fixture "$t" "" clear 52:54:00:00:00:01 --dry-run)" && r+="mac "
+    out=$(run_dhcp_fixture "$t" 'DATACENTER_BASE="$t"; is_vm_in_network() { :; }
+      get_vm_mac() { awk -v d="$1" '\''$1 == d { print $2 }'\'' "$t/ifaces"; }' renew --dry-run)
+    grep -q 'cut the link of web' <<<"$out" && r+="renew "
+    for a in cleanup renew "clear vm1"; do
+      # shellcheck disable=SC2086
+      run_dhcp_fixture "$t" "" $a extra >/dev/null && r+="BAD:$a "
+    done
+    ! grep -qE '^dhcp_release|domif-setlink' "$t/calls" && cmp -s "$t/before" "$t/br.status" && [ ! -e "$t/br.dcvm.lock" ] && r+="unchanged "
+    if [ "$r" = "all stale mac renew unchanged " ]; then
+      log_test "PASS" "dhcp --dry-run lists the leases and links, asks nothing and changes nothing (#23)"
+    else
+      log_test "FAIL" "dhcp --dry-run lists the leases and links, asks nothing and changes nothing (#23)" "$r; $(tr '\n' '|' <<<"$out" | cut -c1-300)"
+    fi
+  fi
+  rm -rf "$t"
+
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(
+      python3 -I -S - "$SCRIPT_DIR/../server/dcvm-server.py" <<'PY' 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+s.own_vm = lambda ctx, vm: vm
+def ask(*argv):
+    ctx = {"uid": 4242, "user": "u", "role": "user", "origin": "agent", "files": {}}
+    try:
+        return "%s %s" % (" ".join(s.decide_user(ctx, list(argv))), ctx["mutating"])
+    except s.Denied:
+        return "denied"
+print(ask("network", "ports", "add", "web", "-n"), "|", ask("network", "ports", "remove", "web"), "|", ask("network", "ports", "setup", "--dry-run"))
+PY
+    )
+    if [ "$out" = "network ports add web --dry-run False | network ports remove web True | denied" ]; then
+      log_test "PASS" "users may dry-run ports add and remove on their own VMs (#23)"
+    else
+      log_test "FAIL" "users may dry-run ports add and remove on their own VMs (#23)" "$out"
+    fi
+  fi
+}
+
 # shellcheck disable=SC2034,SC2317,SC1090,SC1091 # stubs are called by the code under test
 test_dhcp_hostile_and_partial() {
   local r="" out esc=$'\e'
@@ -6842,6 +6976,7 @@ test_common_functions() {
   test_forward_rules_scope
   test_port_forward_records
   test_port_mappings_kept_and_checked
+  test_network_dry_run
   test_dhcp_hostile_and_partial
   test_delete_all_shared_state
   test_installer_network

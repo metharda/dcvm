@@ -162,6 +162,23 @@ listens on); `dcvm network ports remove <vm>` takes them away. Users without
 root use these for their own VMs; `setup`, `apply` and `clear` are for admins,
 because they touch every VM's forwards.
 
+### Dry run
+
+`--dry-run` (or `-n`) shows what a command would do, rule by rule, and changes
+nothing: no iptables rules, leases, links, sysctls or files. It asks no
+questions and takes no locks, so it shows the state of that moment.
+
+```bash
+dcvm network ports setup --dry-run
+dcvm network dhcp clear --all --dry-run
+```
+
+It works with `network start`, `stop`, `restart` and `ip-forwarding`, with
+`ports setup`, `add`, `remove`, `apply` and `clear`, and with `dhcp clear`,
+`cleanup` and `renew`. `ports setup --dry-run` does not wait for VMs that have
+no address yet, and does not start a stopped network. `network vnc` has no dry
+run and refuses the flag.
+
 ### Command Reference
 
 | Command | Description |

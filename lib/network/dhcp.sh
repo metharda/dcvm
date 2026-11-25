@@ -11,7 +11,7 @@ show_current_leases() {
 
 lease_cleared() {
   case "$1" in
-  0) ui_done ok "DHCP lease of $2 released" ;;
+  0) if [ "$DRY_RUN" = true ]; then ui_done skip "DHCP lease of $2 would be released"; else ui_done ok "DHCP lease of $2 released"; fi ;;
   1) ui_done skip "No matching DHCP lease found" "for $2; nothing to release" ;;
   *) return 1 ;;
   esac
@@ -38,13 +38,21 @@ release_leases() {
   while IFS='|' read -r mac ip hostname reason; do
     [ -n "$mac$hostname" ] || continue
     rc=0
-    cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
+    if [ "$DRY_RUN" = true ]; then
+      cleanup_dhcp_lease "$mac" "$hostname" >/dev/null || rc=$?
+    else
+      cleanup_dhcp_lease "$mac" "$hostname" || rc=$?
+    fi
     # The hostname is the guest's choice: no escape sequences into the admin's terminal.
     shown="${reason:+$reason, }${hostname:-no hostname}, ${mac:-no MAC}"
     shown=${shown//[[:cntrl:]]/?}
     case "$rc" in
     0)
-      ui_step ok "${ip//[[:cntrl:]]/?}" "$shown"
+      if [ "$DRY_RUN" = true ]; then
+        would "release ${ip//[[:cntrl:]]/?}: $shown"
+      else
+        ui_step ok "${ip//[[:cntrl:]]/?}" "$shown"
+      fi
       removed_count=$((removed_count + 1))
       ;;
     2)
@@ -54,7 +62,12 @@ release_leases() {
     esac
   done <<<"$1"
 
-  if [ "$failed" -gt 0 ]; then
+  if [ "$DRY_RUN" = true ] && [ "$removed_count" -gt 0 ]; then
+    ui_done skip "$(plural "$removed_count" "$what") would be released"
+    echo ""
+    [ "$failed" -eq 0 ]
+    return
+  elif [ "$failed" -gt 0 ]; then
     ui_done warn "Released $removed_count of $(plural "$((removed_count + failed))" "$what")" "see the errors above"
     echo ""
     return 1
@@ -78,6 +91,7 @@ status_file_readable() {
 }
 
 confirm_release() {
+  [ "$DRY_RUN" = true ] && return 0
   if [ -t 0 ]; then
     confirm_action "$1"
   else
@@ -120,6 +134,7 @@ clear_vm_lease() {
 }
 
 clear_stale_leases() {
+  no_args "dcvm network dhcp cleanup" "$@"
   ui_quiet
   ui_title "Stale DHCP leases" "$NETWORK_NAME"
   local stale
@@ -151,6 +166,7 @@ clear_lease() {
       return 1
       ;;
     *)
+      [ -z "$target" ] || no_args "dcvm network dhcp clear <vm-name|mac-address|--all|--stale>" "$1"
       target="$1"
       shift
       ;;
@@ -171,7 +187,7 @@ clear_lease() {
       clear_vm_lease "$target"
     fi
   else
-    print_error "Usage: dcvm network dhcp clear <vm-name|mac-address|--all|--stale>"
+    print_error "Usage: dcvm network dhcp clear <vm-name|mac-address|--all|--stale> [--dry-run]"
     return 1
   fi
 }
@@ -188,6 +204,7 @@ relink_pending() {
 # A link cut of over 4 s (NetworkManager ignores shorter ones) makes the
 # guest's DHCP client ask again; nothing in the guest is needed.
 force_renew_all() {
+  no_args "dcvm network dhcp renew" "$@"
   local running_vms vm mac pending="" left i
   local status_file="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.status"
   running_vms=$(virsh list --name 2>/dev/null | while read -r vm; do [ -n "$vm" ] && is_vm_in_network "$vm" && echo "$vm"; done)
@@ -201,6 +218,20 @@ force_renew_all() {
   confirm_release "Release the leases of these VMs and cut their links for 5 s?" || return 1
   ui_quiet
   status_file_readable "$status_file" || return 1
+  if [ "$DRY_RUN" = true ]; then
+    while read -r vm; do
+      mac=$(get_vm_mac "$vm" | head -1)
+      if [ -f "${DATACENTER_BASE:-/srv/datacenter}/config/network/$vm.conf" ]; then
+        ui_step skip "$vm" "static IP, no DHCP"
+      elif [ -n "$mac" ]; then
+        would "cut the link of $vm (${mac,,}) for 5 s and release its lease"
+      else
+        ui_step warn "$vm" "could not cut its link; it has no MAC on $NETWORK_NAME"
+      fi
+    done <<<"$running_vms"
+    echo ""
+    return 0
+  fi
   # Interrupted (Ctrl-C in the 5 s), the links cut so far come back up.
   trap relink_pending EXIT
   trap 'exit 130' INT
@@ -270,9 +301,13 @@ Commands:
   files                Lease file location and contents
   help                 Show this help
 
+Options:
+  -n, --dry-run        With clear, cleanup or renew: show what would change, change nothing (never asks)
+
 Examples:
   dcvm network dhcp show
   dcvm network dhcp clear web
+  dcvm network dhcp cleanup --dry-run
   dcvm network dhcp cleanup
 EOF
 }
@@ -283,9 +318,12 @@ main() {
     exit 0
     ;;
   esac
+  parse_dry_run "$@"
+  set -- "${ARGS[@]}"
   load_dcvm_config
   require_root
   check_dependencies virsh
+  dry_run_title
 
   local subcmd="${1:-help}"
   case "$subcmd" in

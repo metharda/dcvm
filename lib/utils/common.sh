@@ -1069,6 +1069,7 @@ DCVM_ALIAS_LINE='^[[:space:]]*alias[[:space:]]+dcvm='
 # (/etc/iptables exists); otherwise there is nothing to keep in sync.
 IPTABLES_RULES_FILE="${IPTABLES_RULES_FILE:-/etc/iptables/rules.v4}"
 save_iptables_rules() {
+  [ "$DRY_RUN" = true ] && return 0
   if command_exists iptables-save && [ -d "${IPTABLES_RULES_FILE%/*}" ]; then
     iptables-save >"$IPTABLES_RULES_FILE" 2>/dev/null || true
   fi
@@ -1568,6 +1569,39 @@ wants_help() {
   return 1
 }
 
+# Set only by parse_dry_run, never taken from the environment.
+DRY_RUN=false
+DRY_REMOVED=""
+ARGS=()
+
+# parse_dry_run ARG...: sets DRY_RUN, and ARGS to the arguments without the flag.
+parse_dry_run() {
+  local a
+  ARGS=()
+  for a in "$@"; do
+    case "$a" in
+    -n | --dry-run) DRY_RUN=true ;;
+    *) ARGS+=("$a") ;;
+    esac
+  done
+}
+
+dry_run_title() { [ "$DRY_RUN" != true ] || ui_title "Dry run" "nothing is changed"; }
+
+would() { ui_step skip "would" "$1"; }
+
+# run_or_show COMMAND...: runs it, or in a dry run only prints it.
+run_or_show() {
+  if [ "$DRY_RUN" = true ]; then would "run: $*"; else "$@"; fi
+}
+
+# no_args COMMAND ARG...: an argument the command doesn't take must not run it.
+no_args() {
+  [ $# -gt 1 ] || return 0
+  print_error "Usage: $1 [--dry-run]"
+  exit 1
+}
+
 need_value() {
   print_error "$1 needs a value"
   exit 1
@@ -1712,7 +1746,7 @@ cleanup_port_forwarding_for_vm() {
     # By port and destination, whatever else the rule matches: older rules have no address match.
     while read -r rule; do
       read -ra args <<<"${rule#-A }"
-      iptables -w -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
+      run_or_show iptables -w -t nat -D "${args[@]}" 2>/dev/null && print_info "Removed port rule: ${rule#-A PREROUTING }" || true
     done < <(iptables -w -t nat -S PREROUTING 2>/dev/null | awk -v s="$ssh_port $vm_ip:22" -v h="$http_port $vm_ip:80" '
       $1 == "-A" { d = t = ""; for (i = 2; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "--to-destination") t = $(i + 1) }
         if (d " " t == s || d " " t == h) print }')
@@ -1720,7 +1754,9 @@ cleanup_port_forwarding_for_vm() {
     for port in 22 80; do
       for state in "" "-m conntrack --ctstate DNAT"; do
         # shellcheck disable=SC2086 # $state is empty (old rule) or the match words
-        iptables -w -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
+        [ "$DRY_RUN" != true ] || iptables -w -C FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || continue
+        # shellcheck disable=SC2086
+        run_or_show iptables -w -D FORWARD -p tcp -d "$vm_ip" --dport "$port" $state -j ACCEPT 2>/dev/null || true
       done
     done
   else
@@ -1749,10 +1785,11 @@ cleanup_port_forwarding() {
   print_info "Cleaning up existing dcvm port forwarding rules"
   while read -r rule; do
     read -ra args <<<"${rule#-A }"
+    [ "$DRY_RUN" != true ] || DRY_REMOVED+="${DRY_REMOVED:+$'\n'}$rule"
     if [ "${args[0]}" = PREROUTING ]; then
-      iptables -w -t nat -D "${args[@]}" 2>/dev/null || true
+      run_or_show iptables -w -t nat -D "${args[@]}" 2>/dev/null || true
     else
-      iptables -w -D "${args[@]}" 2>/dev/null || true
+      run_or_show iptables -w -D "${args[@]}" 2>/dev/null || true
     fi
   done < <({ iptables -w -t nat -S PREROUTING && iptables -w -S FORWARD; } 2>/dev/null |
     DNAT_RE=$dnat FWD_RE=$fwd MAPS=$(read_port_mappings 2>/dev/null) awk -v s="${SSH_PORT_START:-2221}" -v h="${HTTP_PORT_START:-8081}" '
@@ -1772,6 +1809,7 @@ cleanup_port_forwarding() {
 }
 
 lock_port_mappings() {
+  [ "$DRY_RUN" = true ] && return 0
   exec {PORT_LOCK_FD}>>"$(get_port_mappings_file).lock"
   flock -w 30 "$PORT_LOCK_FD" && return 0
   print_error "Another port change is running; try again"
@@ -1782,6 +1820,10 @@ drop_port_mapping() {
   local f
   f=$(get_port_mappings_file)
   [ -f "$f" ] || return 0
+  if [ "$DRY_RUN" = true ]; then
+    would "drop $1's row from $f"
+    return 0
+  fi
   (umask 077 && awk -v v="$1" '$1 != v' "$f" >"$f.new") && mv -f "$f.new" "$f"
 }
 
@@ -1983,7 +2025,7 @@ filter_lease_lines() {
 # Returns 0 when a lease was cleared, 1 when nothing matched (no MAC/host given, empty or missing status file, no matching entry), 2 on any failure (dhcp_release or jq missing, lock timeout, unreadable or unparseable status file, mktemp failure, status file write failed, dhcp_release failed, a matched lease without an IPv4 address or MAC).
 cleanup_dhcp_lease() {
   local lock="${DNSMASQ_DIR:-/var/lib/libvirt/dnsmasq}/${BRIDGE_NAME}.dcvm.lock"
-  if ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
+  if [ "$DRY_RUN" = true ] || ! command_exists flock || ! { : >>"$lock"; } 2>/dev/null; then
     cleanup_dhcp_lease_unlocked "$@"
     return
   fi
@@ -2009,7 +2051,7 @@ cleanup_dhcp_lease_unlocked() {
 
   if [ ! -s "$status_file" ]; then
     # Older versions left 0 bytes; jq-based readers need valid JSON (libvirt accepts both).
-    [ -f "$status_file" ] && printf '[]\n' >"$status_file"
+    [ "$DRY_RUN" != true ] && [ -f "$status_file" ] && printf '[]\n' >"$status_file"
     print_info "No matching DHCP lease found"
     return 1
   fi
@@ -2042,6 +2084,14 @@ cleanup_dhcp_lease_unlocked() {
     rm -f "$tmp"
     print_error "dhcp_release not found; cannot release the lease in dnsmasq (install dnsmasq-utils on Debian, Ubuntu, Kali and Fedora, dnsmasq on Arch)"
     return 2
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    rm -f "$tmp"
+    while IFS=$'\t' read -r lmac ip cid; do
+      would "release the lease of ${ip:-no IP} (${lmac:-no MAC})"
+    done <<<"$matches"
+    return 0
   fi
 
   # Write the status file first: dnsmasq's release makes libvirt's lease

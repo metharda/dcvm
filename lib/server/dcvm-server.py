@@ -510,10 +510,13 @@ def decide_user(ctx, argv):
         return argv
     if cmd == "network" and plain[:2] == ["ports", "show"] and len(plain) == 2:
         return argv
-    if cmd == "network" and plain[:1] == ["ports"] and len(plain) == 3 and plain[1] in ("add", "remove"):
-        own_vm(ctx, plain[2])
-        ctx.update(vm=plain[2], mutating=True)
-        return argv
+    if cmd == "network":
+        rest = [a for a in plain if a not in ("-n", "--dry-run")]
+        if rest[:1] == ["ports"] and len(rest) == 3 and rest[1] in ("add", "remove"):
+            dry = ["--dry-run"] if len(rest) < len(plain) else []
+            own_vm(ctx, rest[2])
+            ctx.update(vm=rest[2], mutating=not dry)
+            return [cmd] + rest + dry
     if cmd == "network" and plain[:1] == ["vnc"] and len(plain) == 3 and plain[1] in ("enable", "disable", "status"):
         own_vm(ctx, plain[2])
         # enable/disable offer to stop a running VM, which needs the user's terminal.
@@ -549,8 +552,8 @@ USAGE = {
     "protect": "dcvm protect <vm>",
     "unprotect": "dcvm unprotect <vm>",
     "fix-lock": "dcvm fix-lock <vm> [--verbose]",
-    "network ports add": "dcvm network ports add <vm>",
-    "network ports remove": "dcvm network ports remove <vm>",
+    "network ports add": "dcvm network ports add <vm> [--dry-run]",
+    "network ports remove": "dcvm network ports remove <vm> [--dry-run]",
     "network ports show": "dcvm network ports show",
     "network vnc": "dcvm network vnc enable|disable|status <vm>",
     "backup create": "dcvm backup create <vm>",
